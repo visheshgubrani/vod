@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vod-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-12-21",
+  // 1. Enable Node.js compatibility (Required for Better Auth/Crypto)
+  "compatibility_flags": ["nodejs_compat"],
+  // 2. Public Environment Variables (Secrets go in .dev.vars!)
+  "vars": {
+    "FRONTEND_URL": "http://localhost:3000",
+    "MODAL_API_URL": "https://your-modal-endpoint.modal.run"
+  },
+  // 3. R2 Storage Binding (The "Warehouse")
+  "r2_buckets": [
+    {
+      "bucket_name": "vod-raw-dev",
+      "binding": "vod_raw_dev"
+    },
+    {
+      "bucket_name": "vod-app-dev",
+      "binding": "vod_app_dev"
+    }
+  ],
+  // 4. Observability (Optional: Keep it enabled for logs)
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
