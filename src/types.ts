@@ -12,4 +12,7 @@ export type Bindings = {
   R2_SECRET_ACCESS_KEY: string
   ACCOUNT_ID: string
   FRONTEND_URL: string
+
+  GOOGLE_CLIENT_ID: string
+  GOOGLE_CLIENT_SECRET: string
 }

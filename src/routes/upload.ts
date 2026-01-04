@@ -2,12 +2,12 @@ import { Hono } from 'hono'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { Bindings } from '../types'
-import { auth } from '../lib/auth'
+import { createAuth } from '../lib/auth'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.post('/url', async (c) => {
-  // 1. AUTH CHECK: Who is this user?
+  const auth = createAuth(c.env)
   const session = await auth.api.getSession({ headers: c.req.raw.headers })
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
