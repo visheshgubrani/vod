@@ -7,7 +7,7 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/*', async (c, next) => {
   const corsMiddleware = cors({
-    origin: c.env.FRONTEND_URL,
+    origin: c.env.FRONTEND_URL || 'http://localhost:3000',
     allowHeaders: ['Content-Type', 'Authorization'],
     allowMethods: ['POST', 'GET', 'OPTIONS'],
     exposeHeaders: ['Content-Length'],
