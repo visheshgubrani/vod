@@ -1,4 +1,15 @@
 import { R2Bucket } from '@cloudflare/workers-types'
+import { createAuth } from './lib/auth'
+
+type AuthInstance = ReturnType<typeof createAuth>
+
+export type Session = AuthInstance['$Infer']['Session']['session']
+export type User = AuthInstance['$Infer']['Session']['user']
+
+export type Variables = {
+  user: User
+  session: Session
+}
 
 export type Bindings = {
   // Buckets
