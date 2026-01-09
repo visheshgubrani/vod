@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { getDb } from './database' // Import the function we just made
+import { getDb } from './database'
 import { admin, organization } from 'better-auth/plugins'
 import { Bindings } from '../types'
 
@@ -20,6 +20,10 @@ export const createAuth = (env: Bindings) => {
         prompt: 'select_account',
         clientId: env.GOOGLE_CLIENT_ID,
         clientSecret: env.GOOGLE_CLIENT_SECRET,
+      },
+      github: {
+        clientId: env.GITHUB_CLIENT_ID,
+        clientSecret: env.GITHUB_CLIENT_SECRET,
       },
     },
     trustedOrigins: [env.FRONTEND_URL || 'http://localhost:3000'],
