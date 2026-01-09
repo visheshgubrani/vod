@@ -17,12 +17,14 @@ import {
     validateEmail,
     validatePassword,
 } from "@/types/auth";
+import { signUp } from "@/lib/auth-client";
 
 export default function SignupPage() {
     const router = useRouter();
     const [isLoading, setIsLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const [formData, setFormData] = useState<SignupFormData>({
         fullName: "",
         email: "",
@@ -60,26 +62,36 @@ export default function SignupPage() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setError(null);
 
         if (!validateForm()) return;
 
         setIsLoading(true);
 
-        // Simulate API call
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+            const result = await signUp({
+                email: formData.email,
+                password: formData.password,
+                name: formData.fullName,
+            });
 
-        // TODO: Replace with actual signup logic
-        console.log("Signup data:", formData);
+            if (result.error) {
+                setError(result.error.message || "Failed to create account");
+                setIsLoading(false);
+                return;
+            }
 
-        setIsLoading(false);
-
-        // Redirect to dashboard or login on success
-        router.push("/login");
+            // Redirect to dashboard on success
+            router.push("/dashboard");
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "An error occurred");
+            setIsLoading(false);
+        }
     };
 
     const updateField = (field: keyof SignupFormData, value: string | boolean) => {
         setFormData((prev) => ({ ...prev, [field]: value }));
-        // Clear error when user starts typing
+        setError(null);
         if (errors[field]) {
             setErrors((prev) => ({ ...prev, [field]: undefined }));
         }
@@ -91,6 +103,13 @@ export default function SignupPage() {
             subtitle="Start streaming video in minutes"
         >
             <form onSubmit={handleSubmit} className="space-y-5">
+                {/* Error Banner */}
+                {error && (
+                    <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+                        {error}
+                    </div>
+                )}
+
                 {/* Full Name */}
                 <div className="space-y-2">
                     <Label htmlFor="fullName" required>
@@ -162,7 +181,11 @@ export default function SignupPage() {
                             className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                             tabIndex={-1}
                         >
-                            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                            {showPassword ? (
+                                <EyeOff className="w-5 h-5" />
+                            ) : (
+                                <Eye className="w-5 h-5" />
+                            )}
                         </button>
                     </div>
                     <PasswordStrengthIndicator password={formData.password} />
@@ -191,7 +214,11 @@ export default function SignupPage() {
                             className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                             tabIndex={-1}
                         >
-                            {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                            {showConfirmPassword ? (
+                                <EyeOff className="w-5 h-5" />
+                            ) : (
+                                <Eye className="w-5 h-5" />
+                            )}
                         </button>
                     </div>
                 </div>
@@ -238,7 +265,10 @@ export default function SignupPage() {
                 {/* Login Link */}
                 <p className="text-center text-sm text-muted-foreground">
                     Already have an account?{" "}
-                    <Link href="/login" className="text-primary hover:underline font-medium">
+                    <Link
+                        href="/login"
+                        className="text-primary hover:underline font-medium"
+                    >
                         Sign in
                     </Link>
                 </p>

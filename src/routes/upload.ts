@@ -132,7 +132,7 @@ app.post('/multipart/create', async (c) => {
   let partSize: number
   let partCount: number
   try {
-    ;({ partSize, partCount } = resolvePartConfig(parsedSize, parsedPartSize))
+    ; ({ partSize, partCount } = resolvePartConfig(parsedSize, parsedPartSize))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid input'
     return c.json({ error: message }, 400)
@@ -162,8 +162,6 @@ app.post('/multipart/create', async (c) => {
 })
 
 app.post('/multipart/parts', async (c) => {
-  const session = c.var.session
-
   const { key, uploadId, partNumbers, size, partSize } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
 
@@ -177,7 +175,7 @@ app.post('/multipart/parts', async (c) => {
   let resolvedPartSize: number
   let partCount: number
   try {
-    ;({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
+    ; ({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
       parsedSize,
       parsedPartSize
     ))
@@ -239,7 +237,6 @@ app.post('/multipart/parts', async (c) => {
 })
 
 app.post('/multipart/complete', async (c) => {
-  const session = c.var.session
 
   const { key, uploadId, parts } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
@@ -260,9 +257,9 @@ app.post('/multipart/complete', async (c) => {
       return { PartNumber: partNumber, ETag: cleanEtag }
     })
     .filter((part) => part !== null) as Array<{
-    PartNumber: number
-    ETag: string
-  }>
+      PartNumber: number
+      ETag: string
+    }>
 
   if (normalizedParts.length === 0) {
     return c.json({ error: 'Invalid parts' }, 400)
@@ -290,7 +287,6 @@ app.post('/multipart/complete', async (c) => {
 })
 
 app.post('/multipart/abort', async (c) => {
-  const session = c.var.session
 
   const { key, uploadId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)

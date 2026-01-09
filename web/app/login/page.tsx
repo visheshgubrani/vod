@@ -11,11 +11,13 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SocialLogin } from "@/components/social-login";
 import { LoginFormData, FormErrors, validateEmail } from "@/types/auth";
+import { signIn } from "@/lib/auth-client";
 
 export default function LoginPage() {
     const router = useRouter();
     const [isLoading, setIsLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const [formData, setFormData] = useState<LoginFormData>({
         email: "",
         password: "",
@@ -39,25 +41,35 @@ export default function LoginPage() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setError(null);
 
         if (!validateForm()) return;
 
         setIsLoading(true);
 
-        // Simulate API call
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+            const result = await signIn({
+                email: formData.email,
+                password: formData.password,
+            });
 
-        // TODO: Replace with actual login logic
-        console.log("Login data:", formData);
+            if (result.error) {
+                setError(result.error.message || "Invalid email or password");
+                setIsLoading(false);
+                return;
+            }
 
-        setIsLoading(false);
-
-        // Redirect to dashboard on success
-        router.push("/dashboard");
+            // Redirect to dashboard on success
+            router.push("/dashboard");
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "An error occurred");
+            setIsLoading(false);
+        }
     };
 
     const updateField = (field: keyof LoginFormData, value: string | boolean) => {
         setFormData((prev) => ({ ...prev, [field]: value }));
+        setError(null);
         if (errors[field]) {
             setErrors((prev) => ({ ...prev, [field]: undefined }));
         }
@@ -69,6 +81,13 @@ export default function LoginPage() {
             subtitle="Sign in to your StreamFlow account"
         >
             <form onSubmit={handleSubmit} className="space-y-5">
+                {/* Error Banner */}
+                {error && (
+                    <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+                        {error}
+                    </div>
+                )}
+
                 {/* Email */}
                 <div className="space-y-2">
                     <Label htmlFor="email" required>
@@ -117,7 +136,11 @@ export default function LoginPage() {
                             className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                             tabIndex={-1}
                         >
-                            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                            {showPassword ? (
+                                <EyeOff className="w-5 h-5" />
+                            ) : (
+                                <Eye className="w-5 h-5" />
+                            )}
                         </button>
                     </div>
                 </div>
@@ -147,8 +170,11 @@ export default function LoginPage() {
 
                 {/* Signup Link */}
                 <p className="text-center text-sm text-muted-foreground">
-                    Don't have an account?{" "}
-                    <Link href="/signup" className="text-primary hover:underline font-medium">
+                    Don&apos;t have an account?{" "}
+                    <Link
+                        href="/signup"
+                        className="text-primary hover:underline font-medium"
+                    >
                         Create one
                     </Link>
                 </p>
