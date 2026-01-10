@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   pgEnum,
   integer,
+  bigint,
   uuid,
 } from 'drizzle-orm/pg-core'
 
@@ -176,7 +177,7 @@ export const video = pgTable('video', {
   thumbnailUrl: text('thumbnail_url'),
 
   duration: integer('duration'), // in seconds
-  size: integer('size'), // in bytes
+  size: bigint('size', { mode: 'number' }), // in bytes (bigint for files > 2GB)
   uploadedBy: text('uploaded_by')
     .notNull()
     .references(() => user.id, { onDelete: 'cascade' }),

@@ -135,6 +135,25 @@ app.post('/url', async (c) => {
   })
 })
 
+// Single file upload - complete (called after PUT succeeds)
+app.post('/complete', async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+
+  const { fileId } = await c.req.json()
+  if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
+
+  // Update video status to 'processing'
+  await db
+    .update(video)
+    .set({
+      status: 'processing',
+      updatedAt: new Date(),
+    })
+    .where(eq(video.id, fileId))
+
+  return c.json({ success: true, fileId })
+})
+
 // Multipart upload - create
 app.post('/multipart/create', async (c) => {
   const session = c.var.session

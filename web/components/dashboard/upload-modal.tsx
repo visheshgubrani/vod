@@ -218,6 +218,34 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
             },
         });
 
+        // Handle individual file upload success (for single-file uploads, call /complete)
+        uppy.on("upload-success", async (file, response) => {
+            console.log("upload-success event fired", { file, response });
+            if (!file) return;
+
+            const meta = file.meta as CustomMeta;
+            const fileId = meta?.fileId;
+
+            // Only call /complete for single-file uploads (non-multipart)
+            // Multipart uploads have their own completeMultipartUpload callback
+            const isMultipart = (file.size ?? 0) > 100 * 1024 * 1024;
+
+            if (fileId && !isMultipart) {
+                try {
+                    const result = await fetch(`${API_BASE_URL}/upload/complete`, {
+                        method: "POST",
+                        credentials: "include",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({ fileId }),
+                    });
+                } catch (err) {
+                    console.error("Failed to mark upload as complete:", err);
+                }
+            }
+        });
+
         // Handle upload complete
         uppy.on("complete", (result) => {
             if (result.successful && result.successful.length > 0) {
