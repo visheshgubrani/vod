@@ -177,6 +177,11 @@ export const video = pgTable('video', {
 
   duration: integer('duration'), // in seconds
   size: integer('size'), // in bytes
+  uploadedBy: text('uploaded_by')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  resolutions: text('resolutions'),
+  metadata: text('metadata'),
 
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at')

@@ -1,4 +1,5 @@
-import { createAuthClient } from "better-auth/react";
+import { createAuthClient } from "better-auth/react"
+import { organizationClient } from "better-auth/client/plugins"
 
 const baseURL =
     process.env.NEXT_PUBLIC_AUTH_BASE_URL ?? "http://localhost:8787/api/auth";
@@ -11,6 +12,7 @@ export const authClient = createAuthClient({
     fetchOptions: {
         credentials: "include",
     },
+    plugins: [organizationClient()]
 });
 
 // Email authentication
@@ -67,3 +69,61 @@ export const getSession = async () => {
 
 // Export the useSession hook for components
 export const useSession = authClient.useSession;
+
+// Organization management
+export const createOrganization = async (data: {
+    name: string;
+    slug: string;
+    logo?: string;
+    metadata?: Record<string, unknown>;
+}) => {
+    const result = await authClient.organization.create({
+        name: data.name,
+        slug: data.slug,
+        logo: data.logo,
+        metadata: data.metadata,
+    });
+    return result;
+};
+
+export const updateOrganization = async (data: {
+    organizationId: string;
+    name?: string;
+    slug?: string;
+    logo?: string;
+    metadata?: Record<string, unknown>;
+}) => {
+    const result = await authClient.organization.update({
+        organizationId: data.organizationId,
+        data: {
+            name: data.name,
+            slug: data.slug,
+            logo: data.logo,
+            metadata: data.metadata,
+        },
+    });
+    return result;
+};
+
+export const deleteOrganization = async (organizationId: string) => {
+    const result = await authClient.organization.delete({
+        organizationId,
+    });
+    return result;
+};
+
+export const setActiveOrganization = async (organizationId: string | null) => {
+    const result = await authClient.organization.setActive({
+        organizationId,
+    });
+    return result;
+};
+
+export const listOrganizations = async () => {
+    const result = await authClient.organization.list();
+    return result;
+};
+
+// Export the useActiveOrganization and useListOrganizations hooks
+export const useActiveOrganization = authClient.useActiveOrganization;
+export const useListOrganizations = authClient.useListOrganizations;

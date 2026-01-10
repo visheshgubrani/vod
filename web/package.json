@@ -9,8 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.16",
     "@uppy/aws-s3": "^5.1.0",
     "@uppy/core": "^5.2.0",
+    "@uppy/dashboard": "^5.1.0",
     "better-auth": "^1.4.10",
     "clsx": "^2.1.1",
     "lucide-react": "^0.562.0",

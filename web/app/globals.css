@@ -229,3 +229,111 @@ body {
 .code-block .function { color: hsl(200 80% 65%); }
 .code-block .comment { color: hsl(var(--muted-foreground)); }
 .code-block .number { color: hsl(35 90% 65%); }
+
+/* Animation utilities */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes zoom-in-95 {
+  from { transform: scale(0.95); }
+  to { transform: scale(1); }
+}
+
+@keyframes slide-in-from-top {
+  from { transform: translateY(-8px); }
+  to { transform: translateY(0); }
+}
+
+@keyframes slide-in-from-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-in-from-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+.animate-in {
+  animation-duration: 200ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: forwards;
+}
+
+.fade-in-0 {
+  animation-name: fade-in;
+}
+
+.zoom-in-95 {
+  animation-name: zoom-in-95;
+}
+
+.slide-in-from-top-2 {
+  animation-name: slide-in-from-top;
+}
+
+.slide-in-from-right {
+  animation-name: slide-in-from-right;
+}
+
+.slide-in-from-left {
+  animation-name: slide-in-from-left;
+}
+
+/* Uppy Theme Overrides */
+.uppy-Dashboard-inner {
+  background: hsl(var(--card) / 0.7) !important;
+  border-color: hsl(var(--border)) !important;
+}
+
+.uppy-Dashboard-AddFiles {
+  border-color: hsl(var(--border)) !important;
+}
+
+.uppy-Dashboard-AddFiles-title {
+  color: hsl(var(--foreground)) !important;
+}
+
+.uppy-Dashboard-browse {
+  color: hsl(var(--primary)) !important;
+}
+
+.uppy-Dashboard-note {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+.uppy-StatusBar {
+  background: hsl(var(--muted) / 0.5) !important;
+}
+
+.uppy-StatusBar-progress {
+  background: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--accent))) !important;
+}
+
+.uppy-StatusBar-actionBtn--upload {
+  background: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--accent))) !important;
+  color: white !important;
+}
+
+.uppy-DashboardContent-bar {
+  background: hsl(var(--card)) !important;
+  border-color: hsl(var(--border)) !important;
+}
+
+.uppy-DashboardItem {
+  border-color: hsl(var(--border)) !important;
+}
+
+.uppy-DashboardItem-preview {
+  background: hsl(var(--muted)) !important;
+}
+
+.uppy-Dashboard-Item-name {
+  color: hsl(var(--foreground)) !important;
+}
+
+.uppy-Dashboard-Item-status {
+  color: hsl(var(--muted-foreground)) !important;
+}

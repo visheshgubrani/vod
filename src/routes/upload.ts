@@ -8,8 +8,11 @@ import {
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { eq } from 'drizzle-orm'
 import { Bindings, Variables } from '../types'
 import { requireAuth } from '../middleware/auth'
+import { getDb } from '../lib/database'
+import { video } from '../db/schema'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const RAW_BUCKET = 'vod-raw-dev'
@@ -76,11 +79,13 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
 
 app.use('/*', requireAuth)
 
+// Single file upload (for smaller files)
 app.post('/url', async (c) => {
   const session = c.var.session
+  const db = getDb(c.env.DATABASE_URL)
 
-  // 2. INPUT VALIDATION
-  const { filename, contentType, size } = await c.req.json()
+  // INPUT VALIDATION
+  const { filename, contentType, size, title } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
   const parsedSize = Number(size)
   if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
@@ -90,11 +95,27 @@ app.post('/url', async (c) => {
     return c.json({ error: 'Size must be an integer' }, 400)
   }
 
-  // 3. GENERATE UNIQUE FILE PATH
-  // Path: org_id/raw/random_id/filename.mp4
-  const { fileId, key } = getUploadKey(session.activeOrganizationId, filename)
+  // Ensure user has an active organization
+  const organizationId = session.activeOrganizationId
+  if (!organizationId) {
+    return c.json({ error: 'No active organization' }, 400)
+  }
 
-  // 4. GENERATE PRESIGNED URL (For R2)
+  // GENERATE UNIQUE FILE PATH
+  const { fileId, key } = getUploadKey(organizationId, filename)
+
+  // CREATE VIDEO ENTRY IN DATABASE with status 'uploading'
+  await db.insert(video).values({
+    id: fileId,
+    organizationId,
+    title: title || filename,
+    status: 'uploading',
+    rawKey: key,
+    size: parsedSize,
+    uploadedBy: session.userId,
+  })
+
+  // GENERATE PRESIGNED URL (For R2)
   const r2 = createR2Client(c.env)
 
   const command = new PutObjectCommand({
@@ -114,14 +135,17 @@ app.post('/url', async (c) => {
   })
 })
 
+// Multipart upload - create
 app.post('/multipart/create', async (c) => {
   const session = c.var.session
+  const db = getDb(c.env.DATABASE_URL)
 
   const {
     filename,
     contentType,
     size,
     partSize: requestedPartSize,
+    title,
   } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
 
@@ -138,7 +162,24 @@ app.post('/multipart/create', async (c) => {
     return c.json({ error: message }, 400)
   }
 
-  const { fileId, key } = getUploadKey(session.activeOrganizationId, filename)
+  // Ensure user has an active organization
+  const organizationId = session.activeOrganizationId
+  if (!organizationId) {
+    return c.json({ error: 'No active organization' }, 400)
+  }
+
+  const { fileId, key } = getUploadKey(organizationId, filename)
+
+  // CREATE VIDEO ENTRY IN DATABASE with status 'uploading'
+  await db.insert(video).values({
+    id: fileId,
+    organizationId,
+    title: title || filename,
+    status: 'uploading',
+    rawKey: key,
+    size: parsedSize,
+    uploadedBy: session.userId,
+  })
 
   const r2 = createR2Client(c.env)
   const command = new CreateMultipartUploadCommand({
@@ -149,6 +190,8 @@ app.post('/multipart/create', async (c) => {
 
   const response = await r2.send(command)
   if (!response.UploadId) {
+    // Rollback: delete the video entry if R2 upload creation fails
+    await db.delete(video).where(eq(video.id, fileId))
     return c.json({ error: 'Failed to create multipart upload' }, 500)
   }
 
@@ -161,6 +204,7 @@ app.post('/multipart/create', async (c) => {
   })
 })
 
+// Multipart upload - get signed URLs for parts
 app.post('/multipart/parts', async (c) => {
   const { key, uploadId, partNumbers, size, partSize } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
@@ -236,9 +280,11 @@ app.post('/multipart/parts', async (c) => {
   })
 })
 
+// Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
 
-  const { key, uploadId, parts } = await c.req.json()
+  const { key, uploadId, parts, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
 
   if (!Array.isArray(parts) || parts.length === 0) {
@@ -278,17 +324,32 @@ app.post('/multipart/complete', async (c) => {
   })
 
   const response = await r2.send(command)
+
+  // UPDATE VIDEO STATUS TO 'processing'
+  if (fileId) {
+    await db
+      .update(video)
+      .set({
+        status: 'processing',
+        updatedAt: new Date(),
+      })
+      .where(eq(video.id, fileId))
+  }
+
   return c.json({
     location: response.Location,
     bucket: response.Bucket,
     key: response.Key,
     etag: response.ETag,
+    fileId,
   })
 })
 
+// Multipart upload - abort
 app.post('/multipart/abort', async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
 
-  const { key, uploadId } = await c.req.json()
+  const { key, uploadId, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
 
   const r2 = createR2Client(c.env)
@@ -299,6 +360,17 @@ app.post('/multipart/abort', async (c) => {
       UploadId: uploadId,
     })
   )
+
+  // UPDATE VIDEO STATUS TO 'failed' if fileId provided
+  if (fileId) {
+    await db
+      .update(video)
+      .set({
+        status: 'failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(video.id, fileId))
+  }
 
   return c.json({ aborted: true })
 })
