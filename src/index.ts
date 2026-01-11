@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { createAuth } from './lib/auth'
 import upload from './routes/upload'
+import webhook from './routes/webhook'
 import { Bindings } from './types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -25,7 +26,9 @@ app.on(['POST', 'GET'], '/api/auth/**', (c) => {
 })
 
 app.route('/api/upload', upload)
+app.route('/api/webhook', webhook)
 
 app.get('/health', (c) => c.text('ok'))
 
 export default app
+

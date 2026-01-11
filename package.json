@@ -11,6 +11,7 @@
     "@aws-sdk/s3-request-presigner": "^3.958.0",
     "@cloudflare/workers-types": "^4.20251231.0",
     "@neondatabase/serverless": "^1.0.2",
+    "@upstash/qstash": "^2.8.4",
     "@xmldom/xmldom": "^0.8.11",
     "better-auth": "^1.4.7",
     "dotenv": "^17.2.3",

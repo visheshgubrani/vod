@@ -13,6 +13,7 @@ import { Bindings, Variables } from '../types'
 import { requireAuth } from '../middleware/auth'
 import { getDb } from '../lib/database'
 import { video } from '../db/schema'
+import { triggerTranscoding } from '../utils/queue'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const RAW_BUCKET = 'vod-raw-dev'
@@ -142,6 +143,14 @@ app.post('/complete', async (c) => {
   const { fileId } = await c.req.json()
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
 
+  // Get the video to retrieve the rawKey
+  const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
   // Update video status to 'processing'
   await db
     .update(video)
@@ -150,6 +159,11 @@ app.post('/complete', async (c) => {
       updatedAt: new Date(),
     })
     .where(eq(video.id, fileId))
+
+  // Queue for transcoding
+  if (videoRecord.rawKey) {
+    await triggerTranscoding(c.env, videoRecord.rawKey, fileId)
+  }
 
   return c.json({ success: true, fileId })
 })
@@ -344,7 +358,7 @@ app.post('/multipart/complete', async (c) => {
 
   const response = await r2.send(command)
 
-  // UPDATE VIDEO STATUS TO 'processing'
+  // UPDATE VIDEO STATUS TO 'processing' and queue for transcoding
   if (fileId) {
     await db
       .update(video)
@@ -353,6 +367,9 @@ app.post('/multipart/complete', async (c) => {
         updatedAt: new Date(),
       })
       .where(eq(video.id, fileId))
+
+    // Queue for transcoding
+    await triggerTranscoding(c.env, key, fileId)
   }
 
   return c.json({

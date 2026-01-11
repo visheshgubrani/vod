@@ -28,4 +28,9 @@ export type Bindings = {
   GOOGLE_CLIENT_SECRET: string
   GITHUB_CLIENT_ID: string
   GITHUB_CLIENT_SECRET: string
+  MODAL_WEBHOOK_URL: string
+  QSTASH_TOKEN: string
+  TRANSCODED_BUCKET_URL: string // URL prefix for transcoded content bucket
+  BACKEND_URL: string // Backend URL for callbacks (e.g. https://api.streamflow.io)
+  MODAL_WEBHOOK_SECRET: string
 }
