@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 import {
     useSession,
     useListOrganizations,
@@ -10,7 +11,6 @@ import {
 } from "@/lib/auth-client";
 import { DashboardSidebar } from "@/components/dashboard/dashboard-sidebar";
 import { DashboardHeader } from "@/components/dashboard/dashboard-header";
-import { DashboardLayoutSkeleton } from "@/components/dashboard/page-skeletons";
 import { UploadModal } from "@/components/dashboard/upload-modal";
 
 interface DashboardLayoutProps {
@@ -23,13 +23,6 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     const { data: organizations, isPending: orgsPending } = useListOrganizations();
     const { data: activeOrg } = useActiveOrganization();
     const [uploadModalOpen, setUploadModalOpen] = React.useState(false);
-    const [hasResolvedActiveOrg, setHasResolvedActiveOrg] = React.useState(false);
-
-    React.useEffect(() => {
-        if (activeOrg !== undefined) {
-            setHasResolvedActiveOrg(true);
-        }
-    }, [activeOrg]);
 
     // Redirect to login if not authenticated
     React.useEffect(() => {
@@ -47,16 +40,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
     // Auto-set active org if none is set but orgs exist
     React.useEffect(() => {
-        if (
-            !orgsPending &&
-            hasResolvedActiveOrg &&
-            organizations &&
-            organizations.length > 0 &&
-            !activeOrg
-        ) {
+        if (!orgsPending && organizations && organizations.length > 0 && !activeOrg) {
             setActiveOrganization(organizations[0].id);
         }
-    }, [organizations, orgsPending, activeOrg, hasResolvedActiveOrg]);
+    }, [organizations, orgsPending, activeOrg]);
 
     // Handle upload completion
     const handleUploadComplete = React.useCallback((fileId: string, key: string) => {
@@ -74,7 +61,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
     // Show loading state
     if (sessionPending || orgsPending) {
-        return <DashboardLayoutSkeleton />;
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-background">
+                <div className="flex flex-col items-center gap-4">
+                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                </div>
+            </div>
+        );
     }
 
     // Don't render if not authenticated
@@ -112,9 +106,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                     userName={session.user?.name}
                     userEmail={session.user?.email}
                     userImage={session.user?.image}
-                    organizationName={activeOrg?.name ?? organizations[0]?.name ?? "Organization"}
                 />
-                <main className="relative z-0 flex-1 overflow-auto p-4 md:p-6">
+                <main className="flex-1 overflow-auto p-6">
                     {children}
                 </main>
             </div>

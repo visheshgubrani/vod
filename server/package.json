@@ -1,48 +1,29 @@
 {
-  "name": "vod-api",
+  "name": "vod-app",
   "type": "module",
-  "private": true,
-  "license": "Apache-2.0",
-  "packageManager": "pnpm@12.3.4",
   "scripts": {
-    "dev": "PORT=${API_PORT:-8787} tsx watch src/node/server.ts",
-    "dev:workers": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "cf-typegen": "wrangler types",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push",
-    "db:seed": "tsx src/db/seed.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "build:node": "esbuild src/node/server.ts src/node/migrate.ts --bundle --platform=node --format=cjs --outdir=dist-node --out-extension:.js=.cjs --target=node22 --external:@upstash/qstash --log-level=warning",
-    "start": "pnpm start:node",
-    "start:node": "node dist-node/server.cjs"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
     "@aws-sdk/s3-request-presigner": "^3.958.0",
-    "@hono/node-server": "^2.1.1",
-    "@neondatabase/serverless": "^0.10.4",
+    "@cloudflare/workers-types": "^4.20251231.0",
+    "@neondatabase/serverless": "^1.0.2",
     "@upstash/qstash": "^2.8.4",
-    "@upstash/ratelimit": "^2.0.8",
-    "@upstash/redis": "^1.36.2",
     "@xmldom/xmldom": "^0.8.11",
-    "better-auth": "~1.7.4",
+    "better-auth": "^1.4.7",
+    "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.1",
-    "jose": "^5.10.0",
-    "postgres": "^3.4.9",
-    "redis": "^5.12.1"
+    "pg": "^8.16.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250214.0",
-    "dotenv": "^17.2.3",
+    "@types/node": "^25.0.3",
+    "@types/pg": "^8.16.0",
     "drizzle-kit": "^0.31.8",
-    "esbuild": "^0.28.2",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "vitest": "~3.2.7",
-    "wrangler": "^4.59.1"
+    "wrangler": "^4.56.0"
   }
 }

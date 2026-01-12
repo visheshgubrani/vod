@@ -1,9 +1,0 @@
-/* OpenVOD dashboard player — Vidstack layout */
-
-.media-player[data-view-type="video"] {
-  aspect-ratio: 16 / 9;
-}
-
-.vds-video-layout {
-  --video-brand: hsl(0, 0%, 96%);
-}

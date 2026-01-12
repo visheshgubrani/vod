@@ -1,76 +1,39 @@
-import { Hono, type Context } from 'hono'
-import { createMiddleware } from 'hono/factory'
+import { Hono } from 'hono'
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
-  ListObjectsV2Command,
   PutObjectCommand,
+  S3Client,
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
+import { Bindings, Variables } from '../types'
 import { requireAuth } from '../middleware/auth'
-import { requireApiKey } from '../middleware/apiKey'
-import { db } from '../lib/database'
+import { getDb } from '../lib/database'
 import { video } from '../db/schema'
-import { notDeleted } from '../db/predicates'
-import { dispatchFailureStatus } from '../utils/dispatchTranscode'
-import { dispatchWithProvider } from '../utils/dispatchProvider'
-import { dispatchWebhook } from '../utils/webhookDispatcher'
-import { headObjectSize, r2 } from '../utils/R2'
-import type { Bindings } from '../types'
+import { triggerTranscoding } from '../utils/queue'
 
-const app = new Hono<{ Bindings: Bindings }>()
-
-/**
- * Bucket names come from the resolved configuration on every use.
- *
- * They used to be module-scope constants read once from `process.env`, with
- * hardcoded defaults ('raw-bucket-uploads' / 'transcoded-bucket'), while the same
- * handler recorded the bucket for a job by reading `c.env` — three resolutions of
- * one value in one file. A presigned URL could therefore point at one bucket
- * while the transcode job named another, and an unconfigured deployment silently
- * targeted a bucket that does not exist instead of saying so.
- */
-function rawBucketOrFail(c: Context<{ Bindings: Bindings }>): string | Response {
-  const bucket = c.var.runtime.config.rawBucket
-  if (!bucket) {
-    return c.json(
-      {
-        error:
-          'Uploads are not configured: RAW_BUCKET_NAME is not set on this deployment.',
-      },
-      409,
-    )
-  }
-  return bucket
-}
-
-function transcodedBucketOrFail(c: Context<{ Bindings: Bindings }>): string | Response {
-  const bucket = c.var.runtime.config.transcodedBucket
-  if (!bucket) {
-    return c.json(
-      {
-        error:
-          'Object storage is not configured: TRANSCODED_BUCKET_NAME is not set on this deployment.',
-      },
-      409,
-    )
-  }
-  return bucket
-}
-
+const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+const RAW_BUCKET = 'vod-raw-dev'
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
-const MAX_PARTS_PER_REQUEST = 100
+
+const createR2Client = (env: Bindings) =>
+  new S3Client({
+    region: 'auto',
+    endpoint: `https://${env.ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    },
+  })
 
 const getUploadKey = (
   organizationId: string | null | undefined,
-  filename: string,
+  filename: string
 ) => {
   const fileId = crypto.randomUUID()
   const key = `${organizationId || 'org_default'}/raw/${fileId}/${filename}`
@@ -88,11 +51,7 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
 
   let partSize = requestedPartSize
   if (partSize === undefined) {
-    // Calculate optimal part size, but never exceed MAX_PART_SIZE (5GB R2 limit)
-    partSize = Math.min(
-      MAX_PART_SIZE,
-      Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS)),
-    )
+    partSize = Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS))
   }
 
   if (!Number.isFinite(partSize) || partSize <= 0) {
@@ -119,62 +78,15 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
   return { partSize, partCount }
 }
 
-const requireUploadAuth = createMiddleware(async (c, next) => {
-  const authHeader = c.req.header('Authorization')
-
-  if (authHeader?.startsWith('Bearer ')) {
-    return requireApiKey(c, next)
-  }
-
-  return requireAuth(c, async () => {
-    const session = c.var.session
-    c.set('organizationId', session?.activeOrganizationId)
-    c.set('userId', session?.userId)
-    await next()
-  })
-})
-
-
-/**
- * Uploads can be turned off for an installation (`UPLOADS_ENABLED=false`), which
- * is what makes a deployment valid without a raw bucket. Until now the flag was
- * reported by `/health/config` and enforced nowhere: the dashboard said uploads
- * were off while the API kept accepting them.
- *
- * Deletion (`DELETE /:fileId`) is deliberately not gated — it is not an upload,
- * and refusing it would strand bytes.
- */
-const requireUploadsEnabled = createMiddleware(async (c, next) => {
-  if (!c.var.runtime.config.uploadsEnabled) {
-    return c.json(
-      { error: 'Uploads are disabled on this deployment (UPLOADS_ENABLED=false)' },
-      403,
-    )
-  }
-  await next()
-})
-
-app.use('/url', requireUploadsEnabled)
-app.use('/complete', requireUploadsEnabled)
-app.use('/multipart/*', requireUploadsEnabled)
-
-app.use('/*', requireUploadAuth)
+app.use('/*', requireAuth)
 
 // Single file upload (for smaller files)
 app.post('/url', async (c) => {
-  const organizationId = c.var.organizationId
-  const userId = c.var.userId
+  const session = c.var.session
+  const db = getDb(c.env.DATABASE_URL)
 
   // INPUT VALIDATION
-  const {
-    filename,
-    contentType,
-    size,
-    title,
-    playbackPolicy,
-    generateSubtitle,
-    generateChapters,
-  } = await c.req.json()
+  const { filename, contentType, size, title } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
   const parsedSize = Number(size)
   if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
@@ -183,32 +95,15 @@ app.post('/url', async (c) => {
   if (!Number.isInteger(parsedSize)) {
     return c.json({ error: 'Size must be an integer' }, 400)
   }
-  const maxBytesUrl = c.var.runtime.config.uploadSizeLimitBytes
-  if (parsedSize > maxBytesUrl) {
-    return c.json(
-      { error: `File exceeds the maximum allowed size (${maxBytesUrl} bytes)` },
-      400,
-    )
-  }
-
-  // Validate: chapters require subtitles (need transcription first)
-  const enableSubtitle = generateSubtitle === true || generateChapters === true
-  const enableChapters = generateChapters === true && enableSubtitle
 
   // Ensure user has an active organization
+  const organizationId = session.activeOrganizationId
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
-  }
-  if (!userId) {
-    return c.json({ error: 'Unauthorized' }, 401)
   }
 
   // GENERATE UNIQUE FILE PATH
   const { fileId, key } = getUploadKey(organizationId, filename)
-  const rawBucket = rawBucketOrFail(c)
-  if (typeof rawBucket !== 'string') return rawBucket
-
-  console.log(`[UPLOAD CREATED] Inserted video into DB with ID: ${fileId}, key: ${key}, bucket: ${rawBucket}`)
 
   // CREATE VIDEO ENTRY IN DATABASE with status 'uploading'
   await db.insert(video).values({
@@ -216,19 +111,16 @@ app.post('/url', async (c) => {
     organizationId,
     title: title || filename,
     status: 'uploading',
-    playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
     rawKey: key,
     size: parsedSize,
-    uploadedBy: userId,
-    generateSubtitle: enableSubtitle,
-    subtitleStatus: enableSubtitle ? 'pending' : null,
-    generateChapters: enableChapters,
-    chaptersStatus: enableChapters ? 'pending' : null,
+    uploadedBy: session.userId,
   })
 
   // GENERATE PRESIGNED URL (For R2)
+  const r2 = createR2Client(c.env)
+
   const command = new PutObjectCommand({
-    Bucket: rawBucket,
+    Bucket: RAW_BUCKET,
     Key: key,
     ContentType: contentType,
     ContentLength: parsedSize,
@@ -237,15 +129,6 @@ app.post('/url', async (c) => {
   // The URL is valid for 1 hour
   const url = await getSignedUrl(r2, command, { expiresIn: 3600 })
 
-  console.log(`[PRESIGNED URL GENERATED] fileId: ${fileId} (single-file PUT)`)
-
-  // Dispatch webhook event
-  dispatchWebhook(c.executionCtx, organizationId, 'video.uploading', {
-    videoId: fileId,
-    title: title || filename,
-    status: 'uploading',
-  })
-
   return c.json({
     uploadUrl: url,
     fileId: fileId,
@@ -253,141 +136,42 @@ app.post('/url', async (c) => {
   })
 })
 
+// Single file upload - complete (called after PUT succeeds)
 app.post('/complete', async (c) => {
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
-  const transcodedBucket = transcodedBucketOrFail(c)
-  if (typeof transcodedBucket !== 'string') return transcodedBucket
+  const db = getDb(c.env.DATABASE_URL)
 
-  const organizationId = c.var.organizationId
-  const { fileId, transcodingProvider } = await c.req.json<{
-    fileId?: string
-    transcodingProvider?: string
-  }>()
-  console.log(`[UPLOAD COMPLETE REQ] Received /api/upload/complete for fileId: ${fileId}, orgId: ${organizationId}`)
+  const { fileId } = await c.req.json()
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
   // Get the video to retrieve the rawKey
-  const videos = await db
-    .select()
-    .from(video)
-    .where(and(notDeleted, eq(video.id, fileId)))
-    .limit(1)
+  const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
   const videoRecord = videos[0]
 
   if (!videoRecord) {
-    console.error(`[UPLOAD COMPLETE ERROR] Video not found in DB: ${fileId}`)
     return c.json({ error: 'Video not found' }, 404)
   }
-  if (videoRecord.organizationId !== organizationId) {
-    console.error(`[UPLOAD COMPLETE ERROR] Access denied for video ${fileId}: org mismatch`)
-    return c.json({ error: 'Access denied' }, 403)
-  }
 
-  console.log(`[UPLOAD COMPLETE DB MATCH] Found video record ${fileId}, rawKey: ${videoRecord.rawKey}, status: ${videoRecord.status}`)
-
-  // Only process if status is 'uploading' (idempotency check)
-  if (videoRecord.status !== 'uploading') {
-    console.log(
-      `Video ${fileId} already being processed (status: ${videoRecord.status}), skipping`,
-    )
-    return c.json({ success: true, fileId, skipped: true })
-  }
-
-    // Verify the object actually landed in R2 at the declared size before
-    // spending a transcode dispatch on a missing/truncated file.
-    const verifyKey = videoRecord.rawKey
-    const headSize = verifyKey ? await headObjectSize(bucket, verifyKey) : null
-    if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
-      await db
-        .update(video)
-        .set({
-          status: 'failed',
-          failureCode: headSize === null ? 'OBJECT_MISSING' : 'SIZE_MISMATCH',
-          updatedAt: new Date(),
-        })
-        .where(eq(video.id, fileId))
-      return c.json(
-        {
-          error:
-            headSize === null
-              ? 'File was not uploaded; please upload the file again'
-              : 'Uploaded file size does not match the declared size; abort and re-upload',
-        },
-        409,
-      )
-    }
-
-    // Dispatch the transcode job BEFORE flipping state: a failed dispatch must
-    // never leave the row stuck in 'processing'. triggerTranscoding throws a
-    // typed DispatchError on final failure.
-    if (!videoRecord.rawKey) {
-      console.error(`[UPLOAD COMPLETE ERROR] Video ${fileId} has no rawKey`)
-      await db
-        .update(video)
-        .set({ status: 'failed', updatedAt: new Date() })
-        .where(eq(video.id, fileId))
-      return c.json(
-        { error: 'Upload has no stored object; please upload the file again' },
-        400,
-      )
-    }
-
-    // Claim the attempt, then dispatch. The claim is the compare-and-swap that
-    // records ownership; dispatching without it is how a lost response or a
-    // concurrent retry buys a second GPU run. It also performs the
-    // uploading -> processing transition that used to be a separate update.
-    const dispatchResult = await dispatchWithProvider({
-      videoId: fileId,
-      rawKey: videoRecord.rawKey,
-      rawBucket: c.var.runtime.config.rawBucket,
-      organizationId: videoRecord.organizationId,
-      playbackPolicy: videoRecord.playbackPolicy || 'public',
-      generateSubtitle: videoRecord.generateSubtitle || false,
-      generateChapters: videoRecord.generateChapters || false,
-      transcodingProvider,
-      env: c.var.runtime.env,
-    })
-
-    if (!dispatchResult.dispatched) {
-      if (dispatchResult.reason === 'dispatch-failed') {
-        // dispatchTranscodeJob already marked the row failed.
-        console.error(`Failed to queue transcoding for ${fileId}:`, dispatchResult.error)
-        return c.json(
-          {
-            error: `Upload complete but transcoding failed to start: ${dispatchResult.error?.message ?? 'unknown error'}`,
-          },
-          500,
-        )
-      }
-
-      // Lost the claim: another caller owns this row, or the org is at its
-      // concurrency cap. Not a failure of the upload itself.
-      console.log(`Transcode not dispatched for ${fileId}: ${dispatchResult.reason}`)
-      return c.json(
-        { error: `Transcode not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
-        dispatchFailureStatus(dispatchResult.reason),
-      )
-    }
-
-    // Dispatch webhook event
-    dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
-      videoId: fileId,
-      title: videoRecord.title,
+  // Update video status to 'processing'
+  await db
+    .update(video)
+    .set({
       status: 'processing',
+      updatedAt: new Date(),
     })
+    .where(eq(video.id, fileId))
 
-    return c.json({ success: true, fileId })
+  // Queue for transcoding
+  if (videoRecord.rawKey) {
+    await triggerTranscoding(c.env, videoRecord.rawKey, fileId)
+  }
+
+  return c.json({ success: true, fileId })
 })
 
 // Multipart upload - create
 app.post('/multipart/create', async (c) => {
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
-
-  const organizationId = c.var.organizationId
-  const userId = c.var.userId
+  const session = c.var.session
+  const db = getDb(c.env.DATABASE_URL)
 
   const {
     filename,
@@ -395,9 +179,6 @@ app.post('/multipart/create', async (c) => {
     size,
     partSize: requestedPartSize,
     title,
-    playbackPolicy,
-    generateSubtitle,
-    generateChapters,
   } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
 
@@ -408,33 +189,19 @@ app.post('/multipart/create', async (c) => {
   let partSize: number
   let partCount: number
   try {
-    ;({ partSize, partCount } = resolvePartConfig(parsedSize, parsedPartSize))
+    ; ({ partSize, partCount } = resolvePartConfig(parsedSize, parsedPartSize))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid input'
     return c.json({ error: message }, 400)
   }
 
-  const maxBytesMp = c.var.runtime.config.uploadSizeLimitBytes
-  if (parsedSize > maxBytesMp) {
-    return c.json(
-      { error: `File exceeds the maximum allowed size (${maxBytesMp} bytes)` },
-      400,
-    )
-  }
-
   // Ensure user has an active organization
+  const organizationId = session.activeOrganizationId
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
   }
-  if (!userId) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
 
   const { fileId, key } = getUploadKey(organizationId, filename)
-
-  // Validate: chapters require subtitles (need transcription first)
-  const enableSubtitle = generateSubtitle === true || generateChapters === true
-  const enableChapters = generateChapters === true && enableSubtitle
 
   // CREATE VIDEO ENTRY IN DATABASE with status 'uploading'
   await db.insert(video).values({
@@ -442,42 +209,24 @@ app.post('/multipart/create', async (c) => {
     organizationId,
     title: title || filename,
     status: 'uploading',
-    playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
     rawKey: key,
     size: parsedSize,
-    uploadedBy: userId,
-    generateSubtitle: enableSubtitle,
-    subtitleStatus: enableSubtitle ? 'pending' : null,
-    generateChapters: enableChapters,
-    chaptersStatus: enableChapters ? 'pending' : null,
+    uploadedBy: session.userId,
   })
 
+  const r2 = createR2Client(c.env)
   const command = new CreateMultipartUploadCommand({
-    Bucket: bucket,
+    Bucket: RAW_BUCKET,
     Key: key,
     ContentType: contentType,
   })
 
-  let response
-  try {
-    response = await r2.send(command)
-  } catch (err) {
-    // Rollback: never leave an orphan 'uploading' row behind.
-    console.error('Failed to create multipart upload:', err)
-    await db.delete(video).where(eq(video.id, fileId))
-    return c.json({ error: 'Failed to create multipart upload' }, 500)
-  }
+  const response = await r2.send(command)
   if (!response.UploadId) {
+    // Rollback: delete the video entry if R2 upload creation fails
     await db.delete(video).where(eq(video.id, fileId))
     return c.json({ error: 'Failed to create multipart upload' }, 500)
   }
-
-  // Dispatch webhook event
-  dispatchWebhook(c.executionCtx, organizationId, 'video.uploading', {
-    videoId: fileId,
-    title: title || filename,
-    status: 'uploading',
-  })
 
   return c.json({
     uploadId: response.UploadId,
@@ -490,32 +239,8 @@ app.post('/multipart/create', async (c) => {
 
 // Multipart upload - get signed URLs for parts
 app.post('/multipart/parts', async (c) => {
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
-
-  const organizationId = c.var.organizationId
-  const { key, uploadId, partNumbers, size, partSize, fileId } =
-    await c.req.json()
+  const { key, uploadId, partNumbers, size, partSize } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
-
-  // Security: Verify the user owns this upload via fileId
-  if (fileId) {
-    const videos = await db
-      .select()
-      .from(video)
-      .where(and(notDeleted, eq(video.id, fileId)))
-      .limit(1)
-
-    if (videos.length === 0) {
-      return c.json({ error: 'Video not found' }, 404)
-    }
-
-    // Verify the video belongs to user's organization
-    if (!organizationId || videos[0].organizationId !== organizationId) {
-      return c.json({ error: 'Access denied' }, 403)
-    }
-  }
 
   if (!Array.isArray(partNumbers) || partNumbers.length === 0) {
     return c.json({ error: 'partNumbers must be a non-empty array' }, 400)
@@ -527,9 +252,9 @@ app.post('/multipart/parts', async (c) => {
   let resolvedPartSize: number
   let partCount: number
   try {
-    ;({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
+    ; ({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
       parsedSize,
-      parsedPartSize,
+      parsedPartSize
     ))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid input'
@@ -540,8 +265,8 @@ app.post('/multipart/parts', async (c) => {
     new Set(
       partNumbers
         .map((partNumber: number) => Number(partNumber))
-        .filter((partNumber: number) => Number.isFinite(partNumber)),
-    ),
+        .filter((partNumber: number) => Number.isFinite(partNumber))
+    )
   )
 
   if (uniquePartNumbers.length === 0) {
@@ -549,13 +274,6 @@ app.post('/multipart/parts', async (c) => {
   }
 
   uniquePartNumbers.sort((a, b) => a - b)
-
-  if (uniquePartNumbers.length > MAX_PARTS_PER_REQUEST) {
-    return c.json(
-      { error: `Too many part_numbers per request (max ${MAX_PARTS_PER_REQUEST})` },
-      400,
-    )
-  }
 
   for (const partNumber of uniquePartNumbers) {
     if (
@@ -567,10 +285,11 @@ app.post('/multipart/parts', async (c) => {
     }
   }
 
+  const r2 = createR2Client(c.env)
   const urls = await Promise.all(
     uniquePartNumbers.map(async (partNumber) => {
       const command = new UploadPartCommand({
-        Bucket: bucket,
+        Bucket: RAW_BUCKET,
         Key: key,
         UploadId: uploadId,
         PartNumber: partNumber,
@@ -582,7 +301,7 @@ app.post('/multipart/parts', async (c) => {
           : resolvedPartSize
 
       return { partNumber, url, size: expectedSize }
-    }),
+    })
   )
 
   return c.json({
@@ -596,19 +315,10 @@ app.post('/multipart/parts', async (c) => {
 
 // Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
+  const db = getDb(c.env.DATABASE_URL)
 
-  const organizationId = c.var.organizationId
-  const { key, uploadId, parts, fileId, transcodingProvider } = await c.req.json<{
-    key?: string
-    uploadId?: string
-    parts?: Array<Record<string, unknown>>
-    fileId?: string
-    transcodingProvider?: string
-  }>()
+  const { key, uploadId, parts, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
   if (!Array.isArray(parts) || parts.length === 0) {
     return c.json({ error: 'parts must be a non-empty array' }, 400)
@@ -626,9 +336,9 @@ app.post('/multipart/complete', async (c) => {
       return { PartNumber: partNumber, ETag: cleanEtag }
     })
     .filter((part) => part !== null) as Array<{
-    PartNumber: number
-    ETag: string
-  }>
+      PartNumber: number
+      ETag: string
+    }>
 
   if (normalizedParts.length === 0) {
     return c.json({ error: 'Invalid parts' }, 400)
@@ -636,8 +346,9 @@ app.post('/multipart/complete', async (c) => {
 
   normalizedParts.sort((a, b) => a.PartNumber - b.PartNumber)
 
+  const r2 = createR2Client(c.env)
   const command = new CompleteMultipartUploadCommand({
-    Bucket: bucket,
+    Bucket: RAW_BUCKET,
     Key: key,
     UploadId: uploadId,
     MultipartUpload: {
@@ -647,100 +358,18 @@ app.post('/multipart/complete', async (c) => {
 
   const response = await r2.send(command)
 
-  // UPDATE VIDEO STATUS TO 'processing' and queue for transcoding (with idempotency)
+  // UPDATE VIDEO STATUS TO 'processing' and queue for transcoding
   if (fileId) {
-    // First check current status
-    const videos = await db
-      .select()
-      .from(video)
-      .where(and(notDeleted, eq(video.id, fileId)))
-      .limit(1)
-    const videoRecord = videos[0]
-
-    if (!videoRecord) {
-      return c.json({ error: 'Video not found' }, 404)
-    }
-    if (videoRecord.organizationId !== organizationId) {
-      return c.json({ error: 'Access denied' }, 403)
-    }
-    if (
-      videoRecord.status === 'processing' ||
-      videoRecord.status === 'ready'
-    ) {
-      console.log(
-        `Video ${fileId} already processed/processing, skipping transcoding`,
-      )
-      return c.json({
-        location: response.Location,
-        bucket: response.Bucket,
-        key: response.Key,
-        etag: response.ETag,
-        fileId,
-        skipped: true,
+    await db
+      .update(video)
+      .set({
+        status: 'processing',
+        updatedAt: new Date(),
       })
-    }
+      .where(eq(video.id, fileId))
 
-    // Verify the object actually landed in R2 at the declared size before
-    // spending a transcode dispatch on a missing/truncated file.
-    const verifyKey = videoRecord.rawKey
-    const headSize = verifyKey ? await headObjectSize(bucket, verifyKey) : null
-    if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
-      await db
-        .update(video)
-        .set({
-          status: 'failed',
-          failureCode: headSize === null ? 'OBJECT_MISSING' : 'SIZE_MISMATCH',
-          updatedAt: new Date(),
-        })
-        .where(eq(video.id, fileId))
-      return c.json(
-        {
-          error:
-            headSize === null
-              ? 'File was not uploaded; please upload the file again'
-              : 'Uploaded file size does not match the declared size; abort and re-upload',
-        },
-        409,
-      )
-    }
-
-    // Claim the attempt, then dispatch (see the note on the single-PUT path).
-    const dispatchResult = await dispatchWithProvider({
-      videoId: fileId,
-      rawKey: key,
-      rawBucket: c.var.runtime.config.rawBucket,
-      organizationId: videoRecord.organizationId,
-      playbackPolicy: videoRecord.playbackPolicy || 'public',
-      generateSubtitle: videoRecord.generateSubtitle || false,
-      generateChapters: videoRecord.generateChapters || false,
-      transcodingProvider,
-      env: c.var.runtime.env,
-    })
-
-    if (!dispatchResult.dispatched) {
-      if (dispatchResult.reason === 'dispatch-failed') {
-        // dispatchTranscodeJob already marked the row failed.
-        console.error(`Failed to queue transcoding for ${fileId}:`, dispatchResult.error)
-        return c.json(
-          {
-            error: `Upload complete but transcoding failed to start: ${dispatchResult.error?.message ?? 'unknown error'}`,
-          },
-          500,
-        )
-      }
-      console.log(`Transcode not dispatched for ${fileId}: ${dispatchResult.reason}`)
-      return c.json(
-        { error: `Transcode not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
-        dispatchFailureStatus(dispatchResult.reason),
-      )
-    }
-
-    // Dispatch webhook event
-    dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
-      videoId: fileId,
-      title: videoRecord.title,
-      status: 'processing',
-    })
+    // Queue for transcoding
+    await triggerTranscoding(c.env, key, fileId)
   }
 
   return c.json({
@@ -754,151 +383,32 @@ app.post('/multipart/complete', async (c) => {
 
 // Multipart upload - abort
 app.post('/multipart/abort', async (c) => {
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
+  const db = getDb(c.env.DATABASE_URL)
 
-  const organizationId = c.var.organizationId
   const { key, uploadId, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
+  const r2 = createR2Client(c.env)
   await r2.send(
     new AbortMultipartUploadCommand({
-      Bucket: bucket,
+      Bucket: RAW_BUCKET,
       Key: key,
       UploadId: uploadId,
-    }),
+    })
   )
 
-  // DELETE video record if fileId provided (user canceled)
+  // UPDATE VIDEO STATUS TO 'failed' if fileId provided
   if (fileId) {
-    const videos = await db
-      .select()
-      .from(video)
-      .where(and(notDeleted, eq(video.id, fileId)))
-      .limit(1)
-    const videoRecord = videos[0]
-
-    if (!videoRecord) {
-      return c.json({ error: 'Video not found' }, 404)
-    }
-    if (videoRecord.organizationId !== organizationId) {
-      return c.json({ error: 'Access denied' }, 403)
-    }
-
-    await db.delete(video).where(eq(video.id, fileId))
+    await db
+      .update(video)
+      .set({
+        status: 'failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(video.id, fileId))
   }
 
-  return c.json({ aborted: true, deleted: !!fileId })
-})
-
-// Cancel/delete any upload (for single-file uploads or general cleanup)
-app.delete('/:fileId', async (c) => {
-  const transcodedBucket = transcodedBucketOrFail(c)
-  if (typeof transcodedBucket !== 'string') return transcodedBucket
-
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
-
-  const organizationId = c.var.organizationId
-  const fileId = c.req.param('fileId')
-
-  if (!fileId) {
-    return c.json({ error: 'Missing fileId' }, 400)
-  }
-  if (!organizationId) {
-    return c.json({ error: 'No active organization' }, 400)
-  }
-
-  // Get the video record
-  const videos = await db
-    .select()
-    .from(video)
-    .where(and(notDeleted, eq(video.id, fileId)))
-    .limit(1)
-  const videoRecord = videos[0]
-
-  if (!videoRecord) {
-    // Already deleted, that's fine
-    return c.json({ deleted: true, fileId })
-  }
-
-  // Verify ownership - video must belong to user's organization
-  if (videoRecord.organizationId !== organizationId) {
-    return c.json({ error: 'Access denied' }, 403)
-  }
-
-  // Only allow deletion of uploads in 'uploading' or 'failed' status
-  if (videoRecord.status !== 'uploading' && videoRecord.status !== 'failed') {
-    return c.json({ error: 'Cannot delete video in current status' }, 400)
-  }
-
-  // Try to delete from R2 raw bucket if rawKey exists
-  if (videoRecord.rawKey) {
-    try {
-      await r2.send(
-        new DeleteObjectCommand({
-          Bucket: bucket,
-          Key: videoRecord.rawKey,
-        }),
-      )
-    } catch (err) {
-      // Log but don't fail - file might not exist in R2 yet
-      console.warn(
-        `Failed to delete from R2 raw bucket: ${videoRecord.rawKey}`,
-        err,
-      )
-    }
-  }
-
-  // Delete all transcoded files from R2 transcoded bucket
-  // Transcoded files are stored under {videoId}/ prefix
-  try {
-    // List all objects with the video ID prefix
-    const listResponse = await r2.send(
-      new ListObjectsV2Command({
-        Bucket: transcodedBucket,
-        Prefix: `${fileId}/`,
-      }),
-    )
-
-    if (listResponse.Contents && listResponse.Contents.length > 0) {
-      // Batch delete all objects
-      const objectsToDelete = listResponse.Contents.map((obj: { Key?: string }) => ({
-        Key: obj.Key!,
-      }))
-
-      await r2.send(
-        new DeleteObjectsCommand({
-          Bucket: transcodedBucket,
-          Delete: {
-            Objects: objectsToDelete,
-            Quiet: true,
-          },
-        }),
-      )
-
-      console.log(
-        `Deleted ${objectsToDelete.length} transcoded files for video ${fileId}`,
-      )
-    }
-
-    // Also delete the folder marker object (0-byte object with trailing /)
-    await r2.send(
-      new DeleteObjectCommand({
-        Bucket: transcodedBucket,
-        Key: `${fileId}/`,
-      }),
-    )
-  } catch (err) {
-    // Log but don't fail - files might not exist in transcoded bucket yet
-    console.warn(`Failed to delete from R2 transcoded bucket: ${fileId}/`, err)
-  }
-
-  // Delete from database
-  await db.delete(video).where(eq(video.id, fileId))
-
-  return c.json({ deleted: true, fileId })
+  return c.json({ aborted: true })
 })
 
 export default app

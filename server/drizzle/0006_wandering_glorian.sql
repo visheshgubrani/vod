@@ -1,1 +1,0 @@
-ALTER TABLE "video" ALTER COLUMN "uploaded_by" DROP NOT NULL;

@@ -1,525 +1,437 @@
-"""
-VOD Production Pipeline — Modal endpoints.
-
-This module is now only the *Modal adapter*. It owns the things that are
-genuinely Modal's: the image, the HTTP ingest endpoint, the container-level
-duplicate suppression, and the GPU worker's resource request. Everything else —
-probing, planning, encoding, packaging, validation, inventory — is in
-`openvod_transcoder`, which is the same code a self-hosted agent runs.
-
-That split is the point of the extraction: a fix to rendition planning or to
-output validation lands in both environments at once, and cannot drift.
-"""
-import sys
+import modal
+import subprocess
+import os
+import json
+import boto3
+import shutil
+import requests
+import ipaddress
+import socket
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-# Ensure the current directory is in Python path for Modal deployment
-# Modal copies files to /root, so we need to add it to sys.path
-_root = Path(__file__).parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
+app = modal.App("vod-hls-pipeline")
 
-import modal
-import os
-import re
-import secrets
-import shutil
-import time
-import threading
-from fastapi import HTTPException, Request
-
-# Keep build helpers independent of this module's pipeline imports.
-from image_build import download_whisper_weights
-
-# The shared engine. Imported here so `modal deploy` fails loudly if the
-# package does not hydrate, rather than at the first job.
-from openvod_transcoder import (
-    CancellationToken,
-    ProcessingOptions,
-    classify_error,
-    run_pipeline,
-)
-from openvod_transcoder.config import (
-    ALLOWED_SOURCE_BUCKETS,
-    ALLOWED_URL_HOSTS,
-    R2_PREFIX,
-    config_warnings,
-)
-from openvod_transcoder.errors import ERROR_INSUFFICIENT_DISK, TranscodeError
-from openvod_transcoder.progress import CallbackProgress
-from openvod_transcoder.transfer.s3 import S3Transfer, client_from_env
-from openvod_transcoder.utils import send_callback, send_heartbeat
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODAL APP CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-for _warning in config_warnings():
-    print(f"[CONFIG] {_warning}", flush=True)
-
-app = modal.App("vod-production-pipeline")
-
-# Durable duplicate suppression for transcode attempts.
-#
-# Keyed by the API's attempt id, written before a worker is spawned. Shared
-# across containers, so it survives the ingest container being recycled between
-# a lost dispatch response and the retry that follows it.
-attempts = modal.Dict.from_name("transcode-attempts", create_if_missing=True)
-
-# How long an "accepted" marker suppresses a repeat delivery. Long enough to
-# cover the API's dispatch retries; short enough that a crash between recording
-# and spawning costs one retry rather than the job.
-ATTEMPT_MARKER_TTL_SECONDS = int(os.environ.get("ATTEMPT_MARKER_TTL_SECONDS", "300"))
-
-
-# Production-optimized container. CUDA devel image per Modal CUDA guide
-# (faster-whisper/CTranslate2 need toolkit libs, not just pip nvidia-* wheels).
-# Whisper weights use run_function so the 1.6GB fetch is not bound by
-# run_commands' short layer timeout.
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
-    .entrypoint([])
-    .apt_install("ffmpeg", "wget", "curl", "mediainfo")
-    .pip_install(
-        "boto3",
-        "requests",
-        "fastapi[standard]",
-        "pillow",
-        "faster-whisper",
-        "groq",
-        "huggingface_hub",
-    )
-    .env({"HF_HOME": "/root/.cache/huggingface"})
-    .run_commands(
-        "wget -q https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager"
-        " && chmod +x /usr/local/bin/packager"
-        " && printf '%s  /usr/local/bin/packager\\n' 05af2e9ef5f12d58b9d615b7d31dc0eb61c32aee632c71965340b43c1556043e | sha256sum -c -",
-    )
-    .run_function(download_whisper_weights, timeout=60 * 60)
-    # The engine package is mounted as a package, not as loose modules: that is
-    # what lets `openvod_transcoder.encoding.backends` resolve inside the
-    # container, and what stops the shared modules shadowing third-party ones.
-    .add_local_python_source("openvod_transcoder", "image_build")
+    .apt_install("ffmpeg", "wget", "curl")
+    .pip_install("boto3", "requests")
 )
 
-VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# --- CONFIGURATION ---
+# HLS segment length (seconds)
+HLS_TIME = 6
+
+# Where you want outputs to live in R2
+R2_PREFIX = "videos"  # videos/{video_id}/...
+
+STANDARD_LADDER = {
+    "2160p": {"h": 2160, "b": "15M",  "max": "17M",  "buf": "22M"},
+    "1440p": {"h": 1440, "b": "10M",  "max": "12M",  "buf": "15M"},
+    "1080p": {"h": 1080, "b": "5M",   "max": "6M",   "buf": "7.5M"},
+    "720p":  {"h": 720,  "b": "3M",   "max": "3.5M", "buf": "4.5M"},
+    "480p":  {"h": 480,  "b": "1.5M", "max": "1.8M", "buf": "2.5M"},
+    "360p":  {"h": 360,  "b": "800k", "max": "900k", "buf": "1.2M"},
+}
+
+# Optional: comma-separated allowed hosts for input_url (e.g. "cdn.myapp.com,storage.googleapis.com")
+# If empty/unset, we allow any PUBLIC host over https (still blocks private/reserved IPs).
+ALLOWED_URL_HOSTS = {h.strip().lower() for h in os.getenv("ALLOWED_URL_HOSTS", "").split(",") if h.strip()}
 
 
-def normalize_video_id(raw_video_id: str | None) -> str:
-    if not raw_video_id or not isinstance(raw_video_id, str):
-        raise ValueError("Missing video_id or fileId")
-
-    video_id = raw_video_id.strip()
-    if not VIDEO_ID_PATTERN.fullmatch(video_id):
-        raise ValueError(
-            "Invalid video_id format (allowed: letters, numbers, '_' and '-')"
+def run_cmd(cmd: list[str], *, label: str = "cmd") -> subprocess.CompletedProcess:
+    """
+    Run a subprocess and capture stdout/stderr for debugging.
+    On failure, raises with a compact error message including tail of stderr.
+    """
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        stderr_tail = "\n".join((p.stderr or "").splitlines()[-80:])
+        stdout_tail = "\n".join((p.stdout or "").splitlines()[-40:])
+        raise RuntimeError(
+            f"{label} failed (exit={p.returncode}).\n"
+            f"COMMAND: {' '.join(cmd)}\n\n"
+            f"STDERR (tail):\n{stderr_tail}\n\n"
+            f"STDOUT (tail):\n{stdout_tail}"
         )
-    return video_id
+    return p
 
 
-def require_ingest_auth(request: Request) -> None:
-    expected = (
-        os.environ.get("TRANSCODE_INGEST_SECRET")
-        or os.environ.get("MODAL_WEBHOOK_SECRET")
-    )
-    if not expected:
-        raise HTTPException(
-            status_code=500,
-            detail="Server misconfigured: missing TRANSCODE_INGEST_SECRET",
-        )
-
-    auth_header = request.headers.get("authorization", "")
-    presented = ""
-    if auth_header.lower().startswith("bearer "):
-        presented = auth_header[7:].strip()
-
-    if not presented:
-        presented = request.headers.get("x-transcode-secret", "").strip()
-
-    if not presented or not secrets.compare_digest(presented, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# HTTP ENDPOINT
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@app.function(image=image)
-@modal.fastapi_endpoint(method="GET")
-def healthz(request: Request):
+def is_public_host(url: str) -> bool:
     """
-    Liveness/health probe for the BYOK setup wizard and uptime checks.
-    Optional auth: when TRANSCODE_INGEST_SECRET / MODAL_WEBHOOK_SECRET is set,
-    the caller must pass it via x-transcode-secret.
+    Basic SSRF mitigation:
+    - require https
+    - optional host allowlist (if ALLOWED_URL_HOSTS is set)
+    - resolve DNS and block private/reserved/link-local loopback, etc.
     """
-    expected = os.environ.get("TRANSCODE_INGEST_SECRET") or os.environ.get("MODAL_WEBHOOK_SECRET")
-    if expected:
-        presented = request.headers.get("x-transcode-secret", "")
-        if not presented or not secrets.compare_digest(presented, expected):
-            raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"status": "ok", "service": "openvod-transcoder"}
+    u = urlparse(url)
+    if u.scheme.lower() != "https":
+        return False
 
+    host = (u.hostname or "").lower()
+    if not host:
+        return False
 
-@app.function(
-    image=image,
-    secrets=[modal.Secret.from_name("r2-creds")],
-)
-@modal.fastapi_endpoint(method="POST")
-def transcode_video(request: Request, payload: dict):
-    """
-    Fast HTTP endpoint - spawns GPU worker and returns immediately.
-    
-    Payload:
-      - video_id or fileId (required)
-      - {bucket, key} OR input_url (required)
-      - callbackUrl (optional)
-      - playbackPolicy (optional): "public" or "signed"
-      - attempt_id (required by the API): identifies the owning attempt
-
-    Duplicate suppression
-    ---------------------
-    The API's dispatcher retries a POST whose response was lost. Without
-    suppression that retry spawns a *second* GPU container for the same video:
-    two encodes, two uploads to the same prefix, and the tenant billed twice.
-
-    So an accepted `attempt_id` is recorded before the worker spawns, and a
-    repeat delivery of the same id returns without spawning. The API holds the
-    same id across its retries for exactly this reason.
-
-    The marker carries a timestamp and is only honoured while it is *fresh*. A
-    marker with no expiry would turn a crash between "record accepted" and
-    "spawn worker" into a permanently suppressed job: the retry would see the
-    marker, skip, and the video would never encode. A marker older than
-    `ATTEMPT_MARKER_TTL_SECONDS` is treated as a failed accept and the retry is
-    allowed through.
-
-    Residual windows, stated rather than papered over:
-      - `modal.Dict` is not an atomic compare-and-set, so two genuinely
-        simultaneous requests carrying one attempt id could both pass. The API
-        only retries after the previous request failed, so they are not
-        simultaneous in practice.
-      - If the dedupe store is unreachable we log loudly and continue, because
-        failing closed would stop all transcoding on a Dict outage. The API's
-        attempt claim is the primary guard; this is defence in depth.
-    """
-    require_ingest_auth(request)
+    if ALLOWED_URL_HOSTS and host not in ALLOWED_URL_HOSTS:
+        return False
 
     try:
-        video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
-    except ValueError as e:
-        return {"status": "error", "message": str(e)}
+        # Resolve and validate all A/AAAA records
+        infos = socket.getaddrinfo(host, None)
+        for info in infos:
+            addr = info[4][0]
+            ip = ipaddress.ip_address(addr)
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            ):
+                return False
+    except Exception:
+        return False
 
-    attempt_id = str(payload.get("attempt_id") or payload.get("attemptId") or "").strip()
-
-    has_r2 = "key" in payload and "bucket" in payload
-    has_url = "input_url" in payload
-    
-    if not has_r2 and not has_url:
-        return {
-            "status": "error",
-            "message": "Provide either {bucket,key} or input_url"
-        }
-
-    # Defense in depth on the ingest boundary: the API is the only intended
-    # caller, but a leaked ingest secret must not turn into "read any bucket
-    # under the R2 credentials" or "fetch any URL".
-    if has_r2 and ALLOWED_SOURCE_BUCKETS and (payload.get("bucket") or "").lower() not in ALLOWED_SOURCE_BUCKETS:
-        return {
-            "status": "error",
-            "message": f"Bucket '{payload.get('bucket')}' is not in ALLOWED_SOURCE_BUCKETS",
-        }
-
-    if has_url and not ALLOWED_URL_HOSTS:
-        return {
-            "status": "error",
-            "message": "input_url is disabled: set ALLOWED_URL_HOSTS to allow URL sources",
-        }
-
-    # Suppress a repeat delivery of an attempt we already accepted. Recorded
-    # BEFORE the spawn so a retry arriving mid-spawn is also suppressed.
-    if attempt_id:
-        try:
-            seen = attempts.get(attempt_id)
-        except Exception as e:
-            seen = None
-            print(f"[WARN] Dedupe store unreachable, proceeding: {e}")
-
-        if isinstance(seen, dict):
-            age = time.time() - float(seen.get("ts") or 0)
-            if age < ATTEMPT_MARKER_TTL_SECONDS:
-                print(f"♻️ Duplicate attempt {attempt_id} for {video_id}: not spawning again")
-                return {
-                    "status": "duplicate",
-                    "video_id": video_id,
-                    "attempt_id": attempt_id,
-                    "message": "Attempt already accepted; not started again",
-                }
-            # Stale marker: the previous accept never produced a worker (the
-            # process died between recording and spawning). Let the retry run.
-            print(
-                f"[WARN] Stale attempt marker for {attempt_id} "
-                f"({age:.0f}s > {ATTEMPT_MARKER_TTL_SECONDS}s): retrying rather than suppressing"
-            )
-
-        try:
-            attempts[attempt_id] = {
-                "video_id": video_id,
-                "state": "accepted",
-                "ts": time.time(),
-            }
-        except Exception as e:
-            # A dedupe-store outage must not block transcoding outright; the API's
-            # attempt claim is still the primary guard.
-            print(f"[WARN] Could not record attempt {attempt_id}: {e}")
-
-    safe_payload = dict(payload)
-    safe_payload["video_id"] = video_id
-    safe_payload["fileId"] = video_id
-    if attempt_id:
-        safe_payload["attempt_id"] = attempt_id
-
-    print(f"🚀 Spawning production worker for: {video_id} (attempt {attempt_id or 'unidentified'})")
-    transcode_worker.spawn(safe_payload)
-    
-    return {
-        "status": "accepted",
-        "video_id": video_id,
-        "attempt_id": attempt_id or None,
-        "message": "Transcoding job queued"
-    }
+    return True
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# GPU WORKER
-# ═══════════════════════════════════════════════════════════════════════════════
+def get_stream_info(filepath: str) -> tuple[int, bool]:
+    """Returns (height, has_audio)."""
+    try:
+        cmd = ["ffprobe", "-v", "error", "-show_streams", "-of", "json", filepath]
+        p = run_cmd(cmd, label="ffprobe(streams)")
+        data = json.loads(p.stdout)
+
+        height = 1080
+        has_audio = False
+
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "video":
+                height = int(stream.get("height", 1080))
+            elif stream.get("codec_type") == "audio":
+                has_audio = True
+
+        return height, has_audio
+    except Exception:
+        return 1080, False  # fallback
+
+
+def get_video_duration(filepath: str) -> float:
+    """Returns duration in seconds (float)."""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            filepath,
+        ]
+        p = run_cmd(cmd, label="ffprobe(duration)")
+        return float(p.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def generate_thumbnail(input_path: str, out_path: str, duration: float) -> None:
+    """
+    Generate a thumbnail JPG.
+    Picks a timestamp around 10% into the video (clamped).
+    """
+    # Pick a good timestamp
+    if duration and duration > 0:
+        ts = max(1.0, min(10.0, duration * 0.10))
+    else:
+        ts = 1.0
+
+    # Scale for a decent preview. Keep aspect, ensure width divisible by 2.
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        "-ss",
+        f"{ts:.3f}",
+        "-i",
+        input_path,
+        "-frames:v",
+        "1",
+        "-an",
+        "-vf",
+        "scale=1280:-2",
+        "-q:v",
+        "2",
+        out_path,
+    ]
+    run_cmd(cmd, label="ffmpeg(thumbnail)")
+
 
 @app.function(
     gpu="l4",
     image=image,
-    secrets=[modal.Secret.from_name("r2-creds"), modal.Secret.from_name("groq-creds")],
-    timeout=3600,  # 1 hour max
-    memory=16384,  # 16GB RAM
+    secrets=[modal.Secret.from_name("r2-creds")],
+    timeout=1800,
 )
-def transcode_worker(payload: dict):
-    """GPU worker - executes the shared pipeline and reports the outcome."""
-    try:
-        video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
-    except ValueError as e:
-        return {"status": "error", "message": str(e)}
+@modal.web_endpoint(method="POST")
+def transcode_video(payload: dict):
+    """
+    Expected payload:
+      - video_id OR fileId (required - used as the output folder name)
+      - {bucket, key} OR input_url (required)
+      - callbackUrl (optional)
+    """
+    video_id = payload.get("video_id") or payload.get("fileId")
+    if not video_id:
+        return {"status": "error", "message": "Missing video_id or fileId"}
 
     work_dir = Path(f"/tmp/{video_id}")
+    output_dir = work_dir / "output"
     local_input = work_dir / "input.mp4"
-    attempt_id = str(payload.get("attempt_id") or "").strip()
-    job_start = time.time()
 
-    # ── heartbeat thread (strictly non-fatal) ─────────────────────────────
-    heartbeat_url = payload.get("heartbeatUrl")
-    # Every beat names its attempt: the API ignores a beat from an attempt
-    # that no longer owns the row, and extends the lease of one that does.
-    beat_state = {"stage": "download", "progress": 0.0}
-    stop_event = threading.Event()
+    s3 = None
+    targets = []
+    duration = 0.0
+    has_audio = False
+    input_height = 1080
 
-    def report_stage(stage: str, progress: float) -> None:
-        beat_state["stage"] = stage
-        beat_state["progress"] = progress
-        if heartbeat_url:
-            send_heartbeat(heartbeat_url, video_id, stage, progress, attempt_id)
-
-    def _heartbeat_loop() -> None:
-        while not stop_event.wait(30):
-            if heartbeat_url:
-                send_heartbeat(
-                    heartbeat_url, video_id,
-                    beat_state["stage"], beat_state["progress"],
-                    attempt_id,
-                )
-
-    if heartbeat_url:
-        threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat").start()
-
-    token = CancellationToken()
     try:
-        print(f"🎬 [JOB START] {video_id}")
+        print(f"🎬 Starting Job for: {video_id}")
 
+        # Clean workspace
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
-        _preflight_disk(work_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── download (the Modal input is already immutable: a fresh download
-        #    into an ephemeral container, so no local snapshot is needed) ────
-        download_start = time.time()
-        _download_source(payload, local_input)
-        download_time = time.time() - download_start
-        file_size_mb = local_input.stat().st_size / (1024 * 1024)
-        print(f"✅ Downloaded {file_size_mb:.1f} MB in {download_time:.1f}s")
+        # --- DOWNLOAD ---
+        if "key" in payload and "bucket" in payload:
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+                aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            )
+            s3.download_file(payload["bucket"], payload["key"], str(local_input))
 
-        required_gb = max(4.0, file_size_mb / 1024.0 * 2.2 + 2.0)
-        free_after_gb = shutil.disk_usage("/tmp").free / (1024**3)
-        if free_after_gb < required_gb:
-            raise TranscodeError(
-                ERROR_INSUFFICIENT_DISK,
-                f"Insufficient disk space: {free_after_gb:.2f} GB free, "
-                f"estimated need {required_gb:.2f} GB for a {file_size_mb:.0f} MB source",
+        elif "input_url" in payload:
+            url = payload["input_url"]
+            if not is_public_host(url):
+                return {"status": "error", "message": "input_url blocked (must be https and public/allowed host)"}
+            run_cmd(["wget", "-q", url, "-O", str(local_input)], label="wget(download)")
+
+        else:
+            return {"status": "error", "message": "Provide either {bucket,key} or input_url"}
+
+        # --- ANALYZE ---
+        input_height, has_audio = get_stream_info(str(local_input))
+        duration = get_video_duration(str(local_input))
+
+        # Choose ladder targets (no upscaling)
+        for label, settings in STANDARD_LADDER.items():
+            if settings["h"] <= input_height:
+                targets.append((label, settings))
+        targets.sort(key=lambda x: x[1]["h"], reverse=True)
+        if not targets:
+            targets.append(("360p", STANDARD_LADDER["360p"]))
+
+        print(f"📐 Input height: {input_height} | Audio: {has_audio} | Duration: {duration:.2f}s")
+        print(f"🎚️ Generating renditions: {[t[0] for t in targets]}")
+
+        # --- THUMBNAIL ---
+        thumb_path = output_dir / "thumbnail.jpg"
+        generate_thumbnail(str(local_input), str(thumb_path), duration)
+
+        # --- FFMPEG (HLS) ---
+        cmd = ["ffmpeg", "-hide_banner", "-y", "-i", str(local_input)]
+
+        # Split + scale in one decode pass
+        filter_complex = f"[0:v]split={len(targets)}"
+        filter_complex += "".join([f"[v{i}]" for i in range(len(targets))]) + ";"
+        for i, (_, settings) in enumerate(targets):
+            # -2 keeps AR and ensures divisible-by-2 width for H.264
+            filter_complex += f"[v{i}]scale=-2:{settings['h']}[out{i}];"
+        cmd.extend(["-filter_complex", filter_complex])
+
+        # Build HLS var_stream_map
+        var_stream_map_parts = []
+
+        for i, (_, settings) in enumerate(targets):
+            # Force keyframes exactly at segment boundaries for cleaner ABR switching,
+            # regardless of input FPS / VFR weirdness.
+            force_kf_expr = f"expr:gte(t,n_forced*{HLS_TIME})"
+
+            cmd.extend(
+                [
+                    "-map",
+                    f"[out{i}]",
+
+                    # Video encode (GPU)
+                    f"-c:v:{i}",
+                    "h264_nvenc",
+
+                    # Quality / RC tuning (good MVP defaults)
+                    f"-preset:v:{i}",
+                    "p4",
+                    f"-rc:v:{i}",
+                    "vbr_hq",
+
+                    # Compatibility
+                    f"-pix_fmt:v:{i}",
+                    "yuv420p",
+                    f"-profile:v:{i}",
+                    "high",
+
+                    # Rate control
+                    f"-b:v:{i}",
+                    settings["b"],
+                    f"-maxrate:v:{i}",
+                    settings["max"],
+                    f"-bufsize:v:{i}",
+                    settings["buf"],
+
+                    # GOP / keyframes
+                    f"-force_key_frames:v:{i}",
+                    force_kf_expr,
+                    f"-sc_threshold:v:{i}",
+                    "0",
+                ]
             )
 
-        options = _options_from_payload(payload, video_id, attempt_id)
+            if has_audio:
+                var_stream_map_parts.append(f"v:{i},agroup:audio")
+            else:
+                var_stream_map_parts.append(f"v:{i}")
 
-        # Progress → heartbeat. The engine's 0..1 scale is what the API stores,
-        # so the Modal path and the agent path report identical numbers.
-        def on_progress(update) -> None:
-            report_stage(update.stage, update.overall)
+        # Audio (single shared track) only if present
+        if has_audio:
+            cmd.extend(
+                [
+                    "-map",
+                    "a:0",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    "-ac",
+                    "2",
+                    "-ar",
+                    "48000",
+                ]
+            )
+            var_stream_map_parts.append(
+                "a:0,agroup:audio,default:yes,language:eng,name:English"
+            )
 
-        s3 = client_from_env()
-        transfer = S3Transfer(
-            s3,
-            os.environ["R2_BUCKET_NAME"],
-            prefix=R2_PREFIX,
-            # Legacy layout on purpose: existing Modal videos, in-flight
-            # attempts and already-issued playback URLs all reference
-            # `videos/<id>/`, and changing it would strand them.
-            key_root=f"{R2_PREFIX}/{video_id}",
-            video_id=video_id,
-            playback_policy=options.playback_policy,
-            organization_id=options.organization_id,
+        # HLS packaging
+        cmd.extend(
+            [
+                "-f",
+                "hls",
+                "-hls_time",
+                str(HLS_TIME),
+                "-hls_playlist_type",
+                "vod",
+                "-hls_flags",
+                "independent_segments",
+                "-master_pl_name",
+                "playlist.m3u8",
+                "-hls_segment_filename",
+                f"{output_dir}/stream_%v_data%03d.ts",
+                "-var_stream_map",
+                " ".join(var_stream_map_parts),
+                f"{output_dir}/stream_%v.m3u8",
+            ]
         )
 
-        result = run_pipeline(
-            local_input,
-            work_dir / "job",
-            options,
-            None,  # capabilities: probed by the engine at entry
-            CallbackProgress(on_progress),
-            token,
-            transfer=transfer,
-            ffmpeg="ffmpeg",
-            packager="packager",
+        run_cmd(cmd, label="ffmpeg(hls)")
+
+        # --- UPLOAD ---
+        print("☁️ Uploading...")
+
+        s3_upload = boto3.client(
+            "s3",
+            endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         )
 
-        result.metadata.timings.setdefault("download", round(download_time, 2))
-        # Rebase onto the key layout this worker actually uploaded to. The API
-        # handles a Modal callback with rebasing *off* (it has no attempt prefix
-        # to rebase against), so output-relative paths would be saved as
-        # `<delivery>/playlist.m3u8` — a URL that 404s for every viewer.
-        response = result.as_payload(key_prefix=f"{R2_PREFIX}/{video_id}")
-        response["processing"]["total_time"] = round(time.time() - job_start, 2)
+        files = sorted(os.listdir(output_dir))
 
-        print(
-            f"✅ [JOB COMPLETE] {video_id} in {response['processing']['total_time']:.1f}s "
-            f"({response['processing']['processing_speed']:.2f}x realtime)"
-        )
-        report_stage("complete", 1.0)
+        def upload_file(filename: str):
+            local_path = output_dir / filename
+            r2_key = f"{R2_PREFIX}/{video_id}/{filename}"
 
+            if filename.endswith(".m3u8"):
+                content_type = "application/vnd.apple.mpegurl"
+                cache_control = "public, max-age=60"  # playlists: short cache
+            elif filename.endswith(".ts"):
+                content_type = "video/mp2t"
+                cache_control = "public, max-age=31536000, immutable"  # segments: long cache
+            elif filename.endswith(".jpg") or filename.endswith(".jpeg"):
+                content_type = "image/jpeg"
+                cache_control = "public, max-age=31536000, immutable"
+            else:
+                content_type = "application/octet-stream"
+                cache_control = "public, max-age=31536000, immutable"
+
+            s3_upload.upload_file(
+                str(local_path),
+                os.environ["R2_BUCKET_NAME"],
+                r2_key,
+                ExtraArgs={
+                    "ContentType": content_type,
+                    "CacheControl": cache_control,
+                },
+            )
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            list(executor.map(upload_file, files))
+
+        # --- CALLBACK ---
         if "callbackUrl" in payload:
-            send_callback(payload["callbackUrl"], response)
+            try:
+                print(f"📞 Calling Webhook: {payload['callbackUrl']}")
+                requests.post(
+                    payload["callbackUrl"],
+                    json={
+                        "status": "success",
+                        "video_id": video_id,
+                        "fileId": payload.get("fileId"),
+                        "resolutions": [t[0] for t in targets],
+                        "duration": duration,
+                        "master_playlist": f"{R2_PREFIX}/{video_id}/playlist.m3u8",
+                        "thumbnail": f"{R2_PREFIX}/{video_id}/thumbnail.jpg",
+                        "file_count": len(files),
+                    },
+                    timeout=10,
+                )
+            except Exception as e:
+                print(f"❌ Callback failed: {e}")
 
-        return response
-
-    except Exception as e:
-        error_time = time.time() - job_start
-        print(f"❌ [JOB FAILED] {video_id} after {error_time:.1f}s")
-        print(f"Error: {e}")
-
-        import traceback
-        traceback.print_exc()
-
-        error_result = {
-            "status": "error",
+        # --- RETURN (better payload) ---
+        return {
+            "status": "success",
             "video_id": video_id,
-            "attempt_id": attempt_id,
-            "message": str(e),
-            "error_type": type(e).__name__,
-            "error_code": classify_error(e),
-            "processing_time": round(error_time, 2),
+            "resolutions": [t[0] for t in targets],
+            "duration": duration,
+            "master_playlist": f"{R2_PREFIX}/{video_id}/playlist.m3u8",
+            "thumbnail": f"{R2_PREFIX}/{video_id}/thumbnail.jpg",
+            "file_count": len(files),
+            "has_audio": has_audio,
+            "input_height": input_height,
         }
 
-        # Send error callback
-        if "callbackUrl" in payload:
-            send_callback(payload["callbackUrl"], error_result)
-
-        return error_result
+    except Exception as e:
+        print(f"❌ Job failed: {e}")
+        return {"status": "error", "video_id": video_id, "message": str(e)}
 
     finally:
-        # Stop the heartbeat thread
-        stop_event.set()
-
-        # Always cleanup temp files
-        if work_dir.exists():
-            shutil.rmtree(work_dir, ignore_errors=True)
-            print(f"🧹 Cleaned up temp directory")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# WORKER HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _preflight_disk(work_dir: Path) -> None:
-    free_gb = shutil.disk_usage(str(work_dir)).free / (1024**3)
-    print(f"💾 Disk space: {free_gb:.2f} GB free")
-    if free_gb < 2:
-        raise TranscodeError(
-            ERROR_INSUFFICIENT_DISK,
-            f"Insufficient disk space: {free_gb:.2f} GB free (<2 GB)",
-        )
-
-
-def _download_source(payload: dict, local_input: Path) -> None:
-    """Fetch the source from R2 or a public URL, with retry."""
-    from openvod_transcoder.utils import download_public_url
-
-    last_error: Exception | None = None
-    for attempt in range(3):
+        # Always cleanup
         try:
-            print(f"⬇️ Download attempt {attempt + 1}/3...")
-            if "key" in payload and "bucket" in payload:
-                from openvod_transcoder.transfer.s3 import transfer_config
-
-                s3 = client_from_env()
-                print(f"📦 Downloading from R2: {payload['bucket']}/{payload['key']}")
-                s3.download_file(
-                    payload["bucket"],
-                    payload["key"],
-                    str(local_input),
-                    Config=transfer_config(),
-                )
-            else:
-                url = payload["input_url"]
-                if not isinstance(url, str) or not url.strip():
-                    raise ValueError("Invalid input_url")
-                print(f"🌐 Downloading from URL: {url[:80]}...")
-                # Validate and re-validate on every redirect hop.
-                download_public_url(url.strip(), str(local_input))
-            return
-        except Exception as e:  # noqa: BLE001 — retried below, then reported
-            last_error = e
-            print(f"⚠️ Download failed: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)  # Exponential backoff
-
-    raise RuntimeError(f"Download failed after 3 attempts: {last_error}")
-
-
-def _options_from_payload(payload: dict, video_id: str, attempt_id: str) -> ProcessingOptions:
-    """
-    Build the immutable option set from the dispatch payload.
-
-    The Modal path keeps the legacy rendition policy so its output stays
-    byte-identical: existing installations are mid-flight during a rolling
-    upgrade, and a silently different ladder would strand their playback URLs.
-    """
-    return ProcessingOptions.from_dict({
-        "video_id": video_id,
-        "attempt_id": attempt_id,
-        "playback_policy": payload.get("playbackPolicy", "public"),
-        "organization_id": payload.get("organizationId"),
-        "generate_subtitle": bool(payload.get("generateSubtitle", False)),
-        "generate_chapters": bool(payload.get("generateChapters", False)),
-        "transcribe_language": os.environ.get("TRANSCRIBE_LANGUAGE") or None,
-        "whisper_model": os.environ.get("WHISPER_MODEL", "large-v3-turbo"),
-        "rendition_policy": "legacy",
-        "encoder_backend": os.environ.get("TRANSCODE_ENCODER", "auto"),
-        # The engine no longer hard-codes L4-sized concurrency; the Modal
-        # worker asks for what it actually has.
-        "rendition_concurrency": int(os.environ.get("TRANSCODE_RENDITION_CONCURRENCY", "3")),
-        "audio_concurrency": 1,
-        "upload_concurrency": 10,
-    })
+            if work_dir.exists():
+                shutil.rmtree(work_dir)
+        except Exception:
+            pass

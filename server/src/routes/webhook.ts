@@ -1,318 +1,132 @@
-import { Hono, type Context } from 'hono'
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
-import { db } from '../lib/database'
-import { decideCallbackTransition, type VideoStatus } from '../lib/videoState'
-import {
-  decideAttemptOwnership,
-  DEFAULT_TRANSCODE_LEASE_MS,
-} from '../lib/transcodeClaim'
+import { Hono } from 'hono'
+import { eq } from 'drizzle-orm'
+import { Bindings, Variables } from '../types'
+import { getDb } from '../lib/database'
 import { video } from '../db/schema'
-import { notDeleted } from '../db/predicates'
-import { dispatchWebhook, secretsMatch } from '../utils/webhookDispatcher'
-import {
-  finalizeVideoFailure,
-  finalizeVideoSuccess,
-  joinUrl,
-  safeJsonParse,
-} from '../lib/lifecycleFinalize'
-import { drainOutbox } from '../lib/webhookDelivery'
-import type { Bindings } from '../types'
 
-/**
- * Run a task after the response without losing it, tolerating a runtime with no
- * ExecutionContext (the Node entry). A failure is logged, never propagated:
- * these tasks are best-effort by design, and the sweeper is the safety net.
- */
-function runAfterResponse(
-  executionCtx: Pick<ExecutionContext, 'waitUntil'> | undefined,
-  task: Promise<unknown>,
-): void {
-  const guarded = task.catch((err) => {
-    console.error('[WEBHOOK] background task failed:', err)
-  })
-  if (executionCtx) {
-    executionCtx.waitUntil(guarded)
-    return
-  }
-  void guarded
+const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+function joinUrl(base: string, path: string) {
+  const b = (base || '').replace(/\/+$/, '')
+  const p = String(path || '').replace(/^\/+/, '')
+  if (!b) return p // allow relative paths if no base
+  return `${b}/${p}`
 }
 
-const app = new Hono<{ Bindings: Bindings }>()
+function safeJsonParse<T>(s: unknown, fallback: T): T {
+  if (typeof s !== 'string') return fallback
+  try {
+    return JSON.parse(s) as T
+  } catch {
+    return fallback
+  }
+}
 
 app.post('/transcode-complete', async (c) => {
-  console.log('[WEBHOOK] Received /api/webhook/transcode-complete callback request')
-  
-  // 1) Webhook auth — REQUIRED (fail-closed): an unconfigured secret is a
-  // server misconfiguration, never a reason to accept unsigned callbacks.
-  const authError = authenticateWebhook(c)
-  if (authError) return authError
+  const db = getDb(c.env.DATABASE_URL)
+
+  // 1) Webhook auth (MVP)
+  const expected = c.env.MODAL_WEBHOOK_SECRET
+  if (expected) {
+    const got =
+      c.req.header('x-webhook-secret') ||
+      (c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '')
+    if (!got || got !== expected) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+  }
 
   try {
     const payload = await c.req.json<any>()
-    console.log('[WEBHOOK PAYLOAD]', JSON.stringify({ status: payload?.status, video_id: payload?.video_id || payload?.fileId }))
+    console.log('Transcode webhook received:', JSON.stringify(payload))
 
     const status = payload?.status
     if (status !== 'success' && status !== 'error') {
-      console.error(`[WEBHOOK ERROR] Invalid status received: ${status}`)
       return c.json({ error: 'Invalid status' }, 400)
     }
 
     const videoId = payload?.video_id || payload?.fileId
     if (!videoId || typeof videoId !== 'string') {
-      console.error('[WEBHOOK ERROR] Missing video_id or fileId in payload')
       return c.json({ error: 'Missing video_id or fileId' }, 400)
     }
 
-    console.log(`[WEBHOOK DB QUERY] Querying database for video ID: ${videoId}`)
-    const rows = await db
-      .select()
-      .from(video)
-      .where(and(notDeleted, eq(video.id, videoId)))
-      .limit(1)
+    const rows = await db.select().from(video).where(eq(video.id, videoId)).limit(1)
     const videoRecord = rows[0]
     if (!videoRecord) {
-      console.error(`[WEBHOOK 404 ERROR] Video not found in database for ID: ${videoId}`)
-      return c.json({ error: `Video not found: ${videoId}` }, 404)
-    }
-    console.log(`[WEBHOOK DB MATCH] Found video record: ${videoRecord.id}, current status: ${videoRecord.status}`)
-
-    // 2) State-machine guard: late/duplicate/out-of-order callbacks must never
-    // corrupt status — no resurrecting failed videos, no downgrading ready ones.
-    const decision = decideCallbackTransition(
-      videoRecord.status as VideoStatus,
-      status === 'success' ? 'success' : 'error',
-    )
-    if (!decision.apply) {
-      console.log(`[WEBHOOK GUARD] ${decision.reason}`)
-      return c.json({ success: true, status: videoRecord.status, ignored: true })
+      console.error(`Video not found: ${videoId}`)
+      return c.json({ error: 'Video not found' }, 404)
     }
 
-    // 3) Ownership guard: a status-only check cannot tell attempt A's callback
-    // from attempt B's, and the row really is `processing` either way. An
-    // attempt that has been superseded must not write its outputs.
-    const reportedAttemptId = payload?.attempt_id ?? payload?.attemptId
-    const ownership = decideAttemptOwnership(
-      videoRecord.transcodeAttemptId,
-      reportedAttemptId,
-    )
-    if (!ownership.apply) {
-      console.log(`[WEBHOOK GUARD] ${ownership.reason}`)
-      return c.json({ success: true, status: videoRecord.status, ignored: true })
+    // 2) Idempotency / state protection
+    // If already ready, ignore any later callbacks (prevents out-of-order overwrite)
+    if (videoRecord.status === 'ready') {
+      return c.json({ success: true, status: 'ready', ignored: true })
     }
 
-    // Re-asserted in the mutation below so a claim that lands between this read
-    // and the write still wins.
-    const ownerPredicate = videoRecord.transcodeAttemptId
-      ? eq(video.transcodeAttemptId, videoRecord.transcodeAttemptId)
-      : isNull(video.transcodeAttemptId)
-
-    // The delivery base URL, from the same single source every other route uses.
-    // This used to read only DELIVERY_WORKER_URL from process.env and never the
-    // documented DELIVERY_URL, so an installation that set DELIVERY_URL got a
-    // relative playback URL here while /api/video returned an absolute one.
-    const transcodedBucketUrl = c.var.runtime.config.deliveryUrl ?? ''
-
-    const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
+    const transcodedBucketUrl = c.env.TRANSCODED_BUCKET_URL || ''
 
     if (status === 'error') {
-      const message =
-        typeof payload?.message === 'string' ? payload.message : 'Unknown error'
+      const message = typeof payload?.message === 'string' ? payload.message : 'Unknown error'
+      const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
 
-      // Same outbox guarantee as the success path: the terminal state and its
-      // event are one write, so a crash cannot strand a `failed` video whose
-      // tenant is never told. Shared with the self-hosted path so both
-      // providers produce identical rows and events.
-      const failed = await finalizeVideoFailure(db, {
-        videoId,
-        organizationId: videoRecord.organizationId,
-        title: videoRecord.title,
-        attemptId: videoRecord.transcodeAttemptId,
-        message,
-        failureCode: typeof payload?.error_code === 'string' ? payload.error_code : null,
-        prevMetadata: prevMeta,
-      })
-
-      if (!failed.applied) {
-        return c.json({ success: true, status: 'failed', ignored: true })
-      }
-
-      runAfterResponse(c.executionCtx, drainOutbox({ eventIds: [failed.eventId] }))
+      await db
+        .update(video)
+        .set({
+          status: 'failed',
+          metadata: JSON.stringify({
+            ...prevMeta,
+            error: message,
+            failed_at: new Date().toISOString(),
+          }),
+          updatedAt: new Date(),
+        })
+        .where(eq(video.id, videoId))
 
       return c.json({ success: true, status: 'failed', videoId })
     }
 
-    // success - payload structure from Modal (and, unchanged, from an agent)
-    // payload.outputs: { hls_playlist, dash_manifest, poster, subtitles, renditions }
-    // payload.metadata: { width, height, duration, fps, has_audio, is_hdr, ... }
-    // payload.processing: { total_time, transcode_time, ... }
-    // payload.subtitle / payload.chapters: { requested, generated, status, url }
-    //
-    // `outputPrefix` is null here on purpose: the Modal worker writes to the
-    // legacy `videos/<id>/` layout, so its artifact paths are already complete
-    // keys. A self-hosted agent passes its attempt prefix instead, and the same
-    // code re-bases its relative paths onto it.
-    const lifecycle = await finalizeVideoSuccess(db, {
-      videoId,
-      organizationId: videoRecord.organizationId,
-      title: videoRecord.title,
-      attemptId: videoRecord.transcodeAttemptId,
-      payload: payload as Record<string, unknown>,
-      outputPrefix: null,
-      deliveryBaseUrl: transcodedBucketUrl,
-      prevMetadata: prevMeta,
-    })
+    // success
+    const master = typeof payload?.master_playlist === 'string' ? payload.master_playlist : null
+    const thumb = typeof payload?.thumbnail === 'string' ? payload.thumbnail : null
 
-    if (!lifecycle.applied) {
-      // A concurrent callback (or a newer attempt's claim) won the race. No
-      // state changed, so no event was recorded either — nothing to dispatch.
-      return c.json({ success: true, status: 'ready', ignored: true })
-    }
+    const duration = typeof payload?.duration === 'number' && payload.duration >= 0 ? payload.duration : null
+    const resolutions = Array.isArray(payload?.resolutions)
+      ? payload.resolutions.filter((x: any) => typeof x === 'string')
+      : null
 
-    // `video.ready` was already recorded by the atomic write above and is
-    // claimed by this drain. Everything else below still dispatches directly.
-    // The drain is fire-and-forget: if the process dies before it runs, the
-    // sweeper picks the event up, so the event is late rather than lost.
-    runAfterResponse(
-      c.executionCtx,
-      drainOutbox({ eventIds: [lifecycle.eventId] }),
-    )
+    const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
 
-    const subtitle = (payload?.subtitle ?? {}) as Record<string, unknown>
-    const chapters = (payload?.chapters ?? {}) as Record<string, unknown>
-
-    // subtitle events
-    if (subtitle.requested) {
-      if (lifecycle.subtitleStatus === 'completed') {
-        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'subtitle.generated', {
-          videoId,
-          subtitleUrl: lifecycle.subtitleUrl,
-        })
-      } else if (lifecycle.subtitleStatus === 'failed') {
-        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'subtitle.failed', {
-          videoId,
-        })
-      }
-    }
-
-    // chapters events
-    if (chapters.requested) {
-      if (lifecycle.chaptersStatus === 'completed') {
-        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'chapters.generated', {
-          videoId,
-          chapters: lifecycle.chapters,
-        })
-      } else if (lifecycle.chaptersStatus === 'failed') {
-        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'chapters.failed', {
-          videoId,
-        })
-      }
-    }
+    await db
+      .update(video)
+      .set({
+        status: 'ready',
+        hlsUrl: master ? joinUrl(transcodedBucketUrl, master) : null,
+        thumbnailUrl: thumb ? joinUrl(transcodedBucketUrl, thumb) : null,
+        duration: duration != null ? Math.floor(duration) : null,
+        resolutions: resolutions ? JSON.stringify(resolutions) : null,
+        metadata: JSON.stringify({
+          ...prevMeta,
+          file_count: payload?.file_count,
+          has_audio: payload?.has_audio,
+          input_height: payload?.input_height,
+          duration_exact: duration,
+          transcoded_at: new Date().toISOString(),
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(video.id, videoId))
 
     return c.json({
       success: true,
       status: 'ready',
       videoId,
-      hlsUrl: lifecycle.hlsUrl,
-      thumbnailUrl: lifecycle.thumbnailUrl,
+      hlsUrl: master ? joinUrl(transcodedBucketUrl, master) : null,
+      thumbnailUrl: thumb ? joinUrl(transcodedBucketUrl, thumb) : null,
     })
   } catch (error) {
     console.error('Webhook error:', error)
-    return c.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
-      500,
-    )
+    return c.json({ error: error instanceof Error ? error.message : 'Unknown error' }, 500)
   }
-})
-function authenticateWebhook(c: Context<{ Bindings: Bindings }>): Response | null {
-  // One precedence, shared with the outbound dispatch in utils/queue.ts:
-  // TRANSCODE_INGEST_SECRET wins, MODAL_WEBHOOK_SECRET is the documented alias.
-  // Previously this verifier preferred the alias while dispatch signed with the
-  // primary name, so a deployment that set both to different values rejected
-  // every callback with a 401.
-  const expected = c.var.runtime.config.ingestSecret
-  if (!expected) {
-    return c.json({ error: 'Webhook secret not configured on server' }, 503)
-  }
-  const got =
-    c.req.header('x-webhook-secret') ||
-    (c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '')
-  if (!got || !secretsMatch(got, expected)) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  return null
-}
-
-/**
- * POST /api/webhook/heartbeat
- * Transcoder liveness beats during long jobs. Non-fatal for the transcoder:
- * the worker swallows heartbeat failures; the server sweep uses these to keep
- * jobs alive past the stale window.
- */
-app.post('/heartbeat', async (c) => {
-  const authError = authenticateWebhook(c)
-  if (authError) return authError
-
-  const body = await c.req.json<any>().catch(() => null)
-  if (!body) return c.json({ error: 'Invalid payload' }, 400)
-
-  const videoId = body?.video_id || body?.fileId || body?.videoId
-  if (!videoId || typeof videoId !== 'string') {
-    return c.json({ error: 'Missing video_id' }, 400)
-  }
-
-  const rows = await db
-    .select({
-      transcodeAttemptId: video.transcodeAttemptId,
-    })
-    .from(video)
-    .where(and(notDeleted, eq(video.id, videoId), isNull(video.deletedAt)))
-    .limit(1)
-
-  const record = rows[0]
-  if (!record) {
-    // Unknown or deleted video — acknowledge so the transcoder never treats a
-    // heartbeat rejection as fatal.
-    return c.json({ success: true, ignored: true })
-  }
-
-  // A heartbeat must name its attempt. An anonymous beat from a superseded
-  // attempt would otherwise keep a dead job's lease alive and block recovery.
-  const ownership = decideAttemptOwnership(
-    record.transcodeAttemptId,
-    body?.attempt_id ?? body?.attemptId,
-  )
-  if (!ownership.apply) {
-    console.log(`[HEARTBEAT GUARD] ${ownership.reason}`)
-    return c.json({ success: true, ignored: true })
-  }
-
-  // Extending the lease is the point of a beat: without it a long job would
-  // lose its lease mid-encode and become reclaimable — exactly the duplicate
-  // GPU run this mechanism exists to prevent.
-  const updated = await db
-    .update(video)
-    .set({
-      lastHeartbeatAt: new Date(),
-      transcodeLeaseExpiresAt: new Date(Date.now() + DEFAULT_TRANSCODE_LEASE_MS),
-    })
-    .where(
-      and(
-        eq(video.id, videoId),
-        inArray(video.status, ['processing', 'uploading']),
-        isNull(video.deletedAt),
-        record.transcodeAttemptId
-          ? eq(video.transcodeAttemptId, record.transcodeAttemptId)
-          : isNull(video.transcodeAttemptId),
-      ),
-    )
-    .returning({ id: video.id })
-
-  if (updated.length === 0) {
-    // Terminal video — nothing to keep alive. Acknowledge so the transcoder
-    // never treats a heartbeat rejection as fatal.
-    return c.json({ success: true, ignored: true })
-  }
-  return c.json({ success: true })
 })
 
 export default app

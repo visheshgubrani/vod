@@ -1,2 +1,0 @@
-DROP INDEX "storage_cleanup_one_outstanding_idx";--> statement-breakpoint
-CREATE UNIQUE INDEX "storage_cleanup_one_outstanding_idx" ON "storage_cleanup_job" USING btree ("video_id","prefix") WHERE "storage_cleanup_job"."status" <> 'reclaimed';
