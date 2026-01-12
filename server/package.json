@@ -2,8 +2,8 @@
   "name": "vod-app",
   "type": "module",
   "scripts": {
-    "dev": "nodemon --watch src --ext ts --exec tsx src/index.ts",
-    "build": "tsc -p tsconfig.json"
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --out-dir dist --clean"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
@@ -23,6 +23,7 @@
     "@types/pg": "^8.16.0",
     "drizzle-kit": "^0.31.8",
     "nodemon": "^3.1.11",
+    "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
