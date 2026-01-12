@@ -1,34 +1,10 @@
-import './polyfills'
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
-import { createAuth } from './lib/auth'
-import upload from './routes/upload'
-import webhook from './routes/webhook'
-import { Bindings } from './types'
+import 'dotenv/config'
+import { serve } from '@hono/node-server'
+import app from './app'
 
-const app = new Hono<{ Bindings: Bindings }>()
+const port = Number(process.env.PORT) || 4080
 
-app.use('/*', async (c, next) => {
-  const corsMiddleware = cors({
-    origin: c.env.FRONTEND_URL || 'http://localhost:3000',
-    allowHeaders: ['Content-Type', 'Authorization'],
-    allowMethods: ['POST', 'GET', 'OPTIONS'],
-    exposeHeaders: ['Content-Length'],
-    maxAge: 600,
-    credentials: true,
-  })
-  return corsMiddleware(c, next)
+serve({
+  fetch: app.fetch,
+  port,
 })
-
-app.on(['POST', 'GET'], '/api/auth/**', (c) => {
-  const auth = createAuth(c.env)
-  return auth.handler(c.req.raw)
-})
-
-app.route('/api/upload', upload)
-app.route('/api/webhook', webhook)
-
-app.get('/health', (c) => c.text('ok'))
-
-export default app
-

@@ -1,20 +1,15 @@
 import { Client } from '@upstash/qstash'
-import { Bindings } from '../types'
 
-export const triggerTranscoding = async (
-  env: Bindings,
-  fileKey: string,
-  fileId: string
-) => {
-  const client = new Client({ token: env.QSTASH_TOKEN })
+export const triggerTranscoding = async (fileKey: string, fileId: string) => {
+  const client = new Client({ token: process.env.QSTASH_TOKEN })
 
   // Use BACKEND_URL for the callback since the webhook is in the worker
   // Falls back to constructing from localhost for local dev
-  const backendUrl = env.BACKEND_URL || 'http://localhost:8787'
+  const backendUrl = process.env.BACKEND_URL || 'http://localhost:4080'
 
   try {
     const result = await client.publishJSON({
-      url: env.MODAL_WEBHOOK_URL,
+      url: process.env.MODAL_WEBHOOK_URL!,
       body: {
         key: fileKey,
         bucket: 'vod-raw-dev',
@@ -31,4 +26,3 @@ export const triggerTranscoding = async (
     return { success: false, error }
   }
 }
-
