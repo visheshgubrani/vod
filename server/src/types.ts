@@ -1,20 +1,7 @@
-import { R2Bucket } from '@cloudflare/workers-types'
-import { createAuth } from './lib/auth'
-
-type AuthInstance = ReturnType<typeof createAuth>
-
-export type Session = AuthInstance['$Infer']['Session']['session']
-export type User = AuthInstance['$Infer']['Session']['user']
-
-export type Variables = {
-  user: User
-  session: Session
-}
-
 export type Bindings = {
   // Buckets
-  RAW_BUCKET: R2Bucket
-  PUBLIC_BUCKET: R2Bucket
+  RAW_BUCKET: string
+  PUBLIC_BUCKET: string
 
   // Secrets (from .dev.vars)
   DATABASE_URL: string
@@ -33,4 +20,5 @@ export type Bindings = {
   TRANSCODED_BUCKET_URL: string // URL prefix for transcoded content bucket
   BACKEND_URL: string // Backend URL for callbacks (e.g. https://api.streamflow.io)
   MODAL_WEBHOOK_SECRET: string
+  PORT: number
 }

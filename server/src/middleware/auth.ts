@@ -1,14 +1,7 @@
 import { createMiddleware } from 'hono/factory'
-import { createAuth } from '../lib/auth'
-import { Bindings, Variables } from '../types'
+import { auth } from '../lib/auth'
 
-export const requireAuth = createMiddleware<{
-  Bindings: Bindings
-  Variables: Variables
-}>(async (c, next) => {
-  // Initialize Auth
-  const auth = createAuth(c.env)
-
+export const requireAuth = createMiddleware(async (c, next) => {
   const sessionData = await auth.api.getSession({
     headers: c.req.raw.headers,
   })

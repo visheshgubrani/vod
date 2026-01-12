@@ -1,10 +1,9 @@
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
-import { Bindings, Variables } from '../types'
-import { getDb } from '../lib/database'
+import { db } from '../lib/database'
 import { video } from '../db/schema'
 
-const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+const app = new Hono()
 
 function joinUrl(base: string, path: string) {
   const b = (base || '').replace(/\/+$/, '')
@@ -23,10 +22,8 @@ function safeJsonParse<T>(s: unknown, fallback: T): T {
 }
 
 app.post('/transcode-complete', async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
-
   // 1) Webhook auth (MVP)
-  const expected = c.env.MODAL_WEBHOOK_SECRET
+  const expected = process.env.MODAL_WEBHOOK_SECRET
   if (expected) {
     const got =
       c.req.header('x-webhook-secret') ||
@@ -50,7 +47,11 @@ app.post('/transcode-complete', async (c) => {
       return c.json({ error: 'Missing video_id or fileId' }, 400)
     }
 
-    const rows = await db.select().from(video).where(eq(video.id, videoId)).limit(1)
+    const rows = await db
+      .select()
+      .from(video)
+      .where(eq(video.id, videoId))
+      .limit(1)
     const videoRecord = rows[0]
     if (!videoRecord) {
       console.error(`Video not found: ${videoId}`)
@@ -63,11 +64,15 @@ app.post('/transcode-complete', async (c) => {
       return c.json({ success: true, status: 'ready', ignored: true })
     }
 
-    const transcodedBucketUrl = c.env.TRANSCODED_BUCKET_URL || ''
+    const transcodedBucketUrl = process.env.TRANSCODED_BUCKET_URL || ''
 
     if (status === 'error') {
-      const message = typeof payload?.message === 'string' ? payload.message : 'Unknown error'
-      const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
+      const message =
+        typeof payload?.message === 'string' ? payload.message : 'Unknown error'
+      const prevMeta = safeJsonParse<Record<string, any>>(
+        videoRecord.metadata,
+        {}
+      )
 
       await db
         .update(video)
@@ -86,15 +91,25 @@ app.post('/transcode-complete', async (c) => {
     }
 
     // success
-    const master = typeof payload?.master_playlist === 'string' ? payload.master_playlist : null
-    const thumb = typeof payload?.thumbnail === 'string' ? payload.thumbnail : null
+    const master =
+      typeof payload?.master_playlist === 'string'
+        ? payload.master_playlist
+        : null
+    const thumb =
+      typeof payload?.thumbnail === 'string' ? payload.thumbnail : null
 
-    const duration = typeof payload?.duration === 'number' && payload.duration >= 0 ? payload.duration : null
+    const duration =
+      typeof payload?.duration === 'number' && payload.duration >= 0
+        ? payload.duration
+        : null
     const resolutions = Array.isArray(payload?.resolutions)
       ? payload.resolutions.filter((x: any) => typeof x === 'string')
       : null
 
-    const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
+    const prevMeta = safeJsonParse<Record<string, any>>(
+      videoRecord.metadata,
+      {}
+    )
 
     await db
       .update(video)
@@ -125,7 +140,10 @@ app.post('/transcode-complete', async (c) => {
     })
   } catch (error) {
     console.error('Webhook error:', error)
-    return c.json({ error: error instanceof Error ? error.message : 'Unknown error' }, 500)
+    return c.json(
+      { error: error instanceof Error ? error.message : 'Unknown error' },
+      500
+    )
   }
 })
 

@@ -4,32 +4,21 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   PutObjectCommand,
-  S3Client,
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { eq } from 'drizzle-orm'
-import { Bindings, Variables } from '../types'
 import { requireAuth } from '../middleware/auth'
-import { getDb } from '../lib/database'
+import { db } from '../lib/database'
 import { video } from '../db/schema'
 import { triggerTranscoding } from '../utils/queue'
+import { r2 } from '../utils/R2'
 
-const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+const app = new Hono()
 const RAW_BUCKET = 'vod-raw-dev'
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
-
-const createR2Client = (env: Bindings) =>
-  new S3Client({
-    region: 'auto',
-    endpoint: `https://${env.ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId: env.R2_ACCESS_KEY_ID,
-      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-    },
-  })
 
 const getUploadKey = (
   organizationId: string | null | undefined,
@@ -83,7 +72,6 @@ app.use('/*', requireAuth)
 // Single file upload (for smaller files)
 app.post('/url', async (c) => {
   const session = c.var.session
-  const db = getDb(c.env.DATABASE_URL)
 
   // INPUT VALIDATION
   const { filename, contentType, size, title } = await c.req.json()
@@ -117,8 +105,6 @@ app.post('/url', async (c) => {
   })
 
   // GENERATE PRESIGNED URL (For R2)
-  const r2 = createR2Client(c.env)
-
   const command = new PutObjectCommand({
     Bucket: RAW_BUCKET,
     Key: key,
@@ -138,13 +124,15 @@ app.post('/url', async (c) => {
 
 // Single file upload - complete (called after PUT succeeds)
 app.post('/complete', async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
-
   const { fileId } = await c.req.json()
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
 
   // Get the video to retrieve the rawKey
-  const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
+  const videos = await db
+    .select()
+    .from(video)
+    .where(eq(video.id, fileId))
+    .limit(1)
   const videoRecord = videos[0]
 
   if (!videoRecord) {
@@ -162,7 +150,7 @@ app.post('/complete', async (c) => {
 
   // Queue for transcoding
   if (videoRecord.rawKey) {
-    await triggerTranscoding(c.env, videoRecord.rawKey, fileId)
+    await triggerTranscoding(videoRecord.rawKey, fileId)
   }
 
   return c.json({ success: true, fileId })
@@ -171,7 +159,6 @@ app.post('/complete', async (c) => {
 // Multipart upload - create
 app.post('/multipart/create', async (c) => {
   const session = c.var.session
-  const db = getDb(c.env.DATABASE_URL)
 
   const {
     filename,
@@ -189,7 +176,7 @@ app.post('/multipart/create', async (c) => {
   let partSize: number
   let partCount: number
   try {
-    ; ({ partSize, partCount } = resolvePartConfig(parsedSize, parsedPartSize))
+    ;({ partSize, partCount } = resolvePartConfig(parsedSize, parsedPartSize))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid input'
     return c.json({ error: message }, 400)
@@ -214,7 +201,6 @@ app.post('/multipart/create', async (c) => {
     uploadedBy: session.userId,
   })
 
-  const r2 = createR2Client(c.env)
   const command = new CreateMultipartUploadCommand({
     Bucket: RAW_BUCKET,
     Key: key,
@@ -252,7 +238,7 @@ app.post('/multipart/parts', async (c) => {
   let resolvedPartSize: number
   let partCount: number
   try {
-    ; ({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
+    ;({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
       parsedSize,
       parsedPartSize
     ))
@@ -285,7 +271,6 @@ app.post('/multipart/parts', async (c) => {
     }
   }
 
-  const r2 = createR2Client(c.env)
   const urls = await Promise.all(
     uniquePartNumbers.map(async (partNumber) => {
       const command = new UploadPartCommand({
@@ -315,8 +300,6 @@ app.post('/multipart/parts', async (c) => {
 
 // Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
-
   const { key, uploadId, parts, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
 
@@ -336,9 +319,9 @@ app.post('/multipart/complete', async (c) => {
       return { PartNumber: partNumber, ETag: cleanEtag }
     })
     .filter((part) => part !== null) as Array<{
-      PartNumber: number
-      ETag: string
-    }>
+    PartNumber: number
+    ETag: string
+  }>
 
   if (normalizedParts.length === 0) {
     return c.json({ error: 'Invalid parts' }, 400)
@@ -346,7 +329,6 @@ app.post('/multipart/complete', async (c) => {
 
   normalizedParts.sort((a, b) => a.PartNumber - b.PartNumber)
 
-  const r2 = createR2Client(c.env)
   const command = new CompleteMultipartUploadCommand({
     Bucket: RAW_BUCKET,
     Key: key,
@@ -369,7 +351,7 @@ app.post('/multipart/complete', async (c) => {
       .where(eq(video.id, fileId))
 
     // Queue for transcoding
-    await triggerTranscoding(c.env, key, fileId)
+    await triggerTranscoding(key, fileId)
   }
 
   return c.json({
@@ -383,12 +365,9 @@ app.post('/multipart/complete', async (c) => {
 
 // Multipart upload - abort
 app.post('/multipart/abort', async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
-
   const { key, uploadId, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
 
-  const r2 = createR2Client(c.env)
   await r2.send(
     new AbortMultipartUploadCommand({
       Bucket: RAW_BUCKET,
