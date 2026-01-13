@@ -66,16 +66,19 @@ jobs:
     steps:
       - name: Deploy to Server via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
+          envs: GH_TOKEN
           script: |
             cd ${{ secrets.DEPLOY_PATH }}
             
-            # Login to GHCR
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # Login to GHCR using the PAT
+            echo "$GH_TOKEN" | docker login ghcr.io -u visheshgubrani --password-stdin
             
             # Pull latest images
             docker compose pull
@@ -85,3 +88,4 @@ jobs:
             
             # Cleanup old images
             docker image prune -f
+
