@@ -7,8 +7,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  SERVER_IMAGE: ${{ github.repository }}-server
-  WEB_IMAGE: ${{ github.repository }}-web
+  SERVER_IMAGE: ${{ github.repository }}/server
+  WEB_IMAGE: ${{ github.repository }}/web
 
 jobs:
   build-and-push:

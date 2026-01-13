@@ -1,7 +1,7 @@
 services:
   # Backend API Server
   server:
-    image: ghcr.io/${GITHUB_USERNAME}/vod-server:${TAG:-latest}
+    image: ghcr.io/visheshgubrani/vod/server:${TAG:-latest}
     container_name: vod_server
     restart: unless-stopped
     ports:
@@ -19,7 +19,7 @@ services:
 
   # Next.js Frontend
   web:
-    image: ghcr.io/${GITHUB_USERNAME}/vod-web:${TAG:-latest}
+    image: ghcr.io/visheshgubrani/vod/web:${TAG:-latest}
     container_name: vod_web
     restart: unless-stopped
     ports:
