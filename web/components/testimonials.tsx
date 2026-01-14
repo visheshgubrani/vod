@@ -64,7 +64,7 @@ export function Testimonials() {
                         <span className="gradient-text">Thousands</span> of Teams
                     </h2>
                     <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-                        From startups to enterprises, developers choose StreamFlow
+                        From startups to enterprises, developers choose ClipMux
                         for reliable, affordable video streaming.
                     </p>
                 </div>

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "StreamFlow | Video Streaming at 90% Less Cost",
+  title: "ClipMux | Video Streaming at 90% Less Cost",
   description:
     "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing. Simple API, global CDN, instant encoding. Start free today.",
   keywords: [
@@ -26,13 +26,13 @@ export const metadata: Metadata = {
     "Mux alternative",
     "affordable video hosting",
   ],
-  authors: [{ name: "StreamFlow" }],
+  authors: [{ name: "ClipMux" }],
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://streamflow.io",
-    siteName: "StreamFlow",
-    title: "StreamFlow | Video Streaming at 90% Less Cost",
+    url: "https://clipmux.io",
+    siteName: "ClipMux",
+    title: "ClipMux | Video Streaming at 90% Less Cost",
     description:
       "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing.",
     images: [
@@ -40,13 +40,13 @@ export const metadata: Metadata = {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "StreamFlow - Affordable Video Streaming",
+        alt: "ClipMux - Affordable Video Streaming",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "StreamFlow | Video Streaming at 90% Less Cost",
+    title: "ClipMux | Video Streaming at 90% Less Cost",
     description:
       "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing.",
     images: ["/og-image.png"],

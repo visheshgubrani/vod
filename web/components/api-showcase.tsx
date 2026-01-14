@@ -8,10 +8,10 @@ const tabs = [
     {
         id: "javascript",
         label: "JavaScript",
-        code: `import { StreamFlow } from '@streamflow/sdk';
+        code: `import { ClipMux } from '@clipmux/sdk';
 
-const client = new StreamFlow({
-  apiKey: process.env.STREAMFLOW_API_KEY
+const client = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY
 });
 
 // Upload and encode a video
@@ -26,10 +26,10 @@ console.log(video.playbackId);
     {
         id: "python",
         label: "Python",
-        code: `from streamflow import StreamFlow
+        code: `from clipmux import ClipMux
 
-client = StreamFlow(
-    api_key=os.environ["STREAMFLOW_API_KEY"]
+client = ClipMux(
+    api_key=os.environ["CLIPMUX_API_KEY"]
 )
 
 # Upload and encode a video
@@ -44,8 +44,8 @@ print(video.playback_id)
     {
         id: "curl",
         label: "cURL",
-        code: `curl -X POST https://api.streamflow.io/v1/videos \\
-  -H "Authorization: Bearer $STREAMFLOW_API_KEY" \\
+        code: `curl -X POST https://api.clipmux.io/v1/videos \\
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "url": "https://example.com/video.mp4",

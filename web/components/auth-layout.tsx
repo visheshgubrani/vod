@@ -34,7 +34,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
                         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
                             <Play className="w-5 h-5 text-white fill-white" />
                         </div>
-                        <span className="text-xl font-bold text-white">StreamFlow</span>
+                        <span className="text-xl font-bold text-white">ClipMux</span>
                     </Link>
 
                     {/* Main Content */}
@@ -64,7 +64,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
                     {/* Testimonial */}
                     <div className="glass rounded-2xl p-6">
                         <p className="text-white/90 mb-4">
-                            "Switching to StreamFlow cut our video costs by 85%. The migration took less than a day."
+                            "Switching to ClipMux cut our video costs by 85%. The migration took less than a day."
                         </p>
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white font-semibold text-sm">
@@ -88,7 +88,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
                             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center">
                                 <Play className="w-5 h-5 text-white fill-white" />
                             </div>
-                            <span className="text-xl font-bold gradient-text">StreamFlow</span>
+                            <span className="text-xl font-bold gradient-text">ClipMux</span>
                         </Link>
                     </div>
 
