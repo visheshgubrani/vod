@@ -148,7 +148,7 @@ export default function OnboardingPage() {
                         <div className="space-y-2">
                             <Label htmlFor="slug">URL Slug</Label>
                             <div className="flex items-center gap-2">
-                                <span className="text-sm text-muted-foreground">streamflow.io/</span>
+                                <span className="text-sm text-muted-foreground">clipmux.io/</span>
                                 <Input
                                     id="slug"
                                     type="text"

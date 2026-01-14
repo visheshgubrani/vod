@@ -120,7 +120,7 @@ export function Pricing() {
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         {/* Our Cost */}
                         <div className="rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 p-6 text-center border border-primary/30">
-                            <div className="text-sm text-muted-foreground mb-2">StreamFlow</div>
+                            <div className="text-sm text-muted-foreground mb-2">ClipMux</div>
                             <div className="text-3xl font-bold text-primary">
                                 ${ourCost.toFixed(2)}
                             </div>

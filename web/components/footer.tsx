@@ -94,7 +94,7 @@ export function Footer() {
                                     <polygon points="5 3 19 12 5 21 5 3" />
                                 </svg>
                             </div>
-                            <span className="text-xl font-bold">StreamFlow</span>
+                            <span className="text-xl font-bold">ClipMux</span>
                         </a>
                         <p className="text-sm text-muted-foreground mb-4">
                             The cost-effective video platform built for modern developers.
@@ -136,7 +136,7 @@ export function Footer() {
                 {/* Bottom Bar */}
                 <div className="border-t border-border pt-8 flex flex-col md:flex-row items-center justify-between gap-4">
                     <p className="text-sm text-muted-foreground">
-                        © 2026 StreamFlow. All rights reserved.
+                        © 2026 ClipMux. All rights reserved.
                     </p>
                     <div className="flex items-center gap-6">
                         <a

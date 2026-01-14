@@ -16,7 +16,7 @@ app = modal.App("vod-hls-pipeline")
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("ffmpeg", "wget", "curl")
-    .pip_install("boto3", "requests")
+    .pip_install("boto3", "requests", "fastapi[standard]")
 )
 
 # --- CONFIGURATION ---
@@ -175,7 +175,7 @@ def generate_thumbnail(input_path: str, out_path: str, duration: float) -> None:
     secrets=[modal.Secret.from_name("r2-creds")],
     timeout=1800,
 )
-@modal.web_endpoint(method="POST")
+@modal.fastapi_endpoint(method="POST")
 def transcode_video(payload: dict):
     """
     Expected payload:
@@ -253,6 +253,7 @@ def transcode_video(payload: dict):
         for i, (_, settings) in enumerate(targets):
             # -2 keeps AR and ensures divisible-by-2 width for H.264
             filter_complex += f"[v{i}]scale=-2:{settings['h']}[out{i}];"
+        filter_complex = filter_complex.rstrip(";")
         cmd.extend(["-filter_complex", filter_complex])
 
         # Build HLS var_stream_map
@@ -276,7 +277,7 @@ def transcode_video(payload: dict):
                     f"-preset:v:{i}",
                     "p4",
                     f"-rc:v:{i}",
-                    "vbr_hq",
+                    "vbr",
 
                     # Compatibility
                     f"-pix_fmt:v:{i}",
@@ -393,7 +394,8 @@ def transcode_video(payload: dict):
         # --- CALLBACK ---
         if "callbackUrl" in payload:
             try:
-                print(f"📞 Calling Webhook: {payload['callbackUrl']}")
+                print(f"Calling Webhook: {payload['callbackUrl']}")
+                webhook_secret = os.environ.get("MODAL_WEBHOOK_SECRET")
                 requests.post(
                     payload["callbackUrl"],
                     json={
@@ -405,6 +407,10 @@ def transcode_video(payload: dict):
                         "master_playlist": f"{R2_PREFIX}/{video_id}/playlist.m3u8",
                         "thumbnail": f"{R2_PREFIX}/{video_id}/thumbnail.jpg",
                         "file_count": len(files),
+                    },
+                    headers={
+                        "X-Webhook-Secret": webhook_secret,
+                        "Content-Type": "application/json"
                     },
                     timeout=10,
                 )
