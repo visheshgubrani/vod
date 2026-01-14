@@ -160,6 +160,12 @@ export const statusEnum = pgEnum('video_status', [
   'failed',
 ])
 
+// Playback policy for access control (like Mux)
+// - public: anyone can access the video
+// - signed: requires a signed token/URL to access
+export const playbackPolicyEnum = pgEnum('playback_policy', ['public', 'signed'])
+
+
 export const video = pgTable('video', {
   id: uuid('id').defaultRandom().primaryKey(),
 
@@ -170,6 +176,7 @@ export const video = pgTable('video', {
 
   title: text('title').notNull(),
   status: statusEnum('status').default('pending'),
+  playbackPolicy: playbackPolicyEnum('playback_policy').default('public'),
 
   // R2 Storage Paths
   rawKey: text('raw_key'),
