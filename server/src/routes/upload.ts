@@ -74,7 +74,7 @@ app.post('/url', async (c) => {
   const session = c.var.session
 
   // INPUT VALIDATION
-  const { filename, contentType, size, title } = await c.req.json()
+  const { filename, contentType, size, title, playbackPolicy } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
   const parsedSize = Number(size)
   if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
@@ -99,6 +99,7 @@ app.post('/url', async (c) => {
     organizationId,
     title: title || filename,
     status: 'uploading',
+    playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
     rawKey: key,
     size: parsedSize,
     uploadedBy: session.userId,
@@ -166,6 +167,7 @@ app.post('/multipart/create', async (c) => {
     size,
     partSize: requestedPartSize,
     title,
+    playbackPolicy,
   } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
 
@@ -196,6 +198,7 @@ app.post('/multipart/create', async (c) => {
     organizationId,
     title: title || filename,
     status: 'uploading',
+    playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
     rawKey: key,
     size: parsedSize,
     uploadedBy: session.userId,

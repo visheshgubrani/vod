@@ -276,14 +276,24 @@ def transcode_video(payload: dict):
                     # Quality / RC tuning (good MVP defaults)
                     f"-preset:v:{i}",
                     "p4",
+                    f"-tune:v:{i}",
+                    "hq",
                     f"-rc:v:{i}",
                     "vbr",
 
-                    # Compatibility
+                    # Compatibility - CRITICAL for browser playback
                     f"-pix_fmt:v:{i}",
                     "yuv420p",
                     f"-profile:v:{i}",
                     "high",
+                    f"-level:v:{i}",
+                    "4.1",
+
+                    # B-frames for proper GOP structure (critical for HLS)
+                    f"-bf:v:{i}",
+                    "2",
+                    f"-b_ref_mode:v:{i}",
+                    "middle",
 
                     # Rate control
                     f"-b:v:{i}",
@@ -293,7 +303,11 @@ def transcode_video(payload: dict):
                     f"-bufsize:v:{i}",
                     settings["buf"],
 
-                    # GOP / keyframes
+                    # GOP / keyframes - explicit GOP size + forced keyframes
+                    f"-g:v:{i}",
+                    str(HLS_TIME * 30),  # GOP of ~6 seconds at 30fps
+                    f"-keyint_min:v:{i}",
+                    str(HLS_TIME * 30),
                     f"-force_key_frames:v:{i}",
                     force_kf_expr,
                     f"-sc_threshold:v:{i}",
@@ -335,6 +349,8 @@ def transcode_video(payload: dict):
                 str(HLS_TIME),
                 "-hls_playlist_type",
                 "vod",
+                "-hls_segment_type",
+                "mpegts",  # Explicit segment type for compatibility
                 "-hls_flags",
                 "independent_segments",
                 "-master_pl_name",
