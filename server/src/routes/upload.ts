@@ -151,7 +151,7 @@ app.post('/complete', async (c) => {
 
   // Queue for transcoding
   if (videoRecord.rawKey) {
-    await triggerTranscoding(videoRecord.rawKey, fileId)
+    await triggerTranscoding(videoRecord.rawKey, fileId, videoRecord.playbackPolicy || 'public')
   }
 
   return c.json({ success: true, fileId })
@@ -353,8 +353,10 @@ app.post('/multipart/complete', async (c) => {
       })
       .where(eq(video.id, fileId))
 
-    // Queue for transcoding
-    await triggerTranscoding(key, fileId)
+    // Queue for transcoding - lookup video to get playback policy
+    const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
+    const playbackPolicy = videos[0]?.playbackPolicy || 'public'
+    await triggerTranscoding(key, fileId, playbackPolicy)
   }
 
   return c.json({

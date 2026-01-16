@@ -169,6 +169,33 @@ def generate_thumbnail(input_path: str, out_path: str, duration: float) -> None:
     run_cmd(cmd, label="ffmpeg(thumbnail)")
 
 
+def generate_encryption_key(output_dir: Path, key_url: str) -> tuple[Path, Path]:
+    """
+    Generate AES-128 key and keyinfo file for FFmpeg HLS encryption.
+    
+    Args:
+        output_dir: Directory to write key files
+        key_url: The URL where the key will be accessible (for playlist)
+    
+    Returns:
+        Tuple of (key_path, keyinfo_path)
+    """
+    key = os.urandom(16)  # 128-bit key
+    iv = os.urandom(16)   # 128-bit IV
+    
+    key_path = output_dir / "enc.key"
+    key_path.write_bytes(key)
+    
+    # FFmpeg keyinfo format:
+    # Line 1: Key URI (what goes in the playlist)
+    # Line 2: Path to key file (local path for FFmpeg)
+    # Line 3: IV in hex format
+    keyinfo_path = output_dir / "enc.keyinfo"
+    keyinfo_path.write_text(f"{key_url}\n{key_path}\n{iv.hex()}")
+    
+    return key_path, keyinfo_path
+
+
 @app.function(
     gpu="l4",
     image=image,
@@ -196,6 +223,8 @@ def transcode_video(payload: dict):
     duration = 0.0
     has_audio = False
     input_height = 1080
+    playback_policy = payload.get("playbackPolicy", "public")  # 'public' or 'signed'
+    keyinfo_path = None  # Will be set if encryption is needed
 
     try:
         print(f"🎬 Starting Job for: {video_id}")
@@ -243,6 +272,15 @@ def transcode_video(payload: dict):
         # --- THUMBNAIL ---
         thumb_path = output_dir / "thumbnail.jpg"
         generate_thumbnail(str(local_input), str(thumb_path), duration)
+
+        # --- ENCRYPTION KEY (for signed videos) ---
+        if playback_policy == "signed":
+            # The key URL that will be embedded in the playlist
+            # This assumes your delivery worker serves from videos/{video_id}/enc.key
+            delivery_base = os.environ.get("DELIVERY_URL", "https://delivery.example.com")
+            key_url = f"{delivery_base}/{R2_PREFIX}/{video_id}/enc.key"
+            _, keyinfo_path = generate_encryption_key(output_dir, key_url)
+            print(f"🔐 Encryption enabled for signed video")
 
         # --- FFMPEG (HLS) ---
         cmd = ["ffmpeg", "-hide_banner", "-y", "-i", str(local_input)]
@@ -359,9 +397,15 @@ def transcode_video(payload: dict):
                 f"{output_dir}/stream_%v_data%03d.ts",
                 "-var_stream_map",
                 " ".join(var_stream_map_parts),
-                f"{output_dir}/stream_%v.m3u8",
             ]
         )
+
+        # Add encryption BEFORE output file (FFmpeg requires options before output)
+        if keyinfo_path:
+            cmd.extend(["-hls_key_info_file", str(keyinfo_path)])
+
+        # Output filename must be LAST
+        cmd.append(f"{output_dir}/stream_%v.m3u8")
 
         run_cmd(cmd, label="ffmpeg(hls)")
 
@@ -390,6 +434,13 @@ def transcode_video(payload: dict):
             elif filename.endswith(".jpg") or filename.endswith(".jpeg"):
                 content_type = "image/jpeg"
                 cache_control = "public, max-age=31536000, immutable"
+            elif filename.endswith(".key"):
+                # SECURITY: Encryption keys must NEVER be cached
+                content_type = "application/octet-stream"
+                cache_control = "private, no-store, max-age=0"
+            elif filename.endswith(".keyinfo"):
+                # Don't upload keyinfo file - it's only for FFmpeg
+                return
             else:
                 content_type = "application/octet-stream"
                 cache_control = "public, max-age=31536000, immutable"
@@ -401,6 +452,7 @@ def transcode_video(payload: dict):
                 ExtraArgs={
                     "ContentType": content_type,
                     "CacheControl": cache_control,
+                    "Metadata": {"playback_policy": playback_policy},
                 },
             )
 
@@ -423,6 +475,8 @@ def transcode_video(payload: dict):
                         "master_playlist": f"{R2_PREFIX}/{video_id}/playlist.m3u8",
                         "thumbnail": f"{R2_PREFIX}/{video_id}/thumbnail.jpg",
                         "file_count": len(files),
+                        "playback_policy": playback_policy,
+                        "encrypted": playback_policy == "signed",
                     },
                     headers={
                         "X-Webhook-Secret": webhook_secret,
@@ -444,6 +498,8 @@ def transcode_video(payload: dict):
             "file_count": len(files),
             "has_audio": has_audio,
             "input_height": input_height,
+            "playback_policy": playback_policy,
+            "encrypted": playback_policy == "signed",
         }
 
     except Exception as e:

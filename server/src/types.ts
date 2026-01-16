@@ -22,3 +22,9 @@ export type Bindings = {
   MODAL_WEBHOOK_SECRET: string
   PORT: number
 }
+
+// Context variables set by API key middleware
+export type ApiKeyVariables = {
+  organizationId: string
+  apiKeyId: string
+}

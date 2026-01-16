@@ -1,10 +1,8 @@
-/**
- * ClipMux Delivery Worker
- * Serves video content (HLS, thumbnails) from the transcoded R2 bucket.
- */
+import * as jose from 'jose'
 
 interface Env {
-  TRANSCODED_BUCKET: R2Bucket // Ensure this matches your wrangler.toml
+  TRANSCODED_BUCKET: R2Bucket
+  JWT_SECRET: string
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -14,14 +12,14 @@ const MIME_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.key': 'application/octet-stream', // Added for your encryption keys later
+  '.key': 'application/octet-stream',
 }
 
 const CACHE_CONTROL = {
   playlist: 'public, max-age=5',
   segment: 'public, max-age=31536000, immutable',
   thumbnail: 'public, max-age=86400',
+  key: 'private, no-store, max-age=0',
   default: 'public, max-age=3600',
 }
 
@@ -33,8 +31,34 @@ function getMimeType(path: string): string {
 function getCacheControl(path: string): string {
   if (path.endsWith('.m3u8')) return CACHE_CONTROL.playlist
   if (path.endsWith('.ts')) return CACHE_CONTROL.segment
+  if (path.endsWith('.key')) return CACHE_CONTROL.key
   if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return CACHE_CONTROL.thumbnail
   return CACHE_CONTROL.default
+}
+
+function extractVideoId(path: string): string | null {
+  const match = path.match(/^videos\/([^\/]+)\//)
+  return match ? match[1] : null
+}
+
+async function verifyToken(token: string, secret: string, videoId: string): Promise<boolean> {
+  try {
+    const secretKey = new TextEncoder().encode(secret)
+    const { payload } = await jose.jwtVerify(token, secretKey)
+    return payload.video_id === videoId || payload.sub === videoId
+  } catch {
+    return false
+  }
+}
+
+function rewritePlaylist(content: string, token: string): string {
+  return content.replace(
+    /(#EXT-X-KEY:[^"]*URI=")([^"]+)(")/g,
+    (_, prefix, uri, suffix) => {
+      const separator = uri.includes('?') ? '&' : '?'
+      return `${prefix}${uri}${separator}token=${token}${suffix}`
+    }
+  )
 }
 
 export default {
@@ -55,17 +79,15 @@ export default {
     }
 
     const url = new URL(request.url)
-    const key = url.pathname.slice(1) // e.g., "videos/123/playlist.m3u8"
+    const key = url.pathname.slice(1)
+    const token = url.searchParams.get('token')
 
     if (!key) return new Response('Not found', { status: 404, headers: corsHeaders })
 
     try {
+      // 1. SETUP RANGE REQUEST (Standard)
       const rangeHeader = request.headers.get('Range')
-      
-      // 1. Setup options for R2
       const options: R2GetOptions = {}
-
-      // 2. Parse Range Header - store values for later use
       let rangeOffset: number | undefined
       let rangeLength: number | undefined
 
@@ -76,22 +98,42 @@ export default {
           const end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : undefined
           rangeOffset = start
           rangeLength = end !== undefined ? (end - start + 1) : undefined
-          // R2 expects 'offset' and 'length' (not end index)
-          options.range = { 
-            offset: rangeOffset, 
-            length: rangeLength 
-          }
+          options.range = { offset: rangeOffset, length: rangeLength }
         }
       }
 
-      // 3. Fetch from R2
+      // 2. FETCH OBJECT (Optimized: Get metadata AND handle in one shot)
       const object = await env.TRANSCODED_BUCKET.get(key, options)
 
       if (!object) {
         return new Response('Not found', { status: 404, headers: corsHeaders })
       }
 
-      // 4. Build Headers
+      // 3. CHECK AUTH (Using the metadata we just fetched!)
+      const playbackPolicy = object.customMetadata?.playback_policy || 'public'
+      const isSigned = playbackPolicy === 'signed'
+      
+      // Determine if we need to enforce security
+      // We check .key files specifically because they are the "Master Lock"
+      const isProtectedResource = key.endsWith('.m3u8') || key.endsWith('.key')
+
+      if (isSigned && isProtectedResource) {
+        if (!token) {
+          return new Response('Unauthorized: Token required', { status: 401, headers: corsHeaders })
+        }
+        
+        const videoId = extractVideoId(key)
+        if (!videoId) {
+           return new Response('Invalid Path', { status: 400, headers: corsHeaders })
+        }
+
+        const isValid = await verifyToken(token, env.JWT_SECRET, videoId)
+        if (!isValid) {
+          return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders })
+        }
+      }
+
+      // 4. PREPARE HEADERS
       const headers = new Headers({
         'Content-Type': getMimeType(key),
         'Cache-Control': getCacheControl(key),
@@ -100,35 +142,38 @@ export default {
         ...corsHeaders,
       })
 
-      // 5. Handle Partial Content (206) vs Full Content (200)
+      // 5. MANIFEST REWRITING
+      if (isSigned && key.endsWith('.m3u8') && token) {
+        const content = await object.text()
+        const rewritten = rewritePlaylist(content, token)
+        
+        // Ensure signed manifests are NEVER cached by the browser/CDN
+        headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0')
+        headers.set('Content-Length', new TextEncoder().encode(rewritten).length.toString())
+        
+        return new Response(rewritten, { status: 200, headers })
+      }
+
+      // 6. SERVE BODY (Range or Full)
       const isRangeRequest = rangeOffset !== undefined && 'body' in object
       
       if (isRangeRequest) {
-        // We requested a range, R2 returned the chunk.
-        // object.size is the TOTAL file size in R2, not just the chunk size.
         const totalSize = object.size 
         const start = rangeOffset!
-        // Calculate the end byte position of this specific chunk
-        // If we requested length, end is start + length - 1. If not, end is total - 1.
         let end = totalSize - 1
         if (rangeLength) {
-            end = start + rangeLength - 1
+          end = start + rangeLength - 1
         }
-        
-        // Safety: Clamp end to totalSize
         if (end > totalSize - 1) end = totalSize - 1
 
         const contentLength = end - start + 1
-
         headers.set('Content-Range', `bytes ${start}-${end}/${totalSize}`)
         headers.set('Content-Length', contentLength.toString())
 
         return new Response(object.body, { status: 206, headers })
       } 
 
-      // 6. Standard Response (200)
       headers.set('Content-Length', object.size.toString())
-      
       return new Response(object.body, { status: 200, headers })
 
     } catch (error) {
