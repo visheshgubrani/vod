@@ -1,6 +1,10 @@
 import { Client } from '@upstash/qstash'
 
-export const triggerTranscoding = async (fileKey: string, fileId: string) => {
+export const triggerTranscoding = async (
+  fileKey: string,
+  fileId: string,
+  playbackPolicy: 'public' | 'signed' = 'public'
+) => {
   const client = new Client({ token: process.env.QSTASH_TOKEN })
 
   // Use BACKEND_URL for the callback since the webhook is in the worker
@@ -14,6 +18,7 @@ export const triggerTranscoding = async (fileKey: string, fileId: string) => {
         key: fileKey,
         bucket: 'vod-raw-dev',
         fileId: fileId,
+        playbackPolicy: playbackPolicy,
         callbackUrl: `${backendUrl}/api/webhook/transcode-complete`,
       },
       retries: 3,

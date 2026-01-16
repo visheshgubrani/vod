@@ -4,6 +4,7 @@ import * as React from "react";
 import Uppy, { UppyFile, Meta, Body } from "@uppy/core";
 import AwsS3 from "@uppy/aws-s3";
 import Dashboard from "@uppy/dashboard";
+import { Lock, Globe } from "lucide-react";
 
 import "@uppy/core/css/style.min.css";
 import "@uppy/dashboard/css/style.min.css";
@@ -29,6 +30,13 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8
 export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProps) {
     const dashboardRef = React.useRef<HTMLDivElement>(null);
     const uppyRef = React.useRef<Uppy<CustomMeta, Body> | null>(null);
+    const [playbackPolicy, setPlaybackPolicy] = React.useState<"public" | "signed">("public");
+
+    // Store policy in ref so it's accessible in Uppy callbacks
+    const playbackPolicyRef = React.useRef(playbackPolicy);
+    React.useEffect(() => {
+        playbackPolicyRef.current = playbackPolicy;
+    }, [playbackPolicy]);
 
     React.useEffect(() => {
         if (!open || !dashboardRef.current) return;
@@ -60,6 +68,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                         filename: file.name,
                         contentType: file.type,
                         size: file.size,
+                        playbackPolicy: playbackPolicyRef.current,
                     }),
                 });
 
@@ -97,6 +106,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                         filename: file.name,
                         contentType: file.type,
                         size: file.size,
+                        playbackPolicy: playbackPolicyRef.current,
                     }),
                 });
 
@@ -206,7 +216,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
             target: dashboardRef.current,
             inline: true,
             width: "100%",
-            height: 400,
+            height: 350,
             proudlyDisplayPoweredByUppy: false,
             theme: "dark",
             note: "Video files up to 10GB. MP4, MOV, WebM, MKV supported.",
@@ -279,6 +289,46 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                 <SheetTitle>Upload Videos</SheetTitle>
             </SheetHeader>
             <SheetContent className="space-y-4">
+                {/* Playback Policy Selector */}
+                <div className="flex items-center gap-4 p-4 rounded-xl bg-muted/30 border border-border">
+                    <div className="flex-1">
+                        <p className="text-sm font-medium text-foreground mb-1">Playback Policy</p>
+                        <p className="text-xs text-muted-foreground">
+                            {playbackPolicy === "public" 
+                                ? "Anyone with the URL can view this video" 
+                                : "Requires signed token for playback"}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-1 p-1 rounded-lg bg-muted/50 border border-border">
+                        <button
+                            type="button"
+                            onClick={() => setPlaybackPolicy("public")}
+                            className={cn(
+                                "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                                playbackPolicy === "public"
+                                    ? "bg-primary text-white shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                            )}
+                        >
+                            <Globe className="w-4 h-4" />
+                            Public
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setPlaybackPolicy("signed")}
+                            className={cn(
+                                "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                                playbackPolicy === "signed"
+                                    ? "bg-primary text-white shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                            )}
+                        >
+                            <Lock className="w-4 h-4" />
+                            Signed
+                        </button>
+                    </div>
+                </div>
+
                 <div
                     ref={dashboardRef}
                     className={cn(
@@ -292,6 +342,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
 
                 <p className="text-xs text-muted-foreground text-center">
                     Videos will be transcoded after upload for optimal streaming
+                    {playbackPolicy === "signed" && " • AES-128 encrypted"}
                 </p>
             </SheetContent>
         </Sheet>
