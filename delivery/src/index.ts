@@ -1,3 +1,23 @@
+/**
+ * ClipMux Delivery Worker
+ * 
+ * SECURITY MODEL FOR SIGNED VIDEOS:
+ * ─────────────────────────────────
+ * Token is required for: .m3u8 (playlists) and .key (encryption keys)
+ * Token is NOT required for: .ts (segments) - they're AES-128 encrypted anyway
+ * 
+ * Flow:
+ * 1. Client requests playlist.m3u8?token=xxx
+ * 2. Worker verifies token, rewrites playlist to include token in:
+ *    - Variant playlist URLs (stream_0.m3u8?token=xxx)
+ *    - Key URIs (#EXT-X-KEY:...URI="...?token=xxx")
+ * 3. Player fetches variant playlist with token (verified again)
+ * 4. Player fetches enc.key with token (verified again)
+ * 5. Player fetches .ts segments (no token needed - encrypted content)
+ * 
+ * This is the same model used by Mux and other B2B video platforms.
+ */
+
 import * as jose from 'jose'
 
 interface Env {
@@ -51,14 +71,58 @@ async function verifyToken(token: string, secret: string, videoId: string): Prom
   }
 }
 
+/**
+ * Rewrite HLS playlist to include token in:
+ * 1. #EXT-X-KEY URIs (for encryption key access)
+ * 2. #EXT-X-MEDIA URIs (for audio/subtitle tracks)
+ * 3. Variant playlist URIs (.m3u8 references in master playlist)
+ */
 function rewritePlaylist(content: string, token: string): string {
-  return content.replace(
-    /(#EXT-X-KEY:[^"]*URI=")([^"]+)(")/g,
-    (_, prefix, uri, suffix) => {
+  let result = content
+  
+  // Debug: log original content (full content for debugging)
+  console.log('=== PLAYLIST REWRITE DEBUG ===')
+  console.log('Original content lines:', content.split('\n').length)
+  console.log('FULL PLAYLIST CONTENT:')
+  console.log(content)
+  console.log('--- END CONTENT ---')
+  
+  // 1. Rewrite #EXT-X-KEY URIs (uses .*? to skip past any quoted attributes before URI)
+  result = result.replace(
+    /(#EXT-X-KEY:.*?URI=")([^"]+)(")/g,
+    (match, prefix, uri, suffix) => {
       const separator = uri.includes('?') ? '&' : '?'
+      console.log(`Rewriting KEY URI: ${uri}`)
       return `${prefix}${uri}${separator}token=${token}${suffix}`
     }
   )
+  
+  // 2. Rewrite #EXT-X-MEDIA URIs (audio/subtitle tracks - uses .*? for same reason)
+  result = result.replace(
+    /(#EXT-X-MEDIA:.*?URI=")([^"]+)(")/g,
+    (match, prefix, uri, suffix) => {
+      const separator = uri.includes('?') ? '&' : '?'
+      console.log(`Rewriting MEDIA URI: ${uri}`)
+      return `${prefix}${uri}${separator}token=${token}${suffix}`
+    }
+  )
+  
+  // 3. Rewrite variant playlist references (.m3u8 files as standalone lines)
+  const m3u8Regex = /^([^#\s].*\.m3u8)$/gm
+  const matches = content.match(m3u8Regex)
+  console.log('Found .m3u8 references:', matches)
+  
+  result = result.replace(
+    m3u8Regex,
+    (uri) => {
+      const separator = uri.includes('?') ? '&' : '?'
+      console.log(`Rewriting m3u8 ref: ${uri} -> ${uri}${separator}token=...`)
+      return `${uri}${separator}token=${token}`
+    }
+  )
+  
+  console.log('=== END PLAYLIST REWRITE ===')
+  return result
 }
 
 export default {
@@ -109,8 +173,13 @@ export default {
         return new Response('Not found', { status: 404, headers: corsHeaders })
       }
 
+      // --- DEBUG LOG START ---
+      console.log(`Checking ${key}`);
+      console.log("Metadata found:", JSON.stringify(object.customMetadata));
+      // --- DEBUG LOG END ---
+
       // 3. CHECK AUTH (Using the metadata we just fetched!)
-      const playbackPolicy = object.customMetadata?.playback_policy || 'public'
+      const playbackPolicy = object.customMetadata?.['playback-policy'] || object.customMetadata?.playback_policy || 'public'
       const isSigned = playbackPolicy === 'signed'
       
       // Determine if we need to enforce security
