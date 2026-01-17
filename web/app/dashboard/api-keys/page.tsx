@@ -27,7 +27,7 @@ import {
     DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4080";
+const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080";
 
 interface ApiKey {
     id: string;
@@ -76,7 +76,7 @@ export default function ApiKeysPage() {
     // Fetch API keys
     const fetchKeys = React.useCallback(async () => {
         try {
-            const res = await fetch(`${API_URL}/api/keys`, {
+            const res = await fetch(`${API_URL}/keys`, {
                 credentials: "include",
             });
             if (!res.ok) throw new Error("Failed to fetch API keys");
