@@ -452,7 +452,7 @@ def transcode_video(payload: dict):
                 ExtraArgs={
                     "ContentType": content_type,
                     "CacheControl": cache_control,
-                    "Metadata": {"playback_policy": playback_policy},
+                    "Metadata": {"playback-policy": playback_policy},
                 },
             )
 
