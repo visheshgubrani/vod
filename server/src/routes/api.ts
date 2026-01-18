@@ -236,4 +236,104 @@ app.get('/videos', async (c) => {
   })
 })
 
+/**
+ * PATCH /v1/video/:id
+ * 
+ * Update video details.
+ * 
+ * Headers:
+ *   Authorization: Bearer sk_live_xxxxx
+ * 
+ * Body:
+ *   { "title": "New Title", "playback_policy": "signed" }
+ */
+app.patch('/video/:id', async (c) => {
+  const organizationId = c.var.organizationId
+  const videoId = c.req.param('id')
+
+  const videos = await db
+    .select()
+    .from(video)
+    .where(
+      and(
+        eq(video.id, videoId),
+        eq(video.organizationId, organizationId)
+      )
+    )
+    .limit(1)
+
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  const body = await c.req.json()
+  
+  const updates: { title?: string; playbackPolicy?: 'public' | 'signed' } = {}
+  
+  if (body.title?.trim()) {
+    updates.title = body.title.trim()
+  }
+  
+  // Accept both snake_case (API style) and camelCase
+  const policy = body.playback_policy || body.playbackPolicy
+  if (policy === 'public' || policy === 'signed') {
+    updates.playbackPolicy = policy
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return c.json({ error: 'No valid fields to update' }, 400)
+  }
+
+  await db
+    .update(video)
+    .set(updates)
+    .where(eq(video.id, videoId))
+
+  return c.json({
+    id: videoId,
+    title: updates.title || videoRecord.title,
+    playback_policy: updates.playbackPolicy || videoRecord.playbackPolicy,
+  })
+})
+
+/**
+ * DELETE /v1/video/:id
+ * 
+ * Delete a video.
+ * 
+ * Headers:
+ *   Authorization: Bearer sk_live_xxxxx
+ */
+app.delete('/video/:id', async (c) => {
+  const organizationId = c.var.organizationId
+  const videoId = c.req.param('id')
+
+  const videos = await db
+    .select()
+    .from(video)
+    .where(
+      and(
+        eq(video.id, videoId),
+        eq(video.organizationId, organizationId)
+      )
+    )
+    .limit(1)
+
+  if (videos.length === 0) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  await db
+    .delete(video)
+    .where(eq(video.id, videoId))
+
+  return c.json({
+    deleted: true,
+    id: videoId,
+  })
+})
+
 export default app
+

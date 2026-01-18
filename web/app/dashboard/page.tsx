@@ -1,77 +1,99 @@
 "use client";
 
 import * as React from "react";
-import { Plus } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Plus, Loader2 } from "lucide-react";
+import { useActiveOrganization } from "@/lib/auth-client";
 import { StatsCards } from "@/components/dashboard/stats-cards";
 import { VideosTable, Video } from "@/components/dashboard/videos-table";
+import { VideoDetailModal } from "@/components/dashboard/video-detail-modal";
 import { Button } from "@/components/ui/button";
 
-// Mock data - in real app, fetch from API
-const mockVideos: Video[] = [
-    {
-        id: "vid_abc123",
-        title: "Introduction to Go Programming",
-        status: "ready",
-        thumbnailUrl: undefined,
-        duration: 600, // 10:00
-        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-    },
-    {
-        id: "vid_def456",
-        title: "Docker Tutorial for Beginners",
-        status: "ready",
-        thumbnailUrl: undefined,
-        duration: 930, // 15:30
-        createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day ago
-    },
-    {
-        id: "vid_ghi789",
-        title: "Kubernetes Deep Dive - Part 1",
-        status: "processing",
-        thumbnailUrl: undefined,
-        duration: undefined,
-        createdAt: new Date(Date.now() - 30 * 60 * 1000), // 30 min ago
-    },
-    {
-        id: "vid_jkl012",
-        title: "Building REST APIs with Node.js",
-        status: "ready",
-        thumbnailUrl: undefined,
-        duration: 1245, // 20:45
-        createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
-    },
-    {
-        id: "vid_mno345",
-        title: "React Performance Optimization",
-        status: "error",
-        thumbnailUrl: undefined,
-        duration: undefined,
-        createdAt: new Date(Date.now() - 60 * 60 * 1000), // 1 hour ago
-    },
-];
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4080";
 
 export default function DashboardPage() {
-    const [videos] = React.useState<Video[]>(mockVideos);
+    const router = useRouter();
+    const { data: activeOrg } = useActiveOrganization();
+    const [videos, setVideos] = React.useState<Video[]>([]);
+    const [loading, setLoading] = React.useState(true);
+    const [error, setError] = React.useState<string | null>(null);
+    const [selectedVideo, setSelectedVideo] = React.useState<Video | null>(null);
+
+    // Fetch videos from API
+    const fetchVideos = React.useCallback(async () => {
+        if (!activeOrg) return;
+        
+        try {
+            const res = await fetch(`${API_URL}/api/video`, {
+                credentials: "include",
+            });
+            
+            if (!res.ok) throw new Error("Failed to fetch videos");
+            
+            const data = await res.json();
+            setVideos(data.videos || []);
+            setError(null);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to load videos");
+        } finally {
+            setLoading(false);
+        }
+    }, [activeOrg]);
+
+    React.useEffect(() => {
+        fetchVideos();
+    }, [fetchVideos]);
 
     // Calculate stats from videos
-    const processingCount = videos.filter((v) => v.status === "processing").length;
+    const readyCount = videos.filter((v) => v.status === "ready").length;
+    const processingCount = videos.filter((v) => v.status === "processing" || v.status === "uploading").length;
 
     const handleCopyId = (id: string) => {
-        // Could show a toast notification here
-        console.log("Copied video ID:", id);
+        navigator.clipboard.writeText(id);
     };
 
     const handleEmbed = (video: Video) => {
-        console.log("Get embed code for:", video.title);
+        setSelectedVideo(video);
     };
 
-    const handleDelete = (video: Video) => {
-        console.log("Delete video:", video.title);
+    const handleDelete = async (video: Video) => {
+        if (!confirm(`Are you sure you want to delete "${video.title}"?`)) return;
+        
+        try {
+            const res = await fetch(`${API_URL}/api/video/${video.id}`, {
+                method: "DELETE",
+                credentials: "include",
+            });
+            
+            if (!res.ok) throw new Error("Failed to delete video");
+            
+            // Refresh videos list
+            fetchVideos();
+        } catch (err) {
+            alert(err instanceof Error ? err.message : "Failed to delete video");
+        }
     };
 
     const handleViewDetails = (video: Video) => {
-        console.log("View details:", video.id);
+        setSelectedVideo(video);
     };
+
+    const handleCloseModal = () => {
+        setSelectedVideo(null);
+    };
+
+    const handleVideoUpdate = () => {
+        fetchVideos();
+        setSelectedVideo(null);
+    };
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-8 max-w-6xl">
@@ -85,23 +107,26 @@ export default function DashboardPage() {
                 </div>
             </div>
 
+            {/* Error Banner */}
+            {error && (
+                <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+                    {error}
+                </div>
+            )}
+
             {/* Stats Cards */}
             <StatsCards
-                storageUsed={12.5}
+                storageUsed={0}
                 storageTotal={100}
-                bandwidth={450}
-                totalVideos={videos.filter((v) => v.status === "ready").length}
+                bandwidth={0}
+                totalVideos={readyCount}
                 processingVideos={processingCount}
             />
 
             {/* Recent Videos Section */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-foreground">Recent Videos</h2>
-                    <Button variant="outline" size="sm">
-                        <Plus className="w-4 h-4 mr-1" />
-                        Upload
-                    </Button>
+                    <h2 className="text-lg font-semibold text-foreground">Videos</h2>
                 </div>
 
                 <VideosTable
@@ -112,6 +137,15 @@ export default function DashboardPage() {
                     onViewDetails={handleViewDetails}
                 />
             </div>
+
+            {/* Video Detail Modal */}
+            {selectedVideo && (
+                <VideoDetailModal
+                    video={selectedVideo}
+                    onClose={handleCloseModal}
+                    onUpdate={handleVideoUpdate}
+                />
+            )}
         </div>
     );
 }
