@@ -7,7 +7,7 @@ import {
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
@@ -40,7 +40,11 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
 
   let partSize = requestedPartSize
   if (partSize === undefined) {
-    partSize = Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS))
+    // Calculate optimal part size, but never exceed MAX_PART_SIZE (5GB R2 limit)
+    partSize = Math.min(
+      MAX_PART_SIZE,
+      Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS))
+    )
   }
 
   if (!Number.isFinite(partSize) || partSize <= 0) {
@@ -140,18 +144,38 @@ app.post('/complete', async (c) => {
     return c.json({ error: 'Video not found' }, 404)
   }
 
-  // Update video status to 'processing'
-  await db
+  // Only process if status is 'uploading' (idempotency check)
+  if (videoRecord.status !== 'uploading') {
+    console.log(`Video ${fileId} already being processed (status: ${videoRecord.status}), skipping`)
+    return c.json({ success: true, fileId, skipped: true })
+  }
+
+  // Update video status to 'processing' atomically
+  const updated = await db
     .update(video)
     .set({
       status: 'processing',
       updatedAt: new Date(),
     })
-    .where(eq(video.id, fileId))
+    .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
+    .returning()
+
+  // If no rows updated, another request already started processing
+  if (updated.length === 0) {
+    console.log(`Video ${fileId} processing already started by another request`)
+    return c.json({ success: true, fileId, skipped: true })
+  }
 
   // Queue for transcoding
   if (videoRecord.rawKey) {
-    await triggerTranscoding(videoRecord.rawKey, fileId, videoRecord.playbackPolicy || 'public')
+    try {
+      await triggerTranscoding(videoRecord.rawKey, fileId, videoRecord.playbackPolicy || 'public')
+    } catch (err) {
+      console.error(`Failed to queue transcoding for ${fileId}:`, err)
+      // Revert status so user knows it failed and can retry
+      await db.update(video).set({ status: 'failed' }).where(eq(video.id, fileId))
+      return c.json({ error: 'Upload complete but transcoding failed to start' }, 500)
+    }
   }
 
   return c.json({ success: true, fileId })
@@ -228,8 +252,27 @@ app.post('/multipart/create', async (c) => {
 
 // Multipart upload - get signed URLs for parts
 app.post('/multipart/parts', async (c) => {
-  const { key, uploadId, partNumbers, size, partSize } = await c.req.json()
+  const session = c.var.session
+  const { key, uploadId, partNumbers, size, partSize, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
+
+  // Security: Verify the user owns this upload via fileId
+  if (fileId) {
+    const videos = await db
+      .select()
+      .from(video)
+      .where(eq(video.id, fileId))
+      .limit(1)
+    
+    if (videos.length === 0) {
+      return c.json({ error: 'Video not found' }, 404)
+    }
+    
+    // Verify the video belongs to user's organization
+    if (videos[0].organizationId !== session.activeOrganizationId) {
+      return c.json({ error: 'Access denied' }, 403)
+    }
+  }
 
   if (!Array.isArray(partNumbers) || partNumbers.length === 0) {
     return c.json({ error: 'partNumbers must be a non-empty array' }, 400)
@@ -343,20 +386,48 @@ app.post('/multipart/complete', async (c) => {
 
   const response = await r2.send(command)
 
-  // UPDATE VIDEO STATUS TO 'processing' and queue for transcoding
+  // UPDATE VIDEO STATUS TO 'processing' and queue for transcoding (with idempotency)
   if (fileId) {
-    await db
+    // First check current status
+    const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
+    const videoRecord = videos[0]
+    
+    if (!videoRecord || videoRecord.status === 'processing' || videoRecord.status === 'ready') {
+      console.log(`Video ${fileId} already processed/processing, skipping transcoding`)
+      return c.json({
+        location: response.Location,
+        bucket: response.Bucket,
+        key: response.Key,
+        etag: response.ETag,
+        fileId,
+        skipped: true,
+      })
+    }
+
+    // Atomic update - only update if still 'uploading'
+    const updated = await db
       .update(video)
       .set({
         status: 'processing',
         updatedAt: new Date(),
       })
-      .where(eq(video.id, fileId))
+      .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
+      .returning()
 
-    // Queue for transcoding - lookup video to get playback policy
-    const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
-    const playbackPolicy = videos[0]?.playbackPolicy || 'public'
-    await triggerTranscoding(key, fileId, playbackPolicy)
+    // Only queue if we successfully updated the status
+    if (updated.length > 0) {
+      try {
+        const playbackPolicy = videoRecord.playbackPolicy || 'public'
+        await triggerTranscoding(key, fileId, playbackPolicy)
+      } catch (err) {
+        console.error(`Failed to queue transcoding for ${fileId}:`, err)
+        // Revert status so user knows it failed and can retry
+        await db.update(video).set({ status: 'failed' }).where(eq(video.id, fileId))
+        return c.json({ error: 'Upload complete but transcoding failed to start' }, 500)
+      }
+    } else {
+      console.log(`Video ${fileId} status changed, skipping transcoding`)
+    }
   }
 
   return c.json({

@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 export interface Video {
     id: string;
     title: string;
-    status: "ready" | "processing" | "error" | "uploading" | "pending";
+    status: "ready" | "processing" | "error" | "uploading" | "pending" | "failed";
     playbackPolicy?: "public" | "signed";
     thumbnailUrl?: string;
     duration?: number; // in seconds
@@ -55,6 +55,10 @@ const statusConfig = {
     },
     error: {
         label: "Error",
+        className: "bg-red-500",
+    },
+    failed: {
+        label: "Failed",
         className: "bg-red-500",
     },
 };

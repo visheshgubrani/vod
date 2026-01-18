@@ -3,6 +3,7 @@ import subprocess
 import os
 import json
 import boto3
+from botocore.config import Config
 import shutil
 import requests
 import ipaddress
@@ -12,6 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 app = modal.App("vod-hls-pipeline")
+
+# S3/R2 connection pool config for faster parallel uploads
+S3_CONFIG = Config(
+    max_pool_connections=100,
+    retries={'max_attempts': 3, 'mode': 'adaptive'}
+)
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
@@ -196,22 +203,61 @@ def generate_encryption_key(output_dir: Path, key_url: str) -> tuple[Path, Path]
     return key_path, keyinfo_path
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIRE-AND-FORGET PATTERN:
+# 1. HTTP Receiver (fast) - Accepts request, spawns worker, returns immediately
+# 2. GPU Worker (slow) - Runs in background on GPU, does actual transcoding
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.function(image=image)
+@modal.fastapi_endpoint(method="POST")
+def transcode_video(payload: dict):
+    """
+    Fast HTTP receiver endpoint.
+    Validates the request, spawns the GPU worker, and returns immediately.
+    This prevents QStash/webhook timeouts and retries.
+    
+    Expected payload:
+      - video_id OR fileId (required)
+      - {bucket, key} OR input_url (required)
+      - callbackUrl (optional)
+    """
+    video_id = payload.get("video_id") or payload.get("fileId")
+    if not video_id:
+        return {"status": "error", "message": "Missing video_id or fileId"}
+    
+    # Basic validation
+    has_r2_source = "key" in payload and "bucket" in payload
+    has_url_source = "input_url" in payload
+    
+    if not has_r2_source and not has_url_source:
+        return {"status": "error", "message": "Provide either {bucket,key} or input_url"}
+    
+    # Spawn the GPU worker in the background - returns immediately
+    print(f"🚀 Spawning worker for: {video_id}")
+    transcode_worker.spawn(payload)
+    
+    return {
+        "status": "accepted",
+        "video_id": video_id,
+        "message": "Transcoding job queued"
+    }
+
+
 @app.function(
     gpu="l4",
     image=image,
     secrets=[modal.Secret.from_name("r2-creds")],
     timeout=1800,
 )
-@modal.fastapi_endpoint(method="POST")
-def transcode_video(payload: dict):
+def transcode_worker(payload: dict):
     """
-    Expected payload:
-      - video_id OR fileId (required - used as the output folder name)
-      - {bucket, key} OR input_url (required)
-      - callbackUrl (optional)
+    The actual GPU worker function that does the heavy lifting.
+    This runs in the background after being spawned by the receiver.
     """
     video_id = payload.get("video_id") or payload.get("fileId")
     if not video_id:
+        print("❌ Missing video_id or fileId")
         return {"status": "error", "message": "Missing video_id or fileId"}
 
     work_dir = Path(f"/tmp/{video_id}")
@@ -417,6 +463,7 @@ def transcode_video(payload: dict):
             endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
             aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
             aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            config=S3_CONFIG,
         )
 
         files = sorted(os.listdir(output_dir))
@@ -456,7 +503,7 @@ def transcode_video(payload: dict):
                 },
             )
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=50) as executor:
             list(executor.map(upload_file, files))
 
         # --- CALLBACK ---
