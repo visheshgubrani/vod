@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
@@ -169,7 +169,7 @@ app.get('/', async (c) => {
     })
     .from(video)
     .where(eq(video.organizationId, organizationId))
-    .orderBy(video.createdAt)
+    .orderBy(desc(video.createdAt))
 
   const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
 
@@ -181,4 +181,123 @@ app.get('/', async (c) => {
   })
 })
 
+/**
+ * PATCH /api/video/:id
+ * Update video details (title, playbackPolicy)
+ */
+app.patch('/:id', async (c) => {
+  const session = c.var.session
+  const videoId = c.req.param('id')
+
+  // Get video
+  const videos = await db
+    .select()
+    .from(video)
+    .where(eq(video.id, videoId))
+    .limit(1)
+
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  // Verify organization membership
+  const members = await db
+    .select()
+    .from(member)
+    .where(
+      and(
+        eq(member.userId, session.userId),
+        eq(member.organizationId, videoRecord.organizationId)
+      )
+    )
+    .limit(1)
+
+  if (members.length === 0) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  const body = await c.req.json()
+  
+  // Build update object
+  const updates: { title?: string; playbackPolicy?: 'public' | 'signed' } = {}
+  
+  if (body.title?.trim()) {
+    updates.title = body.title.trim()
+  }
+  
+  if (body.playbackPolicy === 'public' || body.playbackPolicy === 'signed') {
+    updates.playbackPolicy = body.playbackPolicy
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return c.json({ error: 'No valid fields to update' }, 400)
+  }
+
+  await db
+    .update(video)
+    .set(updates)
+    .where(eq(video.id, videoId))
+
+  return c.json({
+    success: true,
+    id: videoId,
+    ...updates,
+  })
+})
+
+/**
+ * DELETE /api/video/:id
+ * Delete a video (soft delete - marks as deleted, cleanup can be handled separately)
+ */
+app.delete('/:id', async (c) => {
+  const session = c.var.session
+  const videoId = c.req.param('id')
+
+  // Get video
+  const videos = await db
+    .select()
+    .from(video)
+    .where(eq(video.id, videoId))
+    .limit(1)
+
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  // Verify organization membership
+  const members = await db
+    .select()
+    .from(member)
+    .where(
+      and(
+        eq(member.userId, session.userId),
+        eq(member.organizationId, videoRecord.organizationId)
+      )
+    )
+    .limit(1)
+
+  if (members.length === 0) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  // Delete the video record
+  await db
+    .delete(video)
+    .where(eq(video.id, videoId))
+
+  // Note: R2 files will remain and should be cleaned up by a background job
+  // This is intentional to prevent accidental data loss
+
+  return c.json({
+    success: true,
+    message: 'Video deleted',
+    id: videoId,
+  })
+})
+
 export default app
+

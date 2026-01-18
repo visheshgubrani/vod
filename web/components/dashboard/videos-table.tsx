@@ -21,10 +21,11 @@ import { cn } from "@/lib/utils";
 export interface Video {
     id: string;
     title: string;
-    status: "ready" | "processing" | "error";
+    status: "ready" | "processing" | "error" | "uploading" | "pending";
+    playbackPolicy?: "public" | "signed";
     thumbnailUrl?: string;
     duration?: number; // in seconds
-    createdAt: Date;
+    createdAt: Date | string;
 }
 
 interface VideosTableProps {
@@ -44,6 +45,14 @@ const statusConfig = {
         label: "Processing",
         className: "bg-amber-500 animate-pulse",
     },
+    uploading: {
+        label: "Uploading",
+        className: "bg-blue-500 animate-pulse",
+    },
+    pending: {
+        label: "Pending",
+        className: "bg-slate-500",
+    },
     error: {
         label: "Error",
         className: "bg-red-500",
@@ -57,16 +66,17 @@ function formatDuration(seconds?: number): string {
     return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-function formatRelativeTime(date: Date): string {
+function formatRelativeTime(date: Date | string): string {
+    const dateObj = typeof date === 'string' ? new Date(date) : date;
     const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+    const diffInSeconds = Math.floor((now.getTime() - dateObj.getTime()) / 1000);
 
     if (diffInSeconds < 60) return "Just now";
     if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} min ago`;
     if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`;
     if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)} days ago`;
 
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return dateObj.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 export function VideosTable({
@@ -96,7 +106,7 @@ export function VideosTable({
     }
 
     return (
-        <div className="overflow-hidden rounded-2xl border border-border bg-card/50 backdrop-blur-sm">
+        <div className="rounded-2xl border border-border bg-card/50 backdrop-blur-sm">
             {/* Table Header */}
             <div className="grid grid-cols-[auto_1fr_100px_120px_auto] gap-4 px-4 py-3 border-b border-border bg-muted/30 text-sm font-medium text-muted-foreground">
                 <div className="w-6">Status</div>
