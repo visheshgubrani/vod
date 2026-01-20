@@ -1,36 +1,54 @@
-import modal
-import subprocess
-import os
-import json
-import boto3
-from botocore.config import Config
-from boto3.s3.transfer import TransferConfig
-import shutil
-import requests
-import ipaddress
-import socket
-from urllib.parse import urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+"""
+VOD Production Pipeline - Modal Endpoints
+
+This is the main entry point for the Modal-based video transcoding service.
+All processing logic is organized in separate modules for maintainability.
+"""
+import sys
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List
-from dataclasses import dataclass
-import hashlib
+
+# Ensure the current directory is in Python path for Modal deployment
+# Modal copies files to /root, so we need to add it to sys.path
+_root = Path(__file__).parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import modal
+import os
+import shutil
 import time
+import boto3
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Configuration
+from config import (
+    S3_CONFIG,
+    TRANSFER_CONFIG,
+    R2_PREFIX,
+)
+
+# Utilities
+from utils import run_cmd, send_callback, is_public_host
+from utils.storage import upload_to_r2
+
+# Video processing
+from video import (
+    get_video_metadata,
+    select_optimal_ladder,
+    generate_poster,
+    transcode_rendition,
+    transcode_audio,
+)
+
+# Packaging
+from packaging import package_with_shaka
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODAL APP CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
 
 app = modal.App("vod-production-pipeline")
-
-S3_CONFIG = Config(
-    max_pool_connections=100,
-    retries={'max_attempts': 3, 'mode': 'adaptive'}
-)
-
-# Multi-threaded transfer config for faster downloads/uploads
-TRANSFER_CONFIG = TransferConfig(
-    multipart_threshold=8 * 1024 * 1024,   # 8MB - use multipart for files larger than this
-    max_concurrency=10,                      # 10 parallel threads
-    multipart_chunksize=8 * 1024 * 1024,   # 8MB chunks
-    use_threads=True
-)
 
 # Production-optimized container
 image = (
@@ -41,507 +59,16 @@ image = (
         "wget https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager",
         "chmod +x /usr/local/bin/packager"
     )
+    # Add local Python modules
+    .add_local_python_source("config")
+    .add_local_python_source("utils")
+    .add_local_python_source("video")
+    .add_local_python_source("packaging")
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-SEGMENT_DURATION = 4  # 4s segments = faster startup, better ABR
-R2_PREFIX = "videos"
-
-@dataclass
-class EncodingProfile:
-    label: str
-    height: int
-    bitrate: str
-    maxrate: str
-    bufsize: str
-
-# Netflix/Mux-style encoding ladder
-ENCODING_PROFILES = [
-    EncodingProfile("2160p", 2160, "15M", "18M", "30M"),
-    EncodingProfile("1440p", 1440, "10M", "12M", "20M"),
-    EncodingProfile("1080p", 1080, "5M", "6M", "10M"),
-    EncodingProfile("720p", 720, "3M", "3.5M", "6M"),
-    EncodingProfile("480p", 480, "1.5M", "1.8M", "3M"),
-    EncodingProfile("360p", 360, "800k", "1M", "2M"),
-]
-
-ALLOWED_URL_HOSTS = {h.strip().lower() for h in os.getenv("ALLOWED_URL_HOSTS", "").split(",") if h.strip()}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# UTILITY FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def run_cmd(cmd: list[str], *, label: str = "cmd", check: bool = True) -> subprocess.CompletedProcess:
-    """Execute subprocess with timing and error handling."""
-    print(f"[CMD] {label}: {' '.join(cmd[:3])}...")
-    start = time.time()
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    elapsed = time.time() - start
-    
-    if check and p.returncode != 0:
-        stderr_tail = "\n".join((p.stderr or "").splitlines()[-50:])
-        raise RuntimeError(
-            f"{label} failed in {elapsed:.1f}s (exit={p.returncode}).\n"
-            f"STDERR:\n{stderr_tail}"
-        )
-    
-    print(f"[CMD] {label}: completed in {elapsed:.1f}s")
-    return p
-
-
-def compute_md5(file_path: Path) -> str:
-    """Memory-efficient MD5 computation for large files."""
-    hash_md5 = hashlib.md5()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):  # 64KB chunks
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
-
-
-def send_callback(url: str, data: dict, max_retries: int = 3):
-    """Robust webhook delivery with exponential backoff."""
-    print(f"📞 Sending callback to {url}...")
-    for attempt in range(max_retries):
-        try:
-            resp = requests.post(
-                url,
-                json=data,
-                headers={
-                    "X-Webhook-Secret": os.environ.get("MODAL_WEBHOOK_SECRET", ""),
-                    "Content-Type": "application/json"
-                },
-                timeout=15
-            )
-            resp.raise_for_status()
-            print(f"✅ Callback delivered: {resp.status_code}")
-            return
-        except Exception as e:
-            if attempt == max_retries - 1:
-                print(f"❌ Callback failed after {max_retries} attempts: {e}")
-            else:
-                wait_time = 2 ** attempt
-                print(f"⚠️ Callback attempt {attempt+1} failed. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-
-
-def is_public_host(url: str) -> bool:
-    """SSRF protection: validate URL is HTTPS and resolves to public IP."""
-    u = urlparse(url)
-    if u.scheme.lower() != "https":
-        print(f"[SECURITY] Blocked non-HTTPS URL")
-        return False
-    
-    host = (u.hostname or "").lower()
-    if not host:
-        return False
-    
-    if ALLOWED_URL_HOSTS and host not in ALLOWED_URL_HOSTS:
-        print(f"[SECURITY] Host not in allowlist: {host}")
-        return False
-    
-    try:
-        infos = socket.getaddrinfo(host, None)
-        for info in infos:
-            addr = info[4][0]
-            ip = ipaddress.ip_address(addr)
-            if (ip.is_private or ip.is_loopback or ip.is_link_local or 
-                ip.is_multicast or ip.is_reserved or ip.is_unspecified):
-                print(f"[SECURITY] Blocked private/reserved IP: {ip}")
-                return False
-    except Exception as e:
-        print(f"[SECURITY] DNS resolution failed: {e}")
-        return False
-    
-    return True
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# VIDEO ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class VideoMetadata:
-    width: int
-    height: int
-    duration: float
-    fps: float
-    has_audio: bool
-    is_hdr: bool
-    
-    @property
-    def is_vertical(self) -> bool:
-        return self.height > self.width
-    
-    @property
-    def aspect_ratio(self) -> str:
-        ratio = self.width / self.height if self.height > 0 else 16/9
-        return f"{ratio:.2f}:1"
-
-
-def get_video_metadata(filepath: str) -> VideoMetadata:
-    """Extract video metadata using ffprobe."""
-    # Get video stream info
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,r_frame_rate,color_transfer:format=duration",
-        "-of", "json",
-        filepath
-    ]
-    p = run_cmd(cmd, label="ffprobe-video")
-    data = json.loads(p.stdout)
-    
-    video = data.get("streams", [{}])[0]
-    fmt = data.get("format", {})
-    
-    # Parse FPS
-    fps_str = video.get("r_frame_rate", "30/1")
-    num, denom = map(int, fps_str.split("/"))
-    fps = num / denom if denom > 0 else 30.0
-    
-    # Detect HDR
-    color_transfer = video.get("color_transfer", "")
-    is_hdr = color_transfer in ["smpte2084", "arib-std-b67"]
-    
-    # Check for audio streams
-    cmd_audio = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=codec_type",
-        "-of", "json",
-        filepath
-    ]
-    p_audio = run_cmd(cmd_audio, label="ffprobe-audio", check=False)
-    has_audio = len(json.loads(p_audio.stdout).get("streams", [])) > 0
-    
-    return VideoMetadata(
-        width=int(video.get("width", 1920)),
-        height=int(video.get("height", 1080)),
-        duration=float(fmt.get("duration", 0)),
-        fps=fps,
-        has_audio=has_audio,
-        is_hdr=is_hdr,
-    )
-
-
-def select_optimal_ladder(metadata: VideoMetadata) -> List[EncodingProfile]:
-    """
-    Smart ABR ladder selection:
-    - No upscaling
-    - Skip renditions too close in quality
-    - Optimize for vertical video
-    """
-    candidates = [p for p in ENCODING_PROFILES if p.height <= metadata.height]
-    
-    if not candidates:
-        candidates = [ENCODING_PROFILES[-1]]  # At least 360p
-    
-    # Vertical video optimization (9:16 content)
-    if metadata.is_vertical:
-        print("[OPTIMIZER] Vertical video detected - limiting to mobile-friendly resolutions")
-        candidates = [p for p in candidates if p.height <= 1080]
-    
-    # Skip renditions within 15% height difference (quality too similar)
-    selected = []
-    last_height = 0
-    for profile in sorted(candidates, key=lambda p: p.height, reverse=True):
-        if not selected or (last_height - profile.height) / last_height > 0.15:
-            selected.append(profile)
-            last_height = profile.height
-    
-    print(f"[LADDER] Selected {len(selected)} renditions: {[p.label for p in selected]}")
-    return selected
-
-
-def generate_poster(input_path: str, output_path: str, duration: float):
-    """Generate high-quality poster image at 10% timestamp."""
-    ts = max(1.0, min(10.0, duration * 0.10)) if duration > 0 else 1.0
-    cmd = [
-        "ffmpeg", "-hide_banner", "-y",
-        "-ss", f"{ts:.3f}",
-        "-i", input_path,
-        "-frames:v", "1",
-        "-vf", "scale=1920:-2",  # Full HD poster
-        "-q:v", "2",  # High quality JPEG
-        output_path
-    ]
-    run_cmd(cmd, label="poster")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TRANSCODING PIPELINE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def transcode_rendition(
-    input_path: Path,
-    output_path: Path,
-    profile: EncodingProfile,
-    metadata: VideoMetadata,
-) -> Path:
-    """Transcode single video rendition with GPU acceleration."""
-    
-    # --- BUILD FILTER CHAIN ---
-    filters = []
-    
-    # Pipeline: CPU decode → GPU scale → CPU encode
-    # format=nv12 → hwupload_cuda → scale_cuda → hwdownload → format=nv12
-    #
-    # CRITICAL: HDR content is 10-bit - we MUST use p010le to preserve color data.
-    # Using nv12 (8-bit) would destroy HDR info before tone mapping = grey/flat colors.
-    
-    if metadata.is_hdr:
-        print(f"[HDR] Tone mapping {profile.label} (HDR → SDR)")
-        # HDR: Convert to p010le (10-bit) to preserve HDR color data
-        filters.append("format=p010le")
-        filters.append("hwupload_cuda")
-        # Scale in 10-bit to preserve quality
-        filters.append(f"scale_cuda=-2:{profile.height}")
-        # Tone map (10-bit -> 8-bit SDR) and output nv12
-        filters.append("tonemap_cuda=tonemap=hable:desat=0:format=nv12")
-        # Download from GPU to CPU for NVENC
-        filters.append("hwdownload")
-        filters.append("format=nv12")
-    else:
-        # SDR: Convert to nv12 (8-bit is fine for SDR)
-        filters.append("format=nv12")
-        filters.append("hwupload_cuda")
-        # Scale on GPU
-        filters.append(f"scale_cuda=-2:{profile.height}")
-        # Download from GPU to CPU for NVENC
-        filters.append("hwdownload")
-        filters.append("format=nv12")
-    
-    cmd = [
-        "ffmpeg", "-hide_banner", "-y",
-        
-        # Initialize CUDA device for GPU filtering
-        "-init_hw_device", "cuda=cuda:0",
-        "-filter_hw_device", "cuda",
-        
-        # CPU decoding (universal, works with VP9/AV1/etc)
-        # GPU encoding via NVENC still provides the main speedup
-        "-i", str(input_path),
-        
-        # Video filters
-        "-vf", ",".join(filters),
-        
-        # NVENC encoding
-        "-c:v", "h264_nvenc",
-        "-preset:v", "p4", 
-        "-tune:v", "hq",
-        "-rc:v", "vbr",
-        
-        # Compatibility settings
-        "-pix_fmt", "yuv420p",
-        "-profile:v", "high",
-        "-level:v", "4.2",
-        
-        # Rate control
-        "-b:v", profile.bitrate,
-        "-maxrate:v", profile.maxrate,
-        "-bufsize:v", profile.bufsize,
-        
-        # GOP structure
-        "-g", str(int(SEGMENT_DURATION * metadata.fps)),
-        "-keyint_min", str(int(SEGMENT_DURATION * metadata.fps)),
-        "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_DURATION})",
-        "-sc_threshold", "0",
-        
-        # B-frames
-        "-bf", "3",
-        "-b_ref_mode", "middle",
-        
-        # No audio in video renditions
-        "-an",
-        
-        # Fragmented MP4 output
-        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-        
-        str(output_path)
-    ]
-    
-    run_cmd(cmd, label=f"encode-{profile.label}")
-    
-    # Validate output
-    if not output_path.exists():
-        raise RuntimeError(f"Output file not created: {output_path}")
-    
-    file_size = output_path.stat().st_size
-    if file_size < 1000:
-        raise RuntimeError(f"Output file too small ({file_size} bytes): {output_path}")
-    
-    print(f"✅ {profile.label}: {file_size / 1024 / 1024:.1f} MB")
-    return output_path
-
-
-def transcode_audio(input_path: Path, output_path: Path) -> Path:
-    """Extract and normalize audio track."""
-    cmd = [
-        "ffmpeg", "-hide_banner", "-y",
-        "-i", str(input_path),
-        
-        # No video
-        "-vn",
-        
-        # Loudness normalization (EBU R128 standard)
-        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-        
-        # AAC encoding
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-ac", "2",
-        "-ar", "48000",
-        
-        # Fragmented MP4
-        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-        
-        str(output_path)
-    ]
-    
-    run_cmd(cmd, label="encode-audio")
-    
-    # Validate output
-    if not output_path.exists() or output_path.stat().st_size < 1000:
-        raise RuntimeError(f"Audio output invalid: {output_path}")
-    
-    print(f"✅ Audio: {output_path.stat().st_size / 1024 / 1024:.1f} MB")
-    return output_path
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SHAKA PACKAGING
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def package_with_shaka(
-    renditions: Dict[str, Path],
-    output_dir: Path,
-    encryption_key: Optional[bytes] = None
-) -> None:
-    """Package fMP4 files into HLS and DASH manifests."""
-    print("📦 Packaging with Shaka Packager...")
-    
-    # Build input specifications
-    inputs = []
-    
-    # Video streams
-    for label, fmp4_path in sorted(renditions.items()):
-        if label == "audio":
-            continue
-        inputs.append(
-            f"in={fmp4_path},stream=video,output={output_dir}/video_{label}.mp4"
-        )
-    
-    # Audio stream (if present)
-    audio_inputs = []
-    if "audio" in renditions:
-        audio_inputs.append(
-            f"in={renditions['audio']},stream=audio,output={output_dir}/audio.mp4"
-        )
-    
-    # Build Shaka command
-    cmd = [
-        "packager",
-        *inputs,
-        *audio_inputs,
-        
-        # Segment settings
-        "--segment_duration", str(SEGMENT_DURATION),
-        
-        # HLS output
-        "--hls_master_playlist_output", str(output_dir / "playlist.m3u8"),
-        "--hls_playlist_type", "VOD",
-        
-        # DASH output
-        "--mpd_output", str(output_dir / "manifest.mpd"),
-        "--generate_static_live_mpd",
-    ]
-    
-    # Optional encryption
-    if encryption_key:
-        key_id = hashlib.md5(encryption_key).hexdigest()
-        key_file = output_dir / "enc.key"
-        key_file.write_bytes(encryption_key)
-        
-        cmd.extend([
-            "--enable_raw_key_encryption",
-            "--keys", f"label=:key_id={key_id}:key={encryption_key.hex()}",
-            "--protection_scheme", "cbcs",
-        ])
-        print("🔐 AES-128 encryption enabled")
-    
-    run_cmd(cmd, label="shaka-package")
-    print("✅ Packaging complete")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# UPLOAD TO R2
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def upload_to_r2(
-    output_dir: Path,
-    video_id: str,
-    s3_client,
-    bucket: str
-) -> int:
-    """Upload packaged files to R2 with proper metadata."""
-    print("☁️ Uploading to R2...")
-    
-    files = list(output_dir.glob("*"))
-    uploaded = 0
-    
-    def upload_file(file_path: Path) -> bool:
-        r2_key = f"{R2_PREFIX}/{video_id}/{file_path.name}"
-        
-        # Content-Type and Cache-Control mapping
-        ext = file_path.suffix.lower()
-        content_types = {
-            ".m3u8": ("application/vnd.apple.mpegurl", "public, max-age=60"),
-            ".mpd": ("application/dash+xml", "public, max-age=60"),
-            ".mp4": ("video/mp4", "public, max-age=31536000, immutable"),
-            ".m4s": ("video/iso.segment", "public, max-age=31536000, immutable"),
-            ".jpg": ("image/jpeg", "public, max-age=31536000, immutable"),
-            ".vtt": ("text/vtt", "public, max-age=31536000, immutable"),
-            ".key": ("application/octet-stream", "private, no-store, max-age=0"),
-        }
-        
-        content_type, cache_control = content_types.get(
-            ext,
-            ("application/octet-stream", "public, max-age=3600")
-        )
-        
-        try:
-            s3_client.upload_file(
-                str(file_path),
-                bucket,
-                r2_key,
-                ExtraArgs={
-                    "ContentType": content_type,
-                    "CacheControl": cache_control,
-                    "Metadata": {
-                        "video-id": video_id,
-                        "original-name": file_path.name,
-                    }
-                },
-                Config=TRANSFER_CONFIG  # Use multi-threaded uploads too
-            )
-            return True
-        except Exception as e:
-            print(f"❌ Upload failed for {file_path.name}: {e}")
-            return False
-    
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        results = list(executor.map(upload_file, files))
-        uploaded = sum(results)
-    
-    print(f"✅ Uploaded {uploaded}/{len(files)} files")
-    return uploaded
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODAL ENDPOINTS
+# HTTP ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.function(image=image)
@@ -578,6 +105,10 @@ def transcode_video(payload: dict):
         "message": "Transcoding job queued"
     }
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GPU WORKER
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.function(
     gpu="l4",
@@ -654,10 +185,7 @@ def transcode_worker(payload: dict):
                     if not is_public_host(url):
                         raise ValueError("URL blocked by security policy")
                     
-                    # Use curl for better performance:
-                    # - Faster connection handling
-                    # - Better buffer management
-                    # - Retry on transient failures
+                    # Use curl for better performance
                     run_cmd([
                         "curl",
                         "-fSL",              # fail on HTTP errors, show errors, follow redirects

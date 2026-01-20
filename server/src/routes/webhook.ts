@@ -90,20 +90,20 @@ app.post('/transcode-complete', async (c) => {
       return c.json({ success: true, status: 'failed', videoId })
     }
 
-    // success
-    const master =
-      typeof payload?.master_playlist === 'string'
-        ? payload.master_playlist
-        : null
-    const thumb =
-      typeof payload?.thumbnail === 'string' ? payload.thumbnail : null
-
-    const duration =
-      typeof payload?.duration === 'number' && payload.duration >= 0
-        ? payload.duration
-        : null
-    const resolutions = Array.isArray(payload?.resolutions)
-      ? payload.resolutions.filter((x: any) => typeof x === 'string')
+    // success - new payload structure from Modal
+    // payload.outputs: { hls_playlist, dash_manifest, poster, renditions }
+    // payload.metadata: { width, height, duration, fps, has_audio, is_hdr, is_vertical, aspect_ratio }
+    // payload.processing: { total_time, transcode_time, etc. }
+    
+    const outputs = payload?.outputs || {}
+    const meta = payload?.metadata || {}
+    const processing = payload?.processing || {}
+    
+    const master = typeof outputs?.hls_playlist === 'string' ? outputs.hls_playlist : null
+    const thumb = typeof outputs?.poster === 'string' ? outputs.poster : null
+    const duration = typeof meta?.duration === 'number' && meta.duration >= 0 ? meta.duration : null
+    const resolutions = Array.isArray(outputs?.renditions)
+      ? outputs.renditions.filter((x: any) => typeof x === 'string')
       : null
 
     const prevMeta = safeJsonParse<Record<string, any>>(
@@ -121,10 +121,25 @@ app.post('/transcode-complete', async (c) => {
         resolutions: resolutions ? JSON.stringify(resolutions) : null,
         metadata: JSON.stringify({
           ...prevMeta,
-          file_count: payload?.file_count,
-          has_audio: payload?.has_audio,
-          input_height: payload?.input_height,
+          // Video info
+          width: meta?.width,
+          height: meta?.height,
+          fps: meta?.fps,
+          has_audio: meta?.has_audio,
+          is_hdr: meta?.is_hdr,
+          is_vertical: meta?.is_vertical,
+          aspect_ratio: meta?.aspect_ratio,
           duration_exact: duration,
+          // Processing stats
+          processing_time: processing?.total_time,
+          transcode_time: processing?.transcode_time,
+          processing_speed: processing?.processing_speed,
+          files_uploaded: processing?.files_uploaded,
+          source_size_mb: processing?.source_size_mb,
+          // Outputs
+          dash_manifest: outputs?.dash_manifest,
+          playback_policy: payload?.playback_policy,
+          encrypted: payload?.encrypted,
           transcoded_at: new Date().toISOString(),
         }),
         updatedAt: new Date(),
