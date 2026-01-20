@@ -8,6 +8,7 @@ import {
     Trash2,
     ExternalLink,
     Play,
+    Lock,
 } from "lucide-react";
 import {
     DropdownMenu,
@@ -142,13 +143,20 @@ export function VideosTable({
                             <div className="flex items-center gap-3 min-w-0">
                                 {/* Thumbnail */}
                                 <div className="w-16 h-9 rounded-lg bg-muted/50 overflow-hidden flex-shrink-0 border border-border">
-                                    {video.thumbnailUrl ? (
+                                    {video.playbackPolicy === "signed" ? (
+                                        // Signed videos: show lock icon
+                                        <div className="w-full h-full flex items-center justify-center bg-amber-500/10">
+                                            <Lock className="w-4 h-4 text-amber-400" />
+                                        </div>
+                                    ) : video.thumbnailUrl ? (
+                                        // Public videos with thumbnail
                                         <img
                                             src={video.thumbnailUrl}
                                             alt={video.title}
                                             className="w-full h-full object-cover"
                                         />
                                     ) : (
+                                        // Public videos without thumbnail yet
                                         <div className="w-full h-full flex items-center justify-center">
                                             <Play className="w-4 h-4 text-muted-foreground" />
                                         </div>
