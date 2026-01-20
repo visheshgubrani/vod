@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { HlsPlayer } from "@/components/ui/hls-player";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4080";
 
@@ -110,12 +111,13 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
         });
     };
 
-    const statusColors = {
+    const statusColors: Record<string, string> = {
         ready: "text-emerald-400",
         processing: "text-amber-400",
         uploading: "text-blue-400",
         pending: "text-slate-400",
         error: "text-red-400",
+        failed: "text-red-400",
     };
 
     return (
@@ -238,30 +240,43 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
 
                             {/* Playback URL (only for public or if we have a token) */}
                             {video.status === "ready" && detail?.playbackUrl && (
-                                <div className="space-y-2">
-                                    <p className="text-sm text-muted-foreground">
-                                        Playback URL
-                                        {(detail?.playbackPolicy || video.playbackPolicy) === "signed" && (
-                                            <span className="ml-2 text-xs text-amber-400">(Token expires in 1 hour)</span>
-                                        )}
-                                    </p>
-                                    <div className="flex items-center gap-2">
-                                        <code className="flex-1 p-3 rounded-lg bg-muted/30 border border-border font-mono text-xs text-foreground truncate">
-                                            {detail.playbackUrl}
-                                        </code>
-                                        <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            onClick={() => handleCopy(detail.playbackUrl!, "url")}
-                                        >
-                                            {copied === "url" ? (
-                                                <Check className="w-4 h-4 text-emerald-400" />
-                                            ) : (
-                                                <Copy className="w-4 h-4" />
-                                            )}
-                                        </Button>
+                                <>
+                                    {/* Video Player Preview with Debug */}
+                                    <div className="space-y-2">
+                                        <p className="text-sm text-muted-foreground">Preview Player</p>
+                                        <HlsPlayer
+                                            src={detail.playbackUrl}
+                                            poster={detail.thumbnailUrl || undefined}
+                                            className="w-full aspect-video"
+                                            debug={true}
+                                        />
                                     </div>
-                                </div>
+
+                                    <div className="space-y-2">
+                                        <p className="text-sm text-muted-foreground">
+                                            Playback URL
+                                            {(detail?.playbackPolicy || video.playbackPolicy) === "signed" && (
+                                                <span className="ml-2 text-xs text-amber-400">(Token expires in 1 hour)</span>
+                                            )}
+                                        </p>
+                                        <div className="flex items-center gap-2">
+                                            <code className="flex-1 p-3 rounded-lg bg-muted/30 border border-border font-mono text-xs text-foreground truncate">
+                                                {detail.playbackUrl}
+                                            </code>
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                onClick={() => handleCopy(detail.playbackUrl!, "url")}
+                                            >
+                                                {copied === "url" ? (
+                                                    <Check className="w-4 h-4 text-emerald-400" />
+                                                ) : (
+                                                    <Copy className="w-4 h-4" />
+                                                )}
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </>
                             )}
 
                             {/* Info Grid */}

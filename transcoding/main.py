@@ -329,7 +329,8 @@ def transcode_worker(payload: dict):
             print(f"🔐 Encryption enabled for signed video")
 
         # --- FFMPEG (HLS) ---
-        cmd = ["ffmpeg", "-hide_banner", "-y", "-i", str(local_input)]
+        # -fflags +genpts regenerates timestamps for clean seeking
+        cmd = ["ffmpeg", "-hide_banner", "-y", "-fflags", "+genpts", "-i", str(local_input)]
 
         # Split + scale in one decode pass
         filter_complex = f"[0:v]split={len(targets)}"
@@ -344,8 +345,8 @@ def transcode_worker(payload: dict):
         var_stream_map_parts = []
 
         for i, (_, settings) in enumerate(targets):
-            # Force keyframes exactly at segment boundaries for cleaner ABR switching,
-            # regardless of input FPS / VFR weirdness.
+            # Force keyframes at segment boundaries for clean ABR switching
+            # Using time-based expression ensures it works regardless of input fps
             force_kf_expr = f"expr:gte(t,n_forced*{HLS_TIME})"
 
             cmd.extend(
@@ -373,11 +374,10 @@ def transcode_worker(payload: dict):
                     f"-level:v:{i}",
                     "4.1",
 
-                    # B-frames for proper GOP structure (critical for HLS)
+                    # CRITICAL: Disable B-frames to prevent decoder issues
+                    # B-frames can cause "End of file" errors in Firefox/Chrome
                     f"-bf:v:{i}",
-                    "2",
-                    f"-b_ref_mode:v:{i}",
-                    "middle",
+                    "0",  # No B-frames = simpler decode = better compatibility
 
                     # Rate control
                     f"-b:v:{i}",
@@ -387,15 +387,19 @@ def transcode_worker(payload: dict):
                     f"-bufsize:v:{i}",
                     settings["buf"],
 
-                    # GOP / keyframes - explicit GOP size + forced keyframes
+                    # GOP / keyframes - strict settings for HLS
                     f"-g:v:{i}",
-                    str(HLS_TIME * 30),  # GOP of ~6 seconds at 30fps
+                    str(HLS_TIME * 30),  # GOP = segment duration in frames (at 30fps)
                     f"-keyint_min:v:{i}",
-                    str(HLS_TIME * 30),
+                    str(HLS_TIME * 30),  # Force keyframe exactly at segment boundary
                     f"-force_key_frames:v:{i}",
                     force_kf_expr,
                     f"-sc_threshold:v:{i}",
                     "0",
+                    
+                    # Ensure NAL units are properly terminated for streaming
+                    f"-flags:v:{i}",
+                    "+cgop",  # Closed GOP for independent segments
                 ]
             )
 
@@ -412,12 +416,17 @@ def transcode_worker(payload: dict):
                     "a:0",
                     "-c:a",
                     "aac",
+                    "-profile:a",
+                    "aac_low",  # AAC-LC is most compatible profile
                     "-b:a",
                     "128k",
                     "-ac",
                     "2",
                     "-ar",
                     "48000",
+                    # Audio sync - ensures audio starts cleanly at segment boundaries
+                    "-af",
+                    "aresample=async=1:first_pts=0",
                 ]
             )
             var_stream_map_parts.append(
@@ -502,9 +511,34 @@ def transcode_worker(payload: dict):
                     "Metadata": {"playback-policy": playback_policy},
                 },
             )
+            
+            # Verify upload succeeded by checking file size
+            local_size = local_path.stat().st_size
+            try:
+                head_response = s3_upload.head_object(
+                    Bucket=os.environ["R2_BUCKET_NAME"],
+                    Key=r2_key
+                )
+                remote_size = head_response.get("ContentLength", 0)
+                if remote_size != local_size:
+                    raise Exception(f"Size mismatch: local={local_size}, remote={remote_size}")
+            except Exception as verify_err:
+                print(f"⚠️ Upload verification failed for {filename}: {verify_err}, retrying...")
+                # Retry upload once
+                s3_upload.upload_file(
+                    str(local_path),
+                    os.environ["R2_BUCKET_NAME"],
+                    r2_key,
+                    ExtraArgs={
+                        "ContentType": content_type,
+                        "CacheControl": cache_control,
+                        "Metadata": {"playback-policy": playback_policy},
+                    },
+                )
 
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            list(executor.map(upload_file, files))
+        # Use fewer workers to prevent overwhelming R2
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = list(executor.map(upload_file, files))
 
         # --- CALLBACK ---
         if "callbackUrl" in payload:

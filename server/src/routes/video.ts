@@ -67,9 +67,14 @@ app.get('/:id', async (c) => {
   // Build response
   const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
   
-  let playbackUrl = videoRecord.hlsUrl 
-    ? `${deliveryUrl}/${videoRecord.hlsUrl}`
-    : null
+  // Helper to resolve URLs - don't double-prefix if already absolute
+  const resolveUrl = (url: string | null) => {
+    if (!url) return null
+    if (url.startsWith('http://') || url.startsWith('https://')) return url
+    return `${deliveryUrl}/${url}`
+  }
+
+  let playbackUrl = resolveUrl(videoRecord.hlsUrl)
 
   // For signed videos, generate a token
   let token: string | null = null
@@ -84,9 +89,7 @@ app.get('/:id', async (c) => {
     status: videoRecord.status,
     playbackPolicy: videoRecord.playbackPolicy,
     duration: videoRecord.duration,
-    thumbnailUrl: videoRecord.thumbnailUrl 
-      ? `${deliveryUrl}/${videoRecord.thumbnailUrl}`
-      : null,
+    thumbnailUrl: resolveUrl(videoRecord.thumbnailUrl),
     playbackUrl,
     token, // Include token separately for clients that need it
     createdAt: videoRecord.createdAt,
@@ -173,10 +176,17 @@ app.get('/', async (c) => {
 
   const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
 
+  // Helper to resolve URLs - don't double-prefix if already absolute
+  const resolveUrl = (url: string | null) => {
+    if (!url) return null
+    if (url.startsWith('http://') || url.startsWith('https://')) return url
+    return `${deliveryUrl}/${url}`
+  }
+
   return c.json({
     videos: videos.map(v => ({
       ...v,
-      thumbnailUrl: v.thumbnailUrl ? `${deliveryUrl}/${v.thumbnailUrl}` : null,
+      thumbnailUrl: resolveUrl(v.thumbnailUrl),
     })),
   })
 })
