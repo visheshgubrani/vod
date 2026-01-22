@@ -21,7 +21,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { HlsPlayer } from "@/components/ui/hls-player";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4080";
+const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 
 interface VideoDetailModalProps {
     video: Video;
@@ -49,7 +49,7 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
     React.useEffect(() => {
         const fetchDetail = async () => {
             try {
-                const res = await fetch(`${API_URL}/api/video/${video.id}`, {
+                const res = await fetch(`${API_URL}/video/${video.id}`, {
                     credentials: "include",
                 });
                 if (!res.ok) throw new Error("Failed to fetch video details");
@@ -73,7 +73,7 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            const res = await fetch(`${API_URL}/api/video/${video.id}`, {
+            const res = await fetch(`${API_URL}/video/${video.id}`, {
                 method: "PATCH",
                 credentials: "include",
                 headers: { "Content-Type": "application/json" },

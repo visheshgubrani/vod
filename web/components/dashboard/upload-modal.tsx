@@ -274,6 +274,26 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
             console.error("Uppy error:", error);
         });
 
+        // Handle file removal/cancel - delete from backend
+        uppy.on("file-removed", async (file: UppyFile<CustomMeta, Body>) => {
+            const meta = file.meta as CustomMeta;
+            const fileId = meta?.fileId;
+
+            // If file had a fileId, delete the record from backend
+            // This handles both single-file and multipart uploads
+            if (fileId) {
+                try {
+                    await fetch(`${API_BASE_URL}/upload/${fileId}`, {
+                        method: "DELETE",
+                        credentials: "include",
+                    });
+                    console.log(`Deleted canceled upload: ${fileId}`);
+                } catch (err) {
+                    console.error("Failed to delete upload:", err);
+                }
+            }
+        });
+
         uppyRef.current = uppy;
 
         return () => {

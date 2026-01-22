@@ -9,7 +9,7 @@ import { VideosTable, Video } from "@/components/dashboard/videos-table";
 import { VideoDetailModal } from "@/components/dashboard/video-detail-modal";
 import { Button } from "@/components/ui/button";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4080";
+const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 
 export default function DashboardPage() {
     const router = useRouter();
@@ -24,7 +24,7 @@ export default function DashboardPage() {
         if (!activeOrg) return;
         
         try {
-            const res = await fetch(`${API_URL}/api/video`, {
+            const res = await fetch(`${API_URL}/video`, {
                 credentials: "include",
             });
             
@@ -60,7 +60,7 @@ export default function DashboardPage() {
         if (!confirm(`Are you sure you want to delete "${video.title}"?`)) return;
         
         try {
-            const res = await fetch(`${API_URL}/api/video/${video.id}`, {
+            const res = await fetch(`${API_URL}/video/${video.id}`, {
                 method: "DELETE",
                 credentials: "include",
             });
