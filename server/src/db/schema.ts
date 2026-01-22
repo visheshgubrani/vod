@@ -191,6 +191,11 @@ export const video = pgTable('video', {
   resolutions: text('resolutions'),
   metadata: text('metadata'),
 
+  // Subtitle/Caption generation
+  generateSubtitle: boolean('generate_subtitle').default(false),
+  subtitleStatus: text('subtitle_status'), // 'pending' | 'processing' | 'completed' | 'failed'
+  subtitleUrl: text('subtitle_url'), // URL to the generated subtitle file (VTT/SRT)
+
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at')
     .defaultNow()

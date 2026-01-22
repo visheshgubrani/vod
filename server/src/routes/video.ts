@@ -309,5 +309,79 @@ app.delete('/:id', async (c) => {
   })
 })
 
+/**
+ * POST /api/video/:id/transcribe
+ * Trigger subtitle/caption generation for a video
+ */
+app.post('/:id/transcribe', async (c) => {
+  const session = c.var.session
+  const videoId = c.req.param('id')
+
+  // Get video
+  const videos = await db
+    .select()
+    .from(video)
+    .where(eq(video.id, videoId))
+    .limit(1)
+
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  // Verify organization membership
+  const members = await db
+    .select()
+    .from(member)
+    .where(
+      and(
+        eq(member.userId, session.userId),
+        eq(member.organizationId, videoRecord.organizationId)
+      )
+    )
+    .limit(1)
+
+  if (members.length === 0) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  // Video must be ready to transcribe
+  if (videoRecord.status !== 'ready') {
+    return c.json({ error: 'Video must be fully processed before transcription' }, 400)
+  }
+
+  // Check if already transcribed or in progress
+  if (videoRecord.subtitleStatus === 'processing') {
+    return c.json({ error: 'Transcription already in progress' }, 400)
+  }
+
+  if (videoRecord.subtitleStatus === 'completed' && videoRecord.subtitleUrl) {
+    return c.json({ 
+      message: 'Video already has subtitles',
+      subtitleUrl: videoRecord.subtitleUrl,
+    })
+  }
+
+  // Update subtitle status to pending
+  await db
+    .update(video)
+    .set({
+      generateSubtitle: true,
+      subtitleStatus: 'pending',
+    })
+    .where(eq(video.id, videoId))
+
+  // TODO: Trigger actual transcription job here
+  // For now, just mark as pending - transcription worker will pick it up
+
+  return c.json({
+    success: true,
+    message: 'Transcription queued',
+    videoId,
+    subtitleStatus: 'pending',
+  })
+})
+
 export default app
 
