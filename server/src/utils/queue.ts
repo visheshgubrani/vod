@@ -3,7 +3,8 @@ import { Client } from '@upstash/qstash'
 export const triggerTranscoding = async (
   fileKey: string,
   fileId: string,
-  playbackPolicy: 'public' | 'signed' = 'public'
+  playbackPolicy: 'public' | 'signed' = 'public',
+  generateSubtitle: boolean = false
 ) => {
   const client = new Client({ token: process.env.QSTASH_TOKEN })
 
@@ -19,6 +20,7 @@ export const triggerTranscoding = async (
         bucket: 'vod-raw-dev',
         fileId: fileId,
         playbackPolicy: playbackPolicy,
+        generateSubtitle: generateSubtitle,
         callbackUrl: `${backendUrl}/api/webhook/transcode-complete`,
       },
       retries: 3,
@@ -31,3 +33,4 @@ export const triggerTranscoding = async (
     return { success: false, error }
   }
 }
+

@@ -8,6 +8,13 @@
       "when": 1767166454096,
       "tag": "0000_fat_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1769106360247,
+      "tag": "0001_sleepy_luminals",
+      "breakpoints": true
     }
   ]
 }

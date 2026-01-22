@@ -79,7 +79,7 @@ app.post('/url', async (c) => {
   const session = c.var.session
 
   // INPUT VALIDATION
-  const { filename, contentType, size, title, playbackPolicy } = await c.req.json()
+  const { filename, contentType, size, title, playbackPolicy, generateSubtitle } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
   const parsedSize = Number(size)
   if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
@@ -108,6 +108,8 @@ app.post('/url', async (c) => {
     rawKey: key,
     size: parsedSize,
     uploadedBy: session.userId,
+    generateSubtitle: generateSubtitle === true,
+    subtitleStatus: generateSubtitle === true ? 'pending' : null,
   })
 
   // GENERATE PRESIGNED URL (For R2)
@@ -170,7 +172,12 @@ app.post('/complete', async (c) => {
   // Queue for transcoding
   if (videoRecord.rawKey) {
     try {
-      await triggerTranscoding(videoRecord.rawKey, fileId, videoRecord.playbackPolicy || 'public')
+      await triggerTranscoding(
+        videoRecord.rawKey,
+        fileId,
+        videoRecord.playbackPolicy || 'public',
+        videoRecord.generateSubtitle || false
+      )
     } catch (err) {
       console.error(`Failed to queue transcoding for ${fileId}:`, err)
       // Revert status so user knows it failed and can retry
@@ -193,6 +200,7 @@ app.post('/multipart/create', async (c) => {
     partSize: requestedPartSize,
     title,
     playbackPolicy,
+    generateSubtitle,
   } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
 
@@ -227,6 +235,8 @@ app.post('/multipart/create', async (c) => {
     rawKey: key,
     size: parsedSize,
     uploadedBy: session.userId,
+    generateSubtitle: generateSubtitle === true,
+    subtitleStatus: generateSubtitle === true ? 'pending' : null,
   })
 
   const command = new CreateMultipartUploadCommand({
@@ -419,7 +429,7 @@ app.post('/multipart/complete', async (c) => {
     if (updated.length > 0) {
       try {
         const playbackPolicy = videoRecord.playbackPolicy || 'public'
-        await triggerTranscoding(key, fileId, playbackPolicy)
+        await triggerTranscoding(key, fileId, playbackPolicy, videoRecord.generateSubtitle || false)
       } catch (err) {
         console.error(`Failed to queue transcoding for ${fileId}:`, err)
         // Revert status so user knows it failed and can retry
