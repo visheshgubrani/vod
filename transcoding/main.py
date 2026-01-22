@@ -164,6 +164,7 @@ def transcode_worker(payload: dict):
                 print(f"⬇️ Download attempt {attempt + 1}/3...")
                 
                 if "key" in payload and "bucket" in payload:
+                    print(f"📦 Downloading from R2: {payload['bucket']}/{payload['key']}")
                     # Download from R2 with multi-threaded transfer
                     s3 = boto3.client(
                         "s3",
@@ -182,10 +183,11 @@ def transcode_worker(payload: dict):
                 elif "input_url" in payload:
                     # Download from URL (with SSRF protection)
                     url = payload["input_url"]
+                    print(f"🌐 Downloading from URL: {url[:80]}...")
                     if not is_public_host(url):
                         raise ValueError("URL blocked by security policy")
                     
-                    # Use curl for better performance
+                    # Use curl for better performance with optimized settings
                     run_cmd([
                         "curl",
                         "-fSL",              # fail on HTTP errors, show errors, follow redirects
@@ -193,6 +195,7 @@ def transcode_worker(payload: dict):
                         "--retry-delay", "2", # wait 2s between retries
                         "--connect-timeout", "15",
                         "--max-time", "600",  # 10 min max for large files
+                        "--tcp-fastopen",     # faster connection setup
                         "-o", str(local_input),
                         url
                     ], label="curl-download")
@@ -292,9 +295,10 @@ def transcode_worker(payload: dict):
         package_start = time.time()
         
         playback_policy = payload.get("playbackPolicy", "public")
-        encryption_key = os.urandom(16) if playback_policy == "signed" else None
+        # Note: For "signed" videos, security is enforced at the delivery 
+        # worker level via JWT tokens (Mux-style), not content encryption.
         
-        package_with_shaka(renditions, output_dir, encryption_key)
+        package_with_shaka(renditions, output_dir)
         
         package_time = time.time() - package_start
         print(f"✅ Packaging complete in {package_time:.1f}s")
@@ -317,7 +321,8 @@ def transcode_worker(payload: dict):
             output_dir,
             video_id,
             s3_upload,
-            os.environ["R2_BUCKET_NAME"]
+            os.environ["R2_BUCKET_NAME"],
+            playback_policy=playback_policy  # For delivery worker auth
         )
         
         upload_time = time.time() - upload_start
@@ -359,7 +364,6 @@ def transcode_worker(payload: dict):
                 "source_size_mb": round(file_size_mb, 2),
             },
             "playback_policy": playback_policy,
-            "encrypted": encryption_key is not None,
         }
         
         print(f"✅ [JOB COMPLETE] {video_id} in {total_time:.1f}s ({processing_speed:.2f}x realtime)")

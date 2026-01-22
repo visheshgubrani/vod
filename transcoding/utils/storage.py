@@ -11,7 +11,8 @@ def upload_to_r2(
     output_dir: Path,
     video_id: str,
     s3_client,
-    bucket: str
+    bucket: str,
+    playback_policy: str = "public"
 ) -> int:
     """
     Upload packaged files to R2 with proper metadata.
@@ -21,6 +22,7 @@ def upload_to_r2(
         video_id: Video ID for R2 key prefix
         s3_client: Configured boto3 S3 client
         bucket: R2 bucket name
+        playback_policy: "public" or "signed" - stored in metadata for delivery worker
         
     Returns:
         Number of files successfully uploaded
@@ -60,6 +62,7 @@ def upload_to_r2(
                     "Metadata": {
                         "video-id": video_id,
                         "original-name": file_path.name,
+                        "playback-policy": playback_policy,  # For delivery worker auth
                     }
                 },
                 Config=TRANSFER_CONFIG  # Use multi-threaded uploads
@@ -75,3 +78,4 @@ def upload_to_r2(
     
     print(f"✅ Uploaded {uploaded}/{len(files)} files")
     return uploaded
+

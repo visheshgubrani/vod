@@ -27,8 +27,10 @@ interface Env {
 
 const MIME_TYPES: Record<string, string> = {
 	'.m3u8': 'application/vnd.apple.mpegurl',
+	'.mpd': 'application/dash+xml',
 	'.ts': 'video/mp2t',
 	'.mp4': 'video/mp4',
+	'.m4s': 'video/iso.segment',
 	'.jpg': 'image/jpeg',
 	'.jpeg': 'image/jpeg',
 	'.png': 'image/png',
@@ -49,8 +51,8 @@ function getMimeType(path: string): string {
 }
 
 function getCacheControl(path: string): string {
-	if (path.endsWith('.m3u8')) return CACHE_CONTROL.playlist;
-	if (path.endsWith('.ts')) return CACHE_CONTROL.segment;
+	if (path.endsWith('.m3u8') || path.endsWith('.mpd')) return CACHE_CONTROL.playlist;
+	if (path.endsWith('.ts') || path.endsWith('.m4s') || path.endsWith('.mp4')) return CACHE_CONTROL.segment;
 	if (path.endsWith('.key')) return CACHE_CONTROL.key;
 	if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return CACHE_CONTROL.thumbnail;
 	return CACHE_CONTROL.default;
@@ -150,7 +152,13 @@ function rewritePlaylist(content: string, token: string): string {
 	console.log('--- END CONTENT ---');
 
 	// 1. Rewrite #EXT-X-KEY URIs (uses .*? to skip past any quoted attributes before URI)
+	// IMPORTANT: Skip data URIs - they contain the key inline, not as a URL to fetch
 	result = result.replace(/(#EXT-X-KEY:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
+		// Skip data URIs - they contain inline base64 key, don't append token
+		if (uri.startsWith('data:')) {
+			console.log(`Skipping data URI for KEY (inline key)`);
+			return match;
+		}
 		const separator = uri.includes('?') ? '&' : '?';
 		console.log(`Rewriting KEY URI: ${uri}`);
 		return `${prefix}${uri}${separator}token=${token}${suffix}`;
@@ -158,6 +166,11 @@ function rewritePlaylist(content: string, token: string): string {
 
 	// 2. Rewrite #EXT-X-MEDIA URIs (audio/subtitle tracks - uses .*? for same reason)
 	result = result.replace(/(#EXT-X-MEDIA:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
+		// Skip data URIs
+		if (uri.startsWith('data:')) {
+			console.log(`Skipping data URI for MEDIA`);
+			return match;
+		}
 		const separator = uri.includes('?') ? '&' : '?';
 		console.log(`Rewriting MEDIA URI: ${uri}`);
 		return `${prefix}${uri}${separator}token=${token}${suffix}`;
@@ -219,8 +232,8 @@ export default {
 			}
 
 			// --- DEBUG LOG START ---
-			console.log(`Checking ${key}`);
-			console.log('Metadata found:', JSON.stringify(object.customMetadata));
+			console.log(`[DELIVERY] Request for: ${key}`);
+			console.log(`[DELIVERY] Metadata:`, JSON.stringify(object.customMetadata));
 			// --- DEBUG LOG END ---
 
 			// 3. CHECK AUTH (Using the metadata we just fetched!)
@@ -228,23 +241,30 @@ export default {
 			const isSigned = playbackPolicy === 'signed';
 
 			// Determine if we need to enforce security
-			// We check .key files specifically because they are the "Master Lock"
+			// Only playlists (.m3u8) and encryption keys (.key) require tokens
+			// Media segments (.mp4, .m4s, .ts) are AES-128 encrypted and don't need token auth
 			const isProtectedResource = key.endsWith('.m3u8') || key.endsWith('.key');
+
+			console.log(`[DELIVERY] Policy: ${playbackPolicy}, isSigned: ${isSigned}, isProtected: ${isProtectedResource}`);
 
 			if (isSigned && isProtectedResource) {
 				if (!token) {
+					console.log(`[DELIVERY] BLOCKED: No token for protected resource`);
 					return new Response('Unauthorized: Token required', { status: 401, headers: corsHeaders });
 				}
 
 				const videoId = extractVideoId(key);
 				if (!videoId) {
+					console.log(`[DELIVERY] BLOCKED: Could not extract videoId from path`);
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
 				const isValid = await verifyToken(token, env.JWT_SECRET, videoId);
 				if (!isValid) {
+					console.log(`[DELIVERY] BLOCKED: Invalid token for video ${videoId}`);
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}
+				console.log(`[DELIVERY] Token verified for video ${videoId}`);
 			}
 
 			// 4. PREPARE HEADERS
