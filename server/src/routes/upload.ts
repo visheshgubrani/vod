@@ -3,6 +3,7 @@ import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
@@ -452,18 +453,65 @@ app.post('/multipart/abort', async (c) => {
     })
   )
 
-  // UPDATE VIDEO STATUS TO 'failed' if fileId provided
+  // DELETE video record if fileId provided (user canceled)
   if (fileId) {
-    await db
-      .update(video)
-      .set({
-        status: 'failed',
-        updatedAt: new Date(),
-      })
-      .where(eq(video.id, fileId))
+    await db.delete(video).where(eq(video.id, fileId))
   }
 
-  return c.json({ aborted: true })
+  return c.json({ aborted: true, deleted: !!fileId })
+})
+
+// Cancel/delete any upload (for single-file uploads or general cleanup)
+app.delete('/:fileId', async (c) => {
+  const session = c.var.session
+  const fileId = c.req.param('fileId')
+
+  if (!fileId) {
+    return c.json({ error: 'Missing fileId' }, 400)
+  }
+
+  // Get the video record
+  const videos = await db
+    .select()
+    .from(video)
+    .where(eq(video.id, fileId))
+    .limit(1)
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    // Already deleted, that's fine
+    return c.json({ deleted: true, fileId })
+  }
+
+  // Verify ownership - video must belong to user's organization
+  if (videoRecord.organizationId !== session.activeOrganizationId) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  // Only allow deletion of uploads in 'uploading' or 'failed' status
+  if (videoRecord.status !== 'uploading' && videoRecord.status !== 'failed') {
+    return c.json({ error: 'Cannot delete video in current status' }, 400)
+  }
+
+  // Try to delete from R2 if rawKey exists
+  if (videoRecord.rawKey) {
+    try {
+      await r2.send(
+        new DeleteObjectCommand({
+          Bucket: RAW_BUCKET,
+          Key: videoRecord.rawKey,
+        })
+      )
+    } catch (err) {
+      // Log but don't fail - file might not exist in R2 yet
+      console.warn(`Failed to delete from R2: ${videoRecord.rawKey}`, err)
+    }
+  }
+
+  // Delete from database
+  await db.delete(video).where(eq(video.id, fileId))
+
+  return c.json({ deleted: true, fileId })
 })
 
 export default app
