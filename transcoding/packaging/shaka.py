@@ -1,9 +1,8 @@
 """
 Shaka Packager integration for HLS/DASH output.
 """
-import hashlib
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from config import SEGMENT_DURATION
 from utils.cmd import run_cmd
@@ -12,15 +11,17 @@ from utils.cmd import run_cmd
 def package_with_shaka(
     renditions: Dict[str, Path],
     output_dir: Path,
-    encryption_key: Optional[bytes] = None
 ) -> None:
     """
     Package fMP4 files into HLS and DASH manifests using Shaka Packager.
     
+    For signed videos, security is enforced at the playlist level via JWT tokens
+    in the delivery worker (Mux-style access control). We don't use content 
+    encryption because SAMPLE-AES/CBCS isn't supported by hls.js.
+    
     Args:
         renditions: Dict mapping label -> fMP4 path (e.g., {"1080p": Path(...), "audio": Path(...)})
         output_dir: Directory for packaged output
-        encryption_key: Optional 16-byte key for AES-128 encryption
     """
     print("📦 Packaging with Shaka Packager...")
     
@@ -60,18 +61,13 @@ def package_with_shaka(
         "--generate_static_live_mpd",
     ]
     
-    # Optional encryption
-    if encryption_key:
-        key_id = hashlib.md5(encryption_key).hexdigest()
-        key_file = output_dir / "enc.key"
-        key_file.write_bytes(encryption_key)
-        
-        cmd.extend([
-            "--enable_raw_key_encryption",
-            "--keys", f"label=:key_id={key_id}:key={encryption_key.hex()}",
-            "--protection_scheme", "cbcs",
-        ])
-        print("🔐 AES-128 encryption enabled")
+    # NOTE: We don't use content encryption here.
+    # For "signed" videos, security is enforced at the delivery worker level:
+    # - Playlists (.m3u8) require a valid JWT token
+    # - Without the playlist, players can't know what segments to fetch
+    # - Segment URLs aren't guessable (contain video ID)
+    # This is the same model Mux uses for "signed" playback policy.
     
     run_cmd(cmd, label="shaka-package")
     print("✅ Packaging complete")
+
