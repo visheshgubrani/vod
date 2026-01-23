@@ -91,16 +91,19 @@ app.post('/transcode-complete', async (c) => {
     }
 
     // success - new payload structure from Modal
-    // payload.outputs: { hls_playlist, dash_manifest, poster, renditions }
+    // payload.outputs: { hls_playlist, dash_manifest, poster, subtitles, renditions }
     // payload.metadata: { width, height, duration, fps, has_audio, is_hdr, is_vertical, aspect_ratio }
     // payload.processing: { total_time, transcode_time, etc. }
+    // payload.subtitle: { requested, generated, status, url }
     
     const outputs = payload?.outputs || {}
     const meta = payload?.metadata || {}
     const processing = payload?.processing || {}
+    const subtitle = payload?.subtitle || {}
     
     const master = typeof outputs?.hls_playlist === 'string' ? outputs.hls_playlist : null
     const thumb = typeof outputs?.poster === 'string' ? outputs.poster : null
+    const subtitleVtt = typeof outputs?.subtitles === 'string' ? outputs.subtitles : null
     const duration = typeof meta?.duration === 'number' && meta.duration >= 0 ? meta.duration : null
     const resolutions = Array.isArray(outputs?.renditions)
       ? outputs.renditions.filter((x: any) => typeof x === 'string')
@@ -111,6 +114,12 @@ app.post('/transcode-complete', async (c) => {
       {}
     )
 
+    // Determine subtitle status from webhook
+    let subtitleStatus: string | null = null
+    if (subtitle?.requested) {
+      subtitleStatus = subtitle?.status || (subtitle?.generated ? 'completed' : 'failed')
+    }
+
     await db
       .update(video)
       .set({
@@ -119,6 +128,9 @@ app.post('/transcode-complete', async (c) => {
         thumbnailUrl: thumb ? joinUrl(transcodedBucketUrl, thumb) : null,
         duration: duration != null ? Math.floor(duration) : null,
         resolutions: resolutions ? JSON.stringify(resolutions) : null,
+        // Subtitle fields
+        subtitleStatus: subtitleStatus,
+        subtitleUrl: subtitleVtt ? joinUrl(transcodedBucketUrl, subtitleVtt) : null,
         metadata: JSON.stringify({
           ...prevMeta,
           // Video info
@@ -140,6 +152,9 @@ app.post('/transcode-complete', async (c) => {
           dash_manifest: outputs?.dash_manifest,
           playback_policy: payload?.playback_policy,
           encrypted: payload?.encrypted,
+          // Subtitle info
+          subtitle_requested: subtitle?.requested,
+          subtitle_generated: subtitle?.generated,
           transcoded_at: new Date().toISOString(),
         }),
         updatedAt: new Date(),
