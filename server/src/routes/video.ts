@@ -299,8 +299,7 @@ app.delete('/:id', async (c) => {
     .delete(video)
     .where(eq(video.id, videoId))
 
-  // Note: R2 files will remain and should be cleaned up by a background job
-  // This is intentional to prevent accidental data loss
+  // TODO: Delete R2 files
 
   return c.json({
     success: true,

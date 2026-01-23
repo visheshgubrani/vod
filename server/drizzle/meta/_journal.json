@@ -15,6 +15,13 @@
       "when": 1769106360247,
       "tag": "0001_sleepy_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1769188800602,
+      "tag": "0002_crazy_tag",
+      "breakpoints": true
     }
   ]
 }
