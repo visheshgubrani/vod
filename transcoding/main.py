@@ -371,6 +371,14 @@ def transcode_worker(payload: dict):
         upload_time = time.time() - upload_start
         print(f"✅ Upload complete in {upload_time:.1f}s")
         
+        # Calculate total transcoded size for billing
+        transcoded_size = 0
+        for file in output_dir.rglob("*"):
+            if file.is_file():
+                transcoded_size += file.stat().st_size
+        transcoded_size_mb = transcoded_size / (1024 * 1024)
+        print(f"📊 Transcoded size: {transcoded_size_mb:.1f} MB ({uploaded_count} files)")
+        
         # ═══════════════════════════════════════════════════════════════════════
         # SUCCESS RESPONSE
         # ═══════════════════════════════════════════════════════════════════════
@@ -412,6 +420,8 @@ def transcode_worker(payload: dict):
                 "processing_speed": round(processing_speed, 2),
                 "files_uploaded": uploaded_count,
                 "source_size_mb": round(file_size_mb, 2),
+                "transcoded_size": transcoded_size,  # bytes - for billing
+                "transcoded_size_mb": round(transcoded_size_mb, 2),
             },
             "playback_policy": playback_policy,
         }

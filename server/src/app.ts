@@ -5,6 +5,7 @@ import upload from './routes/upload'
 import webhook from './routes/webhook'
 import video from './routes/video'
 import keys from './routes/keys'
+import usage from './routes/usage'
 import api from './routes/api'
 import { Bindings } from './types'
 import 'dotenv/config'
@@ -32,6 +33,7 @@ app.route('/api/upload', upload)
 app.route('/api/webhook', webhook)
 app.route('/api/video', video)
 app.route('/api/keys', keys)
+app.route('/api/usage', usage)
 
 // Public API routes (API key auth) - for B2B customers
 app.route('/v1', api)

@@ -120,6 +120,11 @@ app.post('/transcode-complete', async (c) => {
       subtitleStatus = subtitle?.status || (subtitle?.generated ? 'completed' : 'failed')
     }
 
+    // Extract transcoded size for billing (in bytes)
+    const transcodedSize = typeof processing?.transcoded_size === 'number' 
+      ? processing.transcoded_size 
+      : null
+
     await db
       .update(video)
       .set({
@@ -131,6 +136,8 @@ app.post('/transcode-complete', async (c) => {
         // Subtitle fields
         subtitleStatus: subtitleStatus,
         subtitleUrl: subtitleVtt ? joinUrl(transcodedBucketUrl, subtitleVtt) : null,
+        // Storage tracking for billing
+        transcodedSize: transcodedSize,
         metadata: JSON.stringify({
           ...prevMeta,
           // Video info
@@ -148,6 +155,7 @@ app.post('/transcode-complete', async (c) => {
           processing_speed: processing?.processing_speed,
           files_uploaded: processing?.files_uploaded,
           source_size_mb: processing?.source_size_mb,
+          transcoded_size_mb: processing?.transcoded_size_mb,
           // Outputs
           dash_manifest: outputs?.dash_manifest,
           playback_policy: payload?.playback_policy,
