@@ -4,7 +4,7 @@ import * as React from "react";
 import Uppy, { UppyFile, Meta, Body } from "@uppy/core";
 import AwsS3 from "@uppy/aws-s3";
 import Dashboard from "@uppy/dashboard";
-import { Lock, Globe } from "lucide-react";
+import { Lock, Globe, Captions } from "lucide-react";
 
 import "@uppy/core/css/style.min.css";
 import "@uppy/dashboard/css/style.min.css";
@@ -31,12 +31,17 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     const dashboardRef = React.useRef<HTMLDivElement>(null);
     const uppyRef = React.useRef<Uppy<CustomMeta, Body> | null>(null);
     const [playbackPolicy, setPlaybackPolicy] = React.useState<"public" | "signed">("public");
+    const [generateSubtitle, setGenerateSubtitle] = React.useState(false);
 
-    // Store policy in ref so it's accessible in Uppy callbacks
+    // Store in refs so they're accessible in Uppy callbacks
     const playbackPolicyRef = React.useRef(playbackPolicy);
+    const generateSubtitleRef = React.useRef(generateSubtitle);
     React.useEffect(() => {
         playbackPolicyRef.current = playbackPolicy;
     }, [playbackPolicy]);
+    React.useEffect(() => {
+        generateSubtitleRef.current = generateSubtitle;
+    }, [generateSubtitle]);
 
     React.useEffect(() => {
         if (!open || !dashboardRef.current) return;
@@ -69,6 +74,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                         contentType: file.type,
                         size: file.size,
                         playbackPolicy: playbackPolicyRef.current,
+                        generateSubtitle: generateSubtitleRef.current,
                     }),
                 });
 
@@ -107,6 +113,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                         contentType: file.type,
                         size: file.size,
                         playbackPolicy: playbackPolicyRef.current,
+                        generateSubtitle: generateSubtitleRef.current,
                     }),
                 });
 
@@ -349,6 +356,37 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                     </div>
                 </div>
 
+                {/* AI Subtitles Toggle */}
+                <div 
+                    className="flex items-center gap-4 p-4 rounded-xl bg-muted/30 border border-border cursor-pointer hover:bg-muted/50 transition-colors"
+                    onClick={() => setGenerateSubtitle(!generateSubtitle)}
+                >
+                    <div className="flex-1">
+                        <p className="text-sm font-medium text-foreground mb-1">AI Subtitles</p>
+                        <p className="text-xs text-muted-foreground">
+                            {generateSubtitle 
+                                ? "Subtitles will be auto-generated using AI" 
+                                : "No subtitles will be generated"}
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        className={cn(
+                            "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                            generateSubtitle
+                                ? "bg-primary text-white shadow-sm"
+                                : "bg-muted/50 text-muted-foreground border border-border"
+                        )}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setGenerateSubtitle(!generateSubtitle);
+                        }}
+                    >
+                        <Captions className="w-4 h-4" />
+                        {generateSubtitle ? "Enabled" : "Disabled"}
+                    </button>
+                </div>
+
                 <div
                     ref={dashboardRef}
                     className={cn(
@@ -363,6 +401,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                 <p className="text-xs text-muted-foreground text-center">
                     Videos will be transcoded after upload for optimal streaming
                     {playbackPolicy === "signed" && " • AES-128 encrypted"}
+                    {generateSubtitle && " • AI subtitles"}
                 </p>
             </SheetContent>
         </Sheet>

@@ -38,6 +38,7 @@ from video import (
     generate_poster,
     transcode_rendition,
     transcode_audio,
+    transcribe_to_vtt,
 )
 
 # Packaging
@@ -54,7 +55,7 @@ app = modal.App("vod-production-pipeline")
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("ffmpeg", "wget", "curl", "mediainfo")
-    .pip_install("boto3", "requests", "fastapi[standard]", "pillow")
+    .pip_install("boto3", "requests", "fastapi[standard]", "pillow", "faster-whisper")
     .run_commands(
         "wget https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager",
         "chmod +x /usr/local/bin/packager"
@@ -237,16 +238,22 @@ def transcode_worker(payload: dict):
         generate_poster(str(local_input), str(output_dir / "poster.jpg"), metadata.duration)
         
         # ═══════════════════════════════════════════════════════════════════════
-        # PARALLEL TRANSCODING
+        # PARALLEL TRANSCODING (+ AI TRANSCRIPTION)
         # ═══════════════════════════════════════════════════════════════════════
         
         transcode_start = time.time()
         
+        # Check if we should generate subtitles
+        generate_subtitle = payload.get("generateSubtitle", False)
+        
         # Limit workers for 4K to prevent GPU OOM
         max_workers = 4 if metadata.width >= 3840 else 6
         print(f"🎞️ Transcoding with {max_workers} parallel workers...")
+        if generate_subtitle:
+            print("🎤 AI transcription enabled - will run in parallel")
         
         renditions = {}
+        subtitle_path = None
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
@@ -261,7 +268,7 @@ def transcode_worker(payload: dict):
                     profile,
                     metadata
                 )
-                futures[future] = profile.label
+                futures[future] = ("video", profile.label)
             
             # Submit audio if present
             if metadata.has_audio:
@@ -271,18 +278,37 @@ def transcode_worker(payload: dict):
                     local_input,
                     audio_file
                 )
-                futures[audio_future] = "audio"
+                futures[audio_future] = ("audio", "audio")
+            
+            # Submit AI transcription if requested (runs in parallel!)
+            if generate_subtitle and metadata.has_audio:
+                subtitle_file = output_dir / "subtitles.vtt"
+                transcription_future = executor.submit(
+                    transcribe_to_vtt,
+                    local_input,
+                    subtitle_file,
+                    "large-v3-turbo"  # Model size
+                )
+                futures[transcription_future] = ("subtitle", "subtitles")
             
             # Collect results
             for future in as_completed(futures):
-                label = futures[future]
+                task_type, label = futures[future]
                 try:
                     path = future.result()
-                    renditions[label] = path
-                    print(f"✅ Completed: {label}")
+                    if task_type == "subtitle":
+                        subtitle_path = path
+                        print(f"✅ Completed: AI transcription")
+                    else:
+                        renditions[label] = path
+                        print(f"✅ Completed: {label}")
                 except Exception as e:
-                    print(f"❌ Failed {label}: {e}")
-                    raise
+                    if task_type == "subtitle":
+                        # Don't fail the whole job if transcription fails
+                        print(f"⚠️ AI transcription failed (non-fatal): {e}")
+                    else:
+                        print(f"❌ Failed {label}: {e}")
+                        raise
         
         transcode_time = time.time() - transcode_start
         processing_speed = metadata.duration / transcode_time if transcode_time > 0 else 0
@@ -352,6 +378,13 @@ def transcode_worker(payload: dict):
                 "hls_playlist": f"{R2_PREFIX}/{video_id}/playlist.m3u8",
                 "dash_manifest": f"{R2_PREFIX}/{video_id}/manifest.mpd",
                 "poster": f"{R2_PREFIX}/{video_id}/poster.jpg",
+                "subtitles": f"{R2_PREFIX}/{video_id}/subtitles.vtt" if subtitle_path else None,
+            },
+            "subtitle": {
+                "requested": generate_subtitle,
+                "generated": subtitle_path is not None,
+                "status": "completed" if subtitle_path else ("failed" if generate_subtitle else None),
+                "url": f"{R2_PREFIX}/{video_id}/subtitles.vtt" if subtitle_path else None,
             },
             "processing": {
                 "total_time": round(total_time, 2),
