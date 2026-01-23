@@ -8,6 +8,16 @@ from utils.cmd import run_cmd
 from video.analysis import VideoMetadata
 
 
+"""
+Video transcoding with GPU acceleration (NVENC).
+"""
+from pathlib import Path
+
+from config import SEGMENT_DURATION, EncodingProfile
+from utils.cmd import run_cmd
+from video.analysis import VideoMetadata
+
+
 def transcode_rendition(
     input_path: Path,
     output_path: Path,
@@ -15,97 +25,105 @@ def transcode_rendition(
     metadata: VideoMetadata,
 ) -> Path:
     """
-    Transcode single video rendition with GPU acceleration.
-    
-    Pipeline: CPU decode → GPU scale → NVENC encode
-    
-    Args:
-        input_path: Path to input video
-        output_path: Path for output fMP4
-        profile: Encoding profile (resolution, bitrate)
-        metadata: Video metadata
-        
-    Returns:
-        Path to output file
-        
-    Raises:
-        RuntimeError: If transcoding fails or output is invalid
+    Transcode single video rendition.
+    Hybrid Pipeline with safe codec detection:
+    - Safe codecs (h264/hevc): NVDEC (GPU) -> CUDA Scale -> NVENC (GPU)
+    - Risky codecs (av1/vp9): CPU Decode -> CUDA Upload -> CUDA Scale -> NVENC (GPU)
     """
-    # --- BUILD FILTER CHAIN ---
+    
+    # 1. Detect Safe Codecs
+    # We remove mpeg2/mpeg4 from 'safe' list unless you are sure your L4 supports them perfectly.
+    # H264 and HEVC are the most important ones for speed.
+    SAFE_GPU_DECODE_CODECS = ["h264", "hevc", "mjpeg", "avc", "avc1"]
+    
+    use_gpu_decode = metadata.codec_name.lower() in SAFE_GPU_DECODE_CODECS
+    
+    if use_gpu_decode:
+        print(f"🚀 [DECODE] GPU (NVDEC) selected for: {metadata.codec_name}")
+        input_args = [
+            "-threads", "1",
+            "-hwaccel", "cuda",
+            "-hwaccel_output_format", "cuda",
+            "-extra_hw_frames", "8", # Prevents "out of buffers" on 4K
+        ]
+    else:
+        print(f"🛡️ [DECODE] CPU (Hybrid) selected for: {metadata.codec_name}")
+        input_args = [
+            "-init_hw_device", "cuda=cuda:0",
+            "-filter_hw_device", "cuda"
+        ]
+
+    # 2. Build Filter Chain
     filters = []
-    
-    # Pipeline: CPU decode → GPU scale → CPU encode
-    # format=nv12 → hwupload_cuda → scale_cuda → hwdownload → format=nv12
-    #
-    # CRITICAL: HDR content is 10-bit - we MUST use p010le to preserve color data.
-    # Using nv12 (8-bit) would destroy HDR info before tone mapping = grey/flat colors.
-    
+
     if metadata.is_hdr:
         print(f"[HDR] Tone mapping {profile.label} (HDR → SDR)")
-        # HDR: Convert to p010le (10-bit) to preserve HDR color data
-        filters.append("format=p010le")
-        filters.append("hwupload_cuda")
-        # Scale in 10-bit to preserve quality
-        filters.append(f"scale_cuda=-2:{profile.height}")
-        # Tone map (10-bit -> 8-bit SDR) and output nv12
-        filters.append("tonemap_cuda=tonemap=hable:desat=0:format=nv12")
-        # Download from GPU to CPU for NVENC
-        filters.append("hwdownload")
-        filters.append("format=nv12")
+        if use_gpu_decode:
+            # GPU Decode: Frames are already in CUDA memory (likely P010 for HDR)
+            filters.extend([
+                f"scale_cuda=-2:{profile.height}",
+                "tonemap_cuda=tonemap=hable:desat=0:format=nv12"
+            ])
+        else:
+            # CPU Decode: We must upload manually. Use P010 to preserve 10-bit color.
+            filters.extend([
+                "format=p010le",
+                "hwupload",
+                f"scale_cuda=-2:{profile.height}",
+                "tonemap_cuda=tonemap=hable:desat=0:format=nv12"
+            ])
     else:
-        # SDR: Convert to nv12 (8-bit is fine for SDR)
-        filters.append("format=nv12")
-        filters.append("hwupload_cuda")
-        # Scale on GPU
-        filters.append(f"scale_cuda=-2:{profile.height}")
-        # Download from GPU to CPU for NVENC
-        filters.append("hwdownload")
-        filters.append("format=nv12")
-    
+        # SDR Pipeline
+        if use_gpu_decode:
+            # GPU Decode: Frames are already in CUDA memory (likely NV12 or YUV420P)
+            filters.extend([
+                f"scale_cuda=-2:{profile.height}"
+            ])
+        else:
+            # CPU Decode: We must upload manually.
+            filters.extend([
+                "format=nv12",
+                "hwupload",
+                f"scale_cuda=-2:{profile.height}"
+            ])
+
+    # 3. H.264 Level Logic (Standard)
+    if profile.height >= 2160: h264_level = "5.2" if metadata.fps > 30 else "5.1"
+    elif profile.height >= 1440: h264_level = "5.1" if metadata.fps > 30 else "5.0"
+    elif profile.height >= 1080: h264_level = "4.2" if metadata.fps > 30 else "4.1"
+    else: h264_level = "4.0"
+
     cmd = [
         "ffmpeg", "-hide_banner", "-y",
         
-        # Initialize CUDA device for GPU filtering
-        "-init_hw_device", "cuda=cuda:0",
-        "-filter_hw_device", "cuda",
-        
-        # CPU decoding (universal, works with VP9/AV1/etc)
-        # GPU encoding via NVENC still provides the main speedup
+        # --- INPUT STAGE ---
+        *input_args,
         "-i", str(input_path),
         
-        # Video filters
+        # --- FILTER STAGE ---
         "-vf", ",".join(filters),
         
-        # NVENC encoding
+        # --- ENCODE STAGE (NVENC) ---
         "-c:v", "h264_nvenc",
         "-preset:v", "p4", 
         "-tune:v", "hq",
         "-rc:v", "vbr",
         
-        # Compatibility settings
-        "-pix_fmt", "yuv420p",
         "-profile:v", "high",
-        "-level:v", "4.2",
+        "-level:v", h264_level,
         
-        # Rate control
         "-b:v", profile.bitrate,
         "-maxrate:v", profile.maxrate,
         "-bufsize:v", profile.bufsize,
         
-        # GOP structure
         "-g", str(int(SEGMENT_DURATION * metadata.fps)),
         "-keyint_min", str(int(SEGMENT_DURATION * metadata.fps)),
         "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_DURATION})",
         "-sc_threshold", "0",
         
-        # B-frames
         "-bf", "3",
         "-b_ref_mode", "middle",
-        
-        # No audio in video renditions
         "-an",
-        
-        # Fragmented MP4 output
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         
         str(output_path)

@@ -246,17 +246,44 @@ def transcode_worker(payload: dict):
         # Check if we should generate subtitles
         generate_subtitle = payload.get("generateSubtitle", False)
         
-        # Limit workers for 4K to prevent GPU OOM
-        max_workers = 4 if metadata.width >= 3840 else 6
-        print(f"🎞️ Transcoding with {max_workers} parallel workers...")
+        # Dynamically calculate max workers based on decode method and resolution
+        # L4 can handle ~3 concurrent NVDEC streams comfortably
+        SAFE_GPU_DECODE_CODECS = ["h264", "hevc", "mjpeg", "avc", "avc1"]
+        use_gpu_decode = metadata.codec_name.lower() in SAFE_GPU_DECODE_CODECS
+        
+        if use_gpu_decode:
+            # GPU decoding (NVDEC) - limited concurrent streams
+            # 4K: 2 workers (NVDEC handles one, leaves headroom)
+            # <4K: 3 workers (L4's safe limit for NVDEC)
+            max_workers = 2 if metadata.width >= 3840 else 3
+            decode_mode = "GPU (NVDEC)"
+        else:
+            # CPU decoding - can run more parallel jobs
+            # 4K: 4 workers (CPU decode + GPU encode)
+            # <4K: 6 workers
+            max_workers = 4 if metadata.width >= 3840 else 6
+            decode_mode = "CPU (Hybrid)"
+        
+        print(f"🎞️ Transcoding with {max_workers} parallel workers ({decode_mode} decode)...")
         if generate_subtitle:
             print("🎤 AI transcription enabled - will run in parallel")
         
         renditions = {}
         subtitle_path = None
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor, \
+             ThreadPoolExecutor(max_workers=2) as audio_executor:
             futures = {}
+
+            # Submit audio if present
+            if metadata.has_audio:
+                audio_file = fmp4_dir / "audio.mp4"
+                audio_future = audio_executor.submit(
+                    transcode_audio,
+                    local_input,
+                    audio_file
+                )
+                futures[audio_future] = ("audio", "audio")
             
             # Submit video renditions
             for profile in profiles:
@@ -269,16 +296,6 @@ def transcode_worker(payload: dict):
                     metadata
                 )
                 futures[future] = ("video", profile.label)
-            
-            # Submit audio if present
-            if metadata.has_audio:
-                audio_file = fmp4_dir / "audio.mp4"
-                audio_future = executor.submit(
-                    transcode_audio,
-                    local_input,
-                    audio_file
-                )
-                futures[audio_future] = ("audio", "audio")
             
             # Submit AI transcription if requested (runs in parallel!)
             if generate_subtitle and metadata.has_audio:
