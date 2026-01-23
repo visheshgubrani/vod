@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { HlsPlayer } from "@/components/ui/hls-player";
+import { VidstackPlayer } from "@/components/ui/vidstack-player";
 
 const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 
@@ -241,14 +241,15 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
                             {/* Playback URL (only for public or if we have a token) */}
                             {video.status === "ready" && detail?.playbackUrl && (
                                 <>
-                                    {/* Video Player Preview with Debug */}
+                                    {/* Video Player Preview */}
                                     <div className="space-y-2">
                                         <p className="text-sm text-muted-foreground">Preview Player</p>
-                                        <HlsPlayer
+                                        <VidstackPlayer
                                             src={detail.playbackUrl}
+                                            title={detail.title || video.title}
                                             poster={detail.thumbnailUrl || undefined}
-                                            className="w-full aspect-video"
-                                            debug={true}
+                                            token={detail.token || undefined}
+                                            className="w-full"
                                         />
                                     </div>
 

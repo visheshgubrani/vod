@@ -18,6 +18,7 @@ class VideoMetadata:
     fps: float
     has_audio: bool
     is_hdr: bool
+    codec_name: str  # e.g., "h264", "hevc", "av1", "vp9"
     
     @property
     def is_vertical(self) -> bool:
@@ -45,7 +46,7 @@ def get_video_metadata(filepath: str) -> VideoMetadata:
     cmd = [
         "ffprobe", "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,r_frame_rate,color_transfer:format=duration",
+        "-show_entries", "stream=width,height,r_frame_rate,color_transfer,codec_name:format=duration",
         "-of", "json",
         filepath
     ]
@@ -82,6 +83,7 @@ def get_video_metadata(filepath: str) -> VideoMetadata:
         fps=fps,
         has_audio=has_audio,
         is_hdr=is_hdr,
+        codec_name=video.get("codec_name", "unknown"),
     )
 
 
