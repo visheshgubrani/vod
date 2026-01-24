@@ -1,0 +1,222 @@
+/* ClipMux Player - Customizable Theme */
+
+/* ============================================================================
+   CSS Variables for Customization
+   ============================================================================ */
+
+.clipmux-player {
+    --clipmux-accent: #8B5CF6;
+    --clipmux-bg: rgba(0, 0, 0, 0.95);
+    --clipmux-controls-bg: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, transparent 100%);
+    --clipmux-border-radius: 12px;
+    --clipmux-font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+    /* Sizing */
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--clipmux-border-radius);
+    overflow: hidden;
+    background: var(--clipmux-bg);
+    font-family: var(--clipmux-font);
+    position: relative;
+    outline: none;
+}
+
+/* Focus indicator for keyboard navigation */
+.clipmux-player:focus-visible {
+    outline: 2px solid var(--clipmux-accent);
+    outline-offset: 2px;
+}
+
+/* ============================================================================
+   Loading & Error States
+   ============================================================================ */
+
+.clipmux-player__loading,
+.clipmux-player__error {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: var(--clipmux-bg);
+    border-radius: var(--clipmux-border-radius);
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+}
+
+.clipmux-player__spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(255, 255, 255, 0.2);
+    border-top-color: var(--clipmux-accent);
+    border-radius: 50%;
+    animation: clipmux-spin 0.8s linear infinite;
+}
+
+@keyframes clipmux-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.clipmux-player__error span {
+    font-size: 32px;
+}
+
+.clipmux-player__error p {
+    margin: 0;
+    text-align: center;
+    max-width: 300px;
+}
+
+/* ============================================================================
+   Dark Theme (Default)
+   ============================================================================ */
+
+.clipmux-player--dark {
+    --clipmux-bg: rgba(0, 0, 0, 0.95);
+}
+
+/* Override Vidstack default colors with accent color */
+.clipmux-player--dark [data-media-player] {
+    --media-brand: var(--clipmux-accent);
+    --media-focus-ring-color: var(--clipmux-accent);
+}
+
+/* Progress bar */
+.clipmux-player--dark .vds-slider-track-fill,
+.clipmux-player--dark .vds-slider-thumb {
+    background-color: var(--clipmux-accent) !important;
+}
+
+/* Buttons hover */
+.clipmux-player--dark .vds-button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ============================================================================
+   Light Theme
+   ============================================================================ */
+
+.clipmux-player--light {
+    --clipmux-bg: rgba(255, 255, 255, 0.95);
+}
+
+.clipmux-player--light [data-media-player] {
+    --media-brand: var(--clipmux-accent);
+    --media-focus-ring-color: var(--clipmux-accent);
+}
+
+.clipmux-player--light .vds-controls {
+    background: linear-gradient(to top, rgba(255, 255, 255, 0.95) 0%, transparent 100%);
+}
+
+.clipmux-player--light .vds-button {
+    color: #1a1a1a;
+}
+
+.clipmux-player--light .vds-time {
+    color: #1a1a1a;
+}
+
+.clipmux-player--light .vds-slider-track {
+    background: rgba(0, 0, 0, 0.2);
+}
+
+/* ============================================================================
+   Minimal Theme
+   ============================================================================ */
+
+.clipmux-player--minimal {
+    --clipmux-border-radius: 0;
+}
+
+.clipmux-player--minimal [data-media-player] {
+    --media-brand: var(--clipmux-accent);
+}
+
+/* Hide most controls, show only play button and progress */
+.clipmux-player--minimal .vds-volume-slider,
+.clipmux-player--minimal .vds-caption-button,
+.clipmux-player--minimal .vds-pip-button,
+.clipmux-player--minimal .vds-airplay-button,
+.clipmux-player--minimal .vds-google-cast-button,
+.clipmux-player--minimal .vds-settings-button {
+    display: none;
+}
+
+/* Slim controls */
+.clipmux-player--minimal .vds-controls {
+    padding: 8px 12px;
+}
+
+/* ============================================================================
+   Responsive Adjustments
+   ============================================================================ */
+
+@media (max-width: 480px) {
+    .clipmux-player {
+        --clipmux-border-radius: 8px;
+    }
+
+    /* Hide some controls on mobile */
+    .clipmux-player .vds-playback-rate-button,
+    .clipmux-player .vds-pip-button {
+        display: none;
+    }
+}
+
+/* ============================================================================
+   Chapter Markers (for AI chapters)
+   ============================================================================ */
+
+.clipmux-player .vds-slider-chapters {
+    display: flex;
+    gap: 2px;
+}
+
+.clipmux-player .vds-slider-chapter {
+    flex: 1;
+    height: 100%;
+}
+
+/* Chapter tooltip */
+.clipmux-player .vds-chapter-title {
+    background: var(--clipmux-bg);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* ============================================================================
+   Quality Badge
+   ============================================================================ */
+
+.clipmux-player .vds-quality-badge {
+    background: var(--clipmux-accent);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 4px;
+    border-radius: 2px;
+    text-transform: uppercase;
+}
+
+/* ============================================================================
+   Captions Styling
+   ============================================================================ */
+
+.clipmux-player .vds-captions {
+    font-family: var(--clipmux-font);
+}
+
+.clipmux-player .vds-captions [data-part="cue"] {
+    background: rgba(0, 0, 0, 0.8);
+    padding: 4px 8px;
+    border-radius: 4px;
+}
