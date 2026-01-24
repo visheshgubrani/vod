@@ -23,6 +23,5 @@ export const auth = betterAuth({
   },
   trustedOrigins: [process.env.FRONTEND_URL || 'http://localhost:3000'],
   plugins: [admin(), organization()],
-
-  baseURL: process.env.FRONTEND_URL,
+  baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:4080',
 })
