@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { VidstackPlayer } from "@/components/ui/vidstack-player";
+import { ClipMuxPlayer } from "@/components/ui/clipmux-player";
 
 const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 
@@ -244,11 +244,9 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
                                     {/* Video Player Preview */}
                                     <div className="space-y-2">
                                         <p className="text-sm text-muted-foreground">Preview Player</p>
-                                        <VidstackPlayer
-                                            src={detail.playbackUrl}
-                                            title={detail.title || video.title}
-                                            poster={detail.thumbnailUrl || undefined}
-                                            token={detail.token || undefined}
+                                        <ClipMuxPlayer
+                                            videoId={video.id}
+                                            accentColor="#8B5CF6"
                                             className="w-full"
                                         />
                                     </div>
