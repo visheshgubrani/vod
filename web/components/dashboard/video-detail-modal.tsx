@@ -245,9 +245,8 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
                                     <div className="space-y-2">
                                         <p className="text-sm text-muted-foreground">Preview Player</p>
                                         <ClipMuxPlayer
-                                            videoId={video.id}
-                                            accentColor="#8B5CF6"
-                                            className="w-full"
+                                            src={detail.playbackUrl}
+                                            title={detail?.title || video.title}
                                         />
                                     </div>
 
