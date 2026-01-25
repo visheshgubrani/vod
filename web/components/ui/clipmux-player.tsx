@@ -1,6 +1,6 @@
 'use client'
 
-import { MediaPlayer, MediaProvider } from '@vidstack/react'
+import { MediaPlayer, MediaProvider, Track } from '@vidstack/react'
 import {
   defaultLayoutIcons,
   DefaultVideoLayout,
@@ -14,12 +14,28 @@ type ClipMuxPlayerProps = {
   src: string
   title?: string
   thumbnails?: string
+  subtitles?: string
 }
 
-export function ClipMuxPlayer({ src, title, thumbnails }: ClipMuxPlayerProps) {
+export function ClipMuxPlayer({
+  src,
+  title,
+  thumbnails,
+  subtitles,
+}: ClipMuxPlayerProps) {
   return (
     <MediaPlayer className="media-player" title={title} src={src}>
-      <MediaProvider />
+      <MediaProvider>
+        {subtitles ? (
+          <Track
+            src={subtitles}
+            kind="subtitles"
+            label="English"
+            lang="en"
+            default
+          />
+        ) : null}
+      </MediaProvider>
       <DefaultVideoLayout
         thumbnails={thumbnails}
         icons={defaultLayoutIcons}

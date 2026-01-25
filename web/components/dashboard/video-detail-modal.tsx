@@ -32,6 +32,7 @@ interface VideoDetailModalProps {
 interface VideoDetail extends Video {
     playbackUrl?: string | null;
     token?: string | null;
+    subtitleUrl?: string | null;
 }
 
 export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalProps) {
@@ -247,6 +248,7 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
                                         <ClipMuxPlayer
                                             src={detail.playbackUrl}
                                             title={detail?.title || video.title}
+                                            subtitles={detail?.subtitleUrl || undefined}
                                         />
                                     </div>
 

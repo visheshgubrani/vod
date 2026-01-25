@@ -51,7 +51,7 @@ export const session = pgTable(
     impersonatedBy: text('impersonated_by'),
     activeOrganizationId: text('active_organization_id'),
   },
-  (table) => [index('session_userId_idx').on(table.userId)]
+  (table) => [index('session_userId_idx').on(table.userId)],
 )
 
 export const account = pgTable(
@@ -75,7 +75,7 @@ export const account = pgTable(
       .$onUpdate(() => new Date())
       .notNull(),
   },
-  (table) => [index('account_userId_idx').on(table.userId)]
+  (table) => [index('account_userId_idx').on(table.userId)],
 )
 
 export const verification = pgTable(
@@ -91,7 +91,7 @@ export const verification = pgTable(
       .$onUpdate(() => new Date())
       .notNull(),
   },
-  (table) => [index('verification_identifier_idx').on(table.identifier)]
+  (table) => [index('verification_identifier_idx').on(table.identifier)],
 )
 
 export const organization = pgTable(
@@ -104,7 +104,7 @@ export const organization = pgTable(
     createdAt: timestamp('created_at').notNull(),
     metadata: text('metadata'),
   },
-  (table) => [uniqueIndex('organization_slug_uidx').on(table.slug)]
+  (table) => [uniqueIndex('organization_slug_uidx').on(table.slug)],
 )
 
 export const member = pgTable(
@@ -123,7 +123,7 @@ export const member = pgTable(
   (table) => [
     index('member_organizationId_idx').on(table.organizationId),
     index('member_userId_idx').on(table.userId),
-  ]
+  ],
 )
 
 export const invitation = pgTable(
@@ -145,7 +145,7 @@ export const invitation = pgTable(
   (table) => [
     index('invitation_organizationId_idx').on(table.organizationId),
     index('invitation_email_idx').on(table.email),
-  ]
+  ],
 )
 
 // =========================================
@@ -163,8 +163,10 @@ export const statusEnum = pgEnum('video_status', [
 // Playback policy for access control (like Mux)
 // - public: anyone can access the video
 // - signed: requires a signed token/URL to access
-export const playbackPolicyEnum = pgEnum('playback_policy', ['public', 'signed'])
-
+export const playbackPolicyEnum = pgEnum('playback_policy', [
+  'public',
+  'signed',
+])
 
 export const video = pgTable('video', {
   id: uuid('id').defaultRandom().primaryKey(),
