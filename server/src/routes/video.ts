@@ -90,6 +90,7 @@ app.get('/:id', async (c) => {
     playbackPolicy: videoRecord.playbackPolicy,
     duration: videoRecord.duration,
     thumbnailUrl: resolveUrl(videoRecord.thumbnailUrl),
+    subtitleUrl: resolveUrl(videoRecord.subtitleUrl),
     playbackUrl,
     token, // Include token separately for clients that need it
     createdAt: videoRecord.createdAt,
@@ -383,4 +384,3 @@ app.post('/:id/transcribe', async (c) => {
 })
 
 export default app
-
