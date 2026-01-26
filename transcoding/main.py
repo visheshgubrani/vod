@@ -39,6 +39,7 @@ from video import (
     transcode_rendition,
     transcode_audio,
     transcribe_to_vtt,
+    generate_chapters,
 )
 
 # Packaging
@@ -55,7 +56,7 @@ app = modal.App("vod-production-pipeline")
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("ffmpeg", "wget", "curl", "mediainfo")
-    .pip_install("boto3", "requests", "fastapi[standard]", "pillow", "faster-whisper")
+    .pip_install("boto3", "requests", "fastapi[standard]", "pillow", "faster-whisper", "groq")
     .run_commands(
         "wget https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager",
         "chmod +x /usr/local/bin/packager"
@@ -114,7 +115,7 @@ def transcode_video(payload: dict):
 @app.function(
     gpu="l4",
     image=image,
-    secrets=[modal.Secret.from_name("r2-creds")],
+    secrets=[modal.Secret.from_name("r2-creds"), modal.Secret.from_name("groq-creds")],
     timeout=3600,  # 1 hour max
     memory=16384,  # 16GB RAM
 )
@@ -332,6 +333,38 @@ def transcode_worker(payload: dict):
         print(f"✅ Transcoding complete in {transcode_time:.1f}s ({processing_speed:.2f}x realtime)")
         
         # ═══════════════════════════════════════════════════════════════════════
+        # AI CHAPTERS GENERATION (after transcription)
+        # ═══════════════════════════════════════════════════════════════════════
+        
+        generate_chapters_flag = payload.get("generateChapters", False)
+        chapters_data = None
+        
+        if generate_chapters_flag and subtitle_path:
+            try:
+                print("📑 Generating AI chapters from transcript...")
+                # Read the VTT content
+                with open(subtitle_path, "r", encoding="utf-8") as f:
+                    vtt_content = f.read()
+                
+                # Generate chapters using Groq LLM
+                chapters_data = generate_chapters(
+                    vtt_content=vtt_content,
+                    duration_seconds=metadata.duration,
+                )
+                
+                # Save chapters to JSON file
+                chapters_file = output_dir / "chapters.json"
+                import json
+                with open(chapters_file, "w", encoding="utf-8") as f:
+                    json.dump(chapters_data, f, indent=2)
+                print(f"✅ Generated {len(chapters_data)} chapters")
+                
+            except Exception as e:
+                # Don't fail the whole job if chapters generation fails
+                print(f"⚠️ AI chapters generation failed (non-fatal): {e}")
+                chapters_data = None
+        
+        # ═══════════════════════════════════════════════════════════════════════
         # PACKAGE WITH SHAKA
         # ═══════════════════════════════════════════════════════════════════════
         
@@ -410,6 +443,12 @@ def transcode_worker(payload: dict):
                 "generated": subtitle_path is not None,
                 "status": "completed" if subtitle_path else ("failed" if generate_subtitle else None),
                 "url": f"{R2_PREFIX}/{video_id}/subtitles.vtt" if subtitle_path else None,
+            },
+            "chapters": {
+                "requested": generate_chapters_flag,
+                "generated": chapters_data is not None,
+                "status": "completed" if chapters_data else ("failed" if generate_chapters_flag else None),
+                "data": chapters_data,
             },
             "processing": {
                 "total_time": round(total_time, 2),

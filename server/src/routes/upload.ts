@@ -79,7 +79,7 @@ app.post('/url', async (c) => {
   const session = c.var.session
 
   // INPUT VALIDATION
-  const { filename, contentType, size, title, playbackPolicy, generateSubtitle } = await c.req.json()
+  const { filename, contentType, size, title, playbackPolicy, generateSubtitle, generateChapters } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
   const parsedSize = Number(size)
   if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
@@ -88,6 +88,10 @@ app.post('/url', async (c) => {
   if (!Number.isInteger(parsedSize)) {
     return c.json({ error: 'Size must be an integer' }, 400)
   }
+
+  // Validate: chapters require subtitles (need transcription first)
+  const enableSubtitle = generateSubtitle === true || generateChapters === true
+  const enableChapters = generateChapters === true && enableSubtitle
 
   // Ensure user has an active organization
   const organizationId = session.activeOrganizationId
@@ -108,8 +112,10 @@ app.post('/url', async (c) => {
     rawKey: key,
     size: parsedSize,
     uploadedBy: session.userId,
-    generateSubtitle: generateSubtitle === true,
-    subtitleStatus: generateSubtitle === true ? 'pending' : null,
+    generateSubtitle: enableSubtitle,
+    subtitleStatus: enableSubtitle ? 'pending' : null,
+    generateChapters: enableChapters,
+    chaptersStatus: enableChapters ? 'pending' : null,
   })
 
   // GENERATE PRESIGNED URL (For R2)
@@ -176,7 +182,8 @@ app.post('/complete', async (c) => {
         videoRecord.rawKey,
         fileId,
         videoRecord.playbackPolicy || 'public',
-        videoRecord.generateSubtitle || false
+        videoRecord.generateSubtitle || false,
+        videoRecord.generateChapters || false
       )
     } catch (err) {
       console.error(`Failed to queue transcoding for ${fileId}:`, err)
@@ -201,6 +208,7 @@ app.post('/multipart/create', async (c) => {
     title,
     playbackPolicy,
     generateSubtitle,
+    generateChapters,
   } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
 
@@ -225,6 +233,10 @@ app.post('/multipart/create', async (c) => {
 
   const { fileId, key } = getUploadKey(organizationId, filename)
 
+  // Validate: chapters require subtitles (need transcription first)
+  const enableSubtitle = generateSubtitle === true || generateChapters === true
+  const enableChapters = generateChapters === true && enableSubtitle
+
   // CREATE VIDEO ENTRY IN DATABASE with status 'uploading'
   await db.insert(video).values({
     id: fileId,
@@ -235,8 +247,10 @@ app.post('/multipart/create', async (c) => {
     rawKey: key,
     size: parsedSize,
     uploadedBy: session.userId,
-    generateSubtitle: generateSubtitle === true,
-    subtitleStatus: generateSubtitle === true ? 'pending' : null,
+    generateSubtitle: enableSubtitle,
+    subtitleStatus: enableSubtitle ? 'pending' : null,
+    generateChapters: enableChapters,
+    chaptersStatus: enableChapters ? 'pending' : null,
   })
 
   const command = new CreateMultipartUploadCommand({
@@ -429,7 +443,13 @@ app.post('/multipart/complete', async (c) => {
     if (updated.length > 0) {
       try {
         const playbackPolicy = videoRecord.playbackPolicy || 'public'
-        await triggerTranscoding(key, fileId, playbackPolicy, videoRecord.generateSubtitle || false)
+        await triggerTranscoding(
+          key,
+          fileId,
+          playbackPolicy,
+          videoRecord.generateSubtitle || false,
+          videoRecord.generateChapters || false
+        )
       } catch (err) {
         console.error(`Failed to queue transcoding for ${fileId}:`, err)
         // Revert status so user knows it failed and can retry

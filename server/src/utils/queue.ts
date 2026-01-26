@@ -4,7 +4,8 @@ export const triggerTranscoding = async (
   fileKey: string,
   fileId: string,
   playbackPolicy: 'public' | 'signed' = 'public',
-  generateSubtitle: boolean = false
+  generateSubtitle: boolean = false,
+  generateChapters: boolean = false
 ) => {
   const client = new Client({ token: process.env.QSTASH_TOKEN })
 
@@ -21,6 +22,7 @@ export const triggerTranscoding = async (
         fileId: fileId,
         playbackPolicy: playbackPolicy,
         generateSubtitle: generateSubtitle,
+        generateChapters: generateChapters,
         callbackUrl: `${backendUrl}/api/webhook/transcode-complete`,
       },
       retries: 3,
@@ -33,4 +35,3 @@ export const triggerTranscoding = async (
     return { success: false, error }
   }
 }
-

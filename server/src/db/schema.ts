@@ -10,6 +10,7 @@ import {
   integer,
   bigint,
   uuid,
+  jsonb,
 } from 'drizzle-orm/pg-core'
 
 // =========================================
@@ -197,6 +198,11 @@ export const video = pgTable('video', {
   generateSubtitle: boolean('generate_subtitle').default(false),
   subtitleStatus: text('subtitle_status'), // 'pending' | 'processing' | 'completed' | 'failed'
   subtitleUrl: text('subtitle_url'), // URL to the generated subtitle file (VTT/SRT)
+
+  // AI Chapters generation
+  generateChapters: boolean('generate_chapters').default(false),
+  chaptersStatus: text('chapters_status'), // 'pending' | 'processing' | 'completed' | 'failed'
+  chapters: jsonb('chapters').$type<Array<{ startTime: number; endTime: number; title: string }>>(),
 
   // Storage tracking for billing
   transcodedSize: bigint('transcoded_size', { mode: 'number' }), // Total bytes of transcoded files (HLS + poster + subtitles)
