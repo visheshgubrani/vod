@@ -91,6 +91,8 @@ app.get('/:id', async (c) => {
     duration: videoRecord.duration,
     thumbnailUrl: resolveUrl(videoRecord.thumbnailUrl),
     subtitleUrl: resolveUrl(videoRecord.subtitleUrl),
+    chapters: videoRecord.chapters, // AI-generated chapters array
+    chaptersStatus: videoRecord.chaptersStatus,
     playbackUrl,
     token, // Include token separately for clients that need it
     createdAt: videoRecord.createdAt,

@@ -33,6 +33,8 @@ interface VideoDetail extends Video {
     playbackUrl?: string | null;
     token?: string | null;
     subtitleUrl?: string | null;
+    chapters?: Array<{ startTime: number; endTime: number; title: string }> | null;
+    chaptersStatus?: string | null;
 }
 
 export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalProps) {
@@ -249,6 +251,7 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
                                             src={detail.playbackUrl}
                                             title={detail?.title || video.title}
                                             subtitles={detail?.subtitleUrl || undefined}
+                                            chapters={detail?.chapters || undefined}
                                         />
                                     </div>
 
