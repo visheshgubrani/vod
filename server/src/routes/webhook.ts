@@ -100,6 +100,7 @@ app.post('/transcode-complete', async (c) => {
     const meta = payload?.metadata || {}
     const processing = payload?.processing || {}
     const subtitle = payload?.subtitle || {}
+    const chapters = payload?.chapters || {}
     
     const master = typeof outputs?.hls_playlist === 'string' ? outputs.hls_playlist : null
     const thumb = typeof outputs?.poster === 'string' ? outputs.poster : null
@@ -120,6 +121,16 @@ app.post('/transcode-complete', async (c) => {
       subtitleStatus = subtitle?.status || (subtitle?.generated ? 'completed' : 'failed')
     }
 
+    // Determine chapters status and data from webhook
+    let chaptersStatus: string | null = null
+    let chaptersData: Array<{ startTime: number; endTime: number; title: string }> | null = null
+    if (chapters?.requested) {
+      chaptersStatus = chapters?.status || (chapters?.generated ? 'completed' : 'failed')
+      if (chapters?.generated && Array.isArray(chapters?.data)) {
+        chaptersData = chapters.data
+      }
+    }
+
     // Extract transcoded size for billing (in bytes)
     const transcodedSize = typeof processing?.transcoded_size === 'number' 
       ? processing.transcoded_size 
@@ -136,6 +147,9 @@ app.post('/transcode-complete', async (c) => {
         // Subtitle fields
         subtitleStatus: subtitleStatus,
         subtitleUrl: subtitleVtt ? joinUrl(transcodedBucketUrl, subtitleVtt) : null,
+        // Chapters fields
+        chaptersStatus: chaptersStatus,
+        chapters: chaptersData,
         // Storage tracking for billing
         transcodedSize: transcodedSize,
         metadata: JSON.stringify({
@@ -163,6 +177,9 @@ app.post('/transcode-complete', async (c) => {
           // Subtitle info
           subtitle_requested: subtitle?.requested,
           subtitle_generated: subtitle?.generated,
+          // Chapters info
+          chapters_requested: chapters?.requested,
+          chapters_generated: chapters?.generated,
           transcoded_at: new Date().toISOString(),
         }),
         updatedAt: new Date(),

@@ -4,7 +4,7 @@ import * as React from "react";
 import Uppy, { UppyFile, Meta, Body } from "@uppy/core";
 import AwsS3 from "@uppy/aws-s3";
 import Dashboard from "@uppy/dashboard";
-import { Lock, Globe, Captions } from "lucide-react";
+import { Lock, Globe, Captions, ListVideo } from "lucide-react";
 
 import "@uppy/core/css/style.min.css";
 import "@uppy/dashboard/css/style.min.css";
@@ -32,16 +32,27 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
     const uppyRef = React.useRef<Uppy<CustomMeta, Body> | null>(null);
     const [playbackPolicy, setPlaybackPolicy] = React.useState<"public" | "signed">("public");
     const [generateSubtitle, setGenerateSubtitle] = React.useState(false);
+    const [generateChapters, setGenerateChapters] = React.useState(false);
 
     // Store in refs so they're accessible in Uppy callbacks
     const playbackPolicyRef = React.useRef(playbackPolicy);
     const generateSubtitleRef = React.useRef(generateSubtitle);
+    const generateChaptersRef = React.useRef(generateChapters);
     React.useEffect(() => {
         playbackPolicyRef.current = playbackPolicy;
     }, [playbackPolicy]);
     React.useEffect(() => {
         generateSubtitleRef.current = generateSubtitle;
     }, [generateSubtitle]);
+    React.useEffect(() => {
+        generateChaptersRef.current = generateChapters;
+    }, [generateChapters]);
+    // Auto-disable chapters if subtitles are disabled (chapters require transcription)
+    React.useEffect(() => {
+        if (!generateSubtitle && generateChapters) {
+            setGenerateChapters(false);
+        }
+    }, [generateSubtitle, generateChapters]);
 
     React.useEffect(() => {
         if (!open || !dashboardRef.current) return;
@@ -75,6 +86,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                         size: file.size,
                         playbackPolicy: playbackPolicyRef.current,
                         generateSubtitle: generateSubtitleRef.current,
+                        generateChapters: generateChaptersRef.current,
                     }),
                 });
 
@@ -114,6 +126,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                         size: file.size,
                         playbackPolicy: playbackPolicyRef.current,
                         generateSubtitle: generateSubtitleRef.current,
+                        generateChapters: generateChaptersRef.current,
                     }),
                 });
 
@@ -387,6 +400,48 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                     </button>
                 </div>
 
+                {/* AI Chapters Toggle */}
+                <div 
+                    className={cn(
+                        "flex items-center gap-4 p-4 rounded-xl bg-muted/30 border border-border transition-colors",
+                        generateSubtitle 
+                            ? "cursor-pointer hover:bg-muted/50" 
+                            : "opacity-50 cursor-not-allowed"
+                    )}
+                    onClick={() => generateSubtitle && setGenerateChapters(!generateChapters)}
+                >
+                    <div className="flex-1">
+                        <p className="text-sm font-medium text-foreground mb-1">AI Chapters</p>
+                        <p className="text-xs text-muted-foreground">
+                            {!generateSubtitle 
+                                ? "Enable AI Subtitles first (chapters require transcription)"
+                                : generateChapters 
+                                    ? "Chapters will be auto-generated from transcript" 
+                                    : "No chapters will be generated"}
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        disabled={!generateSubtitle}
+                        className={cn(
+                            "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                            generateChapters && generateSubtitle
+                                ? "bg-primary text-white shadow-sm"
+                                : "bg-muted/50 text-muted-foreground border border-border",
+                            !generateSubtitle && "opacity-50 cursor-not-allowed"
+                        )}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (generateSubtitle) {
+                                setGenerateChapters(!generateChapters);
+                            }
+                        }}
+                    >
+                        <ListVideo className="w-4 h-4" />
+                        {generateChapters ? "Enabled" : "Disabled"}
+                    </button>
+                </div>
+
                 <div
                     ref={dashboardRef}
                     className={cn(
@@ -402,6 +457,7 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                     Videos will be transcoded after upload for optimal streaming
                     {playbackPolicy === "signed" && " • AES-128 encrypted"}
                     {generateSubtitle && " • AI subtitles"}
+                    {generateChapters && " • AI chapters"}
                 </p>
             </SheetContent>
         </Sheet>
