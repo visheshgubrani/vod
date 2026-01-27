@@ -4,6 +4,7 @@ import * as jose from 'jose'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { video, member } from '../db/schema'
+import { dispatchWebhook } from '../utils/webhookDispatcher'
 
 const app = new Hono()
 
@@ -253,6 +254,14 @@ app.patch('/:id', async (c) => {
     .set(updates)
     .where(eq(video.id, videoId))
 
+  // Dispatch webhook event
+  dispatchWebhook(videoRecord.organizationId, 'video.updated', {
+    videoId,
+    title: updates.title || videoRecord.title,
+    playbackPolicy: updates.playbackPolicy || videoRecord.playbackPolicy,
+    changes: updates,
+  })
+
   return c.json({
     success: true,
     id: videoId,
@@ -301,6 +310,12 @@ app.delete('/:id', async (c) => {
   await db
     .delete(video)
     .where(eq(video.id, videoId))
+
+  // Dispatch webhook event
+  dispatchWebhook(videoRecord.organizationId, 'video.deleted', {
+    videoId,
+    title: videoRecord.title,
+  })
 
   // TODO: Delete R2 files
 

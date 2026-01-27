@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
+import { dispatchWebhook } from '../utils/webhookDispatcher'
 
 const app = new Hono()
 
@@ -86,6 +87,13 @@ app.post('/transcode-complete', async (c) => {
           updatedAt: new Date(),
         })
         .where(eq(video.id, videoId))
+
+      // Dispatch webhook event for failure
+      dispatchWebhook(videoRecord.organizationId, 'video.failed', {
+        videoId,
+        title: videoRecord.title,
+        error: message,
+      })
 
       return c.json({ success: true, status: 'failed', videoId })
     }
@@ -185,6 +193,47 @@ app.post('/transcode-complete', async (c) => {
         updatedAt: new Date(),
       })
       .where(eq(video.id, videoId))
+
+    // Dispatch webhook events
+    const transcodedBucketUrlFinal = transcodedBucketUrl
+    
+    // video.ready event
+    dispatchWebhook(videoRecord.organizationId, 'video.ready', {
+      videoId,
+      title: videoRecord.title,
+      status: 'ready',
+      duration,
+      hlsUrl: master ? joinUrl(transcodedBucketUrlFinal, master) : null,
+      thumbnailUrl: thumb ? joinUrl(transcodedBucketUrlFinal, thumb) : null,
+    })
+    
+    // subtitle events
+    if (subtitle?.requested) {
+      if (subtitleStatus === 'completed') {
+        dispatchWebhook(videoRecord.organizationId, 'subtitle.generated', {
+          videoId,
+          subtitleUrl: subtitleVtt ? joinUrl(transcodedBucketUrlFinal, subtitleVtt) : null,
+        })
+      } else if (subtitleStatus === 'failed') {
+        dispatchWebhook(videoRecord.organizationId, 'subtitle.failed', {
+          videoId,
+        })
+      }
+    }
+    
+    // chapters events
+    if (chapters?.requested) {
+      if (chaptersStatus === 'completed') {
+        dispatchWebhook(videoRecord.organizationId, 'chapters.generated', {
+          videoId,
+          chapters: chaptersData,
+        })
+      } else if (chaptersStatus === 'failed') {
+        dispatchWebhook(videoRecord.organizationId, 'chapters.failed', {
+          videoId,
+        })
+      }
+    }
 
     return c.json({
       success: true,

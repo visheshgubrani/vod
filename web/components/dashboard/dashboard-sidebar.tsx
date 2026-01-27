@@ -16,6 +16,7 @@ import {
     Check,
     Key,
     HardDrive,
+    Webhook,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -47,6 +48,7 @@ const navItems = [
     { href: "/dashboard/content", label: "Content", icon: Film },
     { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
     { href: "/dashboard/api-keys", label: "API Keys", icon: Key },
+    { href: "/dashboard/webhooks", label: "Webhooks", icon: Webhook },
     { href: "/dashboard/usage", label: "Usage", icon: HardDrive },
     { href: "/dashboard/developers", label: "Developers", icon: Code2 },
     { href: "/dashboard/settings", label: "Settings", icon: Settings },
