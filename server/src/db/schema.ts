@@ -206,6 +206,9 @@ export const video = pgTable('video', {
 
   // Storage tracking for billing
   transcodedSize: bigint('transcoded_size', { mode: 'number' }), // Total bytes of transcoded files (HLS + poster + subtitles)
+  
+  // Processing metrics
+  transcodedTime: integer('transcoded_time'), // Transcoding duration in seconds
 
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at')
