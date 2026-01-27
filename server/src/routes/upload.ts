@@ -4,6 +4,8 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
@@ -18,6 +20,7 @@ import { r2 } from '../utils/R2'
 
 const app = new Hono()
 const RAW_BUCKET = 'vod-raw-dev'
+const TRANSCODED_BUCKET = process.env.TRANSCODED_BUCKET_NAME || 'vod-app-dev'
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
@@ -552,7 +555,7 @@ app.delete('/:fileId', async (c) => {
     return c.json({ error: 'Cannot delete video in current status' }, 400)
   }
 
-  // Try to delete from R2 if rawKey exists
+  // Try to delete from R2 raw bucket if rawKey exists
   if (videoRecord.rawKey) {
     try {
       await r2.send(
@@ -563,8 +566,50 @@ app.delete('/:fileId', async (c) => {
       )
     } catch (err) {
       // Log but don't fail - file might not exist in R2 yet
-      console.warn(`Failed to delete from R2: ${videoRecord.rawKey}`, err)
+      console.warn(`Failed to delete from R2 raw bucket: ${videoRecord.rawKey}`, err)
     }
+  }
+
+  // Delete all transcoded files from R2 transcoded bucket
+  // Transcoded files are stored under {videoId}/ prefix
+  try {
+    // List all objects with the video ID prefix
+    const listResponse = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: TRANSCODED_BUCKET,
+        Prefix: `${fileId}/`,
+      })
+    )
+
+    if (listResponse.Contents && listResponse.Contents.length > 0) {
+      // Batch delete all objects
+      const objectsToDelete = listResponse.Contents.map((obj) => ({
+        Key: obj.Key!,
+      }))
+
+      await r2.send(
+        new DeleteObjectsCommand({
+          Bucket: TRANSCODED_BUCKET,
+          Delete: {
+            Objects: objectsToDelete,
+            Quiet: true,
+          },
+        })
+      )
+
+      console.log(`Deleted ${objectsToDelete.length} transcoded files for video ${fileId}`)
+    }
+
+    // Also delete the folder marker object (0-byte object with trailing /)
+    await r2.send(
+      new DeleteObjectCommand({
+        Bucket: TRANSCODED_BUCKET,
+        Key: `${fileId}/`,
+      })
+    )
+  } catch (err) {
+    // Log but don't fail - files might not exist in transcoded bucket yet
+    console.warn(`Failed to delete from R2 transcoded bucket: ${fileId}/`, err)
   }
 
   // Delete from database
