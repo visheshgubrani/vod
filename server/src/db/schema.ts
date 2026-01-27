@@ -230,6 +230,20 @@ export const apiKey = pgTable('api_key', {
   createdAt: timestamp('created_at').defaultNow(),
 })
 
+export const webhookEndpoint = pgTable('webhook_endpoint', {
+  id: text('id').primaryKey(), // "whep_..."
+  organizationId: text('organization_id')
+    .notNull()
+    .references(() => organization.id, { onDelete: 'cascade' }),
+  url: text('url').notNull(), // HTTPS endpoint URL
+  secret: text('secret').notNull(), // HMAC signing secret
+  events: text('events').array(), // ['video.ready', 'subtitle.generated', ...]
+  enabled: boolean('enabled').default(true),
+  description: text('description'),
+  lastTriggeredAt: timestamp('last_triggered_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+})
+
 // =========================================
 // 3. RELATIONS
 // =========================================

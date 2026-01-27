@@ -6,6 +6,7 @@ import webhook from './routes/webhook'
 import video from './routes/video'
 import keys from './routes/keys'
 import usage from './routes/usage'
+import webhooks from './routes/webhooks'
 import api from './routes/api'
 import { Bindings } from './types'
 import 'dotenv/config'
@@ -21,10 +22,10 @@ app.use(
     exposeHeaders: ['Content-Length'],
     maxAge: 600,
     credentials: true,
-  })
+  }),
 )
 
-app.on(['POST', 'GET'], '/api/auth/**', (c) => {
+app.on(['POST', 'GET'], '/api/auth/*', (c) => {
   return auth.handler(c.req.raw)
 })
 
@@ -34,6 +35,7 @@ app.route('/api/webhook', webhook)
 app.route('/api/video', video)
 app.route('/api/keys', keys)
 app.route('/api/usage', usage)
+app.route('/api/webhooks', webhooks)
 
 // Public API routes (API key auth) - for B2B customers
 app.route('/v1', api)

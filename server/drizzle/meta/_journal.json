@@ -29,6 +29,13 @@
       "when": 1769364216902,
       "tag": "0003_worthless_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1769431200432,
+      "tag": "0004_chilly_the_fury",
+      "breakpoints": true
     }
   ]
 }

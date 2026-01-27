@@ -13,6 +13,7 @@ import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
 import { triggerTranscoding } from '../utils/queue'
+import { dispatchWebhook } from '../utils/webhookDispatcher'
 import { r2 } from '../utils/R2'
 
 const app = new Hono()
@@ -129,6 +130,13 @@ app.post('/url', async (c) => {
   // The URL is valid for 1 hour
   const url = await getSignedUrl(r2, command, { expiresIn: 3600 })
 
+  // Dispatch webhook event
+  dispatchWebhook(organizationId, 'video.uploading', {
+    videoId: fileId,
+    title: title || filename,
+    status: 'uploading',
+  })
+
   return c.json({
     uploadUrl: url,
     fileId: fileId,
@@ -192,6 +200,13 @@ app.post('/complete', async (c) => {
       return c.json({ error: 'Upload complete but transcoding failed to start' }, 500)
     }
   }
+
+  // Dispatch webhook event
+  dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
+    videoId: fileId,
+    title: videoRecord.title,
+    status: 'processing',
+  })
 
   return c.json({ success: true, fileId })
 })
@@ -265,6 +280,13 @@ app.post('/multipart/create', async (c) => {
     await db.delete(video).where(eq(video.id, fileId))
     return c.json({ error: 'Failed to create multipart upload' }, 500)
   }
+
+  // Dispatch webhook event
+  dispatchWebhook(organizationId, 'video.uploading', {
+    videoId: fileId,
+    title: title || filename,
+    status: 'uploading',
+  })
 
   return c.json({
     uploadId: response.UploadId,
@@ -459,6 +481,13 @@ app.post('/multipart/complete', async (c) => {
     } else {
       console.log(`Video ${fileId} status changed, skipping transcoding`)
     }
+    
+    // Dispatch webhook event (inside if block where videoRecord is defined)
+    dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
+      videoId: fileId,
+      title: videoRecord.title,
+      status: 'processing',
+    })
   }
 
   return c.json({
