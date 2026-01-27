@@ -144,6 +144,11 @@ app.post('/transcode-complete', async (c) => {
       ? processing.transcoded_size 
       : null
 
+    // Extract transcoded time for analytics (in seconds)
+    const transcodedTime = typeof processing?.transcode_time === 'number' 
+      ? Math.round(processing.transcode_time) 
+      : null
+
     await db
       .update(video)
       .set({
@@ -160,6 +165,8 @@ app.post('/transcode-complete', async (c) => {
         chapters: chaptersData,
         // Storage tracking for billing
         transcodedSize: transcodedSize,
+        // Processing metrics
+        transcodedTime: transcodedTime,
         metadata: JSON.stringify({
           ...prevMeta,
           // Video info
