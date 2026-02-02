@@ -5,7 +5,8 @@ export const triggerTranscoding = async (
   fileId: string,
   playbackPolicy: 'public' | 'signed' = 'public',
   generateSubtitle: boolean = false,
-  generateChapters: boolean = false
+  generateChapters: boolean = false,
+  organizationId: string
 ) => {
   const client = new Client({ token: process.env.QSTASH_TOKEN })
 
@@ -23,6 +24,7 @@ export const triggerTranscoding = async (
         playbackPolicy: playbackPolicy,
         generateSubtitle: generateSubtitle,
         generateChapters: generateChapters,
+        organizationId: organizationId,  // For bandwidth analytics
         callbackUrl: `${backendUrl}/api/webhook/transcode-complete`,
       },
       retries: 3,

@@ -259,4 +259,136 @@ app.get('/transcoding-breakdown', async (c) => {
   })
 })
 
+/**
+ * GET /api/usage/bandwidth
+ * Get bandwidth usage from Cloudflare Analytics Engine for current organization
+ * 
+ * Query params:
+ * - days: Number of days to look back (default: 30, max: 90)
+ */
+app.get('/bandwidth', async (c) => {
+  const session = c.var.session
+  const organizationId = session.activeOrganizationId
+
+  if (!organizationId) {
+    return c.json({ error: 'No active organization' }, 400)
+  }
+
+  const daysParam = c.req.query('days')
+  const days = Math.min(90, Math.max(1, parseInt(daysParam || '30', 10) || 30))
+  
+  const accountId = process.env.ACCOUNT_ID
+  const apiToken = process.env.CLOUDFLARE_ANALYTICS_TOKEN
+
+  if (!accountId || !apiToken) {
+    return c.json({ 
+      error: 'Bandwidth analytics not configured',
+      message: 'Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN'
+    }, 501)
+  }
+
+  // Calculate date range
+  const endDate = new Date()
+  const startDate = new Date()
+  startDate.setDate(startDate.getDate() - days)
+  
+  // Query Cloudflare Analytics Engine via GraphQL
+  const query = `
+    query GetBandwidthUsage($accountTag: String!, $datetimeStart: Time!, $datetimeEnd: Time!, $orgId: String!) {
+      viewer {
+        accounts(filter: { accountTag: $accountTag }) {
+          bandwidth_usageAdaptiveGroups(
+            filter: {
+              datetime_geq: $datetimeStart
+              datetime_leq: $datetimeEnd
+              index1: $orgId
+            }
+            limit: 1000
+          ) {
+            dimensions {
+              blob1  # organizationId
+              blob3  # fileType
+            }
+            sum {
+              double1  # bytes
+            }
+            count
+          }
+        }
+      }
+    }
+  `
+
+  try {
+    const response = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        variables: {
+          accountTag: accountId,
+          datetimeStart: startDate.toISOString(),
+          datetimeEnd: endDate.toISOString(),
+          orgId: organizationId,
+        },
+      }),
+    })
+
+    if (!response.ok) {
+      console.error('Analytics Engine query failed:', response.status)
+      return c.json({ error: 'Failed to fetch bandwidth data' }, 502)
+    }
+
+    const data = await response.json() as any
+    const groups = data?.data?.viewer?.accounts?.[0]?.bandwidth_usageAdaptiveGroups || []
+
+    // Aggregate by file type
+    const byType: Record<string, { bytes: number; requests: number }> = {}
+    let totalBytes = 0
+    let totalRequests = 0
+
+    for (const group of groups) {
+      const fileType = group.dimensions?.blob3 || 'unknown'
+      const bytes = group.sum?.double1 || 0
+      const requests = group.count || 0
+
+      if (!byType[fileType]) {
+        byType[fileType] = { bytes: 0, requests: 0 }
+      }
+      byType[fileType].bytes += bytes
+      byType[fileType].requests += requests
+      totalBytes += bytes
+      totalRequests += requests
+    }
+
+    return c.json({
+      organizationId,
+      period: {
+        days,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+      },
+      bandwidth: {
+        totalBytes,
+        totalMB: Math.round(totalBytes / (1024 * 1024) * 100) / 100,
+        totalGB: Math.round(totalBytes / (1024 * 1024 * 1024) * 1000) / 1000,
+        totalRequests,
+      },
+      byFileType: Object.entries(byType).map(([type, stats]) => ({
+        type,
+        bytes: stats.bytes,
+        megabytes: Math.round(stats.bytes / (1024 * 1024) * 100) / 100,
+        requests: stats.requests,
+        percentage: totalBytes > 0 ? Math.round(stats.bytes / totalBytes * 100) : 0,
+      })),
+    })
+  } catch (error) {
+    console.error('Bandwidth query error:', error)
+    return c.json({ error: 'Failed to query bandwidth analytics' }, 500)
+  }
+})
+
 export default app

@@ -12,7 +12,8 @@ def upload_to_r2(
     video_id: str,
     s3_client,
     bucket: str,
-    playback_policy: str = "public"
+    playback_policy: str = "public",
+    organization_id: str = None
 ) -> int:
     """
     Upload packaged files to R2 with proper metadata.
@@ -23,6 +24,7 @@ def upload_to_r2(
         s3_client: Configured boto3 S3 client
         bucket: R2 bucket name
         playback_policy: "public" or "signed" - stored in metadata for delivery worker
+        organization_id: Organization ID for bandwidth analytics tracking
         
     Returns:
         Number of files successfully uploaded
@@ -51,6 +53,15 @@ def upload_to_r2(
             ("application/octet-stream", "public, max-age=3600")
         )
         
+        # Build metadata dict with optional organization-id
+        metadata = {
+            "video-id": video_id,
+            "original-name": file_path.name,
+            "playback-policy": playback_policy,
+        }
+        if organization_id:
+            metadata["organization-id"] = organization_id
+        
         try:
             s3_client.upload_file(
                 str(file_path),
@@ -59,11 +70,7 @@ def upload_to_r2(
                 ExtraArgs={
                     "ContentType": content_type,
                     "CacheControl": cache_control,
-                    "Metadata": {
-                        "video-id": video_id,
-                        "original-name": file_path.name,
-                        "playback-policy": playback_policy,  # For delivery worker auth
-                    }
+                    "Metadata": metadata
                 },
                 Config=TRANSFER_CONFIG  # Use multi-threaded uploads
             )
