@@ -17,11 +17,8 @@
 		}
 	],
 	"analytics_engine_datasets": [
-		{
-			"binding": "USAGE_ANALYTICS",
-			"dataset": "bandwidth_usage"
-		}
-	]
+    { "binding": "USAGE_ANALYTICS", "dataset": "bandwidth_usage" }
+  ]
 	
 	/**
 	 * Smart Placement

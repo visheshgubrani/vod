@@ -194,7 +194,8 @@ app.post('/complete', async (c) => {
         fileId,
         videoRecord.playbackPolicy || 'public',
         videoRecord.generateSubtitle || false,
-        videoRecord.generateChapters || false
+        videoRecord.generateChapters || false,
+        videoRecord.organizationId
       )
     } catch (err) {
       console.error(`Failed to queue transcoding for ${fileId}:`, err)
@@ -473,7 +474,8 @@ app.post('/multipart/complete', async (c) => {
           fileId,
           playbackPolicy,
           videoRecord.generateSubtitle || false,
-          videoRecord.generateChapters || false
+          videoRecord.generateChapters || false,
+          videoRecord.organizationId
         )
       } catch (err) {
         console.error(`Failed to queue transcoding for ${fileId}:`, err)

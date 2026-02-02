@@ -23,6 +23,7 @@ import * as jose from 'jose';
 interface Env {
 	TRANSCODED_BUCKET: R2Bucket;
 	JWT_SECRET: string;
+	USAGE_ANALYTICS?: AnalyticsEngineDataset;  // For bandwidth tracking
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -191,6 +192,39 @@ function rewritePlaylist(content: string, token: string): string {
 	return result;
 }
 
+/**
+ * Log bandwidth usage to Analytics Engine for billing/analytics.
+ * Non-blocking - uses waitUntil to prevent impacting response latency.
+ */
+function logBandwidth(
+	ctx: ExecutionContext,
+	env: Env,
+	organizationId: string | undefined,
+	videoId: string | null,
+	bytesServed: number,
+	fileType: string
+) {
+	if (!env.USAGE_ANALYTICS || !organizationId) return;
+	
+	ctx.waitUntil(
+		(async () => {
+			try {
+				env.USAGE_ANALYTICS!.writeDataPoint({
+					blobs: [
+						organizationId,           // blob1: org for grouping
+						videoId || 'unknown',     // blob2: video id
+						fileType,                 // blob3: segment/playlist/thumbnail/key
+					],
+					doubles: [bytesServed],       // double1: bytes served
+					indexes: [organizationId],    // index1: for fast org queries
+				});
+			} catch (e) {
+				console.error('Failed to log bandwidth:', e);
+			}
+		})()
+	);
+}
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const corsHeaders = {
@@ -276,14 +310,36 @@ export default {
 				...corsHeaders,
 			});
 
+			// Extract org-id for bandwidth tracking (and add to header for cache compatibility)
+			const organizationId = object.customMetadata?.['organization-id'];
+			const videoId = extractVideoId(key);
+			if (organizationId) {
+				headers.set('X-Org-Id', organizationId);
+			}
+
+			// Determine file type for analytics categorization
+			const getFileType = (path: string): string => {
+				if (path.endsWith('.m3u8') || path.endsWith('.mpd')) return 'playlist';
+				if (path.endsWith('.mp4') || path.endsWith('.m4s') || path.endsWith('.ts')) return 'segment';
+				if (path.endsWith('.jpg') || path.endsWith('.jpeg') || path.endsWith('.png')) return 'thumbnail';
+				if (path.endsWith('.key')) return 'key';
+				if (path.endsWith('.vtt')) return 'subtitle';
+				return 'other';
+			};
+			const fileType = getFileType(key);
+
 			// 5. MANIFEST REWRITING
 			if (isSigned && key.endsWith('.m3u8') && token) {
 				const content = await object.text();
 				const rewritten = rewritePlaylist(content, token);
+				const rewrittenBytes = new TextEncoder().encode(rewritten).length;
 
 				// Ensure signed manifests are NEVER cached by the browser/CDN
 				headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0');
-				headers.set('Content-Length', new TextEncoder().encode(rewritten).length.toString());
+				headers.set('Content-Length', rewrittenBytes.toString());
+
+				// Log bandwidth
+				logBandwidth(ctx, env, organizationId, videoId, rewrittenBytes, fileType);
 
 				return new Response(rewritten, { status: 200, headers });
 			}
@@ -302,10 +358,18 @@ export default {
 			if (resolvedRange && 'body' in object) {
 				headers.set('Content-Range', `bytes ${resolvedRange.start}-${resolvedRange.end}/${totalSize}`);
 				headers.set('Content-Length', resolvedRange.length.toString());
+
+				// Log bandwidth for range request
+				logBandwidth(ctx, env, organizationId, videoId, resolvedRange.length, fileType);
+
 				return new Response(object.body, { status: 206, headers });
 			}
 
 			headers.set('Content-Length', totalSize.toString());
+
+			// Log bandwidth for full response
+			logBandwidth(ctx, env, organizationId, videoId, totalSize, fileType);
+
 			return new Response(object.body, { status: 200, headers });
 		} catch (error) {
 			console.error('Error serving content:', error);
