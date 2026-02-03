@@ -18,6 +18,7 @@ export type Bindings = {
   MODAL_WEBHOOK_URL: string
   QSTASH_TOKEN: string
   TRANSCODED_BUCKET_URL: string // URL prefix for transcoded content bucket
+  DELIVERY_WORKER_URL: string
   BACKEND_URL: string // Backend URL for callbacks (e.g. https://api.streamflow.io)
   MODAL_WEBHOOK_SECRET: string
   PORT: number

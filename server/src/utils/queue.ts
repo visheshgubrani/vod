@@ -6,7 +6,7 @@ export const triggerTranscoding = async (
   playbackPolicy: 'public' | 'signed' = 'public',
   generateSubtitle: boolean = false,
   generateChapters: boolean = false,
-  organizationId: string
+  organizationId: string,
 ) => {
   const client = new Client({ token: process.env.QSTASH_TOKEN })
 
@@ -19,12 +19,12 @@ export const triggerTranscoding = async (
       url: process.env.MODAL_WEBHOOK_URL!,
       body: {
         key: fileKey,
-        bucket: 'vod-raw-dev',
+        bucket: process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads',
         fileId: fileId,
         playbackPolicy: playbackPolicy,
         generateSubtitle: generateSubtitle,
         generateChapters: generateChapters,
-        organizationId: organizationId,  // For bandwidth analytics
+        organizationId: organizationId, // For bandwidth analytics
         callbackUrl: `${backendUrl}/api/webhook/transcode-complete`,
       },
       retries: 3,
