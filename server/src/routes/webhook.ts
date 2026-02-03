@@ -65,14 +65,14 @@ app.post('/transcode-complete', async (c) => {
       return c.json({ success: true, status: 'ready', ignored: true })
     }
 
-    const transcodedBucketUrl = process.env.TRANSCODED_BUCKET_URL || ''
+    const transcodedBucketUrl = process.env.DELIVERY_WORKER_URL || ''
 
     if (status === 'error') {
       const message =
         typeof payload?.message === 'string' ? payload.message : 'Unknown error'
       const prevMeta = safeJsonParse<Record<string, any>>(
         videoRecord.metadata,
-        {}
+        {},
       )
 
       await db
@@ -103,51 +103,64 @@ app.post('/transcode-complete', async (c) => {
     // payload.metadata: { width, height, duration, fps, has_audio, is_hdr, is_vertical, aspect_ratio }
     // payload.processing: { total_time, transcode_time, etc. }
     // payload.subtitle: { requested, generated, status, url }
-    
+
     const outputs = payload?.outputs || {}
     const meta = payload?.metadata || {}
     const processing = payload?.processing || {}
     const subtitle = payload?.subtitle || {}
     const chapters = payload?.chapters || {}
-    
-    const master = typeof outputs?.hls_playlist === 'string' ? outputs.hls_playlist : null
+
+    const master =
+      typeof outputs?.hls_playlist === 'string' ? outputs.hls_playlist : null
     const thumb = typeof outputs?.poster === 'string' ? outputs.poster : null
-    const subtitleVtt = typeof outputs?.subtitles === 'string' ? outputs.subtitles : null
-    const duration = typeof meta?.duration === 'number' && meta.duration >= 0 ? meta.duration : null
+    const subtitleVtt =
+      typeof outputs?.subtitles === 'string' ? outputs.subtitles : null
+    const duration =
+      typeof meta?.duration === 'number' && meta.duration >= 0
+        ? meta.duration
+        : null
     const resolutions = Array.isArray(outputs?.renditions)
       ? outputs.renditions.filter((x: any) => typeof x === 'string')
       : null
 
     const prevMeta = safeJsonParse<Record<string, any>>(
       videoRecord.metadata,
-      {}
+      {},
     )
 
     // Determine subtitle status from webhook
     let subtitleStatus: string | null = null
     if (subtitle?.requested) {
-      subtitleStatus = subtitle?.status || (subtitle?.generated ? 'completed' : 'failed')
+      subtitleStatus =
+        subtitle?.status || (subtitle?.generated ? 'completed' : 'failed')
     }
 
     // Determine chapters status and data from webhook
     let chaptersStatus: string | null = null
-    let chaptersData: Array<{ startTime: number; endTime: number; title: string }> | null = null
+    let chaptersData: Array<{
+      startTime: number
+      endTime: number
+      title: string
+    }> | null = null
     if (chapters?.requested) {
-      chaptersStatus = chapters?.status || (chapters?.generated ? 'completed' : 'failed')
+      chaptersStatus =
+        chapters?.status || (chapters?.generated ? 'completed' : 'failed')
       if (chapters?.generated && Array.isArray(chapters?.data)) {
         chaptersData = chapters.data
       }
     }
 
     // Extract transcoded size for billing (in bytes)
-    const transcodedSize = typeof processing?.transcoded_size === 'number' 
-      ? processing.transcoded_size 
-      : null
+    const transcodedSize =
+      typeof processing?.transcoded_size === 'number'
+        ? processing.transcoded_size
+        : null
 
     // Extract transcoded time for analytics (in seconds)
-    const transcodedTime = typeof processing?.transcode_time === 'number' 
-      ? Math.round(processing.transcode_time) 
-      : null
+    const transcodedTime =
+      typeof processing?.transcode_time === 'number'
+        ? Math.round(processing.transcode_time)
+        : null
 
     await db
       .update(video)
@@ -159,7 +172,9 @@ app.post('/transcode-complete', async (c) => {
         resolutions: resolutions ? JSON.stringify(resolutions) : null,
         // Subtitle fields
         subtitleStatus: subtitleStatus,
-        subtitleUrl: subtitleVtt ? joinUrl(transcodedBucketUrl, subtitleVtt) : null,
+        subtitleUrl: subtitleVtt
+          ? joinUrl(transcodedBucketUrl, subtitleVtt)
+          : null,
         // Chapters fields
         chaptersStatus: chaptersStatus,
         chapters: chaptersData,
@@ -203,7 +218,7 @@ app.post('/transcode-complete', async (c) => {
 
     // Dispatch webhook events
     const transcodedBucketUrlFinal = transcodedBucketUrl
-    
+
     // video.ready event
     dispatchWebhook(videoRecord.organizationId, 'video.ready', {
       videoId,
@@ -213,13 +228,15 @@ app.post('/transcode-complete', async (c) => {
       hlsUrl: master ? joinUrl(transcodedBucketUrlFinal, master) : null,
       thumbnailUrl: thumb ? joinUrl(transcodedBucketUrlFinal, thumb) : null,
     })
-    
+
     // subtitle events
     if (subtitle?.requested) {
       if (subtitleStatus === 'completed') {
         dispatchWebhook(videoRecord.organizationId, 'subtitle.generated', {
           videoId,
-          subtitleUrl: subtitleVtt ? joinUrl(transcodedBucketUrlFinal, subtitleVtt) : null,
+          subtitleUrl: subtitleVtt
+            ? joinUrl(transcodedBucketUrlFinal, subtitleVtt)
+            : null,
         })
       } else if (subtitleStatus === 'failed') {
         dispatchWebhook(videoRecord.organizationId, 'subtitle.failed', {
@@ -227,7 +244,7 @@ app.post('/transcode-complete', async (c) => {
         })
       }
     }
-    
+
     // chapters events
     if (chapters?.requested) {
       if (chaptersStatus === 'completed') {
@@ -253,7 +270,7 @@ app.post('/transcode-complete', async (c) => {
     console.error('Webhook error:', error)
     return c.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
-      500
+      500,
     )
   }
 })

@@ -19,15 +19,16 @@ import { dispatchWebhook } from '../utils/webhookDispatcher'
 import { r2 } from '../utils/R2'
 
 const app = new Hono()
-const RAW_BUCKET = 'vod-raw-dev'
-const TRANSCODED_BUCKET = process.env.TRANSCODED_BUCKET_NAME || 'vod-app-dev'
+const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
+const TRANSCODED_BUCKET =
+  process.env.TRANSCODED_BUCKET_NAME || 'transcoded-bucket'
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
 
 const getUploadKey = (
   organizationId: string | null | undefined,
-  filename: string
+  filename: string,
 ) => {
   const fileId = crypto.randomUUID()
   const key = `${organizationId || 'org_default'}/raw/${fileId}/${filename}`
@@ -48,7 +49,7 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
     // Calculate optimal part size, but never exceed MAX_PART_SIZE (5GB R2 limit)
     partSize = Math.min(
       MAX_PART_SIZE,
-      Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS))
+      Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS)),
     )
   }
 
@@ -83,7 +84,15 @@ app.post('/url', async (c) => {
   const session = c.var.session
 
   // INPUT VALIDATION
-  const { filename, contentType, size, title, playbackPolicy, generateSubtitle, generateChapters } = await c.req.json()
+  const {
+    filename,
+    contentType,
+    size,
+    title,
+    playbackPolicy,
+    generateSubtitle,
+    generateChapters,
+  } = await c.req.json()
   if (!filename || !contentType) return c.json({ error: 'Missing fields' }, 400)
   const parsedSize = Number(size)
   if (!Number.isFinite(parsedSize) || parsedSize <= 0) {
@@ -166,7 +175,9 @@ app.post('/complete', async (c) => {
 
   // Only process if status is 'uploading' (idempotency check)
   if (videoRecord.status !== 'uploading') {
-    console.log(`Video ${fileId} already being processed (status: ${videoRecord.status}), skipping`)
+    console.log(
+      `Video ${fileId} already being processed (status: ${videoRecord.status}), skipping`,
+    )
     return c.json({ success: true, fileId, skipped: true })
   }
 
@@ -195,13 +206,19 @@ app.post('/complete', async (c) => {
         videoRecord.playbackPolicy || 'public',
         videoRecord.generateSubtitle || false,
         videoRecord.generateChapters || false,
-        videoRecord.organizationId
+        videoRecord.organizationId,
       )
     } catch (err) {
       console.error(`Failed to queue transcoding for ${fileId}:`, err)
       // Revert status so user knows it failed and can retry
-      await db.update(video).set({ status: 'failed' }).where(eq(video.id, fileId))
-      return c.json({ error: 'Upload complete but transcoding failed to start' }, 500)
+      await db
+        .update(video)
+        .set({ status: 'failed' })
+        .where(eq(video.id, fileId))
+      return c.json(
+        { error: 'Upload complete but transcoding failed to start' },
+        500,
+      )
     }
   }
 
@@ -304,7 +321,8 @@ app.post('/multipart/create', async (c) => {
 // Multipart upload - get signed URLs for parts
 app.post('/multipart/parts', async (c) => {
   const session = c.var.session
-  const { key, uploadId, partNumbers, size, partSize, fileId } = await c.req.json()
+  const { key, uploadId, partNumbers, size, partSize, fileId } =
+    await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
 
   // Security: Verify the user owns this upload via fileId
@@ -314,11 +332,11 @@ app.post('/multipart/parts', async (c) => {
       .from(video)
       .where(eq(video.id, fileId))
       .limit(1)
-    
+
     if (videos.length === 0) {
       return c.json({ error: 'Video not found' }, 404)
     }
-    
+
     // Verify the video belongs to user's organization
     if (videos[0].organizationId !== session.activeOrganizationId) {
       return c.json({ error: 'Access denied' }, 403)
@@ -337,7 +355,7 @@ app.post('/multipart/parts', async (c) => {
   try {
     ;({ partSize: resolvedPartSize, partCount } = resolvePartConfig(
       parsedSize,
-      parsedPartSize
+      parsedPartSize,
     ))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid input'
@@ -348,8 +366,8 @@ app.post('/multipart/parts', async (c) => {
     new Set(
       partNumbers
         .map((partNumber: number) => Number(partNumber))
-        .filter((partNumber: number) => Number.isFinite(partNumber))
-    )
+        .filter((partNumber: number) => Number.isFinite(partNumber)),
+    ),
   )
 
   if (uniquePartNumbers.length === 0) {
@@ -383,7 +401,7 @@ app.post('/multipart/parts', async (c) => {
           : resolvedPartSize
 
       return { partNumber, url, size: expectedSize }
-    })
+    }),
   )
 
   return c.json({
@@ -440,11 +458,21 @@ app.post('/multipart/complete', async (c) => {
   // UPDATE VIDEO STATUS TO 'processing' and queue for transcoding (with idempotency)
   if (fileId) {
     // First check current status
-    const videos = await db.select().from(video).where(eq(video.id, fileId)).limit(1)
+    const videos = await db
+      .select()
+      .from(video)
+      .where(eq(video.id, fileId))
+      .limit(1)
     const videoRecord = videos[0]
-    
-    if (!videoRecord || videoRecord.status === 'processing' || videoRecord.status === 'ready') {
-      console.log(`Video ${fileId} already processed/processing, skipping transcoding`)
+
+    if (
+      !videoRecord ||
+      videoRecord.status === 'processing' ||
+      videoRecord.status === 'ready'
+    ) {
+      console.log(
+        `Video ${fileId} already processed/processing, skipping transcoding`,
+      )
       return c.json({
         location: response.Location,
         bucket: response.Bucket,
@@ -475,18 +503,24 @@ app.post('/multipart/complete', async (c) => {
           playbackPolicy,
           videoRecord.generateSubtitle || false,
           videoRecord.generateChapters || false,
-          videoRecord.organizationId
+          videoRecord.organizationId,
         )
       } catch (err) {
         console.error(`Failed to queue transcoding for ${fileId}:`, err)
         // Revert status so user knows it failed and can retry
-        await db.update(video).set({ status: 'failed' }).where(eq(video.id, fileId))
-        return c.json({ error: 'Upload complete but transcoding failed to start' }, 500)
+        await db
+          .update(video)
+          .set({ status: 'failed' })
+          .where(eq(video.id, fileId))
+        return c.json(
+          { error: 'Upload complete but transcoding failed to start' },
+          500,
+        )
       }
     } else {
       console.log(`Video ${fileId} status changed, skipping transcoding`)
     }
-    
+
     // Dispatch webhook event (inside if block where videoRecord is defined)
     dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
       videoId: fileId,
@@ -514,7 +548,7 @@ app.post('/multipart/abort', async (c) => {
       Bucket: RAW_BUCKET,
       Key: key,
       UploadId: uploadId,
-    })
+    }),
   )
 
   // DELETE video record if fileId provided (user canceled)
@@ -564,11 +598,14 @@ app.delete('/:fileId', async (c) => {
         new DeleteObjectCommand({
           Bucket: RAW_BUCKET,
           Key: videoRecord.rawKey,
-        })
+        }),
       )
     } catch (err) {
       // Log but don't fail - file might not exist in R2 yet
-      console.warn(`Failed to delete from R2 raw bucket: ${videoRecord.rawKey}`, err)
+      console.warn(
+        `Failed to delete from R2 raw bucket: ${videoRecord.rawKey}`,
+        err,
+      )
     }
   }
 
@@ -580,7 +617,7 @@ app.delete('/:fileId', async (c) => {
       new ListObjectsV2Command({
         Bucket: TRANSCODED_BUCKET,
         Prefix: `${fileId}/`,
-      })
+      }),
     )
 
     if (listResponse.Contents && listResponse.Contents.length > 0) {
@@ -596,10 +633,12 @@ app.delete('/:fileId', async (c) => {
             Objects: objectsToDelete,
             Quiet: true,
           },
-        })
+        }),
       )
 
-      console.log(`Deleted ${objectsToDelete.length} transcoded files for video ${fileId}`)
+      console.log(
+        `Deleted ${objectsToDelete.length} transcoded files for video ${fileId}`,
+      )
     }
 
     // Also delete the folder marker object (0-byte object with trailing /)
@@ -607,7 +646,7 @@ app.delete('/:fileId', async (c) => {
       new DeleteObjectCommand({
         Bucket: TRANSCODED_BUCKET,
         Key: `${fileId}/`,
-      })
+      }),
     )
   } catch (err) {
     // Log but don't fail - files might not exist in transcoded bucket yet
