@@ -25,7 +25,7 @@ interface CustomMeta extends Meta {
     partCount?: number;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api";
 
 export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProps) {
     const dashboardRef = React.useRef<HTMLDivElement>(null);
@@ -334,8 +334,8 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                     <div className="flex-1">
                         <p className="text-sm font-medium text-foreground mb-1">Playback Policy</p>
                         <p className="text-xs text-muted-foreground">
-                            {playbackPolicy === "public" 
-                                ? "Anyone with the URL can view this video" 
+                            {playbackPolicy === "public"
+                                ? "Anyone with the URL can view this video"
                                 : "Requires signed token for playback"}
                         </p>
                     </div>
@@ -370,15 +370,15 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                 </div>
 
                 {/* AI Subtitles Toggle */}
-                <div 
+                <div
                     className="flex items-center gap-4 p-4 rounded-xl bg-muted/30 border border-border cursor-pointer hover:bg-muted/50 transition-colors"
                     onClick={() => setGenerateSubtitle(!generateSubtitle)}
                 >
                     <div className="flex-1">
                         <p className="text-sm font-medium text-foreground mb-1">AI Subtitles</p>
                         <p className="text-xs text-muted-foreground">
-                            {generateSubtitle 
-                                ? "Subtitles will be auto-generated using AI" 
+                            {generateSubtitle
+                                ? "Subtitles will be auto-generated using AI"
                                 : "No subtitles will be generated"}
                         </p>
                     </div>
@@ -401,11 +401,11 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                 </div>
 
                 {/* AI Chapters Toggle */}
-                <div 
+                <div
                     className={cn(
                         "flex items-center gap-4 p-4 rounded-xl bg-muted/30 border border-border transition-colors",
-                        generateSubtitle 
-                            ? "cursor-pointer hover:bg-muted/50" 
+                        generateSubtitle
+                            ? "cursor-pointer hover:bg-muted/50"
                             : "opacity-50 cursor-not-allowed"
                     )}
                     onClick={() => generateSubtitle && setGenerateChapters(!generateChapters)}
@@ -413,10 +413,10 @@ export function UploadModal({ open, onClose, onUploadComplete }: UploadModalProp
                     <div className="flex-1">
                         <p className="text-sm font-medium text-foreground mb-1">AI Chapters</p>
                         <p className="text-xs text-muted-foreground">
-                            {!generateSubtitle 
+                            {!generateSubtitle
                                 ? "Enable AI Subtitles first (chapters require transcription)"
-                                : generateChapters 
-                                    ? "Chapters will be auto-generated from transcript" 
+                                : generateChapters
+                                    ? "Chapters will be auto-generated from transcript"
                                     : "No chapters will be generated"}
                         </p>
                     </div>

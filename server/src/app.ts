@@ -8,6 +8,7 @@ import keys from './routes/keys'
 import usage from './routes/usage'
 import webhooks from './routes/webhooks'
 import api from './routes/api'
+import analytics from './routes/analytics'
 import { Bindings } from './types'
 import 'dotenv/config'
 
@@ -39,6 +40,9 @@ app.route('/api/webhooks', webhooks)
 
 // Public API routes (API key auth) - for B2B customers
 app.route('/v1', api)
+
+// Analytics routes (public, no auth)
+app.route('/api/analytics', analytics)
 
 app.get('/health', (c) => c.text('ok'))
 

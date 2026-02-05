@@ -249,6 +249,7 @@ export function VideoDetailModal({ video, onClose, onUpdate }: VideoDetailModalP
                                         <p className="text-sm text-muted-foreground">Preview Player</p>
                                         <ClipMuxPlayer
                                             src={detail.playbackUrl}
+                                            videoId={video.id}
                                             title={detail?.title || video.title}
                                             subtitles={detail?.subtitleUrl || undefined}
                                             chapters={detail?.chapters || undefined}
