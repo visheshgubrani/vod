@@ -9,6 +9,7 @@ import usage from './routes/usage'
 import webhooks from './routes/webhooks'
 import api from './routes/api'
 import analytics from './routes/analytics'
+import analyticsStats from './routes/analytics-stats'
 import { Bindings } from './types'
 import 'dotenv/config'
 
@@ -43,6 +44,7 @@ app.route('/v1', api)
 
 // Analytics routes (public, no auth)
 app.route('/api/analytics', analytics)
+app.route('/api/analytics-stats', analyticsStats)
 
 app.get('/health', (c) => c.text('ok'))
 
