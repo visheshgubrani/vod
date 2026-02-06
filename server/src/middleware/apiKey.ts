@@ -42,6 +42,7 @@ export const requireApiKey = createMiddleware(async (c, next) => {
   // Inject organization ID into context
   c.set('organizationId', keyRecord.organizationId)
   c.set('apiKeyId', keyRecord.id)
+  c.set('userId', keyRecord.userId)
 
   await next()
 })

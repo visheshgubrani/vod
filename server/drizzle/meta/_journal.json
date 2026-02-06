@@ -36,6 +36,13 @@
       "when": 1769431200432,
       "tag": "0004_chilly_the_fury",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1770389757255,
+      "tag": "0005_spooky_silver_sable",
+      "breakpoints": true
     }
   ]
 }

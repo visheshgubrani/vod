@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { createMiddleware } from 'hono/factory'
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -12,6 +13,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { eq, and } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
+import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
 import { triggerTranscoding } from '../utils/queue'
@@ -77,11 +79,27 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
   return { partSize, partCount }
 }
 
-app.use('/*', requireAuth)
+const requireUploadAuth = createMiddleware(async (c, next) => {
+  const authHeader = c.req.header('Authorization')
+
+  if (authHeader?.startsWith('Bearer ')) {
+    return requireApiKey(c, next)
+  }
+
+  return requireAuth(c, async () => {
+    const session = c.var.session
+    c.set('organizationId', session?.activeOrganizationId)
+    c.set('userId', session?.userId)
+    await next()
+  })
+})
+
+app.use('/*', requireUploadAuth)
 
 // Single file upload (for smaller files)
 app.post('/url', async (c) => {
-  const session = c.var.session
+  const organizationId = c.var.organizationId
+  const userId = c.var.userId
 
   // INPUT VALIDATION
   const {
@@ -107,9 +125,11 @@ app.post('/url', async (c) => {
   const enableChapters = generateChapters === true && enableSubtitle
 
   // Ensure user has an active organization
-  const organizationId = session.activeOrganizationId
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
+  }
+  if (!userId) {
+    return c.json({ error: 'Unauthorized' }, 401)
   }
 
   // GENERATE UNIQUE FILE PATH
@@ -124,7 +144,7 @@ app.post('/url', async (c) => {
     playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
     rawKey: key,
     size: parsedSize,
-    uploadedBy: session.userId,
+    uploadedBy: userId,
     generateSubtitle: enableSubtitle,
     subtitleStatus: enableSubtitle ? 'pending' : null,
     generateChapters: enableChapters,
@@ -158,8 +178,10 @@ app.post('/url', async (c) => {
 
 // Single file upload - complete (called after PUT succeeds)
 app.post('/complete', async (c) => {
+  const organizationId = c.var.organizationId
   const { fileId } = await c.req.json()
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
+  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
   // Get the video to retrieve the rawKey
   const videos = await db
@@ -171,6 +193,9 @@ app.post('/complete', async (c) => {
 
   if (!videoRecord) {
     return c.json({ error: 'Video not found' }, 404)
+  }
+  if (videoRecord.organizationId !== organizationId) {
+    return c.json({ error: 'Access denied' }, 403)
   }
 
   // Only process if status is 'uploading' (idempotency check)
@@ -234,7 +259,8 @@ app.post('/complete', async (c) => {
 
 // Multipart upload - create
 app.post('/multipart/create', async (c) => {
-  const session = c.var.session
+  const organizationId = c.var.organizationId
+  const userId = c.var.userId
 
   const {
     filename,
@@ -262,9 +288,11 @@ app.post('/multipart/create', async (c) => {
   }
 
   // Ensure user has an active organization
-  const organizationId = session.activeOrganizationId
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
+  }
+  if (!userId) {
+    return c.json({ error: 'Unauthorized' }, 401)
   }
 
   const { fileId, key } = getUploadKey(organizationId, filename)
@@ -282,7 +310,7 @@ app.post('/multipart/create', async (c) => {
     playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
     rawKey: key,
     size: parsedSize,
-    uploadedBy: session.userId,
+    uploadedBy: userId,
     generateSubtitle: enableSubtitle,
     subtitleStatus: enableSubtitle ? 'pending' : null,
     generateChapters: enableChapters,
@@ -320,10 +348,11 @@ app.post('/multipart/create', async (c) => {
 
 // Multipart upload - get signed URLs for parts
 app.post('/multipart/parts', async (c) => {
-  const session = c.var.session
+  const organizationId = c.var.organizationId
   const { key, uploadId, partNumbers, size, partSize, fileId } =
     await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
+  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
   // Security: Verify the user owns this upload via fileId
   if (fileId) {
@@ -338,7 +367,7 @@ app.post('/multipart/parts', async (c) => {
     }
 
     // Verify the video belongs to user's organization
-    if (videos[0].organizationId !== session.activeOrganizationId) {
+    if (!organizationId || videos[0].organizationId !== organizationId) {
       return c.json({ error: 'Access denied' }, 403)
     }
   }
@@ -415,8 +444,10 @@ app.post('/multipart/parts', async (c) => {
 
 // Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
+  const organizationId = c.var.organizationId
   const { key, uploadId, parts, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
+  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
   if (!Array.isArray(parts) || parts.length === 0) {
     return c.json({ error: 'parts must be a non-empty array' }, 400)
@@ -465,8 +496,13 @@ app.post('/multipart/complete', async (c) => {
       .limit(1)
     const videoRecord = videos[0]
 
+    if (!videoRecord) {
+      return c.json({ error: 'Video not found' }, 404)
+    }
+    if (videoRecord.organizationId !== organizationId) {
+      return c.json({ error: 'Access denied' }, 403)
+    }
     if (
-      !videoRecord ||
       videoRecord.status === 'processing' ||
       videoRecord.status === 'ready'
     ) {
@@ -540,8 +576,10 @@ app.post('/multipart/complete', async (c) => {
 
 // Multipart upload - abort
 app.post('/multipart/abort', async (c) => {
+  const organizationId = c.var.organizationId
   const { key, uploadId, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
+  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
   await r2.send(
     new AbortMultipartUploadCommand({
@@ -553,6 +591,20 @@ app.post('/multipart/abort', async (c) => {
 
   // DELETE video record if fileId provided (user canceled)
   if (fileId) {
+    const videos = await db
+      .select()
+      .from(video)
+      .where(eq(video.id, fileId))
+      .limit(1)
+    const videoRecord = videos[0]
+
+    if (!videoRecord) {
+      return c.json({ error: 'Video not found' }, 404)
+    }
+    if (videoRecord.organizationId !== organizationId) {
+      return c.json({ error: 'Access denied' }, 403)
+    }
+
     await db.delete(video).where(eq(video.id, fileId))
   }
 
@@ -561,11 +613,14 @@ app.post('/multipart/abort', async (c) => {
 
 // Cancel/delete any upload (for single-file uploads or general cleanup)
 app.delete('/:fileId', async (c) => {
-  const session = c.var.session
+  const organizationId = c.var.organizationId
   const fileId = c.req.param('fileId')
 
   if (!fileId) {
     return c.json({ error: 'Missing fileId' }, 400)
+  }
+  if (!organizationId) {
+    return c.json({ error: 'No active organization' }, 400)
   }
 
   // Get the video record
@@ -582,7 +637,7 @@ app.delete('/:fileId', async (c) => {
   }
 
   // Verify ownership - video must belong to user's organization
-  if (videoRecord.organizationId !== session.activeOrganizationId) {
+  if (videoRecord.organizationId !== organizationId) {
     return c.json({ error: 'Access denied' }, 403)
   }
 

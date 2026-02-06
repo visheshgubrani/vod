@@ -7,4 +7,6 @@ const port = Number(process.env.PORT) || 4080
 serve({
   fetch: app.fetch,
   port,
+}, (info) => {
+  console.log(`Listening on http://localhost:${info.port}`)
 })

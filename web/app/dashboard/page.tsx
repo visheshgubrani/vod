@@ -2,12 +2,10 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { StatsCards } from "@/components/dashboard/stats-cards";
 import { VideosTable, Video } from "@/components/dashboard/videos-table";
-import { VideoDetailModal } from "@/components/dashboard/video-detail-modal";
-import { Button } from "@/components/ui/button";
 
 const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 
@@ -17,7 +15,6 @@ export default function DashboardPage() {
     const [videos, setVideos] = React.useState<Video[]>([]);
     const [loading, setLoading] = React.useState(true);
     const [error, setError] = React.useState<string | null>(null);
-    const [selectedVideo, setSelectedVideo] = React.useState<Video | null>(null);
 
     // Fetch videos from API
     const fetchVideos = React.useCallback(async () => {
@@ -53,7 +50,7 @@ export default function DashboardPage() {
     };
 
     const handleEmbed = (video: Video) => {
-        setSelectedVideo(video);
+        router.push(`/dashboard/videos/${video.id}?tab=embed`);
     };
 
     const handleDelete = async (video: Video) => {
@@ -75,16 +72,7 @@ export default function DashboardPage() {
     };
 
     const handleViewDetails = (video: Video) => {
-        setSelectedVideo(video);
-    };
-
-    const handleCloseModal = () => {
-        setSelectedVideo(null);
-    };
-
-    const handleVideoUpdate = () => {
-        fetchVideos();
-        setSelectedVideo(null);
+        router.push(`/dashboard/videos/${video.id}`);
     };
 
     if (loading) {
@@ -137,15 +125,6 @@ export default function DashboardPage() {
                     onViewDetails={handleViewDetails}
                 />
             </div>
-
-            {/* Video Detail Modal */}
-            {selectedVideo && (
-                <VideoDetailModal
-                    video={selectedVideo}
-                    onClose={handleCloseModal}
-                    onUpdate={handleVideoUpdate}
-                />
-            )}
         </div>
     );
 }

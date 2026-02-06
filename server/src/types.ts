@@ -28,4 +28,22 @@ export type Bindings = {
 export type ApiKeyVariables = {
   organizationId: string
   apiKeyId: string
+  userId: string
+}
+
+// Context variables set by upload token middleware
+export type UploadTokenVariables = {
+  organizationId: string
+  uploadTokenId: string
+  uploadTokenRecord: {
+    id: string
+    token: string
+    organizationId: string
+    apiKeyId: string | null
+    maxFiles: number | null
+    usedFiles: number | null
+    maxSizeBytes: number | null
+    expiresAt: Date
+    createdAt: Date | null
+  }
 }
