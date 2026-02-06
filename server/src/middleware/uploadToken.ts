@@ -13,11 +13,16 @@ import { uploadToken } from '../db/schema'
 export const requireUploadToken = createMiddleware(async (c, next) => {
     const authHeader = c.req.header('Authorization')
 
+    console.log('[UploadToken] Auth header:', authHeader)
+
     if (!authHeader?.startsWith('UploadToken ')) {
+        console.log('[UploadToken] Header does not start with "UploadToken "')
         return c.json({ error: 'Missing or invalid Authorization header' }, 401)
     }
 
-    const token = authHeader.slice(12) // Remove "UploadToken "
+    const token = authHeader.slice(12).trim() // Remove "UploadToken "
+
+    console.log('[UploadToken] Extracted token:', token)
 
     if (!token) {
         return c.json({ error: 'Upload token required' }, 401)
@@ -30,9 +35,12 @@ export const requireUploadToken = createMiddleware(async (c, next) => {
         .where(eq(uploadToken.token, token))
         .limit(1)
 
+    console.log('[UploadToken] Found tokens:', tokens.length)
+
     const tokenRecord = tokens[0]
 
     if (!tokenRecord) {
+        console.log('[UploadToken] Token not found in database')
         return c.json({ error: 'Invalid upload token' }, 401)
     }
 
