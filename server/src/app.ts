@@ -16,8 +16,23 @@ import 'dotenv/config'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// Permissive CORS for B2B public API routes (/v1/*)
+// These routes use API keys or upload tokens for auth, so any origin is fine
 app.use(
-  '/*',
+  '/v1/*',
+  cors({
+    origin: '*', // Allow any origin for B2B customers
+    allowHeaders: ['Content-Type', 'Authorization'],
+    allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
+    exposeHeaders: ['Content-Length'],
+    maxAge: 600,
+  }),
+)
+
+// Strict CORS for dashboard routes (/api/*)
+// These routes use session cookies, so we need to restrict origin
+app.use(
+  '/api/*',
   cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     allowHeaders: ['Content-Type', 'Authorization'],
