@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { auth } from './lib/auth'
 import upload from './routes/upload'
+import uploadPublic from './routes/upload-public'
 import webhook from './routes/webhook'
 import video from './routes/video'
 import keys from './routes/keys'
@@ -41,6 +42,9 @@ app.route('/api/webhooks', webhooks)
 
 // Public API routes (API key auth) - for B2B customers
 app.route('/v1', api)
+
+// Public upload routes (upload token auth) - for B2B customer frontends
+app.route('/v1/upload', uploadPublic)
 
 // Analytics routes (public, no auth)
 app.route('/api/analytics', analytics)

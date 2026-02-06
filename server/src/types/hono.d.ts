@@ -4,5 +4,8 @@ declare module 'hono' {
   interface ContextVariableMap {
     user: typeof auth.$Infer.Session.user
     session: typeof auth.$Infer.Session.session
+    organizationId?: string | null
+    apiKeyId?: string
+    userId?: string
   }
 }

@@ -1,0 +1,506 @@
+/**
+ * Public Upload Routes (Upload Token Authentication)
+ *
+ * These routes allow B2B customer frontends to upload files directly
+ * using short-lived upload tokens instead of API keys.
+ *
+ * Base path: /v1/upload
+ */
+
+import { Hono } from 'hono'
+import {
+    CreateMultipartUploadCommand,
+    CompleteMultipartUploadCommand,
+    AbortMultipartUploadCommand,
+    UploadPartCommand,
+    PutObjectCommand,
+} from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { eq, and } from 'drizzle-orm'
+import {
+    requireUploadToken,
+    incrementUploadTokenUsage,
+} from '../middleware/uploadToken'
+import { db } from '../lib/database'
+import { video, uploadToken } from '../db/schema'
+import { r2 } from '../utils/R2'
+import { triggerTranscoding } from '../utils/queue'
+import { dispatchWebhook } from '../utils/webhookDispatcher'
+import type { UploadTokenVariables } from '../types'
+
+const app = new Hono<{ Variables: UploadTokenVariables }>()
+
+const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
+const MIN_PART_SIZE = 5 * 1024 * 1024
+const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
+const MAX_PARTS = 10000
+
+const getUploadKey = (
+    organizationId: string | null | undefined,
+    filename: string,
+) => {
+    const fileId = crypto.randomUUID()
+    const key = `${organizationId || 'org_default'}/raw/${fileId}/${filename}`
+    return { fileId, key }
+}
+
+const resolvePartConfig = (size: number, requestedPartSize?: number) => {
+    if (!Number.isFinite(size) || size <= 0) {
+        throw new Error('Invalid size')
+    }
+
+    if (!Number.isInteger(size)) {
+        throw new Error('Size must be an integer')
+    }
+
+    let partSize = requestedPartSize
+    if (partSize === undefined) {
+        partSize = Math.min(
+            MAX_PART_SIZE,
+            Math.max(MIN_PART_SIZE, Math.ceil(size / MAX_PARTS)),
+        )
+    }
+
+    if (!Number.isFinite(partSize) || partSize <= 0) {
+        throw new Error('Invalid part size')
+    }
+
+    if (!Number.isInteger(partSize)) {
+        throw new Error('Part size must be an integer')
+    }
+
+    if (partSize < MIN_PART_SIZE) {
+        throw new Error(`Part size must be at least ${MIN_PART_SIZE} bytes`)
+    }
+
+    if (partSize > MAX_PART_SIZE) {
+        throw new Error(`Part size must be at most ${MAX_PART_SIZE} bytes`)
+    }
+
+    const partCount = Math.ceil(size / partSize)
+    if (partCount > MAX_PARTS) {
+        throw new Error('Too many parts')
+    }
+
+    return { partSize, partCount }
+}
+
+// All routes require upload token authentication
+app.use('/*', requireUploadToken)
+
+/**
+ * POST /v1/upload/create
+ *
+ * Create a new multipart upload. Returns presigned URLs for all parts.
+ *
+ * Headers:
+ *   Authorization: UploadToken ut_xxxxx
+ *
+ * Body:
+ *   {
+ *     "filename": "video.mp4",
+ *     "content_type": "video/mp4",
+ *     "size": 104857600,
+ *     "title": "My Video",           // Optional
+ *     "playback_policy": "public"    // Optional: "public" or "signed"
+ *   }
+ *
+ * Response:
+ *   {
+ *     "upload_id": "abc123",
+ *     "file_id": "uuid",
+ *     "key": "org/raw/uuid/filename",
+ *     "part_size": 5242880,
+ *     "part_count": 20,
+ *     "urls": [{ "part_number": 1, "url": "...", "size": 5242880 }, ...]
+ *   }
+ */
+app.post('/create', async (c) => {
+    const organizationId = c.var.organizationId
+    const uploadTokenRecord = c.var.uploadTokenRecord
+    const uploadTokenId = c.var.uploadTokenId
+
+    const body = await c.req.json()
+    const filename = body.filename
+    const contentType = body.content_type || body.contentType
+    const size = Number(body.size)
+    const title = body.title
+    const playbackPolicy = body.playback_policy || body.playbackPolicy
+
+    if (!filename || !contentType) {
+        return c.json({ error: 'Missing filename or content_type' }, 400)
+    }
+
+    if (!Number.isInteger(size) || size <= 0) {
+        return c.json({ error: 'Invalid size' }, 400)
+    }
+
+    // Check max size constraint from token
+    if (
+        uploadTokenRecord.maxSizeBytes &&
+        size > uploadTokenRecord.maxSizeBytes
+    ) {
+        return c.json(
+            {
+                error: `File size exceeds maximum allowed (${uploadTokenRecord.maxSizeBytes} bytes)`,
+            },
+            400,
+        )
+    }
+
+    let partSize: number
+    let partCount: number
+    try {
+        ; ({ partSize, partCount } = resolvePartConfig(size))
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Invalid input'
+        return c.json({ error: message }, 400)
+    }
+
+    const { fileId, key } = getUploadKey(organizationId, filename)
+
+    // Create video record
+    await db.insert(video).values({
+        id: fileId,
+        organizationId: organizationId!,
+        title: title || filename,
+        status: 'uploading',
+        playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
+        rawKey: key,
+        size: size,
+        uploadedBy: 'upload_token', // No specific user for token uploads
+    })
+
+    // Create multipart upload in R2
+    const command = new CreateMultipartUploadCommand({
+        Bucket: RAW_BUCKET,
+        Key: key,
+        ContentType: contentType,
+    })
+
+    const response = await r2.send(command)
+    if (!response.UploadId) {
+        await db.delete(video).where(eq(video.id, fileId))
+        return c.json({ error: 'Failed to create multipart upload' }, 500)
+    }
+
+    // Increment token usage
+    await incrementUploadTokenUsage(uploadTokenId)
+
+    // Generate presigned URLs for all parts
+    const urls = await Promise.all(
+        Array.from({ length: partCount }, (_, i) => i + 1).map(async (partNumber) => {
+            const partCommand = new UploadPartCommand({
+                Bucket: RAW_BUCKET,
+                Key: key,
+                UploadId: response.UploadId,
+                PartNumber: partNumber,
+            })
+            const url = await getSignedUrl(r2, partCommand, { expiresIn: 3600 })
+            const expectedSize =
+                partNumber === partCount
+                    ? size - (partCount - 1) * partSize
+                    : partSize
+
+            return { part_number: partNumber, url, size: expectedSize }
+        }),
+    )
+
+    // Dispatch webhook
+    dispatchWebhook(organizationId!, 'video.uploading', {
+        videoId: fileId,
+        title: title || filename,
+        status: 'uploading',
+    })
+
+    return c.json({
+        upload_id: response.UploadId,
+        file_id: fileId,
+        key,
+        part_size: partSize,
+        part_count: partCount,
+        urls,
+    })
+})
+
+/**
+ * POST /v1/upload/parts
+ *
+ * Get additional presigned URLs for specific parts (useful for retries).
+ */
+app.post('/parts', async (c) => {
+    const organizationId = c.var.organizationId
+
+    const body = await c.req.json()
+    const { key, upload_id, part_numbers, size, file_id } = body
+    const uploadId = upload_id || body.uploadId
+    const partNumbers = part_numbers || body.partNumbers
+    const fileId = file_id || body.fileId
+
+    if (!key || !uploadId) {
+        return c.json({ error: 'Missing key or upload_id' }, 400)
+    }
+
+    // Verify ownership
+    if (fileId) {
+        const videos = await db
+            .select()
+            .from(video)
+            .where(eq(video.id, fileId))
+            .limit(1)
+
+        if (videos.length === 0) {
+            return c.json({ error: 'Video not found' }, 404)
+        }
+
+        if (videos[0].organizationId !== organizationId) {
+            return c.json({ error: 'Access denied' }, 403)
+        }
+    }
+
+    if (!Array.isArray(partNumbers) || partNumbers.length === 0) {
+        return c.json({ error: 'part_numbers must be a non-empty array' }, 400)
+    }
+
+    const parsedSize = Number(size)
+    let partSize: number
+    let partCount: number
+    try {
+        ; ({ partSize, partCount } = resolvePartConfig(parsedSize))
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Invalid input'
+        return c.json({ error: message }, 400)
+    }
+
+    const uniquePartNumbers = Array.from(
+        new Set(
+            partNumbers
+                .map((n: number) => Number(n))
+                .filter((n: number) => Number.isFinite(n)),
+        ),
+    )
+
+    if (uniquePartNumbers.length === 0) {
+        return c.json({ error: 'Invalid part_numbers' }, 400)
+    }
+
+    uniquePartNumbers.sort((a, b) => a - b)
+
+    for (const partNumber of uniquePartNumbers) {
+        if (
+            !Number.isInteger(partNumber) ||
+            partNumber < 1 ||
+            partNumber > partCount
+        ) {
+            return c.json({ error: 'part_numbers out of range' }, 400)
+        }
+    }
+
+    const urls = await Promise.all(
+        uniquePartNumbers.map(async (partNumber) => {
+            const command = new UploadPartCommand({
+                Bucket: RAW_BUCKET,
+                Key: key,
+                UploadId: uploadId,
+                PartNumber: partNumber,
+            })
+            const url = await getSignedUrl(r2, command, { expiresIn: 3600 })
+            const expectedSize =
+                partNumber === partCount
+                    ? parsedSize - (partCount - 1) * partSize
+                    : partSize
+
+            return { part_number: partNumber, url, size: expectedSize }
+        }),
+    )
+
+    return c.json({
+        upload_id: uploadId,
+        key,
+        part_size: partSize,
+        part_count: partCount,
+        urls,
+    })
+})
+
+/**
+ * POST /v1/upload/complete
+ *
+ * Complete the multipart upload and start transcoding.
+ */
+app.post('/complete', async (c) => {
+    const organizationId = c.var.organizationId
+
+    const body = await c.req.json()
+    const { key, parts, file_id } = body
+    const uploadId = body.upload_id || body.uploadId
+    const fileId = file_id || body.fileId
+
+    if (!key || !uploadId) {
+        return c.json({ error: 'Missing key or upload_id' }, 400)
+    }
+
+    if (!Array.isArray(parts) || parts.length === 0) {
+        return c.json({ error: 'parts must be a non-empty array' }, 400)
+    }
+
+    // Normalize parts to AWS format
+    const normalizedParts = parts
+        .map((part) => {
+            const partNumber = Number(part.part_number ?? part.partNumber ?? part.PartNumber)
+            const etag = part.etag ?? part.ETag
+            if (!Number.isInteger(partNumber) || partNumber < 1 || !etag) {
+                return null
+            }
+            const cleanEtag = String(etag).replace(/^"+|"+$/g, '')
+            if (!cleanEtag) return null
+            return { PartNumber: partNumber, ETag: cleanEtag }
+        })
+        .filter((part) => part !== null) as Array<{
+            PartNumber: number
+            ETag: string
+        }>
+
+    if (normalizedParts.length === 0) {
+        return c.json({ error: 'Invalid parts' }, 400)
+    }
+
+    normalizedParts.sort((a, b) => a.PartNumber - b.PartNumber)
+
+    // Complete multipart upload in R2
+    const command = new CompleteMultipartUploadCommand({
+        Bucket: RAW_BUCKET,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+            Parts: normalizedParts,
+        },
+    })
+
+    const response = await r2.send(command)
+
+    // Update video status and trigger transcoding
+    if (fileId) {
+        const videos = await db
+            .select()
+            .from(video)
+            .where(eq(video.id, fileId))
+            .limit(1)
+        const videoRecord = videos[0]
+
+        if (!videoRecord) {
+            return c.json({ error: 'Video not found' }, 404)
+        }
+
+        if (videoRecord.organizationId !== organizationId) {
+            return c.json({ error: 'Access denied' }, 403)
+        }
+
+        if (
+            videoRecord.status === 'processing' ||
+            videoRecord.status === 'ready'
+        ) {
+            return c.json({
+                location: response.Location,
+                bucket: response.Bucket,
+                key: response.Key,
+                etag: response.ETag,
+                file_id: fileId,
+                skipped: true,
+            })
+        }
+
+        // Atomic update
+        const updated = await db
+            .update(video)
+            .set({
+                status: 'processing',
+                updatedAt: new Date(),
+            })
+            .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
+            .returning()
+
+        if (updated.length > 0) {
+            try {
+                await triggerTranscoding(
+                    key,
+                    fileId,
+                    videoRecord.playbackPolicy || 'public',
+                    videoRecord.generateSubtitle || false,
+                    videoRecord.generateChapters || false,
+                    videoRecord.organizationId,
+                )
+            } catch (err) {
+                console.error(`Failed to queue transcoding for ${fileId}:`, err)
+                await db
+                    .update(video)
+                    .set({ status: 'failed' })
+                    .where(eq(video.id, fileId))
+                return c.json(
+                    { error: 'Upload complete but transcoding failed to start' },
+                    500,
+                )
+            }
+        }
+
+        // Dispatch webhook
+        dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
+            videoId: fileId,
+            title: videoRecord.title,
+            status: 'processing',
+        })
+    }
+
+    return c.json({
+        location: response.Location,
+        bucket: response.Bucket,
+        key: response.Key,
+        etag: response.ETag,
+        file_id: fileId,
+    })
+})
+
+/**
+ * POST /v1/upload/abort
+ *
+ * Abort a multipart upload and clean up.
+ */
+app.post('/abort', async (c) => {
+    const organizationId = c.var.organizationId
+
+    const body = await c.req.json()
+    const { key, file_id } = body
+    const uploadId = body.upload_id || body.uploadId
+    const fileId = file_id || body.fileId
+
+    if (!key || !uploadId) {
+        return c.json({ error: 'Missing key or upload_id' }, 400)
+    }
+
+    // Abort multipart upload in R2
+    await r2.send(
+        new AbortMultipartUploadCommand({
+            Bucket: RAW_BUCKET,
+            Key: key,
+            UploadId: uploadId,
+        }),
+    )
+
+    // Delete video record if exists
+    if (fileId) {
+        const videos = await db
+            .select()
+            .from(video)
+            .where(eq(video.id, fileId))
+            .limit(1)
+        const videoRecord = videos[0]
+
+        if (videoRecord && videoRecord.organizationId === organizationId) {
+            await db.delete(video).where(eq(video.id, fileId))
+        }
+    }
+
+    return c.json({ aborted: true, deleted: !!fileId })
+})
+
+export default app

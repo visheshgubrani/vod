@@ -206,7 +206,7 @@ export const video = pgTable('video', {
 
   // Storage tracking for billing
   transcodedSize: bigint('transcoded_size', { mode: 'number' }), // Total bytes of transcoded files (HLS + poster + subtitles)
-  
+
   // Processing metrics
   transcodedTime: integer('transcoded_time'), // Transcoding duration in seconds
 
@@ -244,6 +244,29 @@ export const webhookEndpoint = pgTable('webhook_endpoint', {
   enabled: boolean('enabled').default(true),
   description: text('description'),
   lastTriggeredAt: timestamp('last_triggered_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+})
+
+/**
+ * Short-lived upload tokens for B2B customers to enable direct frontend uploads
+ * without exposing API keys. Customers generate these tokens from their backend
+ * and pass them to their frontend for secure, direct-to-R2 uploads.
+ */
+export const uploadToken = pgTable('upload_token', {
+  id: text('id').primaryKey(), // "ut_xxxxx"
+  token: text('token').notNull().unique(), // The secret token value
+  organizationId: text('organization_id')
+    .notNull()
+    .references(() => organization.id, { onDelete: 'cascade' }),
+  apiKeyId: text('api_key_id') // Which API key created this token
+    .references(() => apiKey.id, { onDelete: 'cascade' }),
+
+  // Usage constraints
+  maxFiles: integer('max_files').default(1), // How many uploads allowed with this token
+  usedFiles: integer('used_files').default(0), // How many uploads have been used
+  maxSizeBytes: bigint('max_size_bytes', { mode: 'number' }), // Optional size limit per file
+
+  expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 })
 
