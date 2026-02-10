@@ -121,9 +121,8 @@ app.post('/video/:id/playback-token', async (c) => {
 
   // For public videos, no token needed
   if (videoRecord.playbackPolicy === 'public') {
-    const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
     return c.json({
-      playback_url: `${deliveryUrl}/${videoRecord.hlsUrl}`,
+      playback_url: videoRecord.hlsUrl,
       token: null,
       expires_at: null,
       playback_policy: 'public',
@@ -132,10 +131,9 @@ app.post('/video/:id/playback-token', async (c) => {
 
   // Generate signed token
   const { token, expiresAt } = await generatePlaybackToken(videoId, expiresIn)
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
 
   return c.json({
-    playback_url: `${deliveryUrl}/${videoRecord.hlsUrl}?token=${token}`,
+    playback_url: `${videoRecord.hlsUrl}?token=${token}`,
     token,
     expires_at: expiresAt,
     playback_policy: 'signed',
@@ -172,17 +170,13 @@ app.get('/video/:id', async (c) => {
     return c.json({ error: 'Video not found' }, 404)
   }
 
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
-
   return c.json({
     id: videoRecord.id,
     title: videoRecord.title,
     status: videoRecord.status,
     playback_policy: videoRecord.playbackPolicy,
     duration: videoRecord.duration,
-    thumbnail_url: videoRecord.thumbnailUrl
-      ? `${deliveryUrl}/${videoRecord.thumbnailUrl}`
-      : null,
+    thumbnail_url: videoRecord.thumbnailUrl,
     created_at: videoRecord.createdAt,
   })
 })
@@ -221,8 +215,6 @@ app.get('/videos', async (c) => {
 
   const videos = await query
 
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
-
   return c.json({
     data: videos.map(v => ({
       id: v.id,
@@ -230,7 +222,7 @@ app.get('/videos', async (c) => {
       status: v.status,
       playback_policy: v.playbackPolicy,
       duration: v.duration,
-      thumbnail_url: v.thumbnailUrl ? `${deliveryUrl}/${v.thumbnailUrl}` : null,
+      thumbnail_url: v.thumbnailUrl,
       created_at: v.createdAt,
     })),
   })
@@ -335,98 +327,4 @@ app.delete('/video/:id', async (c) => {
   })
 })
 
-// =========================================
-// UPLOAD TOKEN GENERATION
-// =========================================
-
-/**
- * POST /v1/upload/token
- * 
- * Generate a short-lived upload token for frontend use.
- * Your customer's backend calls this with their API key,
- * then passes the token to their frontend for direct uploads.
- * 
- * Headers:
- *   Authorization: Bearer sk_live_xxxxx
- * 
- * Body (optional):
- *   {
- *     "expires_in": "1h",      // Token lifetime (default: 1h, max: 24h)
- *     "max_files": 1,          // Max uploads with this token (default: 1)
- *     "max_size_bytes": null   // Optional max file size in bytes
- *   }
- * 
- * Response:
- *   {
- *     "upload_token": "ut_abc123...",
- *     "expires_at": "2024-02-06T21:00:00Z",
- *     "max_files": 1,
- *     "max_size_bytes": null
- *   }
- */
-app.post('/upload/token', async (c) => {
-  const organizationId = c.var.organizationId
-  const apiKeyId = c.var.apiKeyId
-
-  let expiresIn = '1h'
-  let maxFiles = 1
-  let maxSizeBytes: number | null = null
-
-  try {
-    const body = await c.req.json()
-    if (body.expires_in) {
-      // Validate and cap at 24 hours
-      const seconds = parseExpiration(body.expires_in)
-      if (seconds > 86400) {
-        return c.json({ error: 'expires_in cannot exceed 24h' }, 400)
-      }
-      expiresIn = body.expires_in
-    }
-    if (body.max_files !== undefined) {
-      const mf = Number(body.max_files)
-      if (!Number.isInteger(mf) || mf < 1 || mf > 100) {
-        return c.json({ error: 'max_files must be an integer between 1 and 100' }, 400)
-      }
-      maxFiles = mf
-    }
-    if (body.max_size_bytes !== undefined && body.max_size_bytes !== null) {
-      const msb = Number(body.max_size_bytes)
-      if (!Number.isInteger(msb) || msb < 1) {
-        return c.json({ error: 'max_size_bytes must be a positive integer' }, 400)
-      }
-      maxSizeBytes = msb
-    }
-  } catch {
-    // No body or invalid JSON - use defaults
-  }
-
-  // Generate unique token ID and token value
-  const tokenId = `ut_${crypto.randomUUID().replace(/-/g, '')}`
-  const tokenValue = `${tokenId}_${crypto.randomUUID().replace(/-/g, '')}`
-
-  // Calculate expiration
-  const expiresAtMs = Date.now() + parseExpiration(expiresIn) * 1000
-  const expiresAt = new Date(expiresAtMs)
-
-  // Insert token into database
-  await db.insert(uploadToken).values({
-    id: tokenId,
-    token: tokenValue,
-    organizationId,
-    apiKeyId,
-    maxFiles,
-    usedFiles: 0,
-    maxSizeBytes,
-    expiresAt,
-  })
-
-  return c.json({
-    upload_token: tokenValue,
-    expires_at: expiresAt.toISOString(),
-    max_files: maxFiles,
-    max_size_bytes: maxSizeBytes,
-  })
-})
-
 export default app
-

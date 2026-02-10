@@ -85,7 +85,97 @@ const resolvePartConfig = (size: number, requestedPartSize?: number) => {
     return { partSize, partCount }
 }
 
-// All routes require upload token authentication
+console.log('[upload-public] Module loaded')
+
+// Import API key middleware for the token generation endpoint
+import { requireApiKey } from '../middleware/apiKey'
+
+// Helper to parse expiration strings like "1h", "30m", "24h"
+const parseExpiration = (exp: string): number => {
+    const match = exp.match(/^(\d+)(s|m|h|d)$/)
+    if (!match) return 3600 // Default to 1 hour
+    const [, value, unit] = match
+    const multipliers: Record<string, number> = {
+        s: 1,
+        m: 60,
+        h: 3600,
+        d: 86400,
+    }
+    return parseInt(value) * (multipliers[unit] || 3600)
+}
+
+/**
+ * POST /v1/upload/token
+ * 
+ * Generate a short-lived upload token for frontend use.
+ * This route uses API KEY authentication (Bearer sk_live_xxx).
+ * 
+ * The returned upload token can then be used for /create, /parts, /complete.
+ */
+app.post('/token', requireApiKey, async (c) => {
+    const organizationId = c.var.organizationId
+    const apiKeyId = c.var.apiKeyId
+
+    let expiresIn = '1h'
+    let maxFiles = 1
+    let maxSizeBytes: number | null = null
+
+    try {
+        const body = await c.req.json()
+        if (body.expires_in) {
+            const seconds = parseExpiration(body.expires_in)
+            if (seconds > 86400) {
+                return c.json({ error: 'expires_in cannot exceed 24h' }, 400)
+            }
+            expiresIn = body.expires_in
+        }
+        if (body.max_files !== undefined) {
+            const mf = Number(body.max_files)
+            if (!Number.isInteger(mf) || mf < 1 || mf > 100) {
+                return c.json({ error: 'max_files must be an integer between 1 and 100' }, 400)
+            }
+            maxFiles = mf
+        }
+        if (body.max_size_bytes !== undefined && body.max_size_bytes !== null) {
+            const msb = Number(body.max_size_bytes)
+            if (!Number.isInteger(msb) || msb < 1) {
+                return c.json({ error: 'max_size_bytes must be a positive integer' }, 400)
+            }
+            maxSizeBytes = msb
+        }
+    } catch {
+        // No body or invalid JSON - use defaults
+    }
+
+    // Generate unique token
+    const tokenId = `ut_${crypto.randomUUID().replace(/-/g, '')}`
+    const tokenValue = `${tokenId}_${crypto.randomUUID().replace(/-/g, '')}`
+
+    // Calculate expiration
+    const expiresAtMs = Date.now() + parseExpiration(expiresIn) * 1000
+    const expiresAt = new Date(expiresAtMs)
+
+    // Insert token into database
+    await db.insert(uploadToken).values({
+        id: tokenId,
+        token: tokenValue,
+        organizationId,
+        apiKeyId,
+        maxFiles,
+        usedFiles: 0,
+        maxSizeBytes,
+        expiresAt,
+    })
+
+    return c.json({
+        upload_token: tokenValue,
+        expires_at: expiresAt.toISOString(),
+        max_files: maxFiles,
+        max_size_bytes: maxSizeBytes,
+    })
+})
+
+// All OTHER routes require upload token authentication
 app.use('/*', requireUploadToken)
 
 /**
@@ -168,7 +258,7 @@ app.post('/create', async (c) => {
         playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
         rawKey: key,
         size: size,
-        uploadedBy: 'upload_token', // No specific user for token uploads
+        uploadedBy: null, // No specific user for B2B token uploads
     })
 
     // Create multipart upload in R2
