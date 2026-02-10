@@ -189,8 +189,7 @@ export const video = pgTable('video', {
   duration: integer('duration'), // in seconds
   size: bigint('size', { mode: 'number' }), // in bytes (bigint for files > 2GB)
   uploadedBy: text('uploaded_by')
-    .notNull()
-    .references(() => user.id, { onDelete: 'cascade' }),
+    .references(() => user.id, { onDelete: 'cascade' }), // Nullable for B2B uploads
   resolutions: text('resolutions'),
   metadata: text('metadata'),
 

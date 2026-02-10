@@ -12,7 +12,6 @@ import { uploadToken } from '../db/schema'
  */
 export const requireUploadToken = createMiddleware(async (c, next) => {
     const authHeader = c.req.header('Authorization')
-
     console.log('[UploadToken] Auth header:', authHeader)
 
     if (!authHeader?.startsWith('UploadToken ')) {
@@ -50,7 +49,10 @@ export const requireUploadToken = createMiddleware(async (c, next) => {
     }
 
     // Check if token has been exhausted (used all allowed uploads)
+    // Only enforce this limit for /create - allow /parts, /complete, /abort to proceed
+    const isCreateRequest = c.req.path.endsWith('/create')
     if (
+        isCreateRequest &&
         tokenRecord.maxFiles !== null &&
         tokenRecord.usedFiles !== null &&
         tokenRecord.usedFiles >= tokenRecord.maxFiles

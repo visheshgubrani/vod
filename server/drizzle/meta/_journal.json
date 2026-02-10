@@ -43,6 +43,13 @@
       "when": 1770389757255,
       "tag": "0005_spooky_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1770440268888,
+      "tag": "0006_wandering_glorian",
+      "breakpoints": true
     }
   ]
 }
