@@ -65,3 +65,9 @@ ALLOWED_URL_HOSTS: Set[str] = {
     for h in os.getenv("ALLOWED_URL_HOSTS", "").split(",") 
     if h.strip()
 }
+
+ALLOWED_CALLBACK_HOSTS: Set[str] = {
+    h.strip().lower()
+    for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "").split(",")
+    if h.strip()
+}

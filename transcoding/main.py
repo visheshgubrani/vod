@@ -15,10 +15,13 @@ if str(_root) not in sys.path:
 
 import modal
 import os
+import re
+import secrets
 import shutil
 import time
 import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from fastapi import HTTPException, Request
 
 # Configuration
 from config import (
@@ -28,7 +31,7 @@ from config import (
 )
 
 # Utilities
-from utils import run_cmd, send_callback, is_public_host
+from utils import send_callback, download_public_url
 from utils.storage import upload_to_r2
 
 # Video processing
@@ -68,14 +71,54 @@ image = (
     .add_local_python_source("packaging")
 )
 
+VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def normalize_video_id(raw_video_id: str | None) -> str:
+    if not raw_video_id or not isinstance(raw_video_id, str):
+        raise ValueError("Missing video_id or fileId")
+
+    video_id = raw_video_id.strip()
+    if not VIDEO_ID_PATTERN.fullmatch(video_id):
+        raise ValueError(
+            "Invalid video_id format (allowed: letters, numbers, '_' and '-')"
+        )
+    return video_id
+
+
+def require_ingest_auth(request: Request) -> None:
+    expected = (
+        os.environ.get("TRANSCODE_INGEST_SECRET")
+        or os.environ.get("MODAL_WEBHOOK_SECRET")
+    )
+    if not expected:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfigured: missing TRANSCODE_INGEST_SECRET",
+        )
+
+    auth_header = request.headers.get("authorization", "")
+    presented = ""
+    if auth_header.lower().startswith("bearer "):
+        presented = auth_header[7:].strip()
+
+    if not presented:
+        presented = request.headers.get("x-transcode-secret", "").strip()
+
+    if not presented or not secrets.compare_digest(presented, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HTTP ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.function(image=image)
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("r2-creds")],
+)
 @modal.fastapi_endpoint(method="POST")
-def transcode_video(payload: dict):
+def transcode_video(request: Request, payload: dict):
     """
     Fast HTTP endpoint - spawns GPU worker and returns immediately.
     
@@ -85,9 +128,12 @@ def transcode_video(payload: dict):
       - callbackUrl (optional)
       - playbackPolicy (optional): "public" or "signed"
     """
-    video_id = payload.get("video_id") or payload.get("fileId")
-    if not video_id:
-        return {"status": "error", "message": "Missing video_id or fileId"}
+    require_ingest_auth(request)
+
+    try:
+        video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     
     has_r2 = "key" in payload and "bucket" in payload
     has_url = "input_url" in payload
@@ -98,8 +144,12 @@ def transcode_video(payload: dict):
             "message": "Provide either {bucket,key} or input_url"
         }
     
+    safe_payload = dict(payload)
+    safe_payload["video_id"] = video_id
+    safe_payload["fileId"] = video_id
+
     print(f"🚀 Spawning production worker for: {video_id}")
-    transcode_worker.spawn(payload)
+    transcode_worker.spawn(safe_payload)
     
     return {
         "status": "accepted",
@@ -121,9 +171,10 @@ def transcode_video(payload: dict):
 )
 def transcode_worker(payload: dict):
     """GPU worker - executes full transcoding pipeline."""
-    video_id = payload.get("video_id") or payload.get("fileId")
-    if not video_id:
-        return {"status": "error", "message": "Missing video_id"}
+    try:
+        video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     
     work_dir = Path(f"/tmp/{video_id}")
     fmp4_dir = work_dir / "fmp4"
@@ -185,22 +236,13 @@ def transcode_worker(payload: dict):
                 elif "input_url" in payload:
                     # Download from URL (with SSRF protection)
                     url = payload["input_url"]
+                    if not isinstance(url, str) or not url.strip():
+                        raise ValueError("Invalid input_url")
+                    url = url.strip()
                     print(f"🌐 Downloading from URL: {url[:80]}...")
-                    if not is_public_host(url):
-                        raise ValueError("URL blocked by security policy")
-                    
-                    # Use curl for better performance with optimized settings
-                    run_cmd([
-                        "curl",
-                        "-fSL",              # fail on HTTP errors, show errors, follow redirects
-                        "--retry", "3",       # retry up to 3 times
-                        "--retry-delay", "2", # wait 2s between retries
-                        "--connect-timeout", "15",
-                        "--max-time", "600",  # 10 min max for large files
-                        "--tcp-fastopen",     # faster connection setup
-                        "-o", str(local_input),
-                        url
-                    ], label="curl-download")
+
+                    # Validate and re-validate on every redirect hop.
+                    download_public_url(url, str(local_input))
                 
                 downloaded = True
                 break
@@ -371,6 +413,7 @@ def transcode_worker(payload: dict):
         package_start = time.time()
         
         playback_policy = payload.get("playbackPolicy", "public")
+        organization_id = payload.get("organizationId")
         # Note: For "signed" videos, security is enforced at the delivery 
         # worker level via JWT tokens (Mux-style), not content encryption.
         
@@ -398,7 +441,8 @@ def transcode_worker(payload: dict):
             video_id,
             s3_upload,
             os.environ["R2_BUCKET_NAME"],
-            playback_policy=playback_policy  # For delivery worker auth
+            playback_policy=playback_policy,
+            organization_id=organization_id,
         )
         
         upload_time = time.time() - upload_start
