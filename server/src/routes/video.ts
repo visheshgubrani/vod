@@ -10,15 +10,24 @@ const app = new Hono()
 
 // JWT token expiration (1 hour)
 const TOKEN_EXPIRATION = '1h'
+const JWT_ISSUER = 'clipmux'
+const JWT_AUDIENCE = 'playback'
 
 /**
  * Generate a signed JWT for video playback
  */
-async function generatePlaybackToken(videoId: string, expiresIn: string = TOKEN_EXPIRATION): Promise<string> {
+async function generatePlaybackToken(
+  videoId: string,
+  organizationId: string,
+  expiresIn: string = TOKEN_EXPIRATION
+): Promise<string> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   
-  const token = await new jose.SignJWT({ video_id: videoId })
+  const token = await new jose.SignJWT({ video_id: videoId, org_id: organizationId })
     .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(videoId)
+    .setIssuer(JWT_ISSUER)
+    .setAudience(JWT_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime(expiresIn)
     .sign(secret)
@@ -80,7 +89,7 @@ app.get('/:id', async (c) => {
   // For signed videos, generate a token
   let token: string | null = null
   if (videoRecord.playbackPolicy === 'signed' && playbackUrl) {
-    token = await generatePlaybackToken(videoId)
+    token = await generatePlaybackToken(videoId, videoRecord.organizationId)
     playbackUrl = `${playbackUrl}?token=${token}`
   }
 
@@ -143,7 +152,11 @@ app.get('/:id/token', async (c) => {
     return c.json({ error: 'Video does not require signed access' }, 400)
   }
 
-  const token = await generatePlaybackToken(videoId, expiresIn)
+  const token = await generatePlaybackToken(
+    videoId,
+    videoRecord.organizationId,
+    expiresIn
+  )
 
   return c.json({
     token,

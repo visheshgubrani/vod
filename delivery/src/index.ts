@@ -25,6 +25,9 @@ interface Env {
 	USAGE_ANALYTICS?: AnalyticsEngineDataset;  // For bandwidth tracking
 }
 
+const JWT_ISSUER = 'clipmux';
+const JWT_AUDIENCE = 'playback';
+
 const MIME_TYPES: Record<string, string> = {
 	'.m3u8': 'application/vnd.apple.mpegurl',
 	'.mpd': 'application/dash+xml',
@@ -35,6 +38,7 @@ const MIME_TYPES: Record<string, string> = {
 	'.jpeg': 'image/jpeg',
 	'.png': 'image/png',
 	'.key': 'application/octet-stream',
+	'.vtt': 'text/vtt',
 };
 
 const CACHE_CONTROL = {
@@ -61,6 +65,15 @@ function getCacheControl(path: string): string {
 function extractVideoId(path: string): string | null {
 	const match = path.match(/^videos\/([^\/]+)\//);
 	return match ? match[1] : null;
+}
+
+/** Resources that must never be cached for signed videos (playlists contain token-bearing URLs). */
+function isNoCacheResource(path: string): boolean {
+	return (
+		path.endsWith('.m3u8') ||
+		path.endsWith('.mpd') ||
+		path.endsWith('.key')
+	);
 }
 
 type NormalizedRange = {
@@ -125,11 +138,28 @@ function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null
 	return null;
 }
 
-async function verifyToken(token: string, secret: string, videoId: string): Promise<boolean> {
+async function verifyToken(
+	token: string,
+	secret: string,
+	videoId: string,
+	organizationId?: string
+): Promise<boolean> {
 	try {
 		const secretKey = new TextEncoder().encode(secret);
-		const { payload } = await jose.jwtVerify(token, secretKey);
-		return payload.video_id === videoId || payload.sub === videoId;
+		const { payload } = await jose.jwtVerify(token, secretKey, {
+			issuer: JWT_ISSUER,
+			audience: JWT_AUDIENCE,
+		});
+		const tokenSubject = typeof payload.sub === 'string' ? payload.sub : undefined;
+		const tokenVideoId = typeof payload.video_id === 'string' ? payload.video_id : tokenSubject;
+		if (tokenVideoId !== videoId) return false;
+
+		if (organizationId) {
+			const tokenOrgId = typeof payload.org_id === 'string' ? payload.org_id : undefined;
+			return tokenOrgId === organizationId;
+		}
+
+		return true;
 	} catch {
 		return false;
 	}
@@ -255,28 +285,25 @@ export default {
 				return new Response('Not found', { status: 404, headers: corsHeaders });
 			}
 
-			// --- DEBUG LOG START ---
-			console.log(`[DELIVERY] Request for: ${key}`);
-			console.log(`[DELIVERY] Metadata:`, JSON.stringify(object.customMetadata));
-			// --- DEBUG LOG END ---
 
-			// 3. CHECK AUTH (Using the metadata we just fetched!)
+
+			// 3. CHECK AUTH
 			const playbackPolicy = object.customMetadata?.['playback-policy'] || object.customMetadata?.playback_policy || 'public';
 			const isSigned = playbackPolicy === 'signed';
+			const organizationId = object.customMetadata?.['organization-id'];
+			const videoId = extractVideoId(key);
 
-			// All resources under a signed video require a valid token:
-			// playlists (.m3u8), segments (.mp4, .m4s, .ts), keys (.key), etc.
+			// All resources under a signed video require a valid token
 			if (isSigned) {
 				if (!token) {
 					return new Response('Unauthorized: Token required', { status: 401, headers: corsHeaders });
 				}
 
-				const videoId = extractVideoId(key);
 				if (!videoId) {
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
-				const isValid = await verifyToken(token, env.JWT_SECRET, videoId);
+				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, organizationId);
 				if (!isValid) {
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}
@@ -291,9 +318,14 @@ export default {
 				...corsHeaders,
 			});
 
-			// Extract org-id for bandwidth tracking (and add to header for cache compatibility)
-			const organizationId = object.customMetadata?.['organization-id'];
-			const videoId = extractVideoId(key);
+			// Only playlists/keys need no-cache for signed videos.
+			// Segments keep immutable caching — the token in the URL acts as cache key,
+			// so different tokens = different cache entries (expired ones evict naturally).
+			if (isSigned && isNoCacheResource(key)) {
+				headers.set('Cache-Control', 'private, no-store, max-age=0');
+				headers.set('Pragma', 'no-cache');
+			}
+
 			if (organizationId) {
 				headers.set('X-Org-Id', organizationId);
 			}

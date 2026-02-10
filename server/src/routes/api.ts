@@ -19,19 +19,25 @@ const app = new Hono<{ Variables: ApiKeyVariables }>()
 
 // JWT token expiration (customizable per request)
 const DEFAULT_EXPIRATION = '1h'
+const JWT_ISSUER = 'clipmux'
+const JWT_AUDIENCE = 'playback'
 
 /**
  * Generate a signed JWT for video playback
  */
 async function generatePlaybackToken(
   videoId: string,
+  organizationId: string,
   expiresIn: string = DEFAULT_EXPIRATION
 ): Promise<{ token: string; expiresAt: number }> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
 
-  const token = await new jose.SignJWT({ video_id: videoId })
+  const token = await new jose.SignJWT({ video_id: videoId, org_id: organizationId })
     .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(videoId)
+    .setIssuer(JWT_ISSUER)
+    .setAudience(JWT_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime(exp)
     .sign(secret)
@@ -130,7 +136,11 @@ app.post('/video/:id/playback-token', async (c) => {
   }
 
   // Generate signed token
-  const { token, expiresAt } = await generatePlaybackToken(videoId, expiresIn)
+  const { token, expiresAt } = await generatePlaybackToken(
+    videoId,
+    organizationId,
+    expiresIn
+  )
 
   return c.json({
     playback_url: `${videoRecord.hlsUrl}?token=${token}`,
