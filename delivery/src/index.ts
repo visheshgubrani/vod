@@ -3,19 +3,18 @@
  *
  * SECURITY MODEL FOR SIGNED VIDEOS:
  * ─────────────────────────────────
- * Token is required for: .m3u8 (playlists) and .key (encryption keys)
- * Token is NOT required for: .ts (segments) - they're AES-128 encrypted anyway
+ * Token is required for ALL resources under a signed video:
+ * playlists (.m3u8), segments (.mp4, .m4s, .ts), and keys (.key).
  *
  * Flow:
  * 1. Client requests playlist.m3u8?token=xxx
  * 2. Worker verifies token, rewrites playlist to include token in:
  *    - Variant playlist URLs (stream_0.m3u8?token=xxx)
  *    - Key URIs (#EXT-X-KEY:...URI="...?token=xxx")
- * 3. Player fetches variant playlist with token (verified again)
- * 4. Player fetches enc.key with token (verified again)
- * 5. Player fetches .ts segments (no token needed - encrypted content)
+ *    - Segment URIs (video_1080p.mp4?token=xxx)
+ * 3. Player fetches all sub-resources with token (verified each time)
  *
- * This is the same model used by Mux and other B2B video platforms.
+ * This is the same model used by Mux, Cloudflare Stream, and api.video.
  */
 
 import * as jose from 'jose';
@@ -141,54 +140,45 @@ async function verifyToken(token: string, secret: string, videoId: string): Prom
  * 1. #EXT-X-KEY URIs (for encryption key access)
  * 2. #EXT-X-MEDIA URIs (for audio/subtitle tracks)
  * 3. Variant playlist URIs (.m3u8 references in master playlist)
+ * 4. Segment URIs (.mp4, .m4s, .ts media segments)
  */
 function rewritePlaylist(content: string, token: string): string {
 	let result = content;
 
-	// Debug: log original content (full content for debugging)
-	console.log('=== PLAYLIST REWRITE DEBUG ===');
-	console.log('Original content lines:', content.split('\n').length);
-	console.log('FULL PLAYLIST CONTENT:');
-	console.log(content);
-	console.log('--- END CONTENT ---');
-
 	// 1. Rewrite #EXT-X-KEY URIs (uses .*? to skip past any quoted attributes before URI)
 	// IMPORTANT: Skip data URIs - they contain the key inline, not as a URL to fetch
 	result = result.replace(/(#EXT-X-KEY:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-		// Skip data URIs - they contain inline base64 key, don't append token
-		if (uri.startsWith('data:')) {
-			console.log(`Skipping data URI for KEY (inline key)`);
-			return match;
-		}
+		if (uri.startsWith('data:')) return match;
 		const separator = uri.includes('?') ? '&' : '?';
-		console.log(`Rewriting KEY URI: ${uri}`);
 		return `${prefix}${uri}${separator}token=${token}${suffix}`;
 	});
 
 	// 2. Rewrite #EXT-X-MEDIA URIs (audio/subtitle tracks - uses .*? for same reason)
 	result = result.replace(/(#EXT-X-MEDIA:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-		// Skip data URIs
-		if (uri.startsWith('data:')) {
-			console.log(`Skipping data URI for MEDIA`);
-			return match;
-		}
+		if (uri.startsWith('data:')) return match;
 		const separator = uri.includes('?') ? '&' : '?';
-		console.log(`Rewriting MEDIA URI: ${uri}`);
 		return `${prefix}${uri}${separator}token=${token}${suffix}`;
 	});
 
 	// 3. Rewrite variant playlist references (.m3u8 files as standalone lines)
-	const m3u8Regex = /^([^#\s].*\.m3u8)$/gm;
-	const matches = content.match(m3u8Regex);
-	console.log('Found .m3u8 references:', matches);
-
-	result = result.replace(m3u8Regex, (uri) => {
+	result = result.replace(/^[^#\s].*\.m3u8$/gm, (uri) => {
 		const separator = uri.includes('?') ? '&' : '?';
-		console.log(`Rewriting m3u8 ref: ${uri} -> ${uri}${separator}token=...`);
 		return `${uri}${separator}token=${token}`;
 	});
 
-	console.log('=== END PLAYLIST REWRITE ===');
+	// 4. Rewrite #EXT-X-MAP URIs (fMP4 init segments)
+	result = result.replace(/(#EXT-X-MAP:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
+		const separator = uri.includes('?') ? '&' : '?';
+		return `${prefix}${uri}${separator}token=${token}${suffix}`;
+	});
+
+	// 5. Rewrite segment references (.mp4, .m4s, .ts media files as standalone lines)
+	// NOTE: Must use non-capturing groups (?:...) — capturing groups break the replace callback
+	result = result.replace(/^[^#\s].*\.(?:mp4|m4s|ts)$/gm, (uri) => {
+		const separator = uri.includes('?') ? '&' : '?';
+		return `${uri}${separator}token=${token}`;
+	});
+
 	return result;
 }
 
@@ -205,7 +195,7 @@ function logBandwidth(
 	fileType: string
 ) {
 	if (!env.USAGE_ANALYTICS || !organizationId) return;
-	
+
 	ctx.waitUntil(
 		(async () => {
 			try {
@@ -274,31 +264,22 @@ export default {
 			const playbackPolicy = object.customMetadata?.['playback-policy'] || object.customMetadata?.playback_policy || 'public';
 			const isSigned = playbackPolicy === 'signed';
 
-			// Determine if we need to enforce security
-			// Only playlists (.m3u8) and encryption keys (.key) require tokens
-			// Media segments (.mp4, .m4s, .ts) are AES-128 encrypted and don't need token auth
-			const isProtectedResource = key.endsWith('.m3u8') || key.endsWith('.key');
-
-			console.log(`[DELIVERY] Policy: ${playbackPolicy}, isSigned: ${isSigned}, isProtected: ${isProtectedResource}`);
-
-			if (isSigned && isProtectedResource) {
+			// All resources under a signed video require a valid token:
+			// playlists (.m3u8), segments (.mp4, .m4s, .ts), keys (.key), etc.
+			if (isSigned) {
 				if (!token) {
-					console.log(`[DELIVERY] BLOCKED: No token for protected resource`);
 					return new Response('Unauthorized: Token required', { status: 401, headers: corsHeaders });
 				}
 
 				const videoId = extractVideoId(key);
 				if (!videoId) {
-					console.log(`[DELIVERY] BLOCKED: Could not extract videoId from path`);
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
 				const isValid = await verifyToken(token, env.JWT_SECRET, videoId);
 				if (!isValid) {
-					console.log(`[DELIVERY] BLOCKED: Invalid token for video ${videoId}`);
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}
-				console.log(`[DELIVERY] Token verified for video ${videoId}`);
 			}
 
 			// 4. PREPARE HEADERS

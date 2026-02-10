@@ -62,11 +62,12 @@ def package_with_shaka(
     ]
     
     # NOTE: We don't use content encryption here.
-    # For "signed" videos, security is enforced at the delivery worker level:
-    # - Playlists (.m3u8) require a valid JWT token
-    # - Without the playlist, players can't know what segments to fetch
-    # - Segment URLs aren't guessable (contain video ID)
-    # This is the same model Mux uses for "signed" playback policy.
+    # Shaka Packager with fMP4 only supports SAMPLE-AES (cbcs/cenc), which
+    # requires EME/DRM in hls.js. Traditional AES-128 only works with TS segments.
+    # Instead, security is enforced at the delivery worker level:
+    # - ALL resources (playlists, segments, keys) require a valid JWT token
+    # - Playlist rewriting injects the token into all sub-resource URLs
+    # This is the same model Mux/Cloudflare Stream use for signed playback.
     
     run_cmd(cmd, label="shaka-package")
     print("✅ Packaging complete")
