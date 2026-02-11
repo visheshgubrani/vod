@@ -36,6 +36,68 @@ def format_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
+def iter_subtitle_cues(
+    segment,
+    max_chars: int = 84,
+    max_duration: float = 4.0,
+    max_gap: float = 0.8,
+):
+    """
+    Convert a Whisper segment into smaller subtitle cues.
+
+    Whisper segments are often paragraph-sized; this splits by word timestamps
+    and caps cue duration/length for readable VTT output.
+    """
+    words = getattr(segment, "words", None)
+    if not words:
+        text = segment.text.strip()
+        if text:
+            yield segment.start, segment.end, text
+        return
+
+    cue_tokens = []
+    cue_start = None
+    cue_end = None
+    prev_end = None
+
+    def flush():
+        nonlocal cue_tokens, cue_start, cue_end
+        text = "".join(cue_tokens).strip()
+        if text and cue_start is not None and cue_end is not None:
+            return cue_start, cue_end, text
+        return None
+
+    for word in words:
+        token = getattr(word, "word", "")
+        start = getattr(word, "start", None)
+        end = getattr(word, "end", None)
+        if not token or start is None or end is None:
+            continue
+
+        next_text = "".join(cue_tokens + [token]).strip()
+        too_long = len(next_text) > max_chars and len(cue_tokens) > 0
+        too_slow = cue_start is not None and (end - cue_start) > max_duration
+        big_gap = prev_end is not None and (start - prev_end) > max_gap
+
+        if too_long or too_slow or big_gap:
+            flushed = flush()
+            if flushed:
+                yield flushed
+            cue_tokens = []
+            cue_start = None
+            cue_end = None
+
+        if cue_start is None:
+            cue_start = start
+        cue_tokens.append(token)
+        cue_end = end
+        prev_end = end
+
+    flushed = flush()
+    if flushed:
+        yield flushed
+
+
 def transcribe_to_vtt(
     input_path: str | Path,
     output_path: str | Path,
@@ -55,6 +117,10 @@ def transcribe_to_vtt(
         Path to the generated VTT file
     """
     from faster_whisper import WhisperModel
+    try:
+        from faster_whisper import BatchedInferencePipeline
+    except ImportError:
+        BatchedInferencePipeline = None
     
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -87,7 +153,17 @@ def transcribe_to_vtt(
     if language:
         transcribe_options["language"] = language
     
-    segments, info = model.transcribe(str(audio_path), **transcribe_options)
+    # faster-whisper batching is supported via BatchedInferencePipeline.
+    if BatchedInferencePipeline is not None:
+        batched_model = BatchedInferencePipeline(model=model)
+        segments, info = batched_model.transcribe(
+            str(audio_path),
+            batch_size=8,
+            **transcribe_options,
+        )
+    else:
+        print("⚠️ BatchedInferencePipeline unavailable; falling back to non-batched transcription")
+        segments, info = model.transcribe(str(audio_path), **transcribe_options)
     
     detected_lang = info.language
     print(f"🌐 Detected language: {detected_lang} (probability: {info.language_probability:.2%})")
@@ -99,11 +175,9 @@ def transcribe_to_vtt(
         
         cue_index = 1
         for segment in segments:
-            start = format_timestamp(segment.start)
-            end = format_timestamp(segment.end)
-            text = segment.text.strip()
-            
-            if text:  # Skip empty segments
+            for cue_start, cue_end, text in iter_subtitle_cues(segment):
+                start = format_timestamp(cue_start)
+                end = format_timestamp(cue_end)
                 f.write(f"{cue_index}\n")
                 f.write(f"{start} --> {end}\n")
                 f.write(f"{text}\n\n")
