@@ -52,8 +52,8 @@ function parseUserAgent(ua: string): { device: string; browser: string } {
     return { device, browser }
 }
 
-// POST /events - Accept analytics events from the player
-app.post('/events', async (c) => {
+// POST /journal - Accept analytics events from the player
+app.post('/journal', async (c) => {
     try {
         const events = await c.req.json<AnalyticsEvent[]>()
 

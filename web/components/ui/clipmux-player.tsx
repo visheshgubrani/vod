@@ -43,8 +43,8 @@ type AnalyticsEvent = {
 // Analytics API endpoint
 const ANALYTICS_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL
-    ? `${process.env.NEXT_PUBLIC_API_BASE_URL}/analytics/events`
-    : 'http://localhost:8000/api/analytics/events'
+    ? `${process.env.NEXT_PUBLIC_API_BASE_URL}/playback/journal`
+    : 'http://localhost:8000/api/playback/journal'
 
 /**
  * Convert chapters array to VTT format string
