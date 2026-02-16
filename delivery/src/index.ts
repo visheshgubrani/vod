@@ -372,72 +372,21 @@ export default {
 				headers.set('Content-Range', `bytes ${resolvedRange.start}-${resolvedRange.end}/${totalSize}`);
 				headers.set('Content-Length', resolvedRange.length.toString());
 
-				return serveMetered(
-					object.body,
-					206,
-					headers,
-					ctx,
-					env,
-					organizationId,
-					videoId,
-					fileType
-				);
+				// Log bandwidth for range request
+				logBandwidth(ctx, env, organizationId, videoId, resolvedRange.length, fileType);
+
+				return new Response(object.body, { status: 206, headers });
 			}
 
 			headers.set('Content-Length', totalSize.toString());
 
-			return serveMetered(
-				object.body,
-				200,
-				headers,
-				ctx,
-				env,
-				organizationId,
-				videoId,
-				fileType
-			);
+			// Log bandwidth for full response
+			logBandwidth(ctx, env, organizationId, videoId, totalSize, fileType);
+
+			return new Response(object.body, { status: 200, headers });
 		} catch (error) {
 			console.error('Error serving content:', error);
 			return new Response('Internal server error', { status: 500, headers: corsHeaders });
 		}
 	},
 } satisfies ExportedHandler<Env>;
-
-/**
- * Streams the response body while counting actual bytes transferred.
- * Uses pipeThrough to attach metering inline — no race conditions,
- * correct backpressure, and native cancellation handling.
- */
-function serveMetered(
-	objectBody: ReadableStream,
-	status: number,
-	headers: Headers,
-	ctx: ExecutionContext,
-	env: Env,
-	organizationId: string | undefined,
-	videoId: string | null,
-	fileType: string
-): Response {
-	let bytesServed = 0;
-
-	const meter = new TransformStream({
-		transform(chunk, controller) {
-			bytesServed += chunk.byteLength;
-			controller.enqueue(chunk);
-		},
-		flush() {
-			// Stream completed successfully — log total bytes
-			logBandwidth(ctx, env, organizationId, videoId, bytesServed, fileType);
-		},
-		cancel() {
-			// Client disconnected early — log whatever was actually sent
-			if (bytesServed > 0) {
-				logBandwidth(ctx, env, organizationId, videoId, bytesServed, fileType);
-			}
-		},
-	});
-
-	const metered = objectBody.pipeThrough(meter);
-
-	return new Response(metered, { status, headers });
-}

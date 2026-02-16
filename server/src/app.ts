@@ -62,8 +62,8 @@ app.route('/v1/upload', uploadPublic)
 // Public API routes (API key auth) - for B2B customers
 app.route('/v1', api)
 
-// Analytics routes (public, no auth)
-app.route('/api/analytics', analytics)
+// Playback telemetry ingest route (public, no auth)
+app.route('/api/playback', analytics)
 app.route('/api/analytics-stats', analyticsStats)
 
 app.get('/health', (c) => c.text('ok'))
