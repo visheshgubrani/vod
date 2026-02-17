@@ -1,0 +1,9 @@
+/* ClipMux Player — Default Styles */
+
+.clipmux-player[data-view-type="video"] {
+    aspect-ratio: 16 / 9;
+}
+
+.clipmux-player .vds-video-layout {
+    --video-brand: hsl(0, 0%, 96%);
+}
