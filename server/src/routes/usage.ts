@@ -259,10 +259,62 @@ app.get('/transcoding-breakdown', async (c) => {
   })
 })
 
+// =============================================================================
+// Cloudflare Analytics Engine SQL API Helper
+// =============================================================================
+
+/**
+ * Query Cloudflare Analytics Engine via the SQL API.
+ * This properly supports _sample_interval for accurate sampled data.
+ */
+async function queryAnalyticsEngine<T = Record<string, unknown>>(
+  sql: string,
+  accountId: string,
+  apiToken: string,
+): Promise<T[]> {
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+      },
+      body: sql,
+    },
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    console.error('Analytics Engine SQL error:', response.status, errorText)
+    throw new Error(`Analytics Engine query failed: ${response.status}`)
+  }
+
+  const result = await response.json() as { data: T[] }
+  return result.data ?? []
+}
+
+/** Validate and return Analytics Engine config, or null if not configured */
+function getAnalyticsConfig() {
+  const accountId = process.env.ACCOUNT_ID
+  const apiToken = process.env.CLOUDFLARE_ANALYTICS_TOKEN
+  if (!accountId || !apiToken) return null
+  return { accountId, apiToken }
+}
+
+/** Parse days query param, clamped between 1 and 90 */
+function parseDays(param: string | undefined): number {
+  return Math.min(90, Math.max(1, parseInt(param || '30', 10) || 30))
+}
+
+// =============================================================================
+// Bandwidth Endpoints
+// =============================================================================
+
 /**
  * GET /api/usage/bandwidth
- * Get bandwidth usage from Cloudflare Analytics Engine for current organization
- * 
+ * Get bandwidth usage summary from Cloudflare Analytics Engine.
+ * Uses SQL API with _sample_interval for accurate sampled data.
+ *
  * Query params:
  * - days: Number of days to look back (default: 30, max: 90)
  */
@@ -274,120 +326,135 @@ app.get('/bandwidth', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
-  const daysParam = c.req.query('days')
-  const days = Math.min(90, Math.max(1, parseInt(daysParam || '30', 10) || 30))
-  
-  const accountId = process.env.ACCOUNT_ID
-  const apiToken = process.env.CLOUDFLARE_ANALYTICS_TOKEN
-
-  if (!accountId || !apiToken) {
-    return c.json({ 
+  const config = getAnalyticsConfig()
+  if (!config) {
+    return c.json({
       error: 'Bandwidth analytics not configured',
-      message: 'Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN'
+      message: 'Missing ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN',
     }, 501)
   }
 
-  // Calculate date range
-  const endDate = new Date()
-  const startDate = new Date()
-  startDate.setDate(startDate.getDate() - days)
-  
-  // Query Cloudflare Analytics Engine via GraphQL
-  const query = `
-    query GetBandwidthUsage($accountTag: String!, $datetimeStart: Time!, $datetimeEnd: Time!, $orgId: String!) {
-      viewer {
-        accounts(filter: { accountTag: $accountTag }) {
-          bandwidth_usageAdaptiveGroups(
-            filter: {
-              datetime_geq: $datetimeStart
-              datetime_leq: $datetimeEnd
-              index1: $orgId
-            }
-            limit: 1000
-          ) {
-            dimensions {
-              blob1  # organizationId
-              blob3  # fileType
-            }
-            sum {
-              double1  # bytes
-            }
-            count
-          }
-        }
-      }
-    }
-  `
+  const days = parseDays(c.req.query('days'))
 
   try {
-    const response = await fetch('https://api.cloudflare.com/client/v4/graphql', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query,
-        variables: {
-          accountTag: accountId,
-          datetimeStart: startDate.toISOString(),
-          datetimeEnd: endDate.toISOString(),
-          orgId: organizationId,
-        },
-      }),
-    })
+    const rows = await queryAnalyticsEngine<{
+      file_type: string
+      total_bytes: number
+      request_count: number
+    }>(
+      `SELECT
+        blob3 as file_type,
+        sum(_sample_interval * double1) as total_bytes,
+        sum(_sample_interval) as request_count
+      FROM bandwidth_usage
+      WHERE blob1 = '${organizationId}'
+        AND timestamp > NOW() - INTERVAL '${days}' DAY
+      GROUP BY file_type
+      ORDER BY total_bytes DESC`,
+      config.accountId,
+      config.apiToken,
+    )
 
-    if (!response.ok) {
-      console.error('Analytics Engine query failed:', response.status)
-      return c.json({ error: 'Failed to fetch bandwidth data' }, 502)
-    }
-
-    const data = await response.json() as any
-    const groups = data?.data?.viewer?.accounts?.[0]?.bandwidth_usageAdaptiveGroups || []
-
-    // Aggregate by file type
-    const byType: Record<string, { bytes: number; requests: number }> = {}
     let totalBytes = 0
     let totalRequests = 0
 
-    for (const group of groups) {
-      const fileType = group.dimensions?.blob3 || 'unknown'
-      const bytes = group.sum?.double1 || 0
-      const requests = group.count || 0
-
-      if (!byType[fileType]) {
-        byType[fileType] = { bytes: 0, requests: 0 }
-      }
-      byType[fileType].bytes += bytes
-      byType[fileType].requests += requests
+    const byFileType = rows.map((row) => {
+      const bytes = Number(row.total_bytes) || 0
+      const requests = Number(row.request_count) || 0
       totalBytes += bytes
       totalRequests += requests
-    }
+      return {
+        type: row.file_type || 'unknown',
+        bytes,
+        megabytes: Math.round(bytes / (1024 * 1024) * 100) / 100,
+        requests,
+      }
+    })
+
+    // Add percentage after totals are computed
+    const byFileTypeWithPct = byFileType.map((ft) => ({
+      ...ft,
+      percentage: totalBytes > 0 ? Math.round(ft.bytes / totalBytes * 100) : 0,
+    }))
 
     return c.json({
       organizationId,
-      period: {
-        days,
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-      },
+      period: { days },
       bandwidth: {
         totalBytes,
         totalMB: Math.round(totalBytes / (1024 * 1024) * 100) / 100,
         totalGB: Math.round(totalBytes / (1024 * 1024 * 1024) * 1000) / 1000,
         totalRequests,
       },
-      byFileType: Object.entries(byType).map(([type, stats]) => ({
-        type,
-        bytes: stats.bytes,
-        megabytes: Math.round(stats.bytes / (1024 * 1024) * 100) / 100,
-        requests: stats.requests,
-        percentage: totalBytes > 0 ? Math.round(stats.bytes / totalBytes * 100) : 0,
-      })),
+      byFileType: byFileTypeWithPct,
     })
   } catch (error) {
     console.error('Bandwidth query error:', error)
     return c.json({ error: 'Failed to query bandwidth analytics' }, 500)
+  }
+})
+
+/**
+ * GET /api/usage/bandwidth/daily
+ * Get daily bandwidth breakdown for charting.
+ *
+ * Query params:
+ * - days: Number of days to look back (default: 30, max: 90)
+ */
+app.get('/bandwidth/daily', async (c) => {
+  const session = c.var.session
+  const organizationId = session.activeOrganizationId
+
+  if (!organizationId) {
+    return c.json({ error: 'No active organization' }, 400)
+  }
+
+  const config = getAnalyticsConfig()
+  if (!config) {
+    return c.json({
+      error: 'Bandwidth analytics not configured',
+      message: 'Missing ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN',
+    }, 501)
+  }
+
+  const days = parseDays(c.req.query('days'))
+
+  try {
+    const rows = await queryAnalyticsEngine<{
+      bucket: string
+      total_bytes: number
+      request_count: number
+    }>(
+      `SELECT
+        toStartOfDay(timestamp) as bucket,
+        sum(_sample_interval * double1) as total_bytes,
+        sum(_sample_interval) as request_count
+      FROM bandwidth_usage
+      WHERE blob1 = '${organizationId}'
+        AND timestamp > NOW() - INTERVAL '${days}' DAY
+      GROUP BY bucket
+      ORDER BY bucket ASC`,
+      config.accountId,
+      config.apiToken,
+    )
+
+    return c.json({
+      organizationId,
+      period: { days },
+      daily: rows.map((row) => {
+        const bytes = Number(row.total_bytes) || 0
+        return {
+          date: row.bucket,
+          bytes,
+          megabytes: Math.round(bytes / (1024 * 1024) * 100) / 100,
+          gigabytes: Math.round(bytes / (1024 * 1024 * 1024) * 1000) / 1000,
+          requests: Number(row.request_count) || 0,
+        }
+      }),
+    })
+  } catch (error) {
+    console.error('Bandwidth daily query error:', error)
+    return c.json({ error: 'Failed to query daily bandwidth' }, 500)
   }
 })
 
