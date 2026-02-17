@@ -1,0 +1,51 @@
+{
+    "name": "@clipmux/player",
+    "version": "0.1.0",
+    "description": "ClipMux video player — drop-in React component with built-in analytics",
+    "type": "module",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "typecheck": "tsc --noEmit"
+    },
+    "peerDependencies": {
+        "react": ">=18",
+        "react-dom": ">=18"
+    },
+    "devDependencies": {
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "tsup": "^8.0.0",
+        "typescript": "^5.0.0"
+    },
+    "keywords": [
+        "video",
+        "player",
+        "hls",
+        "clipmux",
+        "vidstack",
+        "react",
+        "analytics",
+        "streaming"
+    ],
+    "license": "MIT",
+    "dependencies": {
+        "@vidstack/react": "^1.12.13"
+    }
+}
