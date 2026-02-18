@@ -7,6 +7,12 @@ export const auth = betterAuth({
   database: drizzleAdapter(db, {
     provider: 'pg',
   }),
+  session: {
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60, // 5 minutes — session served from cookie, skips DB
+    },
+  },
   emailAndPassword: {
     enabled: true,
   },
@@ -25,3 +31,4 @@ export const auth = betterAuth({
   plugins: [admin(), organization()],
   baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:4080',
 })
+

@@ -260,6 +260,12 @@ app.use('*', async (c, next) => {
     return
   }
 
+  // Don't rate-limit inbound webhook callbacks (server-to-server, trusted)
+  if (c.req.path.startsWith('/api/webhook')) {
+    await next()
+    return
+  }
+
   const rateLimiter = resolveRateLimiter(c.req.path)
   if (!rateLimiter) {
     await next()
