@@ -23,6 +23,15 @@ import {
     HardDrive,
     Pencil,
 } from "lucide-react";
+import {
+    CartesianGrid,
+    Line,
+    LineChart,
+    ResponsiveContainer,
+    Tooltip,
+    XAxis,
+    YAxis,
+} from "recharts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -54,12 +63,48 @@ interface VideoDetail {
     fileSize?: number;
 }
 
-interface AnalyticsData {
-    totalViews: number;
+interface VideoContentScore {
+    totalSessions: number;
     uniqueViewers: number;
-    totalWatchTime: number;
-    avgWatchTime: number;
-    dailyViews: Array<{ date: string; views: number }>;
+    avgWatchSeconds: number;
+    completionRate: number;
+    completionRatePercent: number;
+    peakConcurrents: number;
+    durationSeconds: number;
+}
+
+interface VideoRetentionCurve {
+    totalSessions: number;
+    curve: Array<{
+        progressPercent: number;
+        viewersPercent: number;
+        viewers: number;
+    }>;
+}
+
+interface VideoTechHealth {
+    totalSessions: number;
+    totalEvents: number;
+    totalErrors: number;
+    sessionsWithErrors: number;
+    errorEventRate: number;
+    errorEventRatePercent: number;
+    sessionErrorRate: number;
+    sessionErrorRatePercent: number;
+    seekEvents: number;
+    sessionsWithSeek: number;
+    bufferingSessionRate: number;
+    bufferingSessionRatePercent: number;
+    topErrors: Array<{
+        code: string;
+        count: number;
+    }>;
+}
+
+interface VideoAnalyticsData {
+    contentScore: VideoContentScore;
+    retention: VideoRetentionCurve;
+    techHealth: VideoTechHealth;
 }
 
 export default function VideoDetailPage({ params }: VideoDetailPageProps) {
@@ -78,7 +123,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
     const [editPolicy, setEditPolicy] = React.useState<"public" | "signed">("public");
     const [isSaving, setIsSaving] = React.useState(false);
     const [isDeleting, setIsDeleting] = React.useState(false);
-    const [analytics, setAnalytics] = React.useState<AnalyticsData | null>(null);
+    const [analytics, setAnalytics] = React.useState<VideoAnalyticsData | null>(null);
     const [analyticsLoading, setAnalyticsLoading] = React.useState(false);
     const [embedAutoplay, setEmbedAutoplay] = React.useState(false);
     const [embedMuted, setEmbedMuted] = React.useState(true);
@@ -119,15 +164,36 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
         const fetchAnalytics = async () => {
             setAnalyticsLoading(true);
             try {
-                const res = await fetch(`${API_URL}/analytics-stats/${videoId}`, {
-                    credentials: "include",
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setAnalytics(data);
+                const [contentScoreRes, retentionRes, techHealthRes] = await Promise.all([
+                    fetch(`${API_URL}/analytics-stats/video/content-score?videoId=${videoId}`, {
+                        credentials: "include",
+                    }),
+                    fetch(`${API_URL}/analytics-stats/video/retention-curve?videoId=${videoId}`, {
+                        credentials: "include",
+                    }),
+                    fetch(`${API_URL}/analytics-stats/video/tech-health?videoId=${videoId}`, {
+                        credentials: "include",
+                    }),
+                ]);
+
+                if (!contentScoreRes.ok || !retentionRes.ok || !techHealthRes.ok) {
+                    throw new Error("Failed to fetch video analytics");
                 }
+
+                const [contentScore, retention, techHealth] = await Promise.all([
+                    contentScoreRes.json() as Promise<VideoContentScore>,
+                    retentionRes.json() as Promise<VideoRetentionCurve>,
+                    techHealthRes.json() as Promise<VideoTechHealth>,
+                ]);
+
+                setAnalytics({
+                    contentScore,
+                    retention,
+                    techHealth,
+                });
             } catch (err) {
                 console.error("Failed to fetch analytics:", err);
+                setAnalytics(null);
             } finally {
                 setAnalyticsLoading(false);
             }
@@ -184,6 +250,14 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
         if (!seconds) return "--:--";
         const mins = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60);
+        return `${mins}m ${secs}s`;
+    };
+
+    const formatWatchSeconds = (seconds?: number) => {
+        if (!seconds || seconds <= 0) return "0s";
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        if (mins === 0) return `${secs}s`;
         return `${mins}m ${secs}s`;
     };
 
@@ -588,55 +662,136 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                         </div>
                     ) : analytics ? (
                         <div className="space-y-8">
-                            {/* Stats */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-                                <div>
-                                    <p className="text-3xl font-semibold text-foreground">{analytics.totalViews.toLocaleString()}</p>
-                                    <p className="text-sm text-muted-foreground mt-1">Total views</p>
-                                </div>
-                                <div>
-                                    <p className="text-3xl font-semibold text-foreground">{analytics.uniqueViewers.toLocaleString()}</p>
-                                    <p className="text-sm text-muted-foreground mt-1">Unique viewers</p>
-                                </div>
-                                <div>
-                                    <p className="text-3xl font-semibold text-foreground">{Math.floor(analytics.totalWatchTime / 60).toLocaleString()}m</p>
-                                    <p className="text-sm text-muted-foreground mt-1">Watch time</p>
-                                </div>
-                                <div>
-                                    <p className="text-3xl font-semibold text-foreground">{Math.floor(analytics.avgWatchTime).toLocaleString()}s</p>
-                                    <p className="text-sm text-muted-foreground mt-1">Avg. watch time</p>
+                            {/* Row 1: Content Score */}
+                            <div className="space-y-3">
+                                <h3 className="text-sm font-medium text-muted-foreground">Content Score</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div className="rounded-xl border border-border bg-card/40 p-4">
+                                        <p className="text-xs text-muted-foreground uppercase tracking-wide">Avg. Watch Time</p>
+                                        <p className="mt-2 text-2xl font-semibold text-foreground">
+                                            {formatWatchSeconds(analytics.contentScore.avgWatchSeconds)}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-xl border border-border bg-card/40 p-4">
+                                        <p className="text-xs text-muted-foreground uppercase tracking-wide">Completion Rate</p>
+                                        <p className="mt-2 text-2xl font-semibold text-foreground">
+                                            {analytics.contentScore.completionRatePercent.toFixed(1)}%
+                                        </p>
+                                    </div>
+                                    <div className="rounded-xl border border-border bg-card/40 p-4">
+                                        <p className="text-xs text-muted-foreground uppercase tracking-wide">Peak Concurrents</p>
+                                        <p className="mt-2 text-2xl font-semibold text-foreground">
+                                            {analytics.contentScore.peakConcurrents.toLocaleString()}
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
 
-                            {/* Chart */}
-                            {analytics.dailyViews && analytics.dailyViews.length > 0 && (
-                                <div>
-                                    <h3 className="text-sm font-medium text-muted-foreground mb-4">Views over time</h3>
-                                    <div className="h-48 flex items-end gap-1">
-                                        {analytics.dailyViews.map((day, idx) => {
-                                            const maxViews = Math.max(...analytics.dailyViews.map(d => d.views), 1);
-                                            const height = (day.views / maxViews) * 100;
-                                            return (
-                                                <div
-                                                    key={idx}
-                                                    className="flex-1 flex flex-col items-center gap-1"
-                                                >
-                                                    <div className="w-full relative" style={{ height: "150px" }}>
-                                                        <div
-                                                            className="absolute bottom-0 w-full bg-primary/60 hover:bg-primary rounded-sm transition-all"
-                                                            style={{ height: `${height}%`, minHeight: day.views > 0 ? "4px" : "0" }}
-                                                            title={`${day.date}: ${day.views} views`}
-                                                        />
-                                                    </div>
-                                                    <span className="text-[10px] text-muted-foreground">
-                                                        {new Date(day.date).toLocaleDateString("en-US", { month: "numeric", day: "numeric" })}
-                                                    </span>
-                                                </div>
-                                            );
-                                        })}
+                            {/* Row 2: Audience Retention */}
+                            <div className="space-y-3">
+                                <h3 className="text-sm font-medium text-muted-foreground">Audience Retention</h3>
+                                <div className="rounded-xl border border-border bg-card/40 p-4">
+                                    {analytics.retention.curve.length > 0 ? (
+                                        <div className="h-64">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <LineChart data={analytics.retention.curve}>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                                                    <XAxis
+                                                        dataKey="progressPercent"
+                                                        stroke="hsl(var(--muted-foreground))"
+                                                        tick={{ fontSize: 12 }}
+                                                        tickFormatter={(value) => `${value}%`}
+                                                    />
+                                                    <YAxis
+                                                        stroke="hsl(var(--muted-foreground))"
+                                                        tick={{ fontSize: 12 }}
+                                                        domain={[0, 100]}
+                                                        tickFormatter={(value) => `${value}%`}
+                                                    />
+                                                    <Tooltip
+                                                        contentStyle={{
+                                                            backgroundColor: "hsl(var(--card))",
+                                                            border: "1px solid hsl(var(--border))",
+                                                            borderRadius: "12px",
+                                                        }}
+                                                        formatter={(value: number | undefined, name: string | undefined) => {
+                                                            if (name === "viewersPercent") return [`${(value ?? 0).toFixed(2)}%`, "Viewers still watching"];
+                                                            if (name === "viewers") return [`${(value ?? 0).toLocaleString()}`, "Viewers"];
+                                                            return [value ?? 0, name ?? "value"];
+                                                        }}
+                                                        labelFormatter={(value) => `${value}% watched`}
+                                                    />
+                                                    <Line
+                                                        type="monotone"
+                                                        dataKey="viewersPercent"
+                                                        stroke="hsl(var(--primary))"
+                                                        strokeWidth={2.5}
+                                                        dot={false}
+                                                    />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-muted-foreground py-10 text-center">
+                                            No retention points available yet
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Row 3: Tech Health */}
+                            <div className="space-y-3">
+                                <h3 className="text-sm font-medium text-muted-foreground">Tech Health</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="rounded-xl border border-border bg-card/40 p-4">
+                                        <p className="text-xs text-muted-foreground uppercase tracking-wide">Buffering Signals</p>
+                                        <p className="mt-2 text-2xl font-semibold text-foreground">
+                                            {analytics.techHealth.bufferingSessionRatePercent.toFixed(1)}%
+                                        </p>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            Sessions with seek events: {analytics.techHealth.sessionsWithSeek.toLocaleString()} / {analytics.techHealth.totalSessions.toLocaleString()}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            Seek events logged: {analytics.techHealth.seekEvents.toLocaleString()}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-xl border border-border bg-card/40 p-4">
+                                        <p className="text-xs text-muted-foreground uppercase tracking-wide">Errors</p>
+                                        <p className="mt-2 text-2xl font-semibold text-foreground">
+                                            {analytics.techHealth.sessionErrorRatePercent.toFixed(2)}%
+                                        </p>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            Sessions with errors: {analytics.techHealth.sessionsWithErrors.toLocaleString()} / {analytics.techHealth.totalSessions.toLocaleString()}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            Total error events: {analytics.techHealth.totalErrors.toLocaleString()}
+                                        </p>
                                     </div>
                                 </div>
-                            )}
+
+                                <div className="rounded-xl border border-border bg-card/40 p-4">
+                                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-3">Top Error Codes</p>
+                                    {analytics.techHealth.topErrors.length > 0 ? (
+                                        <div className="space-y-2">
+                                            {analytics.techHealth.topErrors.map((errorRow) => (
+                                                <div
+                                                    key={errorRow.code}
+                                                    className="flex items-center justify-between text-sm"
+                                                >
+                                                    <span className="font-mono text-foreground">{errorRow.code}</span>
+                                                    <span className="text-muted-foreground">{errorRow.count.toLocaleString()}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-sm text-muted-foreground">No error events recorded.</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="text-xs text-muted-foreground">
+                                Completion is counted when a session reaches at least 95% of the video duration.
+                            </div>
                         </div>
                     ) : (
                         <div className="text-center py-16 text-muted-foreground">
