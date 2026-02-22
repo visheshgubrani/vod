@@ -1,4 +1,7 @@
 import { Hono } from 'hono'
+import { eq } from 'drizzle-orm'
+import { video } from '../db/schema'
+import { db } from '../lib/database'
 
 const app = new Hono()
 
@@ -6,6 +9,31 @@ const app = new Hono()
 const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL || 'http://localhost:8123'
 const CLICKHOUSE_USER = process.env.CLICKHOUSE_USER || 'default'
 const CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD || ''
+
+// Simple in-memory cache: videoId → organizationId (5-minute TTL)
+const orgCache = new Map<string, { orgId: string; expiresAt: number }>()
+const CACHE_TTL_MS = 5 * 60 * 1000
+
+async function resolveOrganizationId(videoId: string): Promise<string> {
+    const cached = orgCache.get(videoId)
+    if (cached && cached.expiresAt > Date.now()) {
+        return cached.orgId
+    }
+
+    try {
+        const rows = await db
+            .select({ organizationId: video.organizationId })
+            .from(video)
+            .where(eq(video.id, videoId))
+            .limit(1)
+
+        const orgId = rows[0]?.organizationId || ''
+        orgCache.set(videoId, { orgId, expiresAt: Date.now() + CACHE_TTL_MS })
+        return orgId
+    } catch {
+        return ''
+    }
+}
 
 // Event type definition
 interface AnalyticsEvent {
@@ -72,6 +100,10 @@ app.post('/journal', async (c) => {
 
         const receivedAt = new Date().toISOString().replace('T', ' ').replace('Z', '')
 
+        // Resolve organization_id from the video (cached, single lookup per batch)
+        const primaryVideoId = events[0]?.videoId || ''
+        const organizationId = primaryVideoId ? await resolveOrganizationId(primaryVideoId) : ''
+
         // Map events to ClickHouse snake_case format
         const rows = events.map((e) => {
             // Format timestamp for DateTime64(3) - expects 'YYYY-MM-DD HH:mm:ss.SSS' format
@@ -86,6 +118,7 @@ app.post('/journal', async (c) => {
                 video_id: e.videoId,
                 session_id: e.sessionId,
                 user_id: e.userId || null,
+                organization_id: organizationId,
                 current_time: e.currentTime ?? 0,
                 duration: e.duration ?? 0,
                 watched_delta: e.watchedDelta ?? 0,
