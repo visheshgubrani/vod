@@ -26,6 +26,13 @@
     "recharts": "^3.7.0",
     "tailwind-merge": "^3.4.0"
   },
+  "pnpm": {
+    "supportedArchitectures": {
+      "os": ["linux"],
+      "cpu": ["x64", "arm64"],
+      "libc": ["glibc", "musl"]
+    }
+  },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
