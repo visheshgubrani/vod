@@ -213,7 +213,9 @@ export const video = pgTable('video', {
   updatedAt: timestamp('updated_at')
     .defaultNow()
     .$onUpdate(() => new Date()),
-})
+}, (table) => [
+  index('video_organizationId_idx').on(table.organizationId),
+])
 
 export const apiKey = pgTable('api_key', {
   id: text('id').primaryKey(), // "sk_live_..."

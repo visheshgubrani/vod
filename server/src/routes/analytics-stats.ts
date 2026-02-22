@@ -51,32 +51,7 @@ function parseOptionalIntWithBounds(
   return Math.min(Math.max(parsed, min), max)
 }
 
-function buildUuidInClause(
-  ids: string[],
-  keyPrefix: string,
-): { inClause: string; params: Record<string, ClickHouseParamValue> } {
-  const params: Record<string, ClickHouseParamValue> = {}
-  const placeholders = ids.map((id, index) => {
-    const key = `${keyPrefix}${index}`
-    params[key] = id
-    return `{${key}:UUID}`
-  })
 
-  return {
-    inClause: placeholders.join(', '),
-    params,
-  }
-}
-
-async function getOrganizationVideos(organizationId: string) {
-  const rows = await db
-    .select({ id: video.id, title: video.title })
-    .from(video)
-    .where(eq(video.organizationId, organizationId))
-
-  // Extra safeguard in case invalid IDs somehow land in Postgres.
-  return rows.filter((row) => validateVideoId(row.id))
-}
 
 async function isVideoOwnedByOrganization(
   organizationId: string,
@@ -637,25 +612,6 @@ app.get('/organization/hero-stats', async (c) => {
   const days = parseOptionalIntWithBounds(c.req.query('days'), 7, 365)
 
   try {
-    const ownedVideos = await getOrganizationVideos(organizationId)
-
-    if (ownedVideos.length === 0) {
-      return c.json({
-        days,
-        totalViews: 0,
-        watchTimeHours: 0,
-        watchTimeSeconds: 0,
-        uniqueViewers: 0,
-        errorRate: 0,
-        errorRatePercent: 0,
-      })
-    }
-
-    const { inClause, params } = buildUuidInClause(
-      ownedVideos.map((v) => v.id),
-      'videoId',
-    )
-
     const sql = `
       SELECT
         count() as total_views,
@@ -663,7 +619,7 @@ app.get('/organization/hero-stats', async (c) => {
         uniq(ifNull(user_id, toString(session_id))) as unique_viewers,
         if(sum(event_count) = 0, 0, sum(error_count) / sum(event_count)) as error_rate
       FROM analytics.video_session_summary
-      WHERE video_id IN (${inClause})
+      WHERE organization_id = {orgId:String}
       ${days !== null ? 'AND started_at >= now() - INTERVAL {days:Int32} DAY' : ''}
     `
 
@@ -673,7 +629,7 @@ app.get('/organization/hero-stats', async (c) => {
       unique_viewers: string
       error_rate: string
     }>(sql, {
-      ...params,
+      orgId: organizationId,
       ...(days !== null ? { days } : {}),
     })
 
@@ -714,19 +670,6 @@ app.get('/organization/growth', async (c) => {
   const days = parseIntWithBounds(c.req.query('days'), 30, 7, 365)
 
   try {
-    const ownedVideos = await getOrganizationVideos(organizationId)
-    if (ownedVideos.length === 0) {
-      return c.json({
-        days,
-        timeline: [],
-      })
-    }
-
-    const { inClause, params } = buildUuidInClause(
-      ownedVideos.map((v) => v.id),
-      'videoId',
-    )
-
     const sql = `
       SELECT
         toDate(started_at) as date,
@@ -734,7 +677,7 @@ app.get('/organization/growth', async (c) => {
         uniq(ifNull(user_id, toString(session_id))) as unique_viewers,
         coalesce(sum(watch_seconds), 0) as watch_seconds
       FROM analytics.video_session_summary
-      WHERE video_id IN (${inClause})
+      WHERE organization_id = {orgId:String}
         AND started_at >= now() - INTERVAL {days:Int32} DAY
       GROUP BY date
       ORDER BY date ASC
@@ -746,7 +689,7 @@ app.get('/organization/growth', async (c) => {
       unique_viewers: string
       watch_seconds: string
     }>(sql, {
-      ...params,
+      orgId: organizationId,
       days,
     })
 
@@ -781,20 +724,6 @@ app.get('/organization/demographics', async (c) => {
   const days = parseIntWithBounds(c.req.query('days'), 30, 7, 365)
 
   try {
-    const ownedVideos = await getOrganizationVideos(organizationId)
-    if (ownedVideos.length === 0) {
-      return c.json({
-        days,
-        countries: [],
-        devices: [],
-      })
-    }
-
-    const { inClause, params } = buildUuidInClause(
-      ownedVideos.map((v) => v.id),
-      'videoId',
-    )
-
     const [countries, devices] = await Promise.all([
       queryClickHouse<{
         country: string
@@ -807,13 +736,13 @@ app.get('/organization/demographics', async (c) => {
             uniq(ifNull(user_id, toString(session_id))) as viewers,
             uniq(session_id) as sessions
           FROM analytics.video_events_raw
-          WHERE video_id IN (${inClause})
+          WHERE organization_id = {orgId:String}
             AND ts >= now() - INTERVAL {days:Int32} DAY
           GROUP BY country
           ORDER BY viewers DESC
           LIMIT 8
         `,
-        { ...params, days },
+        { orgId: organizationId, days },
       ),
       queryClickHouse<{
         device_type: string
@@ -834,12 +763,12 @@ app.get('/organization/demographics', async (c) => {
             uniq(ifNull(user_id, toString(session_id))) as viewers,
             uniq(session_id) as sessions
           FROM analytics.video_events_raw
-          WHERE video_id IN (${inClause})
+          WHERE organization_id = {orgId:String}
             AND ts >= now() - INTERVAL {days:Int32} DAY
           GROUP BY device_type
           ORDER BY viewers DESC
         `,
-        { ...params, days },
+        { orgId: organizationId, days },
       ),
     ])
 
@@ -870,16 +799,6 @@ async function getTopVideosLeaderboard(
   limit: number,
   days: number | null,
 ) {
-  const ownedVideos = await getOrganizationVideos(organizationId)
-  if (ownedVideos.length === 0) {
-    return []
-  }
-
-  const { inClause, params } = buildUuidInClause(
-    ownedVideos.map((v) => v.id),
-    'videoId',
-  )
-
   const sql = `
     SELECT
       toString(video_id) as video_id,
@@ -888,7 +807,7 @@ async function getTopVideosLeaderboard(
       coalesce(sum(watch_seconds), 0) as total_watch_seconds,
       if(sum(event_count) = 0, 0, sum(error_count) / sum(event_count)) as error_rate
     FROM analytics.video_session_summary
-    WHERE video_id IN (${inClause})
+    WHERE organization_id = {orgId:String}
     ${days !== null ? 'AND started_at >= now() - INTERVAL {days:Int32} DAY' : ''}
     GROUP BY video_id
     ORDER BY views DESC
@@ -902,12 +821,20 @@ async function getTopVideosLeaderboard(
     total_watch_seconds: string
     error_rate: string
   }>(sql, {
-    ...params,
+    orgId: organizationId,
     limit,
     ...(days !== null ? { days } : {}),
   })
 
-  const titleByVideoId = new Map(ownedVideos.map((row) => [row.id, row.title]))
+  if (results.length === 0) return []
+
+  // Fetch titles only for the videos that appear in results (small set)
+  const videoRows = await db
+    .select({ id: video.id, title: video.title })
+    .from(video)
+    .where(eq(video.organizationId, organizationId))
+
+  const titleByVideoId = new Map(videoRows.map((row) => [row.id, row.title]))
 
   return results.map((row) => ({
     videoId: row.video_id,
@@ -968,9 +895,7 @@ app.get('/top-videos', async (c) => {
 
 export default app
 
-// TODO: (Eventually): When  scale, we should add organization_id directly to ClickHouse video_events_raw table so you can simply run WHERE organization_id = '...'.
-
-// CLickhouse schema
+// CLickhouse schema (updated with organization_id)
 /* -- 1. Create the Database
 CREATE DATABASE IF NOT EXISTS analytics;
 
@@ -985,6 +910,7 @@ CREATE TABLE analytics.video_events_raw (
   video_id UUID,
   session_id UUID,
   user_id Nullable(String) CODEC(ZSTD(1)),
+  organization_id String,
 
   -- Metrics
   current_time Float32 DEFAULT 0,
@@ -1009,6 +935,7 @@ CREATE TABLE analytics.video_session_summary
     video_id UUID,
     session_id UUID,
     user_id Nullable(String),
+    organization_id SimpleAggregateFunction(any, String),
 
     -- Aggregates
     started_at SimpleAggregateFunction(min, DateTime64(3)),
@@ -1032,6 +959,7 @@ AS SELECT
     video_id,
     session_id,
     any(user_id) as user_id,
+    any(organization_id) as organization_id,
 
     min(ts) as started_at,
     max(ts) as ended_at,
