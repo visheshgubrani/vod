@@ -93,6 +93,12 @@ app.get('/:id', async (c) => {
     playbackUrl = `${playbackUrl}?token=${token}`
   }
 
+  // For signed videos, append token to subtitle URL too (delivery worker requires it)
+  let subtitleUrl = resolveUrl(videoRecord.subtitleUrl)
+  if (videoRecord.playbackPolicy === 'signed' && subtitleUrl && token) {
+    subtitleUrl = `${subtitleUrl}?token=${token}`
+  }
+
   return c.json({
     id: videoRecord.id,
     title: videoRecord.title,
@@ -100,7 +106,7 @@ app.get('/:id', async (c) => {
     playbackPolicy: videoRecord.playbackPolicy,
     duration: videoRecord.duration,
     thumbnailUrl: resolveUrl(videoRecord.thumbnailUrl),
-    subtitleUrl: resolveUrl(videoRecord.subtitleUrl),
+    subtitleUrl,
     chapters: videoRecord.chapters, // AI-generated chapters array
     chaptersStatus: videoRecord.chaptersStatus,
     playbackUrl,

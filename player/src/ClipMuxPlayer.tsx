@@ -109,16 +109,17 @@ const CDN_BASE = 'https://delivery.clipmux.com/videos'
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
+/** Append signed playback token to a URL if needed. */
+function withToken(url: string, token?: string): string {
+    if (!token || /(?:\?|&)token=/.test(url) || url.startsWith('data:') || url.startsWith('blob:')) return url
+    const separator = url.includes('?') ? '&' : '?'
+    return `${url}${separator}token=${encodeURIComponent(token)}`
+}
+
 /** Resolve the playback source URL from props. */
 function resolveSourceUrl(props: Pick<ClipMuxPlayerProps, 'playbackId' | 'src' | 'token'>): string {
-    let url = props.src || `${CDN_BASE}/${props.playbackId}/playlist.m3u8`
-
-    // Append token for signed playback
-    if (props.token && !url.includes('token=')) {
-        url += `${url.includes('?') ? '&' : '?'}token=${props.token}`
-    }
-
-    return url
+    const url = props.src || `${CDN_BASE}/${props.playbackId}/playlist.m3u8`
+    return withToken(url, props.token)
 }
 
 /** Convert chapters array to a WebVTT data URL. */
@@ -389,6 +390,16 @@ export function ClipMuxPlayer({
         return chaptersToVttUrl(chapters)
     }, [chapters])
 
+    const posterSrc = React.useMemo(() => {
+        if (!poster) return undefined
+        return withToken(poster, token)
+    }, [poster, token])
+
+    const subtitlesSrc = React.useMemo(() => {
+        if (!subtitles) return undefined
+        return withToken(subtitles, token)
+    }, [subtitles, token])
+
     // Build inline style with theme CSS variables
     const mergedStyle = React.useMemo(() => {
         const vars: Record<string, string> = {}
@@ -438,13 +449,13 @@ export function ClipMuxPlayer({
                 {poster && (
                     <Poster
                         className="vds-poster absolute inset-0 block h-full w-full object-cover opacity-0 transition-opacity data-[visible]:opacity-100"
-                        src={poster}
+                        src={posterSrc}
                         alt={title || 'Video poster'}
                     />
                 )}
-                {subtitles && (
+                {subtitlesSrc && (
                     <Track
-                        src={subtitles}
+                        src={subtitlesSrc}
                         kind="subtitles"
                         label="English"
                         lang="en"
@@ -462,7 +473,7 @@ export function ClipMuxPlayer({
                 )}
             </MediaProvider>
             <DefaultVideoLayout
-                thumbnails={poster}
+                thumbnails={posterSrc}
                 icons={defaultLayoutIcons}
                 menuGroup="bottom"
                 smallLayoutWhen={({ width }) => width < 520}

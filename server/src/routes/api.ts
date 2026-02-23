@@ -132,6 +132,8 @@ app.post('/video/:id/playback-token', async (c) => {
       token: null,
       expires_at: null,
       playback_policy: 'public',
+      subtitle_url: videoRecord.subtitleUrl || null,
+      chapters: videoRecord.chapters || null,
     })
   }
 
@@ -147,6 +149,10 @@ app.post('/video/:id/playback-token', async (c) => {
     token,
     expires_at: expiresAt,
     playback_policy: 'signed',
+    subtitle_url: videoRecord.subtitleUrl
+      ? `${videoRecord.subtitleUrl}?token=${token}`
+      : null,
+    chapters: videoRecord.chapters || null,
   })
 })
 

@@ -38,6 +38,7 @@ The player resolves the video URL automatically from the `playbackId`.
 ```
 
 The `token` is appended to the playback URL as a query parameter for secure delivery.
+When provided, the same token is also appended to `subtitles` and `poster` URLs (if set).
 
 ### Custom Source (Escape Hatch)
 
@@ -81,7 +82,7 @@ If you use your own CDN or proxy, pass `src` directly. Keep `playbackId` so anal
 | `playbackId` | `string` | — | ClipMux video ID. Resolves to the HLS URL automatically. |
 | `src` | `string` | — | Direct HLS/DASH URL. Overrides `playbackId` for playback. |
 | `envKey` | `string` | — | Tenant/environment key for multi-tenant analytics. |
-| `token` | `string` | — | Signed playback token for private content. |
+| `token` | `string` | — | Signed playback token for private content (auto-appended to playback, subtitles, and poster URLs). |
 | `title` | `string` | — | Video title displayed in the player UI. |
 | `poster` | `string` | — | Poster/thumbnail image URL. |
 | `subtitles` | `string` | — | VTT subtitle file URL. |
