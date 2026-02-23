@@ -10,7 +10,6 @@
     "@aws-sdk/client-s3": "^3.958.0",
     "@aws-sdk/s3-request-presigner": "^3.958.0",
     "@hono/node-server": "^1.19.8",
-    "@neondatabase/serverless": "^1.0.2",
     "@upstash/qstash": "^2.8.4",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.2",
