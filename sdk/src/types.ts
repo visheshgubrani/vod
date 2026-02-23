@@ -26,6 +26,10 @@ export interface UploadOptions {
     title?: string
     /** Playback policy: 'public' or 'signed' (default: 'public') */
     playbackPolicy?: 'public' | 'signed'
+    /** Generate subtitles for the video (default: false) */
+    generateSubtitle?: boolean
+    /** Generate chapters for the video (default: false, requires generateSubtitle) */
+    generateChapters?: boolean
     /** Progress callback */
     onProgress?: (progress: UploadProgress) => void
     /** Abort signal for cancellation */
