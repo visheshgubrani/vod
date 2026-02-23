@@ -37,7 +37,7 @@ export class ClipmuxUploader {
      * Upload a file to the VOD platform
      */
     async upload(file: File, options: UploadOptions = {}): Promise<UploadResult> {
-        const { title, playbackPolicy, onProgress, signal } = options
+        const { title, playbackPolicy, generateSubtitle, generateChapters, onProgress, signal } = options
 
         // Check if already aborted
         if (signal?.aborted) {
@@ -55,7 +55,7 @@ export class ClipmuxUploader {
         })
 
         // Step 1: Create the upload and get presigned URLs
-        const createResponse = await this.createUpload(file, title, playbackPolicy)
+        const createResponse = await this.createUpload(file, title, playbackPolicy, generateSubtitle, generateChapters)
 
         const parts: PartInfo[] = createResponse.urls.map((u) => ({
             partNumber: u.part_number,
@@ -169,6 +169,8 @@ export class ClipmuxUploader {
         file: File,
         title?: string,
         playbackPolicy?: 'public' | 'signed',
+        generateSubtitle?: boolean,
+        generateChapters?: boolean,
     ): Promise<CreateUploadResponse> {
         const response = await fetch(`${this.baseUrl}/v1/upload/create`, {
             method: 'POST',
@@ -182,6 +184,8 @@ export class ClipmuxUploader {
                 size: file.size,
                 title: title || file.name,
                 playback_policy: playbackPolicy || 'public',
+                generate_subtitle: generateSubtitle || false,
+                generate_chapters: generateChapters || false,
             }),
         })
 

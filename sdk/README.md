@@ -81,6 +81,8 @@ const uploader = new ClipmuxUploader({
 await uploader.upload(file, {
   title: 'My Video',           // Optional, defaults to filename
   playbackPolicy: 'public',    // 'public' or 'signed'
+  generateSubtitle: true,      // Generate subtitles (default: false)
+  generateChapters: true,      // Generate chapters (default: false, requires generateSubtitle)
   onProgress: (progress) => {
     // progress.percentage (0-100)
     // progress.bytesUploaded

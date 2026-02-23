@@ -16,7 +16,7 @@ var ClipmuxUploader = class {
    * Upload a file to the VOD platform
    */
   async upload(file, options = {}) {
-    const { title, playbackPolicy, onProgress, signal } = options;
+    const { title, playbackPolicy, generateSubtitle, generateChapters, onProgress, signal } = options;
     if (signal?.aborted) {
       throw new Error("Upload aborted");
     }
@@ -28,7 +28,7 @@ var ClipmuxUploader = class {
       partsCompleted: 0,
       partsTotal: 0
     });
-    const createResponse = await this.createUpload(file, title, playbackPolicy);
+    const createResponse = await this.createUpload(file, title, playbackPolicy, generateSubtitle, generateChapters);
     const parts = createResponse.urls.map((u) => ({
       partNumber: u.part_number,
       url: u.url,
@@ -116,7 +116,7 @@ var ClipmuxUploader = class {
   // ===============================
   // Private Methods
   // ===============================
-  async createUpload(file, title, playbackPolicy) {
+  async createUpload(file, title, playbackPolicy, generateSubtitle, generateChapters) {
     const response = await fetch(`${this.baseUrl}/v1/upload/create`, {
       method: "POST",
       headers: {
@@ -128,7 +128,9 @@ var ClipmuxUploader = class {
         content_type: file.type || "video/mp4",
         size: file.size,
         title: title || file.name,
-        playback_policy: playbackPolicy || "public"
+        playback_policy: playbackPolicy || "public",
+        generate_subtitle: generateSubtitle || false,
+        generate_chapters: generateChapters || false
       })
     });
     if (!response.ok) {

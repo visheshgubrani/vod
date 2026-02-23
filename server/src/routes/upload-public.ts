@@ -216,6 +216,9 @@ app.post('/create', async (c) => {
     const size = Number(body.size)
     const title = body.title
     const playbackPolicy = body.playback_policy || body.playbackPolicy
+    const generateSubtitle = body.generate_subtitle === true || body.generateSubtitle === true
+    const generateChapters = body.generate_chapters === true || body.generateChapters === true
+    console.log(`[create] generateSubtitle=${generateSubtitle} generateChapters=${generateChapters} playbackPolicy=${playbackPolicy}`)
 
     if (!filename || !contentType) {
         return c.json({ error: 'Missing filename or content_type' }, 400)
@@ -256,6 +259,8 @@ app.post('/create', async (c) => {
         title: title || filename,
         status: 'uploading',
         playbackPolicy: playbackPolicy === 'signed' ? 'signed' : 'public',
+        generateSubtitle,
+        generateChapters: generateSubtitle ? generateChapters : false,
         rawKey: key,
         size: size,
         uploadedBy: null, // No specific user for B2B token uploads
