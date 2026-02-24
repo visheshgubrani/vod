@@ -31,10 +31,12 @@ def upload_to_r2(
     """
     print("☁️ Uploading to R2...")
     
-    files = list(output_dir.glob("*"))
+    files = [f for f in output_dir.rglob("*") if f.is_file()]
     
     def upload_file(file_path: Path) -> bool:
-        r2_key = f"{R2_PREFIX}/{video_id}/{file_path.name}"
+        # Preserve directory structure in R2 key (e.g. video_1080p/init.mp4)
+        relative = file_path.relative_to(output_dir)
+        r2_key = f"{R2_PREFIX}/{video_id}/{relative}"
         
         # Content-Type and Cache-Control mapping
         ext = file_path.suffix.lower()

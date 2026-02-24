@@ -82,28 +82,12 @@ type NormalizedRange = {
 	length: number;
 };
 
-function parseRangeHeader(rangeHeader: string): R2Range | null {
-	if (!rangeHeader.startsWith('bytes=')) return null;
-	const rangeSpec = rangeHeader.slice('bytes='.length).trim();
-	if (!rangeSpec || rangeSpec.includes(',')) return null;
-
-	if (rangeSpec.startsWith('-')) {
-		const suffix = Number.parseInt(rangeSpec.slice(1), 10);
-		if (!Number.isFinite(suffix) || suffix <= 0) return null;
-		return { suffix };
+function withTokenQuery(uri: string, token: string): string {
+	if (!uri || uri.startsWith('data:') || uri.startsWith('blob:') || /(?:\?|&)token=/.test(uri)) {
+		return uri;
 	}
-
-	const [startStr, endStr] = rangeSpec.split('-', 2);
-	const start = Number.parseInt(startStr, 10);
-	if (!Number.isFinite(start) || start < 0) return null;
-
-	if (endStr && endStr.length > 0) {
-		const end = Number.parseInt(endStr, 10);
-		if (!Number.isFinite(end) || end < start) return null;
-		return { offset: start, length: end - start + 1 };
-	}
-
-	return { offset: start };
+	const separator = uri.includes('?') ? '&' : '?';
+	return `${uri}${separator}token=${token}`;
 }
 
 function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null {
@@ -179,34 +163,29 @@ function rewritePlaylist(content: string, token: string): string {
 	// IMPORTANT: Skip data URIs - they contain the key inline, not as a URL to fetch
 	result = result.replace(/(#EXT-X-KEY:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
 		if (uri.startsWith('data:')) return match;
-		const separator = uri.includes('?') ? '&' : '?';
-		return `${prefix}${uri}${separator}token=${token}${suffix}`;
+		return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
 	});
 
 	// 2. Rewrite #EXT-X-MEDIA URIs (audio/subtitle tracks - uses .*? for same reason)
 	result = result.replace(/(#EXT-X-MEDIA:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
 		if (uri.startsWith('data:')) return match;
-		const separator = uri.includes('?') ? '&' : '?';
-		return `${prefix}${uri}${separator}token=${token}${suffix}`;
+		return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
 	});
 
-	// 3. Rewrite variant playlist references (.m3u8 files as standalone lines)
-	result = result.replace(/^[^#\s].*\.m3u8$/gm, (uri) => {
-		const separator = uri.includes('?') ? '&' : '?';
-		return `${uri}${separator}token=${token}`;
+	// 3. Rewrite variant playlist references (.m3u8 files as standalone lines, with optional query)
+	result = result.replace(/^[^#\s].*\.m3u8(?:\?.*)?$/gm, (uri) => {
+		return withTokenQuery(uri, token);
 	});
 
 	// 4. Rewrite #EXT-X-MAP URIs (fMP4 init segments)
 	result = result.replace(/(#EXT-X-MAP:.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-		const separator = uri.includes('?') ? '&' : '?';
-		return `${prefix}${uri}${separator}token=${token}${suffix}`;
+		return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
 	});
 
-	// 5. Rewrite segment references (.mp4, .m4s, .ts media files as standalone lines)
+	// 5. Rewrite segment references (.mp4, .m4s, .ts media files as standalone lines, with optional query)
 	// NOTE: Must use non-capturing groups (?:...) — capturing groups break the replace callback
-	result = result.replace(/^[^#\s].*\.(?:mp4|m4s|ts)$/gm, (uri) => {
-		const separator = uri.includes('?') ? '&' : '?';
-		return `${uri}${separator}token=${token}`;
+	result = result.replace(/^[^#\s].*\.(?:mp4|m4s|ts)(?:\?.*)?$/gm, (uri) => {
+		return withTokenQuery(uri, token);
 	});
 
 	return result;
@@ -269,13 +248,12 @@ export default {
 		if (!key) return new Response('Not found', { status: 404, headers: corsHeaders });
 
 		try {
-			// 1. SETUP RANGE REQUEST (Standard)
+			// 1. SETUP RANGE REQUEST (delegate parsing to R2 for standards-compliant behavior)
 			const rangeHeader = request.headers.get('Range');
 			const options: R2GetOptions = {};
-			const parsedRange = rangeHeader ? parseRangeHeader(rangeHeader) : null;
-
-			if (parsedRange) {
-				options.range = parsedRange;
+			const hasRangeHeader = Boolean(rangeHeader);
+			if (hasRangeHeader) {
+				options.range = request.headers;
 			}
 
 			// 2. FETCH OBJECT (Optimized: Get metadata AND handle in one shot)
@@ -342,33 +320,55 @@ export default {
 			const fileType = getFileType(key);
 
 			// 5. MANIFEST REWRITING
-			if (isSigned && key.endsWith('.m3u8') && token) {
-				const content = await object.text();
-				const rewritten = rewritePlaylist(content, token);
-				const rewrittenBytes = new TextEncoder().encode(rewritten).length;
+      if (isSigned && token && (key.endsWith('.m3u8') || key.endsWith('.mpd'))) {
+        const content = await object.text();
+        let rewritten = content;
 
-				// Ensure signed manifests are NEVER cached by the browser/CDN
-				headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0');
-				headers.set('Content-Length', rewrittenBytes.toString());
+        if (key.endsWith('.m3u8')) {
+          // 1. Rewrite #EXT-X-KEY, #EXT-X-MAP, and #EXT-X-MEDIA URIs (combined for efficiency)
+          rewritten = rewritten.replace(/(#(?:EXT-X-KEY|EXT-X-MAP|EXT-X-MEDIA):.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
+            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
+          });
 
-				// Log bandwidth
-				logBandwidth(ctx, env, organizationId, videoId, rewrittenBytes, fileType);
+          // 2. Rewrite standalone variant playlists and segments, safely capturing the optional \r
+          rewritten = rewritten.replace(/^([^#\s][^\r\n]*\.(?:m3u8|mp4|m4s|ts)(?:\?[^\r\n]*)?)(\r?)$/gm, (match, uri, carriageReturn) => {
+            return `${withTokenQuery(uri, token)}${carriageReturn}`;
+          });
+          
+        } else if (key.endsWith('.mpd')) {
+          // 3. DASH Rewriting: Catch media and initialization paths inside the XML
+          rewritten = rewritten.replace(/(media=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
+            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
+          });
+          rewritten = rewritten.replace(/(initialization=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
+            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
+          });
+        }
 
-				return new Response(rewritten, { status: 200, headers });
-			}
+        const rewrittenBytes = new TextEncoder().encode(rewritten).length;
+
+        // Ensure signed manifests are NEVER cached by the browser/CDN
+        headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0');
+        headers.set('Content-Length', rewrittenBytes.toString());
+
+        // Log bandwidth
+        logBandwidth(ctx, env, organizationId, videoId, rewrittenBytes, fileType);
+
+        return new Response(rewritten, { status: 200, headers });
+      }
 
 			// 6. SERVE BODY (Range or Full)
 			const totalSize = object.size;
-			const range = object.range ?? parsedRange;
-			const resolvedRange = range ? resolveRange(range, totalSize) : null;
+			const resolvedRange = object.range ? resolveRange(object.range, totalSize) : null;
 
-			if (rangeHeader && range && !resolvedRange) {
+			if (hasRangeHeader && !resolvedRange) {
 				headers.set('Content-Range', `bytes */${totalSize}`);
 				headers.set('Content-Length', '0');
 				return new Response(null, { status: 416, headers });
 			}
 
-			if (resolvedRange && 'body' in object) {
+			if (hasRangeHeader && resolvedRange && 'body' in object) {
+				headers.set('Vary', 'Range');
 				headers.set('Content-Range', `bytes ${resolvedRange.start}-${resolvedRange.end}/${totalSize}`);
 				headers.set('Content-Length', resolvedRange.length.toString());
 
