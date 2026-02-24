@@ -309,6 +309,7 @@ export function ClipMuxPlayer({
       className="media-player"
       title={title}
       src={src}
+      crossOrigin="anonymous"
       onPlay={analytics.onPlay}
       onPause={analytics.onPause}
       onSeeking={analytics.onSeeking}

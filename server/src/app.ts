@@ -240,19 +240,36 @@ app.use(
   }),
 )
 
-// Strict CORS for dashboard routes (/api/*)
-// These routes use session cookies, so we need to restrict origin
+// Permissive CORS for playback telemetry (/api/playback/*)
+// The player can be embedded on any domain, so we allow all origins
 app.use(
-  '/api/*',
+  '/api/playback/*',
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: '*',
     allowHeaders: ['Content-Type', 'Authorization'],
-    allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowMethods: ['POST', 'GET', 'OPTIONS'],
     exposeHeaders: ['Content-Length'],
     maxAge: 600,
-    credentials: true,
   }),
 )
+
+// Strict CORS for dashboard routes (/api/*)
+// These routes use session cookies, so we need to restrict origin
+const strictCors = cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
+  exposeHeaders: ['Content-Length'],
+  maxAge: 600,
+  credentials: true,
+})
+
+app.use('/api/*', async (c, next) => {
+  if (c.req.path.startsWith('/api/playback')) {
+    return next()
+  }
+  return strictCors(c, next)
+})
 
 app.use('*', async (c, next) => {
   if (c.req.method === 'OPTIONS' || c.req.path === '/health') {
