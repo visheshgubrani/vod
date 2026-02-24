@@ -25,22 +25,32 @@ def package_with_shaka(
     """
     print("📦 Packaging with Shaka Packager...")
     
-    # Build input specifications
+    # Build input specifications with per-stream segment templates.
+    # Each stream gets its own init segment + individual segment files,
+    # avoiding the fragile single-file byte-range mode.
     inputs = []
     
     # Video streams
     for label, fmp4_path in sorted(renditions.items()):
         if label == "audio":
             continue
+        stream_dir = output_dir / f"video_{label}"
+        stream_dir.mkdir(exist_ok=True)
         inputs.append(
-            f"in={fmp4_path},stream=video,output={output_dir}/video_{label}.mp4"
+            f"in={fmp4_path},stream=video,"
+            f"init_segment={stream_dir}/init.mp4,"
+            f"segment_template={stream_dir}/$Number$.m4s"
         )
     
     # Audio stream (if present)
     audio_inputs = []
     if "audio" in renditions:
+        audio_dir = output_dir / "audio"
+        audio_dir.mkdir(exist_ok=True)
         audio_inputs.append(
-            f"in={renditions['audio']},stream=audio,output={output_dir}/audio.mp4"
+            f"in={renditions['audio']},stream=audio,"
+            f"init_segment={audio_dir}/init.mp4,"
+            f"segment_template={audio_dir}/$Number$.m4s"
         )
     
     # Build Shaka command

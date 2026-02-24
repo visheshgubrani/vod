@@ -8,16 +8,6 @@ from utils.cmd import run_cmd
 from video.analysis import VideoMetadata
 
 
-"""
-Video transcoding with GPU acceleration (NVENC).
-"""
-from pathlib import Path
-
-from config import SEGMENT_DURATION, EncodingProfile
-from utils.cmd import run_cmd
-from video.analysis import VideoMetadata
-
-
 def transcode_rendition(
     input_path: Path,
     output_path: Path,
@@ -116,13 +106,14 @@ def transcode_rendition(
         "-maxrate:v", profile.maxrate,
         "-bufsize:v", profile.bufsize,
         
-        "-g", str(int(SEGMENT_DURATION * metadata.fps)),
-        "-keyint_min", str(int(SEGMENT_DURATION * metadata.fps)),
-        "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_DURATION})",
+        "-vsync", "1",
+        "-r", str(metadata.fps),
+        "-g", str(round(SEGMENT_DURATION * metadata.fps)),
+        "-keyint_min", str(round(SEGMENT_DURATION * metadata.fps)),
         "-sc_threshold", "0",
+        "-no-scenecut", "1",
         
-        "-bf", "3",
-        "-b_ref_mode", "middle",
+        "-bf", "2",
         "-an",
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         
@@ -173,7 +164,7 @@ def transcode_audio(input_path: Path, output_path: Path) -> Path:
         "-ac", "2",
         "-ar", "48000",
         
-        # Fragmented MP4
+        # Fragmented MP4 for Shaka Packager
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         
         str(output_path)
