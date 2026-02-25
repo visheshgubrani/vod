@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import {
+    isHLSProvider,
     MediaPlayer,
     MediaProvider,
     Poster,
@@ -429,6 +430,15 @@ export function ClipMuxPlayer({
             onError={(e) => {
                 analytics.onError(e?.message || 'unknown')
                 onError?.(new Error(e?.message || 'Playback error'))
+            }}
+            onProviderChange={(provider) => {
+                if (isHLSProvider(provider)) {
+                    provider.config = {
+                        ...provider.config,
+                        maxBufferLength: 30,
+                        maxMaxBufferLength: 30,
+                    }
+                }
             }}
             onTimeUpdate={(detail) => {
                 if (playerStateRef.current) {

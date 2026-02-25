@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { MediaPlayer, MediaProvider, Track, useMediaState } from '@vidstack/react'
+import { isHLSProvider, MediaPlayer, MediaProvider, Track, useMediaState } from '@vidstack/react'
 import {
   defaultLayoutIcons,
   DefaultVideoLayout,
@@ -316,6 +316,15 @@ export function ClipMuxPlayer({
       onSeeked={analytics.onSeeked}
       onEnded={analytics.onEnded}
       onError={() => analytics.onError()}
+      onProviderChange={(provider) => {
+        if (isHLSProvider(provider)) {
+          provider.config = {
+            ...provider.config,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 30,
+          }
+        }
+      }}
       onTimeUpdate={(detail) => {
         if (playerStateRef.current) {
           playerStateRef.current.currentTime = detail.currentTime
