@@ -27,6 +27,8 @@ interface Env {
 
 const JWT_ISSUER = 'clipmux';
 const JWT_AUDIENCE = 'playback';
+const UNKNOWN_IP = 'unknown';
+const UNKNOWN_USER_AGENT = 'unknown';
 
 const MIME_TYPES: Record<string, string> = {
 	'.m3u8': 'application/vnd.apple.mpegurl',
@@ -122,10 +124,69 @@ function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null
 	return null;
 }
 
+function firstForwardedValue(value: string): string {
+	const [first = ''] = value.split(',');
+	return first.trim();
+}
+
+function stripIpPort(value: string): string {
+	const ipv4WithPort = value.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+	if (ipv4WithPort?.[1]) return ipv4WithPort[1];
+
+	const bracketedIpv6 = value.match(/^\[([a-f0-9:.%]+)\](?::\d+)?$/i);
+	if (bracketedIpv6?.[1]) return bracketedIpv6[1];
+
+	return value;
+}
+
+function normalizePlaybackIp(value: string | null | undefined): string {
+	if (!value) return UNKNOWN_IP;
+
+	let normalized = firstForwardedValue(value);
+	if (!normalized) return UNKNOWN_IP;
+
+	normalized = stripIpPort(normalized).trim().toLowerCase();
+	if (!normalized) return UNKNOWN_IP;
+
+	if (normalized.startsWith('::ffff:')) {
+		normalized = normalized.slice('::ffff:'.length);
+	}
+
+	return normalized || UNKNOWN_IP;
+}
+
+function normalizePlaybackUserAgent(value: string | null | undefined): string {
+	if (!value) return UNKNOWN_USER_AGENT;
+	const normalized = value.trim().replace(/\s+/g, ' ').toLowerCase();
+	return normalized || UNKNOWN_USER_AGENT;
+}
+
+function getClientIpFromRequest(request: Request): string {
+	return normalizePlaybackIp(
+		request.headers.get('cf-connecting-ip') ||
+		request.headers.get('x-forwarded-for') ||
+		request.headers.get('x-real-ip') ||
+		request.headers.get('x-client-ip')
+	);
+}
+
+function getUserAgentFromRequest(request: Request): string {
+	return normalizePlaybackUserAgent(request.headers.get('user-agent'));
+}
+
+async function hashPlaybackValue(value: string): Promise<string> {
+	const data = new TextEncoder().encode(value);
+	const digest = await crypto.subtle.digest('SHA-256', data);
+	return Array.from(new Uint8Array(digest))
+		.map((byte) => byte.toString(16).padStart(2, '0'))
+		.join('');
+}
+
 async function verifyToken(
 	token: string,
 	secret: string,
 	videoId: string,
+	request: Request,
 	organizationId?: string
 ): Promise<boolean> {
 	try {
@@ -137,6 +198,42 @@ async function verifyToken(
 		const tokenSubject = typeof payload.sub === 'string' ? payload.sub : undefined;
 		const tokenVideoId = typeof payload.video_id === 'string' ? payload.video_id : tokenSubject;
 		if (tokenVideoId !== videoId) return false;
+
+		const tokenIpHash = typeof payload.ip_hash === 'string' ? payload.ip_hash : undefined;
+		const tokenUserAgentHash = typeof payload.ua_hash === 'string' ? payload.ua_hash : undefined;
+		const hasBindingClaims = Boolean(tokenIpHash || tokenUserAgentHash);
+
+		if (hasBindingClaims) {
+			if (!tokenIpHash || !tokenUserAgentHash) {
+				return false;
+			}
+
+			const [requestIpHash, requestUserAgentHash] = await Promise.all([
+				hashPlaybackValue(getClientIpFromRequest(request)),
+				hashPlaybackValue(getUserAgentFromRequest(request)),
+			]);
+
+			if (tokenIpHash !== requestIpHash || tokenUserAgentHash !== requestUserAgentHash) {
+				const userAgent = (request.headers.get('user-agent') || '').toLowerCase();
+				const isAppleCoreMedia = userAgent.includes('applecoremedia');
+				
+				// Common casting and smart TV user agents
+				const isCastingDevice = userAgent.includes('crkey') || 
+					userAgent.includes('chromecast') || 
+					userAgent.includes('roku') || 
+					userAgent.includes('tizen') || 
+					userAgent.includes('webos') || 
+					userAgent.includes('appletv');
+
+				// Native players and casting devices change the User-Agent. 
+				// If IP matches and it's a known alternate device, allow it.
+				if (tokenIpHash === requestIpHash && (isAppleCoreMedia || isCastingDevice)) {
+					// Allowed
+				} else {
+					return false;
+				}
+			}
+		}
 
 		if (organizationId) {
 			const tokenOrgId = typeof payload.org_id === 'string' ? payload.org_id : undefined;
@@ -281,7 +378,7 @@ export default {
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
-				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, organizationId);
+				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, organizationId);
 				if (!isValid) {
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}

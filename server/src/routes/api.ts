@@ -14,6 +14,10 @@ import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
 import { video, uploadToken } from '../db/schema'
 import type { ApiKeyVariables } from '../types'
+import {
+  buildPlaybackBindingClaims,
+  type PlaybackBindingClaims,
+} from '../utils/playbackBinding'
 
 const app = new Hono<{ Variables: ApiKeyVariables }>()
 
@@ -28,12 +32,17 @@ const JWT_AUDIENCE = 'playback'
 async function generatePlaybackToken(
   videoId: string,
   organizationId: string,
-  expiresIn: string = DEFAULT_EXPIRATION
+  expiresIn: string = DEFAULT_EXPIRATION,
+  bindingClaims: PlaybackBindingClaims,
 ): Promise<{ token: string; expiresAt: number }> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
 
-  const token = await new jose.SignJWT({ video_id: videoId, org_id: organizationId })
+  const token = await new jose.SignJWT({
+    video_id: videoId,
+    org_id: organizationId,
+    ...bindingClaims,
+  })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(videoId)
     .setIssuer(JWT_ISSUER)
@@ -77,7 +86,11 @@ app.use('/*', requireApiKey)
  *   Authorization: Bearer sk_live_xxxxx
  * 
  * Body (optional):
- *   { "expires_in": "2h" }  // Token expiration (default: 1h)
+ *   {
+ *     "expires_in": "2h",                // Token expiration (default: 1h)
+ *     "viewer_ip": "203.0.113.10",       // Required for signed videos
+ *     "viewer_user_agent": "Mozilla..."  // Required for signed videos
+ *   }
  * 
  * Response:
  *   {
@@ -91,14 +104,34 @@ app.post('/video/:id/playback-token', async (c) => {
   const videoId = c.req.param('id')
 
   let expiresIn = DEFAULT_EXPIRATION
+  let viewerIp: string | undefined
+  let viewerUserAgent: string | undefined
+
   try {
-    const body = await c.req.json()
-    if (body.expires_in) {
-      expiresIn = body.expires_in
+    const rawBody = await c.req.json<unknown>()
+    if (rawBody && typeof rawBody === 'object') {
+      const body = rawBody as Record<string, unknown>
+
+      if (typeof body.expires_in === 'string' && body.expires_in.trim()) {
+        expiresIn = body.expires_in
+      }
+
+      if (typeof body.viewer_ip === 'string' && body.viewer_ip.trim()) {
+        viewerIp = body.viewer_ip
+      }
+
+      if (typeof body.viewer_user_agent === 'string' && body.viewer_user_agent.trim()) {
+        viewerUserAgent = body.viewer_user_agent
+      }
     }
   } catch {
     // No body or invalid JSON - use defaults
   }
+
+  const headers = c.req.raw.headers
+  const providedViewerIp = viewerIp || headers.get('x-viewer-ip')
+  const providedViewerUserAgent =
+    viewerUserAgent || headers.get('x-viewer-user-agent')
 
   // Get video and verify ownership
   const videos = await db
@@ -137,11 +170,24 @@ app.post('/video/:id/playback-token', async (c) => {
     })
   }
 
+  if (!providedViewerIp || !providedViewerUserAgent) {
+    return c.json({
+      error: 'viewer_ip and viewer_user_agent are required for signed playback tokens',
+      hint: 'Send them in JSON body or x-viewer-ip/x-viewer-user-agent headers',
+    }, 400)
+  }
+
+  const bindingClaims: PlaybackBindingClaims = buildPlaybackBindingClaims(
+    providedViewerIp,
+    providedViewerUserAgent,
+  )
+
   // Generate signed token
   const { token, expiresAt } = await generatePlaybackToken(
     videoId,
     organizationId,
-    expiresIn
+    expiresIn,
+    bindingClaims,
   )
 
   return c.json({

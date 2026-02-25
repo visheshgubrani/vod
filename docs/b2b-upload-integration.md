@@ -168,12 +168,24 @@ After `video.ready`, get a signed playback URL:
 // Backend: GET /api/video/:id/playback
 const response = await fetch(
   `https://api.clipmux.com/v1/video/${videoId}/playback-token`,
-  { headers: { 'Authorization': `Bearer ${CLIPMUX_API_KEY}` } }
+  {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${CLIPMUX_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      viewer_ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+      viewer_user_agent: req.headers['user-agent'],
+    }),
+  }
 )
 
 const { playback_url } = await response.json()
 // playback_url: https://media.clipmux.com/videos/.../playlist.m3u8?token=...
 ```
+
+Always forward the end-user IP and User-Agent from your app request when minting playback tokens, so token binding works correctly.
 
 ### Frontend Player (HLS.js)
 
