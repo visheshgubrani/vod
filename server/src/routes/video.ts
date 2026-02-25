@@ -5,6 +5,12 @@ import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { video, member } from '../db/schema'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
+import {
+  buildPlaybackBindingClaims,
+  getClientIpFromHeaders,
+  getUserAgentFromHeaders,
+  type PlaybackBindingClaims,
+} from '../utils/playbackBinding'
 
 const app = new Hono()
 
@@ -19,11 +25,16 @@ const JWT_AUDIENCE = 'playback'
 async function generatePlaybackToken(
   videoId: string,
   organizationId: string,
-  expiresIn: string = TOKEN_EXPIRATION
+  expiresIn: string = TOKEN_EXPIRATION,
+  bindingClaims: PlaybackBindingClaims,
 ): Promise<string> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   
-  const token = await new jose.SignJWT({ video_id: videoId, org_id: organizationId })
+  const token = await new jose.SignJWT({
+    video_id: videoId,
+    org_id: organizationId,
+    ...bindingClaims,
+  })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(videoId)
     .setIssuer(JWT_ISSUER)
@@ -44,6 +55,11 @@ app.use('/*', requireAuth)
 app.get('/:id', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
+  const headers = c.req.raw.headers
+  const bindingClaims = buildPlaybackBindingClaims(
+    getClientIpFromHeaders(headers),
+    getUserAgentFromHeaders(headers),
+  )
 
   // Get video with organization check
   const videos = await db
@@ -89,7 +105,12 @@ app.get('/:id', async (c) => {
   // For signed videos, generate a token
   let token: string | null = null
   if (videoRecord.playbackPolicy === 'signed' && playbackUrl) {
-    token = await generatePlaybackToken(videoId, videoRecord.organizationId)
+    token = await generatePlaybackToken(
+      videoId,
+      videoRecord.organizationId,
+      TOKEN_EXPIRATION,
+      bindingClaims,
+    )
     playbackUrl = `${playbackUrl}?token=${token}`
   }
 
@@ -123,6 +144,11 @@ app.get('/:id/token', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
   const expiresIn = c.req.query('expires') || TOKEN_EXPIRATION
+  const headers = c.req.raw.headers
+  const bindingClaims = buildPlaybackBindingClaims(
+    getClientIpFromHeaders(headers),
+    getUserAgentFromHeaders(headers),
+  )
 
   // Get video
   const videos = await db
@@ -161,7 +187,8 @@ app.get('/:id/token', async (c) => {
   const token = await generatePlaybackToken(
     videoId,
     videoRecord.organizationId,
-    expiresIn
+    expiresIn,
+    bindingClaims,
   )
 
   return c.json({

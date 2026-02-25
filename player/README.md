@@ -35,6 +35,8 @@ Your backend should keep your ClipMux API key (`sk_live_...`) secret. When a use
 // Example: Node.js / Next.js API Route
 export async function GET(request, { params }) {
   const videoId = params.id;
+  const viewerIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+  const viewerUserAgent = request.headers.get('user-agent');
   
   // 1. Verify your user has access to this video first!
   // ...
@@ -46,8 +48,11 @@ export async function GET(request, { params }) {
       'Authorization': `Bearer ${process.env.CLIPMUX_API_KEY}`,
       'Content-Type': 'application/json'
     },
-    // Optional: set custom expiration (default is 1h)
-    // body: JSON.stringify({ expires_in: "2h" })
+    body: JSON.stringify({
+      expires_in: "2h",
+      viewer_ip: viewerIp,               // Bind token to real viewer IP
+      viewer_user_agent: viewerUserAgent // Bind token to viewer User-Agent
+    })
   });
 
   const session = await clipmuxRes.json();
