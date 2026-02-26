@@ -46,6 +46,57 @@ export function normalizePlaybackUserAgent(value: string | null | undefined): st
   return normalized || UNKNOWN_USER_AGENT
 }
 
+function isPrivateOrLocalIpv4(value: string): boolean {
+  const parts = value.split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) {
+    return true
+  }
+
+  const [a, b] = parts
+
+  // Common non-public IPv4 ranges.
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+    (a === 169 && b === 254) || // link-local
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  )
+}
+
+function isPrivateOrLocalIpv6(value: string): boolean {
+  const ip = value.split('%')[0] || value
+
+  // Loopback, unspecified, unique-local and link-local.
+  return (
+    ip === '::1' ||
+    ip === '0:0:0:0:0:0:0:1' ||
+    ip === '::' ||
+    ip.startsWith('fc') ||
+    ip.startsWith('fd') ||
+    ip.startsWith('fe8') ||
+    ip.startsWith('fe9') ||
+    ip.startsWith('fea') ||
+    ip.startsWith('feb')
+  )
+}
+
+export function isPublicPlaybackIp(value: string | null | undefined): boolean {
+  const normalized = normalizePlaybackIp(value)
+
+  if (normalized === UNKNOWN_IP || normalized === 'localhost') {
+    return false
+  }
+
+  if (normalized.includes(':')) {
+    return !isPrivateOrLocalIpv6(normalized)
+  }
+
+  return !isPrivateOrLocalIpv4(normalized)
+}
+
 function hashPlaybackValue(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }

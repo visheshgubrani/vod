@@ -9,6 +9,7 @@ import {
   buildPlaybackBindingClaims,
   getClientIpFromHeaders,
   getUserAgentFromHeaders,
+  isPublicPlaybackIp,
   type PlaybackBindingClaims,
 } from '../utils/playbackBinding'
 
@@ -26,14 +27,15 @@ async function generatePlaybackToken(
   videoId: string,
   organizationId: string,
   expiresIn: string = TOKEN_EXPIRATION,
-  bindingClaims: PlaybackBindingClaims,
+  bindingClaims: PlaybackBindingClaims | null,
 ): Promise<string> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
+  const claims = bindingClaims ?? {}
   
   const token = await new jose.SignJWT({
     video_id: videoId,
     org_id: organizationId,
-    ...bindingClaims,
+    ...claims,
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(videoId)
@@ -56,10 +58,11 @@ app.get('/:id', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
   const headers = c.req.raw.headers
-  const bindingClaims = buildPlaybackBindingClaims(
-    getClientIpFromHeaders(headers),
-    getUserAgentFromHeaders(headers),
-  )
+  const requestIp = getClientIpFromHeaders(headers)
+  const bindingClaims =
+    isPublicPlaybackIp(requestIp)
+      ? buildPlaybackBindingClaims(requestIp, getUserAgentFromHeaders(headers))
+      : null
 
   // Get video with organization check
   const videos = await db
@@ -145,10 +148,11 @@ app.get('/:id/token', async (c) => {
   const videoId = c.req.param('id')
   const expiresIn = c.req.query('expires') || TOKEN_EXPIRATION
   const headers = c.req.raw.headers
-  const bindingClaims = buildPlaybackBindingClaims(
-    getClientIpFromHeaders(headers),
-    getUserAgentFromHeaders(headers),
-  )
+  const requestIp = getClientIpFromHeaders(headers)
+  const bindingClaims =
+    isPublicPlaybackIp(requestIp)
+      ? buildPlaybackBindingClaims(requestIp, getUserAgentFromHeaders(headers))
+      : null
 
   // Get video
   const videos = await db
