@@ -16,6 +16,7 @@ import { video, uploadToken } from '../db/schema'
 import type { ApiKeyVariables } from '../types'
 import {
   buildPlaybackBindingClaims,
+  isPublicPlaybackIp,
   type PlaybackBindingClaims,
 } from '../utils/playbackBinding'
 
@@ -33,15 +34,16 @@ async function generatePlaybackToken(
   videoId: string,
   organizationId: string,
   expiresIn: string = DEFAULT_EXPIRATION,
-  bindingClaims: PlaybackBindingClaims,
+  bindingClaims: PlaybackBindingClaims | null,
 ): Promise<{ token: string; expiresAt: number }> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
+  const claims = bindingClaims ?? {}
 
   const token = await new jose.SignJWT({
     video_id: videoId,
     org_id: organizationId,
-    ...bindingClaims,
+    ...claims,
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(videoId)
@@ -177,10 +179,17 @@ app.post('/video/:id/playback-token', async (c) => {
     }, 400)
   }
 
-  const bindingClaims: PlaybackBindingClaims = buildPlaybackBindingClaims(
-    providedViewerIp,
-    providedViewerUserAgent,
-  )
+  const shouldBindToViewer = isPublicPlaybackIp(providedViewerIp)
+  if (!shouldBindToViewer && process.env.NODE_ENV === 'production') {
+    return c.json({
+      error: 'viewer_ip must be a public routable IP in production',
+      hint: 'Pass the end-user public IP from x-forwarded-for or a trusted edge header',
+    }, 400)
+  }
+
+  const bindingClaims: PlaybackBindingClaims | null = shouldBindToViewer
+    ? buildPlaybackBindingClaims(providedViewerIp, providedViewerUserAgent)
+    : null
 
   // Generate signed token
   const { token, expiresAt } = await generatePlaybackToken(
