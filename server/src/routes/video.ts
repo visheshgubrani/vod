@@ -7,18 +7,45 @@ import { video, member } from '../db/schema'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import {
   buildPlaybackBindingClaims,
-  getClientIpFromHeaders,
   getUserAgentFromHeaders,
-  isPublicPlaybackIp,
+  normalizePlaybackUserAgent,
   type PlaybackBindingClaims,
 } from '../utils/playbackBinding'
 
 const app = new Hono()
 
-// JWT token expiration (1 hour)
-const TOKEN_EXPIRATION = '1h'
+// JWT token expiration (default)
+const TOKEN_EXPIRATION = '4h'
 const JWT_ISSUER = 'clipmux'
 const JWT_AUDIENCE = 'playback'
+const DEFAULT_RESTRICTIONS = {
+  allowed_domains: ['*'],
+  allow_no_referrer: true,
+}
+
+type PlaybackRestrictionsClaims = {
+  allowed_domains: string[]
+  allow_no_referrer: boolean
+}
+
+function logPlaybackBindingDebug(
+  context: string,
+  videoId: string,
+  organizationId: string,
+  requestUserAgent: string | null,
+  bindingClaims: PlaybackBindingClaims,
+  restrictions: PlaybackRestrictionsClaims,
+): void {
+  console.log('[playback-ip-debug] mint-token: app route', {
+    context,
+    videoId,
+    organizationId,
+    requestUserAgent,
+    normalizedRequestUserAgent: normalizePlaybackUserAgent(requestUserAgent),
+    bindingClaims,
+    restrictions,
+  })
+}
 
 /**
  * Generate a signed JWT for video playback
@@ -27,10 +54,14 @@ async function generatePlaybackToken(
   videoId: string,
   organizationId: string,
   expiresIn: string = TOKEN_EXPIRATION,
-  bindingClaims: PlaybackBindingClaims | null,
+  bindingClaims: PlaybackBindingClaims,
+  restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS,
 ): Promise<string> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
-  const claims = bindingClaims ?? {}
+  const claims = {
+    ...bindingClaims,
+    ...restrictions,
+  }
   
   const token = await new jose.SignJWT({
     video_id: videoId,
@@ -57,12 +88,9 @@ app.use('/*', requireAuth)
 app.get('/:id', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
-  const headers = c.req.raw.headers
-  const requestIp = getClientIpFromHeaders(headers)
-  const bindingClaims =
-    isPublicPlaybackIp(requestIp)
-      ? buildPlaybackBindingClaims(requestIp, getUserAgentFromHeaders(headers))
-      : null
+  const requestUserAgent = getUserAgentFromHeaders(c.req.raw.headers)
+  const bindingClaims = buildPlaybackBindingClaims(requestUserAgent)
+  const restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS
 
   // Get video with organization check
   const videos = await db
@@ -108,11 +136,21 @@ app.get('/:id', async (c) => {
   // For signed videos, generate a token
   let token: string | null = null
   if (videoRecord.playbackPolicy === 'signed' && playbackUrl) {
+    logPlaybackBindingDebug(
+      'GET /api/video/:id',
+      videoId,
+      videoRecord.organizationId,
+      requestUserAgent,
+      bindingClaims,
+      restrictions,
+    )
+
     token = await generatePlaybackToken(
       videoId,
       videoRecord.organizationId,
       TOKEN_EXPIRATION,
       bindingClaims,
+      restrictions,
     )
     playbackUrl = `${playbackUrl}?token=${token}`
   }
@@ -147,12 +185,9 @@ app.get('/:id/token', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
   const expiresIn = c.req.query('expires') || TOKEN_EXPIRATION
-  const headers = c.req.raw.headers
-  const requestIp = getClientIpFromHeaders(headers)
-  const bindingClaims =
-    isPublicPlaybackIp(requestIp)
-      ? buildPlaybackBindingClaims(requestIp, getUserAgentFromHeaders(headers))
-      : null
+  const requestUserAgent = getUserAgentFromHeaders(c.req.raw.headers)
+  const bindingClaims = buildPlaybackBindingClaims(requestUserAgent)
+  const restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS
 
   // Get video
   const videos = await db
@@ -188,11 +223,21 @@ app.get('/:id/token', async (c) => {
     return c.json({ error: 'Video does not require signed access' }, 400)
   }
 
+  logPlaybackBindingDebug(
+    'GET /api/video/:id/token',
+    videoId,
+    videoRecord.organizationId,
+    requestUserAgent,
+    bindingClaims,
+    restrictions,
+  )
+
   const token = await generatePlaybackToken(
     videoId,
     videoRecord.organizationId,
     expiresIn,
     bindingClaims,
+    restrictions,
   )
 
   return c.json({

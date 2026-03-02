@@ -27,8 +27,8 @@ interface Env {
 
 const JWT_ISSUER = 'clipmux';
 const JWT_AUDIENCE = 'playback';
-const UNKNOWN_IP = 'unknown';
 const UNKNOWN_USER_AGENT = 'unknown';
+const ANY_DOMAIN_PATTERN = '*';
 
 const MIME_TYPES: Record<string, string> = {
 	'.m3u8': 'application/vnd.apple.mpegurl',
@@ -124,54 +124,130 @@ function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null
 	return null;
 }
 
-function firstForwardedValue(value: string): string {
-	const [first = ''] = value.split(',');
-	return first.trim();
-}
-
-function stripIpPort(value: string): string {
-	const ipv4WithPort = value.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
-	if (ipv4WithPort?.[1]) return ipv4WithPort[1];
-
-	const bracketedIpv6 = value.match(/^\[([a-f0-9:.%]+)\](?::\d+)?$/i);
-	if (bracketedIpv6?.[1]) return bracketedIpv6[1];
-
-	return value;
-}
-
-function normalizePlaybackIp(value: string | null | undefined): string {
-	if (!value) return UNKNOWN_IP;
-
-	let normalized = firstForwardedValue(value);
-	if (!normalized) return UNKNOWN_IP;
-
-	normalized = stripIpPort(normalized).trim().toLowerCase();
-	if (!normalized) return UNKNOWN_IP;
-
-	if (normalized.startsWith('::ffff:')) {
-		normalized = normalized.slice('::ffff:'.length);
-	}
-
-	return normalized || UNKNOWN_IP;
-}
-
 function normalizePlaybackUserAgent(value: string | null | undefined): string {
 	if (!value) return UNKNOWN_USER_AGENT;
 	const normalized = value.trim().replace(/\s+/g, ' ').toLowerCase();
-	return normalized || UNKNOWN_USER_AGENT;
-}
+	if (!normalized) return UNKNOWN_USER_AGENT;
 
-function getClientIpFromRequest(request: Request): string {
-	return normalizePlaybackIp(
-		request.headers.get('cf-connecting-ip') ||
-		request.headers.get('x-forwarded-for') ||
-		request.headers.get('x-real-ip') ||
-		request.headers.get('x-client-ip')
-	);
+	// Normalize to browser engine/family so minor version updates don't break playback.
+	if (normalized.includes('applecoremedia')) return 'applecoremedia';
+	if (normalized.includes('edg/') || normalized.includes('edga/') || normalized.includes('edgios/')) {
+		return 'edge';
+	}
+	if (normalized.includes('opr/') || normalized.includes('opera')) return 'opera';
+	if (
+		normalized.includes('chrome/') ||
+		normalized.includes('crios/') ||
+		normalized.includes('chromium/') ||
+		normalized.includes('crmo/')
+	) {
+		return 'chrome';
+	}
+	if (normalized.includes('firefox/') || normalized.includes('fxios/')) return 'firefox';
+	if (normalized.includes('safari/')) return 'safari';
+	if (normalized.includes('webkit/')) return 'webkit';
+	if (normalized.includes('gecko/')) return 'gecko';
+
+	return UNKNOWN_USER_AGENT;
 }
 
 function getUserAgentFromRequest(request: Request): string {
 	return normalizePlaybackUserAgent(request.headers.get('user-agent'));
+}
+
+function hostnameFromHeaderValue(value: string | null): string | null {
+	if (!value) return null;
+
+	try {
+		const parsed = new URL(value);
+		return parsed.hostname.toLowerCase() || null;
+	} catch {
+		return null;
+	}
+}
+
+function getRequestPlaybackDomain(request: Request): {
+	domain: string | null;
+	source: 'referer' | 'origin' | 'none';
+	referer: string | null;
+	origin: string | null;
+} {
+	const referer = request.headers.get('referer');
+	const origin = request.headers.get('origin');
+	const refererDomain = hostnameFromHeaderValue(referer);
+	if (refererDomain) {
+		return { domain: refererDomain, source: 'referer', referer, origin };
+	}
+
+	const originDomain = hostnameFromHeaderValue(origin);
+	if (originDomain) {
+		return { domain: originDomain, source: 'origin', referer, origin };
+	}
+
+	return { domain: null, source: 'none', referer, origin };
+}
+
+function normalizeDomainPattern(value: string): string | null {
+	const trimmed = value.trim().toLowerCase();
+	if (!trimmed) return null;
+	if (trimmed === ANY_DOMAIN_PATTERN) return ANY_DOMAIN_PATTERN;
+
+	const isWildcard = trimmed.startsWith('*.');
+	const candidate = isWildcard ? trimmed.slice(2) : trimmed;
+	if (!candidate) return null;
+
+	try {
+		const parsed = new URL(candidate.includes('://') ? candidate : `https://${candidate}`);
+		const hostname = parsed.hostname.toLowerCase();
+		if (!hostname || hostname.includes('*')) return null;
+		return isWildcard ? `*.${hostname}` : hostname;
+	} catch {
+		return null;
+	}
+}
+
+function normalizeAllowedDomainsClaim(value: unknown): string[] {
+	if (!Array.isArray(value)) return [ANY_DOMAIN_PATTERN];
+
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const item of value) {
+		if (typeof item !== 'string') continue;
+		const domainPattern = normalizeDomainPattern(item);
+		if (!domainPattern) continue;
+		if (domainPattern === ANY_DOMAIN_PATTERN) return [ANY_DOMAIN_PATTERN];
+		if (!seen.has(domainPattern)) {
+			seen.add(domainPattern);
+			normalized.push(domainPattern);
+		}
+	}
+
+	return normalized.length > 0 ? normalized : [ANY_DOMAIN_PATTERN];
+}
+
+function domainMatchesPattern(domain: string, pattern: string): boolean {
+	if (pattern === ANY_DOMAIN_PATTERN) return true;
+	if (pattern.startsWith('*.')) {
+		const base = pattern.slice(2);
+		return domain.length > base.length && domain.endsWith(`.${base}`);
+	}
+	return domain === pattern;
+}
+
+function isDomainAllowed(
+	requestDomain: string | null,
+	allowedDomains: string[],
+	allowNoReferrer: boolean
+): boolean {
+	if (!requestDomain) {
+		return allowNoReferrer;
+	}
+
+	if (allowedDomains.includes(ANY_DOMAIN_PATTERN)) {
+		return true;
+	}
+
+	return allowedDomains.some((pattern) => domainMatchesPattern(requestDomain, pattern));
 }
 
 async function hashPlaybackValue(value: string): Promise<string> {
@@ -187,7 +263,8 @@ async function verifyToken(
 	secret: string,
 	videoId: string,
 	request: Request,
-	organizationId?: string
+	organizationId?: string,
+	resourceKey?: string
 ): Promise<boolean> {
 	try {
 		const secretKey = new TextEncoder().encode(secret);
@@ -197,24 +274,53 @@ async function verifyToken(
 		});
 		const tokenSubject = typeof payload.sub === 'string' ? payload.sub : undefined;
 		const tokenVideoId = typeof payload.video_id === 'string' ? payload.video_id : tokenSubject;
-		if (tokenVideoId !== videoId) return false;
+		if (tokenVideoId !== videoId) {
+			console.warn('[playback-ip-debug] reject: video-id mismatch', {
+				resourceKey: resourceKey || null,
+				requestVideoId: videoId,
+				tokenVideoId: tokenVideoId || null,
+			});
+			return false;
+		}
 
-		const tokenIpHash = typeof payload.ip_hash === 'string' ? payload.ip_hash : undefined;
 		const tokenUserAgentHash = typeof payload.ua_hash === 'string' ? payload.ua_hash : undefined;
-		const hasBindingClaims = Boolean(tokenIpHash || tokenUserAgentHash);
+		const tokenAllowedDomains = normalizeAllowedDomainsClaim(payload.allowed_domains);
+		const tokenAllowNoReferrer =
+			typeof payload.allow_no_referrer === 'boolean' ? payload.allow_no_referrer : true;
+		const requestPlaybackDomain = getRequestPlaybackDomain(request);
+		const requestRawUserAgent = request.headers.get('user-agent');
+		const requestNormalizedUserAgent = getUserAgentFromRequest(request);
 
-		if (hasBindingClaims) {
-			if (!tokenIpHash || !tokenUserAgentHash) {
-				return false;
-			}
+		console.log('[playback-ip-debug] verify-start', {
+			resourceKey: resourceKey || null,
+			videoId,
+			tokenVideoId: tokenVideoId || null,
+			tokenSubject: tokenSubject || null,
+			tokenHasUaHash: Boolean(tokenUserAgentHash),
+			tokenAllowedDomains,
+			tokenAllowNoReferrer,
+			requestDomain: requestPlaybackDomain.domain,
+			requestDomainSource: requestPlaybackDomain.source,
+			requestReferer: requestPlaybackDomain.referer,
+			requestOrigin: requestPlaybackDomain.origin,
+			requestRawUserAgent,
+			requestNormalizedUserAgent,
+		});
 
-			const [requestIpHash, requestUserAgentHash] = await Promise.all([
-				hashPlaybackValue(getClientIpFromRequest(request)),
-				hashPlaybackValue(getUserAgentFromRequest(request)),
-			]);
+		if (tokenUserAgentHash) {
+			const requestUserAgentHash = await hashPlaybackValue(requestNormalizedUserAgent);
+			const isUserAgentHashMatch = tokenUserAgentHash === requestUserAgentHash;
 
-			if (tokenIpHash !== requestIpHash || tokenUserAgentHash !== requestUserAgentHash) {
-				const userAgent = (request.headers.get('user-agent') || '').toLowerCase();
+			console.log('[playback-ip-debug] verify-ua-compare', {
+				resourceKey: resourceKey || null,
+				requestNormalizedUserAgent,
+				requestUserAgentHash,
+				tokenUserAgentHash,
+				isUserAgentHashMatch,
+			});
+
+			if (!isUserAgentHashMatch) {
+				const userAgent = (requestRawUserAgent || '').toLowerCase();
 				const isAppleCoreMedia = userAgent.includes('applecoremedia');
 				
 				// Common casting and smart TV user agents
@@ -226,22 +332,82 @@ async function verifyToken(
 					userAgent.includes('appletv');
 
 				// Native players and casting devices change the User-Agent. 
-				// If IP matches and it's a known alternate device, allow it.
-				if (tokenIpHash === requestIpHash && (isAppleCoreMedia || isCastingDevice)) {
-					// Allowed
+				// If alternate playback device is detected, allow user-agent mismatch.
+				if (isAppleCoreMedia || isCastingDevice) {
+					console.log('[playback-ip-debug] allow: user-agent exception', {
+						resourceKey: resourceKey || null,
+						isAppleCoreMedia,
+						isCastingDevice,
+						requestRawUserAgent,
+						requestNormalizedUserAgent,
+					});
 				} else {
+					console.warn('[playback-ip-debug] reject: binding mismatch', {
+						resourceKey: resourceKey || null,
+						isAppleCoreMedia,
+						isCastingDevice,
+						requestRawUserAgent,
+						requestNormalizedUserAgent,
+						requestUserAgentHash,
+						tokenUserAgentHash,
+					});
 					return false;
 				}
 			}
+		} else {
+			console.warn('[playback-ip-debug] warn: missing ua_hash claim, skipping ua binding', {
+				resourceKey: resourceKey || null,
+			});
+		}
+
+		const domainAllowed = isDomainAllowed(
+			requestPlaybackDomain.domain,
+			tokenAllowedDomains,
+			tokenAllowNoReferrer
+		);
+		console.log('[playback-ip-debug] verify-domain-compare', {
+			resourceKey: resourceKey || null,
+			requestDomain: requestPlaybackDomain.domain,
+			requestDomainSource: requestPlaybackDomain.source,
+			tokenAllowedDomains,
+			tokenAllowNoReferrer,
+			domainAllowed,
+		});
+		if (!domainAllowed) {
+			console.warn('[playback-ip-debug] reject: domain restriction mismatch', {
+				resourceKey: resourceKey || null,
+				requestDomain: requestPlaybackDomain.domain,
+				requestDomainSource: requestPlaybackDomain.source,
+				tokenAllowedDomains,
+				tokenAllowNoReferrer,
+			});
+			return false;
 		}
 
 		if (organizationId) {
 			const tokenOrgId = typeof payload.org_id === 'string' ? payload.org_id : undefined;
-			return tokenOrgId === organizationId;
+			const isOrgMatch = tokenOrgId === organizationId;
+			if (!isOrgMatch) {
+				console.warn('[playback-ip-debug] reject: org mismatch', {
+					resourceKey: resourceKey || null,
+					tokenOrgId: tokenOrgId || null,
+					requestOrgId: organizationId,
+				});
+			}
+			return isOrgMatch;
 		}
 
+		console.log('[playback-ip-debug] allow: token verified', {
+			resourceKey: resourceKey || null,
+			videoId,
+		});
 		return true;
-	} catch {
+	} catch (error) {
+		console.error('[playback-ip-debug] reject: token verification error', {
+			resourceKey: resourceKey || null,
+			videoId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return false;
 	}
 }
@@ -378,7 +544,7 @@ export default {
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
-				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, organizationId);
+				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, organizationId, key);
 				if (!isValid) {
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}

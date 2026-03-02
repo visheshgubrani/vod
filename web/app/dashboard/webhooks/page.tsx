@@ -24,7 +24,6 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 
 const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:4080'
@@ -172,7 +171,7 @@ export default function WebhooksPage() {
 
     setIsDeleting(true)
     try {
-      const res = await fetch(`${API_URL}/api/webhooks/${deleteId}`, {
+      const res = await fetch(`${API_URL}/webhooks/${deleteId}`, {
         method: 'DELETE',
         credentials: 'include',
       })
@@ -241,7 +240,8 @@ export default function WebhooksPage() {
                 Webhook Created
               </h3>
               <p className="text-sm text-muted-foreground mb-4">
-                Save your signing secret now. You won't be able to see it again!
+                Save your signing secret now. You will not be able to see it
+                again!
               </p>
               <div className="flex items-center gap-2 p-3 rounded-lg bg-background/50 border border-border font-mono text-sm">
                 <code className="flex-1 break-all text-foreground">
@@ -283,7 +283,7 @@ export default function WebhooksPage() {
       )}
 
       {/* Webhooks Table */}
-      <div className="glass rounded-2xl overflow-hidden">
+      <div className="glass rounded-2xl overflow-visible">
         {webhooks.length === 0 ? (
           <div className="p-12 text-center">
             <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-4">
