@@ -16,16 +16,80 @@ import { video, uploadToken } from '../db/schema'
 import type { ApiKeyVariables } from '../types'
 import {
   buildPlaybackBindingClaims,
-  isPublicPlaybackIp,
+  normalizePlaybackUserAgent,
   type PlaybackBindingClaims,
 } from '../utils/playbackBinding'
 
 const app = new Hono<{ Variables: ApiKeyVariables }>()
 
 // JWT token expiration (customizable per request)
-const DEFAULT_EXPIRATION = '1h'
+const DEFAULT_EXPIRATION = '4h'
 const JWT_ISSUER = 'clipmux'
 const JWT_AUDIENCE = 'playback'
+const DEFAULT_ALLOWED_DOMAINS = ['*']
+const DEFAULT_ALLOW_NO_REFERRER = true
+
+type PlaybackRestrictionsClaims = {
+  allowed_domains: string[]
+  allow_no_referrer: boolean
+}
+
+function normalizeDomainPattern(value: string): string | null {
+  const trimmed = value.trim().toLowerCase()
+  if (!trimmed) return null
+  if (trimmed === '*') return '*'
+
+  const isWildcard = trimmed.startsWith('*.')
+  const candidate = isWildcard ? trimmed.slice(2) : trimmed
+  if (!candidate) return null
+
+  try {
+    const url = new URL(candidate.includes('://') ? candidate : `https://${candidate}`)
+    const hostname = url.hostname.toLowerCase()
+    if (!hostname || hostname.includes('*')) return null
+    return isWildcard ? `*.${hostname}` : hostname
+  } catch {
+    return null
+  }
+}
+
+function parseAllowedDomains(value: unknown): { allowedDomains: string[]; error: string | null } {
+  if (value === undefined) {
+    return { allowedDomains: DEFAULT_ALLOWED_DOMAINS, error: null }
+  }
+
+  if (!Array.isArray(value)) {
+    return { allowedDomains: DEFAULT_ALLOWED_DOMAINS, error: 'allowed_domains must be an array of domain patterns' }
+  }
+
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      return { allowedDomains: DEFAULT_ALLOWED_DOMAINS, error: 'allowed_domains entries must be strings' }
+    }
+
+    const domainPattern = normalizeDomainPattern(item)
+    if (!domainPattern) {
+      return { allowedDomains: DEFAULT_ALLOWED_DOMAINS, error: `invalid allowed_domains entry: ${item}` }
+    }
+
+    if (domainPattern === '*') {
+      return { allowedDomains: ['*'], error: null }
+    }
+
+    if (!seen.has(domainPattern)) {
+      seen.add(domainPattern)
+      normalized.push(domainPattern)
+    }
+  }
+
+  if (normalized.length === 0) {
+    return { allowedDomains: DEFAULT_ALLOWED_DOMAINS, error: null }
+  }
+
+  return { allowedDomains: normalized, error: null }
+}
 
 /**
  * Generate a signed JWT for video playback
@@ -35,10 +99,14 @@ async function generatePlaybackToken(
   organizationId: string,
   expiresIn: string = DEFAULT_EXPIRATION,
   bindingClaims: PlaybackBindingClaims | null,
+  restrictions: PlaybackRestrictionsClaims,
 ): Promise<{ token: string; expiresAt: number }> {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
-  const claims = bindingClaims ?? {}
+  const claims = {
+    ...(bindingClaims ?? {}),
+    ...restrictions,
+  }
 
   const token = await new jose.SignJWT({
     video_id: videoId,
@@ -61,7 +129,7 @@ async function generatePlaybackToken(
  */
 function parseExpiration(exp: string): number {
   const match = exp.match(/^(\d+)(s|m|h|d)$/)
-  if (!match) return 3600 // Default 1 hour
+  if (!match) return 14400 // Default 4 hours
 
   const value = parseInt(match[1], 10)
   const unit = match[2]
@@ -71,7 +139,7 @@ function parseExpiration(exp: string): number {
     case 'm': return value * 60
     case 'h': return value * 3600
     case 'd': return value * 86400
-    default: return 3600
+    default: return 14400
   }
 }
 
@@ -89,9 +157,10 @@ app.use('/*', requireApiKey)
  * 
  * Body (optional):
  *   {
- *     "expires_in": "2h",                // Token expiration (default: 1h)
- *     "viewer_ip": "203.0.113.10",       // Required for signed videos
- *     "viewer_user_agent": "Mozilla..."  // Required for signed videos
+ *     "expires_in": "2h",                // Token expiration (default: 4h)
+ *     "viewer_user_agent": "Mozilla...", // Required for signed videos
+ *     "allowed_domains": ["*.example.com", "app.example.com"], // Optional, default ["*"]
+ *     "allow_no_referrer": true          // Optional, default true
  *   }
  * 
  * Response:
@@ -106,8 +175,9 @@ app.post('/video/:id/playback-token', async (c) => {
   const videoId = c.req.param('id')
 
   let expiresIn = DEFAULT_EXPIRATION
-  let viewerIp: string | undefined
   let viewerUserAgent: string | undefined
+  let rawAllowedDomains: unknown
+  let allowNoReferrer = DEFAULT_ALLOW_NO_REFERRER
 
   try {
     const rawBody = await c.req.json<unknown>()
@@ -118,12 +188,16 @@ app.post('/video/:id/playback-token', async (c) => {
         expiresIn = body.expires_in
       }
 
-      if (typeof body.viewer_ip === 'string' && body.viewer_ip.trim()) {
-        viewerIp = body.viewer_ip
-      }
-
       if (typeof body.viewer_user_agent === 'string' && body.viewer_user_agent.trim()) {
         viewerUserAgent = body.viewer_user_agent
+      }
+
+      if ('allowed_domains' in body) {
+        rawAllowedDomains = body.allowed_domains
+      }
+
+      if (typeof body.allow_no_referrer === 'boolean') {
+        allowNoReferrer = body.allow_no_referrer
       }
     }
   } catch {
@@ -131,9 +205,16 @@ app.post('/video/:id/playback-token', async (c) => {
   }
 
   const headers = c.req.raw.headers
-  const providedViewerIp = viewerIp || headers.get('x-viewer-ip')
   const providedViewerUserAgent =
     viewerUserAgent || headers.get('x-viewer-user-agent')
+
+  const { allowedDomains, error: allowedDomainsError } = parseAllowedDomains(rawAllowedDomains)
+  if (allowedDomainsError) {
+    return c.json({
+      error: allowedDomainsError,
+      hint: 'Use domain names like "example.com", wildcard subdomains like "*.example.com", or "*"',
+    }, 400)
+  }
 
   // Get video and verify ownership
   const videos = await db
@@ -172,24 +253,28 @@ app.post('/video/:id/playback-token', async (c) => {
     })
   }
 
-  if (!providedViewerIp || !providedViewerUserAgent) {
+  if (!providedViewerUserAgent) {
     return c.json({
-      error: 'viewer_ip and viewer_user_agent are required for signed playback tokens',
-      hint: 'Send them in JSON body or x-viewer-ip/x-viewer-user-agent headers',
+      error: 'viewer_user_agent is required for signed playback tokens',
+      hint: 'Send it in JSON body or x-viewer-user-agent header',
     }, 400)
   }
 
-  const shouldBindToViewer = isPublicPlaybackIp(providedViewerIp)
-  if (!shouldBindToViewer && process.env.NODE_ENV === 'production') {
-    return c.json({
-      error: 'viewer_ip must be a public routable IP in production',
-      hint: 'Pass the end-user public IP from x-forwarded-for or a trusted edge header',
-    }, 400)
+  const bindingClaims: PlaybackBindingClaims = buildPlaybackBindingClaims(providedViewerUserAgent)
+  const restrictions: PlaybackRestrictionsClaims = {
+    allowed_domains: allowedDomains,
+    allow_no_referrer: allowNoReferrer,
   }
 
-  const bindingClaims: PlaybackBindingClaims | null = shouldBindToViewer
-    ? buildPlaybackBindingClaims(providedViewerIp, providedViewerUserAgent)
-    : null
+  console.log('[playback-ip-debug] mint-token: api route', {
+    videoId,
+    organizationId,
+    viewerUserAgentSource: viewerUserAgent ? 'body.viewer_user_agent' : 'x-viewer-user-agent header',
+    providedViewerUserAgent,
+    normalizedViewerUserAgent: normalizePlaybackUserAgent(providedViewerUserAgent),
+    bindingClaims,
+    restrictions,
+  })
 
   // Generate signed token
   const { token, expiresAt } = await generatePlaybackToken(
@@ -197,6 +282,7 @@ app.post('/video/:id/playback-token', async (c) => {
     organizationId,
     expiresIn,
     bindingClaims,
+    restrictions,
   )
 
   return c.json({
