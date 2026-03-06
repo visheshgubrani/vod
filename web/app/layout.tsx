@@ -1,9 +1,15 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Geist_Mono } from "next/font/google";
+import { Commissioner, Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
   variable: "--font-inter",
+  subsets: ["latin"],
+  display: "swap",
+});
+
+const commissioner = Commissioner({
+  variable: "--font-commissioner",
   subsets: ["latin"],
   display: "swap",
 });
@@ -71,7 +77,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="scroll-smooth">
       <body
-        className={`${inter.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${inter.variable} ${commissioner.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         {children}
       </body>

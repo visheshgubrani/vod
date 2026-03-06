@@ -10,12 +10,12 @@ export default function Home() {
   return (
     <>
       <Navigation />
-      <main>
+      <main className="landing-page">
         <Hero />
         <Features />
         <Pricing />
         <ApiShowcase />
-        <Testimonials />
+        {/* <Testimonials /> */}
       </main>
       <Footer />
     </>

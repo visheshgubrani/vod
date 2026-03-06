@@ -14,7 +14,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 
         const variants = {
             primary:
-                "bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 hover:scale-105 shadow-lg hover:shadow-xl glow",
+                "bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-lg hover:shadow-xl glow",
             secondary:
                 "bg-muted text-foreground hover:bg-muted/80 border border-border",
             ghost:
