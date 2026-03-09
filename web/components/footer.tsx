@@ -58,15 +58,17 @@ export function Footer() {
         <div className=" pt-8">
           <div className="flex flex-wrap items-center justify-center md:justify-between gap-6 sm:gap-5 text-sm">
             <div className="flex gap-5  sm:gap-10 items-center">
-              <Link href="/" className="flex items-center gap-2">
+              <Link href="/" className="flex items-center gap-0.5">
                 <Image
                   src="/logo.svg"
                   alt="ClipMux logo"
                   width={24}
                   height={24}
-                  className="h-7 w-auto"
+                  className="h-10 w-auto"
                 />
-                <span className="font-semibold">ClipMux</span>
+                <span className="font- tracking-wider font-dashboard-heading">
+                  ClipMux
+                </span>
               </Link>
 
               <div className="flex items-center gap-6">
@@ -88,13 +90,22 @@ export function Footer() {
             </div>
 
             <div className="flex items-center gap-6 md:gap-8 text-muted-foreground">
-              <Link href="/privacy" className="hover:text-foreground transition-colors">
+              <Link
+                href="/privacy"
+                className="hover:text-foreground transition-colors"
+              >
                 Privacy
               </Link>
-              <Link href="/terms" className="hover:text-foreground transition-colors">
+              <Link
+                href="/terms"
+                className="hover:text-foreground transition-colors"
+              >
                 Terms
               </Link>
-              <Link href="/cookies" className="hover:text-foreground transition-colors">
+              <Link
+                href="/cookies"
+                className="hover:text-foreground transition-colors"
+              >
                 Cookies
               </Link>
             </div>

@@ -4,13 +4,12 @@ import * as React from "react";
 import {
     AlertTriangle,
     BarChart3,
-    Globe2,
-    Laptop2,
-    Loader2,
+    Clapperboard,
+    Globe,
+    MonitorSmartphone,
     PlayCircle,
     RefreshCw,
     Users,
-    Video,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import {
@@ -25,6 +24,8 @@ import {
     YAxis,
 } from "recharts";
 import { cn } from "@/lib/utils";
+import { DashboardPageHeader } from "@/components/dashboard/page-header";
+import { DashboardAnalyticsSkeleton } from "@/components/dashboard/page-skeletons";
 import { Button } from "@/components/ui/button";
 
 const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
@@ -173,11 +174,7 @@ export default function AnalyticsPage() {
     }));
 
     if (loading) {
-        return (
-            <div className="flex items-center justify-center h-[60vh]">
-                <Loader2 className="w-8 h-8 text-primary animate-spin" />
-            </div>
-        );
+        return <DashboardAnalyticsSkeleton />;
     }
 
     if (error) {
@@ -188,7 +185,7 @@ export default function AnalyticsPage() {
                     <span>{error}</span>
                 </div>
                 <Button onClick={fetchAnalytics} variant="outline" size="sm">
-                    <RefreshCw className="w-4 h-4 mr-2" />
+                    <RefreshCw className="size-4.5 mr-2" />
                     Retry
                 </Button>
             </div>
@@ -197,89 +194,92 @@ export default function AnalyticsPage() {
 
     return (
         <div className="space-y-8 max-w-7xl">
-            <div className="relative overflow-hidden rounded-2xl border border-border bg-card/40 px-6 py-6">
-                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_20%_10%,hsl(var(--primary)/0.22),transparent_48%),radial-gradient(circle_at_88%_30%,hsl(var(--accent)/0.16),transparent_42%)]" />
-                <div className="relative flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                    <div>
-                        <p className="text-xs uppercase tracking-[0.22em] text-primary/80 font-semibold">
-                            Organization Pulse
-                        </p>
-                        <h1 className="mt-2 text-2xl md:text-3xl font-bold text-foreground">
-                            Is your channel growing?
-                        </h1>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                            Real-time health view across your entire video catalog.
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        {RANGE_OPTIONS.map((option) => (
-                            <button
-                                key={option.value}
-                                onClick={() => setRangeDays(option.value)}
-                                className={cn(
-                                    "rounded-full border px-4 py-2 text-sm font-medium transition-all",
-                                    rangeDays === option.value
-                                        ? "border-primary/50 bg-primary/15 text-primary"
-                                        : "border-border bg-background/40 text-muted-foreground hover:text-foreground hover:border-primary/30"
-                                )}
-                            >
-                                Last {option.label}
-                            </button>
-                        ))}
-                    </div>
-                </div>
+            <div className="relative overflow-hidden rounded-sm border border-border bg-card/70 px-6 py-6">
+                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_20%_10%,hsl(var(--primary)/0.22),transparent_48%),radial-gradient(circle_at_88%_30%,hsl(var(--accent)/0.20),transparent_42%)]" />
+                <DashboardPageHeader
+                    title="Analytics"
+                    description="Real-time health view across your entire video catalog."
+                    eyebrow="Organization Pulse"
+                    className="relative"
+                    actions={
+                        <>
+                            {RANGE_OPTIONS.map((option) => (
+                                <button
+                                    key={option.value}
+                                    onClick={() => setRangeDays(option.value)}
+                                    className={cn(
+                                        "rounded-full border px-6 py-1.5 text-sm font-medium transition-all",
+                                        rangeDays === option.value
+                                            ? "border-primary/60 bg-primary/20 text-purple-200"
+                                            : "border-muted-foreground/30 border bg-background/30 text-muted-foreground hover:text-foreground hover:border-primary/30"
+                                    )}
+                                >
+                                    Last {option.label}
+                                </button>
+                            ))}
+                        </>
+                    }
+                />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="flex items-center justify-between">
-                        <p className="text-sm text-muted-foreground">Total Views</p>
-                        <PlayCircle className="w-4 h-4 text-primary" />
+                        <p className="text-sm font-semibold text-muted-foreground">Total Views</p>
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <PlayCircle className="size-4.5 text-purple-300" />
+                        </div>
                     </div>
                     <p className="mt-3 text-3xl font-semibold text-foreground">
                         {formatCompact(hero?.totalViews || 0)}
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">Sessions across all videos</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Sessions across all videos</p>
                 </div>
 
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="flex items-center justify-between">
-                        <p className="text-sm text-muted-foreground">Watch Time</p>
-                        <BarChart3 className="w-4 h-4 text-accent" />
+                        <p className="text-sm font-semibold text-muted-foreground">Watch Time</p>
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <BarChart3 className="size-4.5 text-cyan-400" />
+                        </div>
                     </div>
                     <p className="mt-3 text-3xl font-semibold text-foreground">
                         {formatHours(hero?.watchTimeHours || 0)}
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">Total hours consumed</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Total hours consumed</p>
                 </div>
 
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="flex items-center justify-between">
-                        <p className="text-sm text-muted-foreground">Unique Viewers</p>
-                        <Users className="w-4 h-4 text-emerald-400" />
+                        <p className="text-sm font-semibold text-muted-foreground">Unique Viewers</p>
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <Users className="size-4.5 text-lime-500" />
+                        </div>
                     </div>
                     <p className="mt-3 text-3xl font-semibold text-foreground">
                         {formatCompact(hero?.uniqueViewers || 0)}
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">Distinct users and sessions</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Distinct users and sessions</p>
                 </div>
 
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="flex items-center justify-between">
-                        <p className="text-sm text-muted-foreground">Error Rate</p>
-                        <AlertTriangle className="w-4 h-4 text-amber-400" />
+                        <p className="text-sm font-semibold text-muted-foreground">Error Rate</p>
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <AlertTriangle className="size-4.5 text-amber-400" />
+                        </div>
                     </div>
                     <p className="mt-3 text-3xl font-semibold text-foreground">
                         {(hero?.errorRatePercent || 0).toFixed(2)}%
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">Playback quality signal</p>
+                    <p className="mt-2 text-xs text-muted-foreground">Playback quality signal</p>
                 </div>
             </div>
 
-            <div className="rounded-2xl border border-border bg-card/50 p-6">
+            <div className="rounded-sm border border-border bg-card/60 p-6">
                 <div className="mb-6">
                     <h2 className="text-lg font-semibold text-foreground">Views Over Time</h2>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="mt-2 text-sm text-muted-foreground">
                         Daily growth trend for the last {rangeDays} days.
                     </p>
                 </div>
@@ -338,13 +338,15 @@ export default function AnalyticsPage() {
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="mb-4 flex items-center justify-between">
                         <div>
                             <h3 className="font-semibold text-foreground">Top Countries</h3>
-                            <p className="text-xs text-muted-foreground">Where your audience watches</p>
+                            <p className="mt-2 text-xs text-muted-foreground">Where your audience watches</p>
                         </div>
-                        <Globe2 className="w-4 h-4 text-primary" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <Globe className="size-4.5 text-purple-300" />
+                        </div>
                     </div>
                     {countries.length === 0 ? (
                         <p className="text-sm text-muted-foreground py-8 text-center">No country data yet</p>
@@ -371,13 +373,15 @@ export default function AnalyticsPage() {
                     )}
                 </div>
 
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="mb-4 flex items-center justify-between">
                         <div>
                             <h3 className="font-semibold text-foreground">Device Types</h3>
-                            <p className="text-xs text-muted-foreground">Desktop vs mobile split</p>
+                            <p className="mt-2 text-xs text-muted-foreground">Desktop vs mobile split</p>
                         </div>
-                        <Laptop2 className="w-4 h-4 text-accent" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <MonitorSmartphone className="size-4.5 text-cyan-500" />
+                        </div>
                     </div>
 
                     {devices.length === 0 ? (
@@ -413,13 +417,15 @@ export default function AnalyticsPage() {
                     )}
                 </div>
 
-                <div className="rounded-2xl border border-border bg-card/50 p-5">
+                <div className="rounded-sm border border-border bg-card/60 p-5">
                     <div className="mb-4 flex items-center justify-between">
                         <div>
                             <h3 className="font-semibold text-foreground">Top Videos</h3>
-                            <p className="text-xs text-muted-foreground">Highest view count content</p>
+                            <p className="mt-2 text-xs text-muted-foreground">Highest view count content</p>
                         </div>
-                        <Video className="w-4 h-4 text-emerald-400" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
+                            <Clapperboard className="size-4.5 text-lime-500" />
+                        </div>
                     </div>
 
                     {topVideos.length === 0 ? (
@@ -429,7 +435,7 @@ export default function AnalyticsPage() {
                             {topVideos.slice(0, 6).map((video, index) => (
                                 <div
                                     key={video.videoId}
-                                    className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-background/30 px-3 py-2"
+                                    className="flex items-start justify-between gap-3 rounded-sm border border-border/60 bg-background/30 px-3 py-2"
                                 >
                                     <div className="min-w-0">
                                         <p className="text-xs text-muted-foreground">#{index + 1}</p>

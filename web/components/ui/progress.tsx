@@ -27,7 +27,7 @@ export function Progress({
 
     return (
         <div className={cn("w-full", className)} {...props}>
-            <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted/50">
+            <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-muted-foreground/60">
                 <div
                     className={cn(
                         "h-full rounded-full bg-gradient-to-r transition-all duration-500 ease-out",

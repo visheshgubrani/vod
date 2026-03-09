@@ -1,31 +1,21 @@
 services:
-  # Backend API Server
-  server:
-    image: ghcr.io/visheshgubrani/vod/server:${TAG:-latest}
-    container_name: vod_server
+  postgres:
+    image: postgres:18-alpine
+    container_name: vod-postgres-dev
     restart: unless-stopped
     ports:
-      - "4080:4080"
-    env_file:
-      - ./server/.env
+      - "5433:5432" # 5432 is taken by vm-postgres-1
     environment:
-      - NODE_ENV=production
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vod_dev
+    volumes:
+      - vod_postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Next.js Frontend
-  web:
-    image: ghcr.io/visheshgubrani/vod/web:${TAG:-latest}
-    container_name: vod_web
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-    depends_on:
-      server:
-        condition: service_healthy
+volumes:
+  vod_postgres_dev_data:

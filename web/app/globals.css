@@ -75,6 +75,8 @@
   --color-success: hsl(var(--success));
   --font-sans: var(--font-inter), system-ui, sans-serif;
   --font-heading: var(--font-commissioner), system-ui, sans-serif;
+  --font-dashboard-heading: var(--font-pt-serif), Georgia, serif;
+  --font-dashboard-copy: var(--font-chivo), system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), monospace;
   --color-sidebar-ring: hsl(var(--sidebar-ring));
   --color-sidebar-border: hsl(var(--sidebar-border));

@@ -107,13 +107,13 @@ function FeatureCard({
 }) {
   return (
     <div
-      className="group relative bg-card/40 border border-card rounded-lg p-4 transition-all duration-300"
+      className="group relative bg-card/40 border border-card rounded-sm p-4 transition-all duration-300"
       style={{ animationDelay: `${index * 0.1}s` }}
     >
       <div className="relative z-10 flex flex-col justify-between h-full">
         {/* Icon */}
         <div
-          className={`w-12 h-12 rounded-lg flex items-center justify-center mb-8 transition-colors ${
+          className={`w-12 h-12 rounded-sm flex items-center justify-center mb-8 transition-colors ${
             highlight
               ? "bg-gradient-to-br from-primary/80 to-accent/70 text-white"
               : "text-accent group-hover:scale-105 transition-all duration-300 ease-in-out"
