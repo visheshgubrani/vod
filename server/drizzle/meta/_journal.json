@@ -50,6 +50,13 @@
       "when": 1770440268888,
       "tag": "0006_wandering_glorian",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1773068282212,
+      "tag": "0007_api_key_hashes",
+      "breakpoints": true
     }
   ]
 }

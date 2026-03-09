@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
@@ -22,6 +23,17 @@ function safeJsonParse<T>(s: unknown, fallback: T): T {
   }
 }
 
+function secretsMatch(value: string, expected: string): boolean {
+  const valueBuffer = Buffer.from(value)
+  const expectedBuffer = Buffer.from(expected)
+
+  if (valueBuffer.length !== expectedBuffer.length) {
+    return false
+  }
+
+  return timingSafeEqual(valueBuffer, expectedBuffer)
+}
+
 app.post('/transcode-complete', async (c) => {
   // 1) Webhook auth (MVP)
   const expected = process.env.MODAL_WEBHOOK_SECRET
@@ -29,7 +41,7 @@ app.post('/transcode-complete', async (c) => {
     const got =
       c.req.header('x-webhook-secret') ||
       (c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '')
-    if (!got || got !== expected) {
+    if (!got || !secretsMatch(got, expected)) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
   }
