@@ -132,7 +132,7 @@ export function ApiShowcase() {
               </div>
               <button
                 onClick={handleCopy}
-                className="p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                className="p-2 rounded-sm bg-muted/50 hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                 aria-label="Copy code"
               >
                 {copied ? (

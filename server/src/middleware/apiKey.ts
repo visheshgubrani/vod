@@ -2,7 +2,6 @@ import { createMiddleware } from 'hono/factory'
 import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { apiKey } from '../db/schema'
-import { hashApiKey } from '../utils/apiKey'
 
 /**
  * Middleware for API key authentication (for external API consumers)
@@ -21,13 +20,11 @@ export const requireApiKey = createMiddleware(async (c, next) => {
     return c.json({ error: 'API key required' }, 401)
   }
 
-  const keyHash = hashApiKey(key)
-
   // Look up the API key
   const keys = await db
     .select()
     .from(apiKey)
-    .where(eq(apiKey.keyHash, keyHash))
+    .where(eq(apiKey.key, key))
     .limit(1)
 
   const keyRecord = keys[0]

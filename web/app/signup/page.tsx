@@ -122,7 +122,7 @@ export default function SignupPage() {
 
         {/* Error Banner */}
         {error && (
-          <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+          <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
             {error}
           </div>
         )}
@@ -141,7 +141,7 @@ export default function SignupPage() {
             error={errors.fullName}
             disabled={isLoading}
             autoComplete="name"
-            className="pr-12 bg-mauve-500/40 mt-1 rounded-lg placeholder:text-mauve-400"
+            className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
           />
         </div>
 
@@ -159,7 +159,7 @@ export default function SignupPage() {
             error={errors.email}
             disabled={isLoading}
             autoComplete="email"
-            className="pr-12 bg-mauve-500/40 mt-1 rounded-lg placeholder:text-mauve-400"
+            className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
           />
         </div>
 
@@ -174,7 +174,7 @@ export default function SignupPage() {
             onChange={(e) => updateField("companyName", e.target.value)}
             disabled={isLoading}
             autoComplete="organization"
-            className="pr-12 bg-mauve-500/40 mt-1 rounded-lg placeholder:text-mauve-400"
+            className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
           />
         </div>
 
@@ -193,7 +193,7 @@ export default function SignupPage() {
               error={errors.password}
               disabled={isLoading}
               autoComplete="new-password"
-              className="pr-12 bg-mauve-500/40 mt-1 rounded-lg placeholder:text-mauve-400"
+              className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
             />
             <button
               type="button"
@@ -226,7 +226,7 @@ export default function SignupPage() {
               error={errors.confirmPassword}
               disabled={isLoading}
               autoComplete="new-password"
-              className="pr-12 bg-mauve-500/40 mt-1 rounded-lg placeholder:text-mauve-400"
+              className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
             />
             <button
               type="button"
