@@ -96,7 +96,7 @@ export function CreateOrganizationModal({
   };
 
   return (
-    <Sheet open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+    <Sheet open={open} onClose={onClose}>
       <SheetContent className="w-full sm:max-w-xl border-l border-border bg-background/95 backdrop-blur-xl">
         <SheetHeader className="border-b border-border pb-5">
           <div className="flex items-center gap-3">
