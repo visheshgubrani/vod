@@ -846,21 +846,29 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                               border: "1px solid hsl(var(--border))",
                               borderRadius: "12px",
                             }}
-                            formatter={(
-                              value: number | undefined,
-                              name: string | undefined
-                            ) => {
-                              if (name === "viewersPercent")
+                            formatter={(value, name) => {
+                              const numericValue =
+                                typeof value === "number"
+                                  ? value
+                                  : Number(
+                                      Array.isArray(value) ? value[0] : value
+                                    ) || 0;
+                              const seriesName =
+                                typeof name === "number"
+                                  ? String(name)
+                                  : name ?? "value";
+
+                              if (seriesName === "viewersPercent")
                                 return [
-                                  `${(value ?? 0).toFixed(2)}%`,
+                                  `${numericValue.toFixed(2)}%`,
                                   "Viewers still watching",
                                 ];
-                              if (name === "viewers")
+                              if (seriesName === "viewers")
                                 return [
-                                  `${(value ?? 0).toLocaleString()}`,
+                                  numericValue.toLocaleString(),
                                   "Viewers",
                                 ];
-                              return [value ?? 0, name ?? "value"];
+                              return [numericValue, seriesName];
                             }}
                             labelFormatter={(value) => `${value}% watched`}
                           />
