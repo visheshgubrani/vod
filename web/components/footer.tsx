@@ -58,7 +58,7 @@ export function Footer() {
         <div className=" pt-8">
           <div className="flex flex-wrap items-center justify-center md:justify-between gap-6 sm:gap-5 text-sm">
             <div className="flex gap-5  sm:gap-10 items-center">
-              <Link href="/" className="flex items-center gap-1.5">
+              <Link href="/" className="flex items-center gap-2">
                 <Image
                   src="/logo.svg"
                   alt="ClipMux logo"
@@ -66,7 +66,7 @@ export function Footer() {
                   height={24}
                   className="h-7 w-auto"
                 />
-                <span className="text-lg tracking-wider text-purple-200 font-dashboard-heading">
+                <span className="text-lg tracking-wider font-semibold text-foreground font-dashboard-heading">
                   ClipMux
                 </span>
               </Link>

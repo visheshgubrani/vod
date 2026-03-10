@@ -45,19 +45,16 @@ export function Navigation() {
     >
       <nav className="max-w-7xl mx-auto px-4 flex items-center justify-between">
         {/* Logo */}
-        <Link
-          href="/"
-          className="flex items-center gap-1.5 justify-start group"
-        >
+        <Link href="/" className="flex items-center gap-2 justify-start group">
           <Image
             src="/logo.svg"
             alt="ClipMux logo"
             width={50}
             height={50}
-            className="size-8 w-auto shrink-0"
+            className="size-7.5 w-auto shrink-0"
             priority
           />
-          <span className="mt-1 text-lg md:text-[1.27rem] font-dashboard-heading font-semibold tracking-wider text-purple-200">
+          <span className="mt-1 text-lg md:text-[1.27rem] font-dashboard-heading font-semibold tracking-wider text-foreground">
             ClipMux
           </span>
         </Link>
@@ -132,7 +129,7 @@ export function Navigation() {
                 {/* Logo */}
                 <Link
                   href="/"
-                  className="flex items-center justify-start gap-1.5 group"
+                  className="flex items-center justify-start gap-2 group"
                 >
                   <Image
                     src="/logo.svg"
@@ -142,7 +139,7 @@ export function Navigation() {
                     className="size-7 w-auto shrink-0"
                     priority
                   />
-                  <span className="mt-0.5 text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-purple-200">
+                  <span className="mt-0.5 text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-foreground">
                     ClipMux
                   </span>
                 </Link>

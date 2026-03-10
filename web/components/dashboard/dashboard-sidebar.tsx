@@ -211,7 +211,7 @@ export function DashboardSidebar({
                     alt="ClipMux logo"
                     width={34}
                     height={34}
-                    className="size-10 w-auto shrink-0"
+                    className="size-9 w-auto shrink-0"
                     priority
                   />
                 </div>
