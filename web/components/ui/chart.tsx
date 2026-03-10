@@ -4,13 +4,22 @@ import * as React from "react"
 import * as RechartsPrimitive from "recharts"
 import type {
   DefaultLegendContentProps,
-  TooltipContentProps,
-  TooltipPayloadEntry,
+  DefaultTooltipContentProps,
+  TooltipProps,
 } from "recharts"
 
-type LegendPayload = NonNullable<DefaultLegendContentProps["payload"]>[number]
-
 import { cn } from "@/lib/utils"
+
+// Derive types not directly exported by recharts v2.15.4
+type LegendPayload = NonNullable<DefaultLegendContentProps["payload"]>[number]
+type TooltipContentProps<
+  TValue extends number | string | Array<number | string>,
+  TName extends number | string,
+> = DefaultTooltipContentProps<TValue, TName>
+type TooltipPayloadEntry<
+  TValue extends number | string | Array<number | string>,
+  TName extends number | string,
+> = NonNullable<DefaultTooltipContentProps<TValue, TName>["payload"]>[number]
 
 // Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: "", dark: ".dark" } as const
@@ -29,7 +38,7 @@ type ChartContextProps = {
   config: ChartConfig
 }
 
-type ChartValueType = number | string | ReadonlyArray<number | string>
+type ChartValueType = number | string | Array<number | string>
 type ChartNameType = number | string
 type ChartTooltipPayload = TooltipPayloadEntry<ChartValueType, ChartNameType>
 
@@ -117,6 +126,7 @@ const ChartTooltip = RechartsPrimitive.Tooltip
 
 type ChartTooltipContentProps = React.ComponentProps<"div"> &
   Partial<TooltipContentProps<ChartValueType, ChartNameType>> & {
+    active?: boolean
     hideLabel?: boolean
     hideIndicator?: boolean
     indicator?: "line" | "dot" | "dashed"
