@@ -66,7 +66,9 @@ export function Footer() {
                   height={24}
                   className="h-7 w-auto"
                 />
-                <span className="font-semibold">ClipMux</span>
+                <span className="text-lg tracking-wider font-semibold text-foreground font-dashboard-heading">
+                  ClipMux
+                </span>
               </Link>
 
               <div className="flex items-center gap-6">
@@ -88,13 +90,22 @@ export function Footer() {
             </div>
 
             <div className="flex items-center gap-6 md:gap-8 text-muted-foreground">
-              <Link href="/privacy" className="hover:text-foreground transition-colors">
+              <Link
+                href="/privacy"
+                className="hover:text-foreground transition-colors"
+              >
                 Privacy
               </Link>
-              <Link href="/terms" className="hover:text-foreground transition-colors">
+              <Link
+                href="/terms"
+                className="hover:text-foreground transition-colors"
+              >
                 Terms
               </Link>
-              <Link href="/cookies" className="hover:text-foreground transition-colors">
+              <Link
+                href="/cookies"
+                className="hover:text-foreground transition-colors"
+              >
                 Cookies
               </Link>
             </div>

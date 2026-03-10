@@ -40,24 +40,21 @@ export function Navigation() {
     <header
       className={cn(
         "fixed top-0 left-0 right-0 z-50 transition-all duration-300",
-        isScrolled ? "py-2.5 bg-muted/40 backdrop-blur-xl" : "py-4"
+        isScrolled ? "py-2 bg-accent/10 backdrop-blur-xl" : "py-4"
       )}
     >
       <nav className="max-w-7xl mx-auto px-4 flex items-center justify-between">
         {/* Logo */}
-        <Link
-          href="/"
-          className="flex items-center justify-start gap-1.5 group"
-        >
+        <Link href="/" className="flex items-center gap-2 justify-start group">
           <Image
             src="/logo.svg"
             alt="ClipMux logo"
-            width={34}
-            height={34}
-            className="h-5 md:h-6 w-auto shrink-0"
+            width={50}
+            height={50}
+            className="size-7.5 w-auto shrink-0"
             priority
           />
-          <span className="text-lg md:text-xl font-semibold ml-0.5 md:ml-1 text-mauve-300">
+          <span className="mt-1 text-lg md:text-[1.27rem] font-dashboard-heading font-semibold tracking-wider text-foreground">
             ClipMux
           </span>
         </Link>
@@ -82,9 +79,9 @@ export function Navigation() {
             <Link href="/dashboard">
               <Button
                 size="sm"
-                className="h-auto py-5 rounded-full bg-[#704fd5] text-white hover:bg-[#704fd5]/90"
+                className="h-auto py-2.5 px-6 rounded-full bg-[#704fd5] text-white hover:bg-[#704fd5]/90"
               >
-                <LayoutDashboard className="w-4 h-4 mr-2" />
+                <LayoutDashboard className="w-4 h-4 fill-foreground" />
                 Dashboard
               </Button>
             </Link>
@@ -132,17 +129,17 @@ export function Navigation() {
                 {/* Logo */}
                 <Link
                   href="/"
-                  className="flex items-center justify-start gap-1.5 group"
+                  className="flex items-center justify-start gap-2 group"
                 >
                   <Image
                     src="/logo.svg"
                     alt="ClipMux logo"
                     width={34}
                     height={34}
-                    className="h-5 md:h-6 w-auto shrink-0"
+                    className="size-7 w-auto shrink-0"
                     priority
                   />
-                  <span className="text-lg md:text-xl font-semibold ml-0.5 md:ml-1 text-mauve-300">
+                  <span className="mt-0.5 text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-foreground">
                     ClipMux
                   </span>
                 </Link>
@@ -175,7 +172,7 @@ export function Navigation() {
                       onClick={() => setIsMobileMenuOpen(false)}
                     >
                       <Button className="w-full cursor-pointer h-auto py-2.5 px-8 rounded-full bg-[#704fd5] text-white hover:bg-[#704fd5]/90">
-                        <LayoutDashboard className="w-4 h-4 mr-2" />
+                        <LayoutDashboard className="w-4 h-4 mr-1 fill-foreground" />
                         Dashboard
                       </Button>
                     </Link>

@@ -1,5 +1,11 @@
 import type { Metadata, Viewport } from "next";
-import { Commissioner, Inter, Geist_Mono } from "next/font/google";
+import {
+  Chivo,
+  Commissioner,
+  Geist_Mono,
+  Inter,
+  PT_Serif,
+} from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
@@ -14,13 +20,31 @@ const commissioner = Commissioner({
   display: "swap",
 });
 
+const ptSerif = PT_Serif({
+  variable: "--font-pt-serif",
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  display: "swap",
+});
+
+const chivo = Chivo({
+  variable: "--font-chivo",
+  subsets: ["latin"],
+  display: "swap",
+});
+
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "ClipMux | Video Streaming at 90% Less Cost",
+  title: "ClipMux",
+  icons: {
+    icon: "/logo.svg",
+    shortcut: "/logo.svg",
+    apple: "/logo.svg",
+  },
   description:
     "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing. Simple API, global CDN, instant encoding. Start free today.",
   keywords: [
@@ -77,7 +101,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="scroll-smooth">
       <body
-        className={`${inter.variable} ${commissioner.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${inter.variable} ${commissioner.variable} ${ptSerif.variable} ${chivo.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         {children}
       </body>

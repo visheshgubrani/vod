@@ -100,7 +100,7 @@ function StatCard({
   badge: string;
 }) {
   return (
-    <div className="bg-card/40 border border-card rounded-lg p-6 transition-transform cursor-default text-left max-w-md mx-auto">
+    <div className="bg-card/40 border border-card rounded-sm p-6 transition-transform cursor-default text-left max-w-md mx-auto">
       <div className="relative mb-6 w-full overflow-hidden">
         <Image
           src={imageSrc}
