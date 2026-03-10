@@ -846,17 +846,17 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                               border: "1px solid hsl(var(--border))",
                               borderRadius: "12px",
                             }}
-                            formatter={(value, name) => {
+                            formatter={(
+                              value: number | string | (number | string)[] | undefined,
+                              name: string | undefined
+                            ) => {
                               const numericValue =
                                 typeof value === "number"
                                   ? value
                                   : Number(
                                       Array.isArray(value) ? value[0] : value
                                     ) || 0;
-                              const seriesName =
-                                typeof name === "number"
-                                  ? String(name)
-                                  : name ?? "value";
+                              const seriesName = String(name ?? "value");
 
                               if (seriesName === "viewersPercent")
                                 return [
