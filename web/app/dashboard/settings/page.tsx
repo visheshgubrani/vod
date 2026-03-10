@@ -160,7 +160,7 @@ export default function SettingsPage() {
 
           {/* Success Banner */}
           {success && (
-            <div className="p-3 rounded-sm bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm">
+            <div className="p-3 rounded-sm bg-lime-500/10 border border-lime-500/20 text-lime-400 text-sm">
               {success}
             </div>
           )}

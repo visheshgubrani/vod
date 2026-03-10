@@ -123,9 +123,9 @@ export function DashboardSidebar({
                 <Image
                   src="/logo.svg"
                   alt="ClipMux logo"
-                  width={34}
-                  height={34}
-                  className="size-11 w-auto shrink-0"
+                  width={24}
+                  height={24}
+                  className="size-8 w-auto shrink-0"
                   priority
                 />
               )}
@@ -211,11 +211,11 @@ export function DashboardSidebar({
                     alt="ClipMux logo"
                     width={34}
                     height={34}
-                    className="size-11 w-auto shrink-0"
+                    className="size-10 w-auto shrink-0"
                     priority
                   />
                 </div>
-                <div className="min-w-0 flex-1">
+                <div className="ml-1 min-w-0 flex-1">
                   <p className="text-sm font-medium text-foreground truncate">
                     {displayName}
                   </p>

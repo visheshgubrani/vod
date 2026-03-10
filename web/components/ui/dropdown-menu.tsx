@@ -15,6 +15,7 @@ interface DropdownMenuTriggerProps {
 interface DropdownMenuContentProps {
   children: React.ReactNode;
   align?: "start" | "center" | "end";
+  side?: "top" | "bottom";
   className?: string;
 }
 
@@ -110,6 +111,7 @@ export function DropdownMenuTrigger({
 export function DropdownMenuContent({
   children,
   align = "end",
+  side = "bottom",
   className,
 }: DropdownMenuContentProps) {
   const { open, setOpen } = React.useContext(DropdownMenuContext);
@@ -119,8 +121,10 @@ export function DropdownMenuContent({
   return (
     <div
       className={cn(
-        "absolute z-50 mt-2 min-w-[180px] overflow-hidden rounded-xl border border-border bg-card/95 backdrop-blur-xl p-1.5 shadow-xl",
-        "animate-in fade-in-0 zoom-in-95 slide-in-from-top-2",
+        "absolute z-50 min-w-[180px] overflow-hidden rounded-xl border border-border bg-card/95 p-1.5 shadow-xl backdrop-blur-xl",
+        "animate-in fade-in-0 zoom-in-95",
+        side === "bottom" && "mt-2 slide-in-from-top-2 top-full",
+        side === "top" && "bottom-full mb-2 slide-in-from-bottom-2",
         align === "start" && "left-0",
         align === "center" && "left-1/2 -translate-x-1/2",
         align === "end" && "right-0",

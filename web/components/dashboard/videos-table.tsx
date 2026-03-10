@@ -66,7 +66,7 @@ const statusConfig = {
 
 function VideoThumbnail({ video }: { video: Video }) {
   return (
-    <div className="h-9 w-16 flex-shrink-0 overflow-hidden rounded-sm border border-border bg-muted/50">
+    <div className="h-10 w-16 flex-shrink-0 overflow-hidden rounded-sm border border-border bg-muted/50">
       {video.playbackPolicy === "signed" ? (
         <div className="flex h-full w-full items-center justify-center bg-amber-500/10">
           <Lock className="h-4 w-4 text-amber-400" />
@@ -92,12 +92,14 @@ function VideoActions({
   onEmbed,
   onDelete,
   onViewDetails,
+  openUpward = false,
 }: {
   video: Video;
   onCopyId: (id: string) => void;
   onEmbed?: (video: Video) => void;
   onDelete?: (video: Video) => void;
   onViewDetails?: (video: Video) => void;
+  openUpward?: boolean;
 }) {
   return (
     <DropdownMenu>
@@ -108,6 +110,7 @@ function VideoActions({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
+        side={openUpward ? "top" : "bottom"}
         className="min-w-[220px] whitespace-nowrap rounded-sm bg-muted p-1.5"
       >
         <DropdownMenuItem
@@ -214,8 +217,9 @@ export function VideosTable({
 
         {/* Table Body */}
         <div className="divide-y divide-border">
-          {videos.map((video) => {
+          {videos.map((video, index) => {
             const status = statusConfig[video.status];
+            const openUpward = index >= videos.length - 3;
 
             return (
               <div
@@ -254,6 +258,7 @@ export function VideosTable({
                     onEmbed={onEmbed}
                     onDelete={onDelete}
                     onViewDetails={onViewDetails}
+                    openUpward={openUpward}
                   />
                 </div>
               </div>
@@ -263,8 +268,9 @@ export function VideosTable({
       </div>
 
       <div className="divide-y divide-border md:hidden">
-        {videos.map((video) => {
+        {videos.map((video, index) => {
           const status = statusConfig[video.status];
+          const openUpward = index >= videos.length - 2;
 
           return (
             <div key={video.id} className="space-y-3 px-4 py-4">
@@ -297,6 +303,7 @@ export function VideosTable({
                   onEmbed={onEmbed}
                   onDelete={onDelete}
                   onViewDetails={onViewDetails}
+                  openUpward={openUpward}
                 />
               </div>
 

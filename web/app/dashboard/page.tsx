@@ -2,15 +2,24 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Search } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Search,
+  Trash2,
+} from "lucide-react";
 import { useActiveOrganization } from "@/lib/auth-client";
 import { DashboardPageHeader } from "@/components/dashboard/page-header";
 import { DashboardOverviewSkeleton } from "@/components/dashboard/page-skeletons";
 import { StatsCards } from "@/components/dashboard/stats-cards";
 import { VideosTable, Video } from "@/components/dashboard/videos-table";
+import { Button } from "@/components/ui/button";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
+const VIDEOS_PER_PAGE = 10;
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -19,6 +28,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [videoToDelete, setVideoToDelete] = React.useState<Video | null>(null);
+  const [isDeleting, setIsDeleting] = React.useState(false);
+  const [currentPage, setCurrentPage] = React.useState(1);
 
   // Fetch videos from API
   const fetchVideos = React.useCallback(async () => {
@@ -53,6 +65,28 @@ export default function DashboardPage() {
   const filteredVideos = videos.filter((video) =>
     video.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredVideos.length / VIDEOS_PER_PAGE)
+  );
+  const paginatedVideos = filteredVideos.slice(
+    (currentPage - 1) * VIDEOS_PER_PAGE,
+    currentPage * VIDEOS_PER_PAGE
+  );
+  const rangeStart =
+    filteredVideos.length === 0 ? 0 : (currentPage - 1) * VIDEOS_PER_PAGE + 1;
+  const rangeEnd = Math.min(
+    currentPage * VIDEOS_PER_PAGE,
+    filteredVideos.length
+  );
+
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery]);
+
+  React.useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
 
   const handleCopyId = (id: string) => {
     navigator.clipboard.writeText(id);
@@ -62,21 +96,24 @@ export default function DashboardPage() {
     router.push(`/dashboard/videos/${video.id}?tab=embed`);
   };
 
-  const handleDelete = async (video: Video) => {
-    if (!confirm(`Are you sure you want to delete "${video.title}"?`)) return;
+  const handleDelete = async () => {
+    if (!videoToDelete) return;
 
+    setIsDeleting(true);
     try {
-      const res = await fetch(`${API_URL}/video/${video.id}`, {
+      const res = await fetch(`${API_URL}/video/${videoToDelete.id}`, {
         method: "DELETE",
         credentials: "include",
       });
 
       if (!res.ok) throw new Error("Failed to delete video");
 
-      // Refresh videos list
-      fetchVideos();
+      setVideoToDelete(null);
+      await fetchVideos();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to delete video");
+      setError(err instanceof Error ? err.message : "Failed to delete video");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -129,13 +166,95 @@ export default function DashboardPage() {
         </div>
 
         <VideosTable
-          videos={filteredVideos}
+          videos={paginatedVideos}
           onCopyId={handleCopyId}
           onEmbed={handleEmbed}
-          onDelete={handleDelete}
+          onDelete={setVideoToDelete}
           onViewDetails={handleViewDetails}
         />
+
+        {filteredVideos.length > 0 && (
+          <div className="flex flex-col gap-5 sm:gap-3 rounded-sm px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm font-medium text-muted-foreground">
+              Showing {rangeStart}-{rangeEnd} of {filteredVideos.length} videos
+            </p>
+            <div className="min-w-[88px] rounded-sm font-medium bg-muted/30 px-3 py-1 text-center text-xs text-foreground/50">
+              Page {currentPage} of {totalPages}
+            </div>
+            <div className="flex sm:w-fit w-full items-center gap-2 self-end sm:self-auto">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={currentPage === 1}
+                className="rounded-sm sm:w-fit w-full border hover:border-mauve-300/40 hover:bg-muted border-mauve-300/60"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Previous
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setCurrentPage((page) => Math.min(totalPages, page + 1))
+                }
+                disabled={currentPage === totalPages}
+                className="rounded-sm sm:w-fit w-full bg-accent/50 hover:bg-accent/60"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {videoToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-destructive/20">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+              </div>
+              <h2 className="text-xl font-bold text-foreground">
+                Delete Video
+              </h2>
+            </div>
+            <p className="mb-6 text-muted-foreground">
+              Are you sure you want to delete &quot;{videoToDelete.title}
+              &quot;? This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setVideoToDelete(null)}
+                className="flex-1 rounded-sm"
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="flex-1 rounded-sm bg-destructive hover:bg-destructive/90"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
