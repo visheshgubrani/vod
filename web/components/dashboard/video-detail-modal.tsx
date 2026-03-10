@@ -124,7 +124,7 @@ export function VideoDetailModal({
   };
 
   const statusColors: Record<string, string> = {
-    ready: "text-emerald-400",
+    ready: "text-lime-400",
     processing: "text-amber-400",
     uploading: "text-blue-400",
     pending: "text-slate-400",
@@ -228,8 +228,8 @@ export function VideoDetailModal({
                         </>
                       ) : (
                         <>
-                          <Globe className="w-4 h-4 text-emerald-400" />
-                          <span className="text-emerald-400">Public</span>
+                          <Globe className="w-4 h-4 text-lime-500" />
+                          <span className="text-lime-500">Public</span>
                         </>
                       )}
                     </div>
@@ -250,7 +250,7 @@ export function VideoDetailModal({
                     onClick={() => handleCopy(video.id, "id")}
                   >
                     {copied === "id" ? (
-                      <Check className="w-4 h-4 text-emerald-400" />
+                      <Check className="w-4 h-4 text-lime-400" />
                     ) : (
                       <Copy className="w-4 h-4" />
                     )}
@@ -295,7 +295,7 @@ export function VideoDetailModal({
                         onClick={() => handleCopy(detail.playbackUrl!, "url")}
                       >
                         {copied === "url" ? (
-                          <Check className="w-4 h-4 text-emerald-400" />
+                          <Check className="w-4 h-4 text-lime-400" />
                         ) : (
                           <Copy className="w-4 h-4" />
                         )}

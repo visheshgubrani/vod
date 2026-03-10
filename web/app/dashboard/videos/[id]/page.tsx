@@ -141,6 +141,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   const [embedAutoplay, setEmbedAutoplay] = React.useState(false);
   const [embedMuted, setEmbedMuted] = React.useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
   // Unwrap params
   React.useEffect(() => {
@@ -258,6 +259,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   const handleDelete = async () => {
     if (!video) return;
     setIsDeleting(true);
+    setDeleteError(null);
     try {
       const res = await fetch(`${API_URL}/video/${video.id}`, {
         method: "DELETE",
@@ -266,7 +268,10 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
       if (!res.ok) throw new Error("Failed to delete video");
       router.push("/dashboard");
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to delete video");
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete video"
+      );
+    } finally {
       setIsDeleting(false);
     }
   };
@@ -344,9 +349,9 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
   const statusConfig = {
     ready: {
-      color: "bg-emerald-500",
+      color: "bg-lime-500",
       text: "Ready",
-      textColor: "text-emerald-400",
+      textColor: "text-lime-600",
     },
     processing: {
       color: "bg-amber-500",
@@ -447,41 +452,17 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                 <Pencil className="w-4 h-4 mr-1" />
                 Edit
               </Button>
-              {!showDeleteConfirm ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="rounded-sm border-red-400/30 text-red-400 hover:text-red-400 hover:bg-red-500/10"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              ) : (
-                <div className="flex items-center gap-2 animate-in fade-in-0">
-                  <span className="text-xs text-muted-foreground">Delete?</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setShowDeleteConfirm(false)}
-                    className="rounded-sm"
-                  >
-                    No
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-red-400 border-red-400/50 hover:bg-red-500/10"
-                    onClick={handleDelete}
-                    disabled={isDeleting}
-                  >
-                    {isDeleting ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      "Yes"
-                    )}
-                  </Button>
-                </div>
-              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setDeleteError(null);
+                  setShowDeleteConfirm(true);
+                }}
+                className="rounded-sm border-red-400/30 text-red-400 hover:text-red-400 hover:bg-red-500/10"
+              >
+                <Trash2 className="w-4 h-4" />
+              </Button>
             </>
           )}
         </div>
@@ -538,29 +519,32 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                         CARD A: Asset Details
                     ───────────────────────────────────────────────── */}
           <div className="glass rounded-sm p-5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-4">
-              Asset Details
-            </h3>
-
-            {/* Status + Resolution Row */}
-            <div className="flex items-center gap-3 mb-4">
-              <span
-                className={cn(
-                "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium",
-                  statusConfig.textColor,
-                  "bg-current/10"
-                )}
-              >
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Asset Details
+              </h3>
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <span
-                  className={cn("w-1.5 h-1.5 rounded-full", statusConfig.color)}
-                />
-                {statusConfig.text}
-              </span>
-              {video.resolutions && (
-                <span className="rounded-sm bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
-                  {video.resolutions}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium",
+                    statusConfig.textColor,
+                    "bg-current/10"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full",
+                      statusConfig.color
+                    )}
+                  />
+                  {statusConfig.text}
                 </span>
-              )}
+                {video.resolutions && (
+                  <span className="rounded-sm bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+                    {video.resolutions}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Video ID */}
@@ -588,7 +572,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
             </div>
 
             {/* Specs Row */}
-            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+            <div className="pt-4 flex items-center gap-4 font-medium text-sm text-foreground/75">
               <span className="flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5" />
                 {formatDuration(video.duration)}
@@ -614,34 +598,34 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                         CARD B: Delivery
                     ───────────────────────────────────────────────── */}
           <div className="glass flex-1 rounded-sm p-5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-4">
-              Delivery
-            </h3>
-
-            {/* Playback Policy */}
-            <div className="flex items-center gap-2 mb-4">
-              {video.playbackPolicy === "signed" ? (
-                <>
-                  <Lock className="w-4 h-4 text-amber-400" />
-                  <span className="text-sm text-amber-400 font-medium">
-                    Signed URL Required
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Globe className="w-4 h-4 text-lime-400" />
-                  <span className="text-sm font-medium text-lime-400">
-                    Public Access
-                  </span>
-                </>
-              )}
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Delivery
+              </h3>
+              <div className="flex items-center gap-2">
+                {video.playbackPolicy === "signed" ? (
+                  <>
+                    <Lock className="h-4 w-4 text-amber-400" />
+                    <span className="text-sm font-medium text-amber-400">
+                      Signed URL Required
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Globe className="h-4 w-4 text-lime-500/80" />
+                    <span className="text-sm font-medium text-lime-500/80">
+                      Public Access
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Playback URL */}
             {video.playbackUrl && (
               <div className="mb-4">
                 <label className="text-xs text-muted-foreground block mb-1.5 flex items-center gap-2">
-                  <Link2 className="w-3 h-3" />
+                  <Link2 className="size-4" />
                   Playback URL
                   {video.playbackPolicy === "signed" && (
                     <span className="text-[10px] text-amber-400">
@@ -654,7 +638,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                     type="text"
                     readOnly
                     value={video.playbackUrl}
-                    className="flex-1 px-3 py-2 rounded-sm bg-muted/30 border border-border text-xs text-foreground font-mono truncate"
+                    className="flex-1 px-3 py-2 rounded-sm bg-muted-foreground/25 border border-border text-xs text-foreground font-mono truncate"
                   />
                   <Button
                     size="sm"
@@ -674,19 +658,21 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
             {/* Thumbnail */}
             {video.thumbnailUrl ? (
-              <div>
-                <label className="text-xs text-muted-foreground block mb-1.5">
-                  Thumbnail
-                </label>
-                <a
-                  href={video.thumbnailUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Download Poster
-                </a>
+              <div className="pt-4">
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <label className="block text-xs text-muted-foreground">
+                    Thumbnail
+                  </label>
+                  <a
+                    href={video.thumbnailUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Download Poster
+                  </a>
+                </div>
               </div>
             ) : (
               <div className="text-xs text-muted-foreground">
@@ -696,6 +682,61 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
           </div>
         </div>
       </div>
+
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-destructive/20">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+              </div>
+              <h2 className="text-xl font-bold text-foreground">
+                Delete Video
+              </h2>
+            </div>
+            <p className="mb-3 text-muted-foreground">
+              Are you sure you want to delete &quot;{video.title}&quot;? This
+              action cannot be undone.
+            </p>
+            {deleteError && (
+              <p className="mb-6 rounded-sm border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {deleteError}
+              </p>
+            )}
+            {!deleteError && <div className="mb-6" />}
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setDeleteError(null);
+                }}
+                className="flex-1 rounded-sm"
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="flex-1 rounded-sm bg-destructive hover:bg-destructive/90"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══════════════════════════════════════════════════════════
                 TABS SECTION
@@ -847,7 +888,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                   Tech Health
                 </h3>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="rounded-sm border border-border bg-card/40 p-4">
+                  <div className="rounded-sm border border-border bg-card/40 p-5">
                     <p className="text-xs text-muted-foreground uppercase tracking-wide">
                       Buffering Signals
                     </p>
@@ -857,29 +898,29 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                       )}
                       %
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
                       Sessions with seek events:{" "}
                       {analytics.techHealth.sessionsWithSeek.toLocaleString()} /{" "}
                       {analytics.techHealth.totalSessions.toLocaleString()}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
                       Seek events logged:{" "}
                       {analytics.techHealth.seekEvents.toLocaleString()}
                     </p>
                   </div>
-                  <div className="rounded-sm border border-border bg-card/40 p-4">
+                  <div className="rounded-sm border border-border bg-card/40 p-5">
                     <p className="text-xs text-muted-foreground uppercase tracking-wide">
                       Errors
                     </p>
                     <p className="mt-2 text-2xl font-semibold text-foreground">
                       {analytics.techHealth.sessionErrorRatePercent.toFixed(2)}%
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
                       Sessions with errors:{" "}
                       {analytics.techHealth.sessionsWithErrors.toLocaleString()}{" "}
                       / {analytics.techHealth.totalSessions.toLocaleString()}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
                       Total error events:{" "}
                       {analytics.techHealth.totalErrors.toLocaleString()}
                     </p>
@@ -936,21 +977,21 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
             <div className="w-full space-y-6">
               {/* Options */}
               <div className="flex gap-6">
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={embedAutoplay}
                     onChange={(e) => setEmbedAutoplay(e.target.checked)}
-                    className="rounded border-border"
+                    className="rounded border border-accent size-4"
                   />
                   <span className="text-sm">Autoplay</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={embedMuted}
                     onChange={(e) => setEmbedMuted(e.target.checked)}
-                    className="rounded border-border"
+                    className="rounded border border-accent size-4 "
                   />
                   <span className="text-sm">Muted</span>
                 </label>
@@ -958,7 +999,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
               {/* Code */}
               <div className="relative">
-                <pre className="p-4 rounded-sm bg-muted/30 font-mono text-xs overflow-x-auto">
+                <pre className="p-4 rounded-sm bg-muted/90 font-mono text-xs overflow-x-auto">
                   <code>{getEmbedCode()}</code>
                 </pre>
                 <Button
@@ -968,7 +1009,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                   className="absolute top-2 right-2"
                 >
                   {copied === "embed" ? (
-                    <Check className="w-4 h-4 text-emerald-400" />
+                    <Check className="w-4 h-4 text-lime-400" />
                   ) : (
                     <Copy className="w-4 h-4" />
                   )}
@@ -976,11 +1017,11 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
               </div>
 
               {/* API Note */}
-              <div className="flex items-start gap-3 text-sm text-muted-foreground">
+              <div className="flex items-start gap-2 text-sm text-muted-foreground">
                 <ExternalLink className="w-4 h-4 mt-0.5 flex-shrink-0" />
                 <p>
                   For API access, use{" "}
-                  <code className="text-xs bg-muted px-1 rounded">
+                  <code className="ml-1 text-xs bg-muted-foreground/35 py-1 px-2 font-medium text-foreground/90 rounded">
                     GET /v1/video/{video.id}
                   </code>
                 </p>
@@ -1061,7 +1102,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
             {/* Signed Video Notice */}
             {video.playbackPolicy === "signed" && (
-                <div className="rounded-sm border border-amber-500/20 bg-amber-500/10 p-4">
+              <div className="rounded-sm border border-amber-500/20 bg-amber-500/10 p-4">
                 <div className="flex items-start gap-3">
                   <Lock className="w-5 h-5 text-amber-400 mt-0.5" />
                   <div>

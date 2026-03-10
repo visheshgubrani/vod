@@ -25,22 +25,24 @@ export function AuthLayout({
         <div className="w-full max-w-xl">
           {/* Top Logo */}
           <div className="mb-2">
-            <Link href="/" className="flex items-center gap-2 justify-center">
+            <Link href="/" className="flex items-center gap-1.5 justify-center">
               <Image
                 src="/logo.svg"
                 alt="ClipMux logo"
                 width={36}
                 height={36}
-                className="h-9 w-auto"
+                className="h-8 w-auto"
                 priority
               />
-              <span className="text-xl font-bold gradient-text">ClipMux</span>
+              <span className="text-2xl tracking-wider text-purple-200 font-dashboard-heading">
+                ClipMux
+              </span>
             </Link>
           </div>
 
           {/* Header */}
-          <div className="text-center mb-10">
-            <h2 className="text-3xl font-bold mb-2">{title}</h2>
+          <div className="text-center mt-6 mb-10">
+            <h2 className="text-2xl font-medium mb-2">{title}</h2>
             <p className="text-muted-foreground">{subtitle}</p>
             {topLink && (
               <div className="mt-3 text-sm text-muted-foreground">

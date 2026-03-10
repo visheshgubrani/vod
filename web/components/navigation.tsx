@@ -40,24 +40,24 @@ export function Navigation() {
     <header
       className={cn(
         "fixed top-0 left-0 right-0 z-50 transition-all duration-300",
-        isScrolled ? "py-3.5 bg-accent/10 backdrop-blur-xl" : "py-4"
+        isScrolled ? "py-2 bg-accent/10 backdrop-blur-xl" : "py-4"
       )}
     >
       <nav className="max-w-7xl mx-auto px-4 flex items-center justify-between">
         {/* Logo */}
         <Link
           href="/"
-          className="flex items-center justify-start group"
+          className="flex items-center gap-1.5 justify-start group"
         >
           <Image
             src="/logo.svg"
             alt="ClipMux logo"
             width={50}
             height={50}
-            className="size-12 w-auto shrink-0"
+            className="size-8 w-auto shrink-0"
             priority
           />
-          <span className="text-lg md:text-xl font-dashboard-heading font-semibold tracking-wider text-mauve-300">
+          <span className="mt-1 text-lg md:text-[1.27rem] font-dashboard-heading font-semibold tracking-wider text-purple-200">
             ClipMux
           </span>
         </Link>
@@ -132,17 +132,17 @@ export function Navigation() {
                 {/* Logo */}
                 <Link
                   href="/"
-                  className="flex items-center justify-start gap-0.5 group"
+                  className="flex items-center justify-start gap-1.5 group"
                 >
                   <Image
                     src="/logo.svg"
                     alt="ClipMux logo"
                     width={34}
                     height={34}
-                    className="size-10 w-auto shrink-0"
+                    className="size-7 w-auto shrink-0"
                     priority
                   />
-                  <span className="text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-mauve-300">
+                  <span className="mt-0.5 text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-purple-200">
                     ClipMux
                   </span>
                 </Link>

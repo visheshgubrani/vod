@@ -24,7 +24,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, subDays } from "date-fns";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
@@ -110,6 +110,16 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
+function createFallbackBandwidthPoint(date: Date) {
+  return {
+    date: date.toISOString(),
+    bytes: 0,
+    megabytes: 0,
+    gigabytes: 0,
+    requests: 0,
+  };
+}
+
 export default function UsagePage() {
   const [usage, setUsage] = React.useState<UsageData | null>(null);
   const [bandwidth, setBandwidth] = React.useState<BandwidthData | null>(null);
@@ -164,6 +174,41 @@ export default function UsagePage() {
     fetchUsage();
   }, []);
 
+  // Prepare sparkline data (last 7 days for compact view)
+  const sparklineData =
+    dailyBandwidth?.daily.slice(-7).map((d) => ({
+      value: d.gigabytes,
+    })) || [];
+  const bandwidthChartData = React.useMemo(() => {
+    const daily = dailyBandwidth?.daily ?? [];
+
+    if (daily.length >= 5) return daily;
+
+    const fallbackCount = 5;
+    const fallbackDays = Array.from({ length: fallbackCount }, (_, index) =>
+      createFallbackBandwidthPoint(subDays(new Date(), fallbackCount - 1 - index))
+    );
+
+    if (daily.length === 0) return fallbackDays;
+
+    return [...fallbackDays.slice(0, fallbackCount - daily.length), ...daily];
+  }, [dailyBandwidth]);
+
+  const bandwidthTicks = React.useMemo(() => {
+    const dates = bandwidthChartData.map((item) => item.date);
+
+    if (dates.length <= 5) return dates;
+
+    const step = Math.max(1, Math.floor((dates.length - 1) / 4));
+    const sampled = Array.from({ length: 5 }, (_, index) => {
+      const tickIndex =
+        index === 4 ? dates.length - 1 : Math.min(index * step, dates.length - 1);
+      return dates[tickIndex];
+    });
+
+    return Array.from(new Set(sampled));
+  }, [bandwidthChartData]);
+
   if (loading) {
     return <DashboardUsageSkeleton />;
   }
@@ -179,12 +224,6 @@ export default function UsagePage() {
       </div>
     );
   }
-
-  // Prepare sparkline data (last 7 days for compact view)
-  const sparklineData =
-    dailyBandwidth?.daily.slice(-7).map((d) => ({
-      value: d.gigabytes,
-    })) || [];
 
   return (
     <div className="space-y-8">
@@ -206,7 +245,7 @@ export default function UsagePage() {
         <div className="rounded-sm border border-primary/20 bg-card/60 p-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="rounded-sm bg-accent/15 p-2">
-              <HardDrive className="w-5 h-5 text-purple-300" />
+              <HardDrive className="w-5 h-5 text-purple-200" />
             </div>
             <span className="text-sm font-medium text-muted-foreground">
               Storage Used
@@ -259,11 +298,11 @@ export default function UsagePage() {
       </div>
 
       {/* Daily Bandwidth Chart */}
-      {dailyBandwidth && dailyBandwidth.daily.length > 0 && (
+      {dailyBandwidth && (
         <div className="rounded-sm border border-border bg-card/60 p-6">
           <div className="flex items-center gap-3 mb-6">
-            <div className="rounded-sm bg-accent/10 p-2">
-              <Database className="w-5 h-5 text-purple-200" />
+            <div className="rounded-sm bg-accent/10 p-3">
+              <Database className="size-6 text-accent" />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-foreground">
@@ -272,12 +311,18 @@ export default function UsagePage() {
               <p className="text-sm text-muted-foreground">Last 30 days</p>
             </div>
           </div>
-          <div className="h-64">
+          <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={dailyBandwidth.daily}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <BarChart data={bandwidthChartData} barCategoryGap="28%">
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="hsl(var(--border))"
+                  strokeOpacity={0.75}
+                />
                 <XAxis
                   dataKey="date"
+                  ticks={bandwidthTicks}
+                  interval={0}
                   tickFormatter={(value: string) => {
                     try {
                       return format(parseISO(value), "MMM d");
@@ -294,6 +339,7 @@ export default function UsagePage() {
                   tickFormatter={(value: number) => `${value.toFixed(1)} GB`}
                 />
                 <Tooltip
+                  cursor={false}
                   contentStyle={{
                     backgroundColor: "#1a1a1a",
                     border: "1px solid #333",
@@ -314,7 +360,12 @@ export default function UsagePage() {
                     "Bandwidth",
                   ]}
                 />
-                <Bar dataKey="gigabytes" fill="#84cc16" radius={[4, 4, 0, 0]} />
+                <Bar
+                  dataKey="gigabytes"
+                  fill="hsl(var(--accent))"
+                  radius={[4, 4, 0, 0]}
+                  barSize={40}
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>
