@@ -4,10 +4,11 @@ import * as React from "react"
 import * as RechartsPrimitive from "recharts"
 import type {
   DefaultLegendContentProps,
-  LegendPayload,
   TooltipContentProps,
   TooltipPayloadEntry,
 } from "recharts"
+
+type LegendPayload = NonNullable<DefaultLegendContentProps["payload"]>[number]
 
 import { cn } from "@/lib/utils"
 
