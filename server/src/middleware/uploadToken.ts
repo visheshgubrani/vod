@@ -1,5 +1,5 @@
 import { createMiddleware } from 'hono/factory'
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { uploadToken } from '../db/schema'
 
@@ -76,7 +76,12 @@ export async function incrementUploadTokenUsage(tokenId: string): Promise<void> 
     await db
         .update(uploadToken)
         .set({
-            usedFiles: sql`COALESCE(${uploadToken.usedFiles}, 0) + 1`,
+            usedFiles: (await db
+                .select({ usedFiles: uploadToken.usedFiles })
+                .from(uploadToken)
+                .where(eq(uploadToken.id, tokenId))
+                .limit(1)
+                .then(r => (r[0]?.usedFiles ?? 0) + 1)),
         })
         .where(eq(uploadToken.id, tokenId))
 }

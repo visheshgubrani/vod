@@ -100,15 +100,6 @@ const RANGE_OPTIONS: Array<{ label: string; value: DateRangeDays }> = [
   { label: "30d", value: 30 },
   { label: "90d", value: 90 },
 ];
-const DEFAULT_COUNTRY_LABELS = [
-  "India",
-  "US",
-  "Canada",
-  "Germany",
-  "Japan",
-  "Unknown",
-];
-
 const compactNumber = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
@@ -293,25 +284,15 @@ export default function AnalyticsPage() {
       .values()
   ).sort((a, b) => b.viewers - a.viewers);
 
-  const topCountries = normalizedCountries
-    .filter((item) => item.country !== "Unknown")
-    .slice(0, 5);
-  const countryRows: CountryChartRow[] = DEFAULT_COUNTRY_LABELS.map(
-    (country) => {
-      const existing =
-        country === "Unknown"
-          ? normalizedCountries.find((item) => item.country === "Unknown")
-          : topCountries.find((item) => item.country === country);
-      const viewers = existing?.viewers ?? 0;
-
-      return {
-        country,
-        viewers,
-        sessions: existing?.sessions ?? 0,
-        fill: viewers > 0 ? "hsl(var(--accent))" : "hsl(var(--accent) / 0.1)",
-      };
-    }
-  );
+  const countryRows: CountryChartRow[] = normalizedCountries
+    .filter((item) => item.viewers > 0)
+    .slice(0, 5)
+    .map((item) => ({
+      country: item.country,
+      viewers: item.viewers,
+      sessions: item.sessions,
+      fill: "hsl(var(--accent))",
+    }));
   const maxCountryViewers = Math.max(
     ...countryRows.map((item) => item.viewers),
     1
@@ -338,7 +319,7 @@ export default function AnalyticsPage() {
   const totalDeviceViewers = desktopViewers + mobileViewers;
   const sortedTopVideos = [...topVideos]
     .sort((a, b) => b.views - a.views)
-    .slice(0, 5);
+    .slice(0, 3);
   const topVideoPeakViews = sortedTopVideos[0]?.views ?? 0;
 
   const devicesChartConfig = {
@@ -351,7 +332,7 @@ export default function AnalyticsPage() {
     },
     mobile: {
       label: "Mobile",
-      color: "hsl(var(--accent) / 0.7)",
+      color: "rgb(251 207 232)",
     },
   } satisfies ChartConfig;
 
@@ -568,7 +549,7 @@ export default function AnalyticsPage() {
             </div>
           </div>
           {countryRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">
+            <p className="text-sm text-muted-foreground/90 px-4 py-12 text-center">
               No country data yet
             </p>
           ) : (
@@ -696,7 +677,7 @@ export default function AnalyticsPage() {
                       fill={
                         mobileViewers > 0
                           ? "var(--color-mobile)"
-                          : "hsl(var(--primary) / 0.1)"
+                          : "rgb(251 207 232 / 0.25)"
                       }
                       className="stroke-transparent stroke-2"
                     />
@@ -712,7 +693,7 @@ export default function AnalyticsPage() {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 text-foreground">
-                  <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-pink-200" />
                   <span>Mobile</span>
                   <span className="text-muted-foreground">
                     {formatCompact(mobileViewers)}

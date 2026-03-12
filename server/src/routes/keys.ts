@@ -7,20 +7,25 @@
 
 import { Hono } from 'hono'
 import { eq, and } from 'drizzle-orm'
+import crypto from 'crypto'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { apiKey, member } from '../db/schema'
-import {
-  generateApiKey,
-  getApiKeyLast4,
-  getApiKeyPreview,
-  hashApiKey,
-} from '../utils/apiKey'
 
 const app = new Hono()
 
 // All routes require session authentication
 app.use('/*', requireAuth)
+
+/**
+ * Generate a secure API key
+ * Format: sk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxx (32 random chars)
+ */
+function generateApiKey(): { id: string; key: string } {
+  const id = `sk_${crypto.randomBytes(8).toString('hex')}`
+  const key = `sk_live_${crypto.randomBytes(24).toString('hex')}`
+  return { id, key }
+}
 
 /**
  * GET /api/keys
@@ -39,7 +44,8 @@ app.get('/', async (c) => {
       id: apiKey.id,
       name: apiKey.name,
       label: apiKey.label,
-      keyPreview: apiKey.keyLast4,
+      // Only show last 4 characters of the key for security
+      keyPreview: apiKey.key,
       lastUsedAt: apiKey.lastUsedAt,
       createdAt: apiKey.createdAt,
     })
@@ -52,7 +58,7 @@ app.get('/', async (c) => {
       id: k.id,
       name: k.name,
       label: k.label,
-      key_preview: getApiKeyPreview(k.keyPreview),
+      key_preview: `sk_live_...${k.keyPreview.slice(-4)}`,
       last_used_at: k.lastUsedAt,
       created_at: k.createdAt,
     })),
@@ -87,8 +93,7 @@ app.post('/', async (c) => {
 
   await db.insert(apiKey).values({
     id,
-    keyHash: hashApiKey(key),
-    keyLast4: getApiKeyLast4(key),
+    key,
     name,
     label: body.label?.trim() || null,
     organizationId,
@@ -101,7 +106,7 @@ app.post('/', async (c) => {
     label: body.label?.trim() || null,
     // Return the full key ONLY on creation
     key,
-    key_preview: getApiKeyPreview(getApiKeyLast4(key)),
+    key_preview: `sk_live_...${key.slice(-4)}`,
     created_at: new Date().toISOString(),
     message: 'Store this key securely. You will not be able to see it again.',
   }, 201)
@@ -141,7 +146,7 @@ app.get('/:id', async (c) => {
     id: keyRecord.id,
     name: keyRecord.name,
     label: keyRecord.label,
-    key_preview: getApiKeyPreview(keyRecord.keyLast4),
+    key_preview: `sk_live_...${keyRecord.key.slice(-4)}`,
     last_used_at: keyRecord.lastUsedAt,
     created_at: keyRecord.createdAt,
   })
@@ -267,21 +272,18 @@ app.post('/:id/regenerate', async (c) => {
   }
 
   // Generate new key value
-  const { key: newKey } = generateApiKey()
+  const newKey = `sk_live_${crypto.randomBytes(24).toString('hex')}`
 
   await db
     .update(apiKey)
-    .set({
-      keyHash: hashApiKey(newKey),
-      keyLast4: getApiKeyLast4(newKey),
-    })
+    .set({ key: newKey })
     .where(eq(apiKey.id, keyId))
 
   return c.json({
     id: keyId,
     name: keyRecord.name,
     key: newKey,
-    key_preview: getApiKeyPreview(getApiKeyLast4(newKey)),
+    key_preview: `sk_live_...${newKey.slice(-4)}`,
     message: 'Store this key securely. You will not be able to see it again.',
   })
 })
