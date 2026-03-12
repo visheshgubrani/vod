@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import {
+  ChevronLeft,
+  ChevronRight,
   HardDrive,
   Database,
   Film,
@@ -28,6 +30,7 @@ import { format, parseISO, subDays } from "date-fns";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
+const VIDEOS_PER_PAGE = 10;
 
 interface UsageData {
   organizationId: string;
@@ -128,6 +131,7 @@ export default function UsagePage() {
   const [breakdown, setBreakdown] = React.useState<BreakdownData | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [currentPage, setCurrentPage] = React.useState(1);
 
   const fetchUsage = async () => {
     setLoading(true);
@@ -194,20 +198,27 @@ export default function UsagePage() {
     return [...fallbackDays.slice(0, fallbackCount - daily.length), ...daily];
   }, [dailyBandwidth]);
 
-  const bandwidthTicks = React.useMemo(() => {
-    const dates = bandwidthChartData.map((item) => item.date);
+  const bandwidthTicks = React.useMemo(
+    () => bandwidthChartData.map((item) => item.date),
+    [bandwidthChartData]
+  );
+  const bandwidthBarSize = bandwidthChartData.length > 10 ? 18 : 32;
+  const paginatedVideos = React.useMemo(() => {
+    const videos = breakdown?.videos ?? [];
+    return videos.slice(
+      (currentPage - 1) * VIDEOS_PER_PAGE,
+      currentPage * VIDEOS_PER_PAGE
+    );
+  }, [breakdown?.videos, currentPage]);
+  const totalVideos = breakdown?.videos.length ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalVideos / VIDEOS_PER_PAGE));
+  const rangeStart =
+    totalVideos === 0 ? 0 : (currentPage - 1) * VIDEOS_PER_PAGE + 1;
+  const rangeEnd = Math.min(currentPage * VIDEOS_PER_PAGE, totalVideos);
 
-    if (dates.length <= 5) return dates;
-
-    const step = Math.max(1, Math.floor((dates.length - 1) / 4));
-    const sampled = Array.from({ length: 5 }, (_, index) => {
-      const tickIndex =
-        index === 4 ? dates.length - 1 : Math.min(index * step, dates.length - 1);
-      return dates[tickIndex];
-    });
-
-    return Array.from(new Set(sampled));
-  }, [bandwidthChartData]);
+  React.useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
 
   if (loading) {
     return <DashboardUsageSkeleton />;
@@ -313,7 +324,10 @@ export default function UsagePage() {
           </div>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={bandwidthChartData} barCategoryGap="28%">
+              <BarChart
+                data={bandwidthChartData}
+                barCategoryGap={bandwidthChartData.length > 10 ? "12%" : "24%"}
+              >
                 <CartesianGrid
                   strokeDasharray="3 3"
                   stroke="hsl(var(--border))"
@@ -364,7 +378,7 @@ export default function UsagePage() {
                   dataKey="gigabytes"
                   fill="hsl(var(--accent))"
                   radius={[4, 4, 0, 0]}
-                  barSize={40}
+                  barSize={bandwidthBarSize}
                 />
               </BarChart>
             </ResponsiveContainer>
@@ -416,7 +430,7 @@ export default function UsagePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {breakdown?.videos.map((video) => (
+                  {paginatedVideos.map((video) => (
                     <tr
                       key={video.id}
                       className="border-b border-border/90 transition-colors hover:bg-muted/30"
@@ -472,7 +486,7 @@ export default function UsagePage() {
             </div>
 
             <div className="divide-y divide-border md:hidden">
-              {breakdown?.videos.map((video) => (
+              {paginatedVideos.map((video) => (
                 <div key={video.id} className="space-y-3 py-4">
                   <div className="flex items-start gap-3">
                     <div
@@ -527,6 +541,44 @@ export default function UsagePage() {
                 </div>
               ))}
             </div>
+
+            {totalVideos > 0 && (
+              <div className="flex flex-col gap-5 rounded-sm px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                <p className="text-sm font-medium text-muted-foreground">
+                  Showing {rangeStart}-{rangeEnd} of {totalVideos} videos
+                </p>
+                <div className="min-w-[88px] rounded-sm bg-muted/30 px-3 py-1 text-center text-xs font-medium text-foreground/50">
+                  Page {currentPage} of {totalPages}
+                </div>
+                <div className="flex w-full items-center gap-2 self-end sm:w-fit sm:self-auto">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setCurrentPage((page) => Math.max(1, page - 1))
+                    }
+                    disabled={currentPage === 1}
+                    className="w-full rounded-sm border border-mauve-300/60 hover:border-mauve-300/40 hover:bg-muted sm:w-fit"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setCurrentPage((page) => Math.min(totalPages, page + 1))
+                    }
+                    disabled={currentPage === totalPages}
+                    className="w-full rounded-sm bg-accent/50 hover:bg-accent/60 sm:w-fit"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
