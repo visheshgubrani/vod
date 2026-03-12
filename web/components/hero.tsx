@@ -13,14 +13,6 @@ export function Hero() {
 
       {/* Content */}
       <div className="relative z-10 max-w-7xl mx-auto px-6 pt-28 pb-6 text-center">
-        {/* Badge */}
-        <div className="bg-mauve-600/40 px-4 py-2 inline-flex items-center gap-1.5 md:gap-2.5 rounded-full border-mauve-300/25 border mb-8 animate-fade-in-up">
-          <span className="size-2 md:size-3 bg-lime-400/90 rounded-full animate-pulse" />
-          <span className=" text-xs whitespace-nowrap md:text-sm font-medium">
-            Now serving 50M+ video views monthly
-          </span>
-        </div>
-
         {/* Main Headline */}
         <h1
           className="text-4xl sm:text-5xl md:text-6xl font-semibold leading-[1.15] tracking-tight mb-5 animate-fade-in-up"

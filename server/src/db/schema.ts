@@ -217,22 +217,27 @@ export const video = pgTable('video', {
   index('video_organizationId_idx').on(table.organizationId),
 ])
 
-export const apiKey = pgTable('api_key', {
-  id: text('id').primaryKey(), // "sk_live_..."
-  key: text('key').notNull().unique(), // The secret key
-  name: text('name').notNull(), // "Production Key"
+export const apiKey = pgTable(
+  'api_key',
+  {
+    id: text('id').primaryKey(), // "sk_live_..."
+    keyHash: text('key_hash').notNull(), // SHA-256 digest of the secret key
+    keyLast4: text('key_last4').notNull(), // Last 4 chars for masked previews
+    name: text('name').notNull(), // "Production Key"
 
-  // Linked to Organization
-  organizationId: text('organization_id')
-    .notNull()
-    .references(() => organization.id, { onDelete: 'cascade' }),
-  userId: text('user_id')
-    .notNull()
-    .references(() => user.id, { onDelete: 'cascade' }),
-  label: text('label'),
-  lastUsedAt: timestamp('last_used_at'),
-  createdAt: timestamp('created_at').defaultNow(),
-})
+    // Linked to Organization
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    label: text('label'),
+    lastUsedAt: timestamp('last_used_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => [uniqueIndex('api_key_key_hash_idx').on(table.keyHash)],
+)
 
 export const webhookEndpoint = pgTable('webhook_endpoint', {
   id: text('id').primaryKey(), // "whep_..."

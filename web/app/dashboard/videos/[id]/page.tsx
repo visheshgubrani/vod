@@ -847,20 +847,28 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                               borderRadius: "12px",
                             }}
                             formatter={(
-                              value: number | undefined,
+                              value: number | string | (number | string)[] | undefined,
                               name: string | undefined
                             ) => {
-                              if (name === "viewersPercent")
+                              const numericValue =
+                                typeof value === "number"
+                                  ? value
+                                  : Number(
+                                      Array.isArray(value) ? value[0] : value
+                                    ) || 0;
+                              const seriesName = String(name ?? "value");
+
+                              if (seriesName === "viewersPercent")
                                 return [
-                                  `${(value ?? 0).toFixed(2)}%`,
+                                  `${numericValue.toFixed(2)}%`,
                                   "Viewers still watching",
                                 ];
-                              if (name === "viewers")
+                              if (seriesName === "viewers")
                                 return [
-                                  `${(value ?? 0).toLocaleString()}`,
+                                  numericValue.toLocaleString(),
                                   "Viewers",
                                 ];
-                              return [value ?? 0, name ?? "value"];
+                              return [numericValue, seriesName];
                             }}
                             labelFormatter={(value) => `${value}% watched`}
                           />
