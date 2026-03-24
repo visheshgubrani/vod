@@ -508,8 +508,8 @@ export function UploadModal({
 
         <div className="rounded-sm border border-border bg-muted/40 p-4">
           <div className="mb-4 flex items-start gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-full border border-muted-foreground/20 bg-card">
-              <Play className="h-5 w-5 text-primary/80 fill-primary/80" />
+            <div className="flex size-8.5 md:size-11 p-2 items-center justify-center rounded-full border border-muted-foreground/20 bg-card">
+              <Play className="size-4 md:size-5 text-primary/80 fill-primary/80" />
             </div>
             <div>
               <p className="text-sm font-medium text-foreground">

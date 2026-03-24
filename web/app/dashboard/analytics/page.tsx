@@ -357,7 +357,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-8 w-full">
-      <div className="relative overflow-hidden rounded-sm border border-border bg-card/70 px-6 py-6">
+      <div className="relative overflow-hidden rounded-sm border border-border bg-card/70 px-4 py-4 md:px-6 md:py-6">
         <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_20%_10%,hsl(var(--primary)/0.22),transparent_48%),radial-gradient(circle_at_88%_30%,hsl(var(--accent)/0.20),transparent_42%)]" />
         <DashboardPageHeader
           title="Analytics"
@@ -365,13 +365,13 @@ export default function AnalyticsPage() {
           eyebrow="Organization Pulse"
           className="relative"
           actions={
-            <>
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
               {RANGE_OPTIONS.map((option) => (
                 <button
                   key={option.value}
                   onClick={() => setRangeDays(option.value)}
                   className={cn(
-                    "rounded-full border px-6 py-1.5 text-sm font-medium transition-all",
+                    "w-full rounded-full border px-6 py-1.5 text-sm font-medium transition-all sm:w-auto",
                     rangeDays === option.value
                       ? "border-primary/60 bg-primary/20 text-purple-200"
                       : "border-muted-foreground/30 border bg-background/30 text-muted-foreground hover:text-foreground hover:border-primary/30"
@@ -380,13 +380,13 @@ export default function AnalyticsPage() {
                   Last {option.label}
                 </button>
               ))}
-            </>
+            </div>
           }
         />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="rounded-sm border border-border bg-card/60 p-5">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
               Total Views
@@ -403,7 +403,7 @@ export default function AnalyticsPage() {
           </p>
         </div>
 
-        <div className="rounded-sm border border-border bg-card/60 p-5">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
               Watch Time
@@ -420,7 +420,7 @@ export default function AnalyticsPage() {
           </p>
         </div>
 
-        <div className="rounded-sm border border-border bg-card/60 p-5">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
               Unique Viewers
@@ -437,7 +437,7 @@ export default function AnalyticsPage() {
           </p>
         </div>
 
-        <div className="rounded-sm border border-border bg-card/60 p-5">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
               Error Rate
@@ -455,7 +455,7 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      <div className="rounded-sm border border-border bg-card/60 p-6">
+      <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
         <div className="mb-6">
           <h2 className="text-lg font-semibold text-foreground">
             Views Over Time
@@ -465,9 +465,12 @@ export default function AnalyticsPage() {
           </p>
         </div>
 
-        <div className="relative h-72">
+        <div className="relative h-64 sm:h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={growthChartData} margin={{ left: 8, right: 8 }}>
+            <AreaChart
+              data={growthChartData}
+              margin={{ top: 8, right: 8, bottom: 8, left: -18 }}
+            >
               <defs>
                 <linearGradient id="viewsFill" x1="0" y1="0" x2="0" y2="1">
                   <stop
@@ -491,11 +494,15 @@ export default function AnalyticsPage() {
                 dataKey="label"
                 stroke="hsl(var(--muted-foreground))"
                 style={{ fontSize: "12px" }}
+                minTickGap={20}
+                tickMargin={10}
               />
               <YAxis
                 stroke="hsl(var(--muted-foreground))"
                 style={{ fontSize: "12px" }}
                 allowDecimals={false}
+                width={45}
+                tickMargin={8}
               />
               <Tooltip
                 contentStyle={{
@@ -527,16 +534,16 @@ export default function AnalyticsPage() {
               />
             </AreaChart>
           </ResponsiveContainer>
-          {growth.length === 0 && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-2 text-sm text-muted-foreground">
+          {/* {growth.length === 0 && (
+            <div className="pointer-events-none md:block hidden absolute inset-x-0 top-0 flex justify-center items-center pb-2 text-sm text-muted-foreground">
               No analytics events yet for this range.
             </div>
-          )}
+          )} */}
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="rounded-sm border border-border bg-card/60 p-5 xl:min-h-[24rem]">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6 xl:min-h-[24rem]">
           <div className="mb-6 flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-foreground">Top Countries</h3>
@@ -588,7 +595,7 @@ export default function AnalyticsPage() {
           )}
         </div>
 
-        <div className="rounded-sm border border-border bg-card/60 p-5 xl:min-h-[25rem]">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6 xl:min-h-[25rem]">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-foreground">Device Types</h3>
@@ -684,7 +691,7 @@ export default function AnalyticsPage() {
                   </RadialBarChart>
                 </ChartContainer>
               </div>
-              <div className="flex -mt-4 items-center justify-center gap-6 md:gap-10 text-sm">
+              <div className="flex -mt-2 flex-col items-center justify-center gap-3 text-sm sm:-mt-4 sm:flex-row sm:gap-6 md:gap-10">
                 <div className="flex items-center gap-2 text-foreground">
                   <span className="h-2.5 w-2.5 rounded-full bg-accent" />
                   <span>Desktop</span>
@@ -704,7 +711,7 @@ export default function AnalyticsPage() {
           )}
         </div>
 
-        <div className="rounded-sm border border-border bg-card/60 p-5 xl:min-h-[25rem]">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6 xl:min-h-[25rem]">
           <div className="mb-6 flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-foreground">Top Videos</h3>
@@ -731,11 +738,11 @@ export default function AnalyticsPage() {
                 return (
                   <div
                     key={video.videoId}
-                    className="rounded-sm border border-border/60 bg-background/30 p-4"
+                    className="rounded-sm border border-border/60 bg-background/30 p-3 md:p-4"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-foreground">
+                        <p className=" text-sm font-semibold text-foreground">
                           {video.title}
                         </p>
                       </div>

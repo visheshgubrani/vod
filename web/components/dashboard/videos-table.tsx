@@ -237,7 +237,7 @@ export function VideosTable({
                   <VideoThumbnail video={video} />
                   <button
                     onClick={() => onViewDetails?.(video)}
-                    className="truncate text-left text-sm font-medium tracking-wide text-foreground transition-colors hover:text-primary"
+                    className="text-left text-sm font-medium tracking-wide text-foreground transition-colors hover:text-primary"
                   >
                     {video.title}
                   </button>
@@ -280,7 +280,7 @@ export function VideosTable({
                   <div className="min-w-0">
                     <button
                       onClick={() => onViewDetails?.(video)}
-                      className="block truncate text-left text-sm font-medium tracking-wide text-foreground transition-colors hover:text-primary"
+                      className="block text-left text-sm font-medium tracking-wide text-foreground transition-colors hover:text-primary"
                     >
                       {video.title}
                     </button>

@@ -387,7 +387,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
             Videos
           </button>
           <ChevronRight className="w-4 h-4 text-muted-foreground/50" />
-          <span className="text-foreground font-medium truncate max-w-[200px]">
+          <span className="text-foreground font-medium max-w-[200px]">
             {truncateTitle(video.title)}
           </span>
         </div>
@@ -518,7 +518,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
           {/* ─────────────────────────────────────────────────
                         CARD A: Asset Details
                     ───────────────────────────────────────────────── */}
-          <div className="glass rounded-sm p-5">
+          <div className="glass rounded-sm p-4 md:p-6">
             <div className="mb-4 flex items-start justify-between gap-4">
               <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Asset Details
@@ -548,11 +548,11 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
             </div>
 
             {/* Video ID */}
-            <div className="mb-4">
+            <div className="mb-4 w-full">
               <label className="text-xs text-muted-foreground block mb-1.5">
                 Video ID
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center md:gap-2 w-full">
                 <code className="flex-1 truncate rounded-sm bg-muted-foreground/30 px-3 py-2 font-mono text-xs text-foreground">
                   {video.id}
                 </code>
@@ -572,8 +572,8 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
             </div>
 
             {/* Specs Row */}
-            <div className="pt-4 flex items-center gap-4 font-medium text-sm text-foreground/75">
-              <span className="flex items-center gap-1.5">
+            <div className="pt-4 flex md:flex-row flex-col md:items-center gap-4 font-medium text-sm text-foreground/75">
+              <span className="flex whitespace-nowrap items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5" />
                 {formatDuration(video.duration)}
               </span>
@@ -597,7 +597,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
           {/* ─────────────────────────────────────────────────
                         CARD B: Delivery
                     ───────────────────────────────────────────────── */}
-          <div className="glass flex-1 rounded-sm p-5">
+          <div className="glass flex-1 rounded-sm p-4 md:p-6">
             <div className="mb-4 flex items-start justify-between gap-4">
               <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Delivery
@@ -633,7 +633,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                     </span>
                   )}
                 </label>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center md:gap-2">
                   <input
                     type="text"
                     readOnly
@@ -659,7 +659,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
             {/* Thumbnail */}
             {video.thumbnailUrl ? (
               <div className="pt-4">
-                <div className="mb-1.5 flex items-center justify-between gap-3">
+                <div className="mb-1.5 flex md:flex-row flex-col md:items-center justify-between gap-1.5 md:gap-3">
                   <label className="block text-xs text-muted-foreground">
                     Thumbnail
                   </label>
@@ -667,7 +667,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                     href={video.thumbnailUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 text-sm text-primary hover:underline"
+                    className="inline-flex whitespace-nowrap md:items-center gap-2 text-sm text-primary hover:underline"
                   >
                     <Download className="h-3.5 w-3.5" />
                     Download Poster
@@ -685,7 +685,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <div className="mb-4 flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-destructive/20">
                 <AlertTriangle className="h-5 w-5 text-destructive" />
@@ -742,7 +742,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                 TABS SECTION
             ═══════════════════════════════════════════════════════════ */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3 gap-3 rounded-sm border border-border bg-card/30 p-2">
+        <TabsList className="grid w-full grid-cols-3 md:gap-3 rounded-sm border border-border bg-card/30 p-2">
           <TabsTrigger
             value="analytics"
             className="gap-1.5 rounded-sm px-4 py-3 font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
@@ -896,7 +896,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                   Tech Health
                 </h3>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="rounded-sm border border-border bg-card/40 p-5">
+                  <div className="rounded-sm border border-border bg-card/40 p-4 md:p-6">
                     <p className="text-xs text-muted-foreground uppercase tracking-wide">
                       Buffering Signals
                     </p>
@@ -916,7 +916,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
                       {analytics.techHealth.seekEvents.toLocaleString()}
                     </p>
                   </div>
-                  <div className="rounded-sm border border-border bg-card/40 p-5">
+                  <div className="rounded-sm border border-border bg-card/40 p-4 md:p-6">
                     <p className="text-xs text-muted-foreground uppercase tracking-wide">
                       Errors
                     </p>

@@ -12,6 +12,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import Link from "next/link";
+import Image from "next/image";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -114,10 +116,22 @@ export default function OnboardingPage() {
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center mx-auto mb-4 shadow-lg">
-            <Building2 className="w-8 h-8 text-white" />
+          <div className="mb-2">
+            <Link href="/" className="flex items-center gap-1.5 justify-center">
+              <Image
+                src="/logo.svg"
+                alt="ClipMux logo"
+                width={36}
+                height={36}
+                className="h-12 w-auto"
+                priority
+              />
+              {/* <span className="text-2xl tracking-wider text-purple-200 font-dashboard-heading">
+                ClipMux
+              </span> */}
+            </Link>
           </div>
-          <h1 className="text-2xl font-bold text-foreground mb-2">
+          <h1 className="text-2xl mt-4 font-medium text-foreground mb-1.5">
             Create Your Organization
           </h1>
           <p className="text-muted-foreground">
@@ -126,8 +140,8 @@ export default function OnboardingPage() {
         </div>
 
         {/* Form Card */}
-        <div className="glass rounded-2xl p-6">
-          <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="glass rounded-md p-4 lg:p-6">
+          <form onSubmit={handleSubmit} className="space-y-7">
             {/* Error Banner */}
             {error && (
               <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
@@ -146,16 +160,15 @@ export default function OnboardingPage() {
                 onChange={(e) => handleNameChange(e.target.value)}
                 disabled={isLoading}
                 autoFocus
+                className="mt-2 rounded-md bg-muted-foreground/20"
               />
             </div>
 
             {/* URL Slug */}
             <div className="space-y-2">
               <Label htmlFor="slug">URL Slug</Label>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">
-                  clipmux.io/
-                </span>
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-sm text-accent font-medium">clipmux.io/</span>
                 <Input
                   id="slug"
                   type="text"
@@ -170,10 +183,10 @@ export default function OnboardingPage() {
                     })
                   }
                   disabled={isLoading}
-                  className="flex-1"
+                  className="flex-1 rounded-md bg-muted-foreground/20 h-10"
                 />
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground/80">
                 This will be used in your organization&apos;s URL
               </p>
             </div>
@@ -181,8 +194,7 @@ export default function OnboardingPage() {
             {/* Submit Button */}
             <Button
               type="submit"
-              className="w-full"
-              size="lg"
+              className="w-full mt-3 lg:text-base text-sm"
               disabled={isLoading}
             >
               {isLoading ? (
@@ -201,7 +213,7 @@ export default function OnboardingPage() {
         </div>
 
         {/* Footer */}
-        <p className="text-center text-xs text-muted-foreground mt-6">
+        <p className="text-center text-xs text-muted-foreground/80 mt-8">
           You can invite team members after creating your organization
         </p>
       </div>

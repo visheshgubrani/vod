@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRight, Building2, Loader2 } from "lucide-react";
+import { ArrowRight, Building2, Loader2, X } from "lucide-react";
 import {
   createOrganization,
   setActiveOrganization,
@@ -97,18 +97,28 @@ export function CreateOrganizationModal({
 
   return (
     <Sheet open={open} onClose={onClose}>
-      <SheetContent className="w-full sm:max-w-xl border-l border-border bg-background/95 backdrop-blur-xl">
-        <SheetHeader className="border-b border-border pb-5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent shadow-md">
-              <Building2 className="h-5 w-5 text-white" />
+      <SheetContent className="w-full md:p-6 p-3 -mt-2 sm:max-w-xl border-l border-border bg-background/95 backdrop-blur-xl">
+        <SheetHeader className="border-b border-border px-2 pb-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="flex h-12 w-11 items-center justify-center rounded-md bg-gradient-to-br from-primary to-accent p-2 shadow-md">
+                <Building2 className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <SheetTitle>Create Organization</SheetTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Add another workspace without leaving the dashboard.
+                </p>
+              </div>
             </div>
-            <div>
-              <SheetTitle>Create Organization</SheetTitle>
-              <p className="text-sm text-muted-foreground">
-                Add another workspace without leaving the dashboard.
-              </p>
-            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-sm p-2 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              aria-label="Close create organization modal"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
         </SheetHeader>
 
@@ -129,13 +139,14 @@ export function CreateOrganizationModal({
               onChange={(event) => handleNameChange(event.target.value)}
               disabled={isLoading}
               autoFocus
+              className="mt-2 rounded-md bg-muted-foreground/20"
             />
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="org-slug">URL Slug</Label>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">clipmux.io/</span>
+            <div className="flex items-center mt-2 gap-2">
+              <span className="text-sm text-accent font-medium">clipmux.io/</span>
               <Input
                 id="org-slug"
                 type="text"
@@ -150,25 +161,26 @@ export function CreateOrganizationModal({
                   }))
                 }
                 disabled={isLoading}
-                className="flex-1"
+                className="flex-1 h-10 rounded-md bg-muted-foreground/20"
+
               />
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground/80 mt-1">
               This becomes the workspace URL slug.
             </p>
           </div>
 
-          <div className="flex gap-3 pt-2">
+          <div className="flex pt-4 flex-col gap-4">
             <Button
               type="button"
               variant="outline"
-              className="flex-1"
+              className="flex-1 py-3"
               onClick={onClose}
               disabled={isLoading}
             >
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={isLoading}>
+            <Button type="submit" className="flex-1 py-3" disabled={isLoading}>
               {isLoading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
