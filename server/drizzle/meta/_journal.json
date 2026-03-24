@@ -57,6 +57,13 @@
       "when": 1773068282212,
       "tag": "0007_api_key_hashes",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773252345573,
+      "tag": "0008_high_smiling_tiger",
+      "breakpoints": true
     }
   ]
 }

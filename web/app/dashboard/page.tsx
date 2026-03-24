@@ -31,6 +31,8 @@ export default function DashboardPage() {
   const [videoToDelete, setVideoToDelete] = React.useState<Video | null>(null);
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [currentPage, setCurrentPage] = React.useState(1);
+  const [storageUsed, setStorageUsed] = React.useState(0);
+  const [bandwidth, setBandwidth] = React.useState(0);
 
   // Fetch videos from API
   const fetchVideos = React.useCallback(async () => {
@@ -53,15 +55,35 @@ export default function DashboardPage() {
     }
   }, [activeOrg]);
 
+  const fetchStats = React.useCallback(async () => {
+    if (!activeOrg) return;
+
+    try {
+      const [storageRes, bandwidthRes] = await Promise.all([
+        fetch(`${API_URL}/usage`, { credentials: "include" }),
+        fetch(`${API_URL}/usage/bandwidth`, { credentials: "include" })
+      ]);
+      
+      if (storageRes.ok) {
+        const storageData = await storageRes.json();
+        setStorageUsed(storageData.storage?.billedGB || 0);
+      }
+      
+      if (bandwidthRes.ok) {
+        const bandwidthData = await bandwidthRes.json();
+        setBandwidth(bandwidthData.bandwidth?.totalGB || 0);
+      }
+    } catch (err) {
+      console.error("Failed to fetch stats:", err);
+    }
+  }, [activeOrg]);
+
   React.useEffect(() => {
     fetchVideos();
-  }, [fetchVideos]);
+    fetchStats();
+  }, [fetchVideos, fetchStats]);
 
   // Calculate stats from videos
-  const readyCount = videos.filter((v) => v.status === "ready").length;
-  const processingCount = videos.filter(
-    (v) => v.status === "processing" || v.status === "uploading"
-  ).length;
   const filteredVideos = videos.filter((video) =>
     video.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -142,11 +164,10 @@ export default function DashboardPage() {
 
       {/* Stats Cards */}
       <StatsCards
-        storageUsed={0}
+        storageUsed={storageUsed}
         storageTotal={100}
-        bandwidth={0}
-        totalVideos={readyCount}
-        processingVideos={processingCount}
+        bandwidth={bandwidth}
+        totalVideos={videos.length}
       />
 
       {/* Recent Videos Section */}
