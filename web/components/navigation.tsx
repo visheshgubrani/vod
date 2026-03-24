@@ -18,7 +18,7 @@ const navLinks = [
   { href: "#features", label: "Features" },
   { href: "#pricing", label: "Pricing" },
   { href: "#api", label: "API" },
-  { href: "#testimonials", label: "Customers" },
+  // { href: "#testimonials", label: "Customers" },
 ];
 
 export function Navigation() {
@@ -60,12 +60,12 @@ export function Navigation() {
         </Link>
 
         {/* Desktop Navigation */}
-        <div className="hidden lg:ml-6 md:flex items-center gap-12 xl:gap-14">
+        <div className="hidden lg:ml-12 md:flex items-center gap-12 xl:gap-14">
           {navLinks.map((link) => (
             <a
               key={link.href}
               href={link.href}
-              className="text-foreground/80 hover:text-foreground transition-colors relative group font-medium"
+              className="text-foreground/75 hover:text-foreground transition-colors relative group font-medium"
             >
               {link.label}
               <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-gradient-to-r from-primary to-accent group-hover:w-full transition-all duration-300" />
