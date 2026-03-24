@@ -114,7 +114,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                     userImage={session.user?.image}
                     organizationName={activeOrg?.name ?? organizations[0]?.name ?? "Organization"}
                 />
-                <main className="relative z-0 flex-1 overflow-auto p-6">
+                <main className="relative z-0 flex-1 overflow-auto p-4 md:p-6">
                     {children}
                 </main>
             </div>

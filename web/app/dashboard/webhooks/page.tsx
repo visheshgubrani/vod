@@ -11,7 +11,6 @@ import {
   MoreVertical,
   Eye,
   EyeOff,
-  Info,
   AlertTriangle,
 } from "lucide-react";
 import { useSession, useActiveOrganization } from "@/lib/auth-client";
@@ -259,7 +258,7 @@ export default function WebhooksPage() {
 
       {/* Newly Created Webhook Banner */}
       {newlyCreated && (
-        <div className="rounded-sm border border-lime-500/30 bg-lime-500/10 p-5">
+        <div className="rounded-sm border border-lime-500/30 bg-lime-500/10 p-4 md:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-sm bg-lime-500/20">
               <Webhook className="w-5 h-5 text-lime-400" />
@@ -314,7 +313,7 @@ export default function WebhooksPage() {
       {/* Webhooks Table */}
       <div className="glass overflow-visible rounded-sm">
         {webhooks.length === 0 ? (
-          <div className="p-12 text-center">
+          <div className="px-4 mt-2 md:px-6 py-12 text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-sm bg-muted/50">
               <Webhook className="w-8 h-8 text-muted-foreground" />
             </div>
@@ -444,7 +443,7 @@ export default function WebhooksPage() {
       {/* Create Webhook Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <h2 className="text-xl font-bold text-foreground mb-4">
               Create Webhook
             </h2>
@@ -496,7 +495,7 @@ export default function WebhooksPage() {
       {/* Delete Confirmation Modal */}
       {deleteId && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-sm bg-destructive/20 flex items-center justify-center">
                 <AlertTriangle className="w-5 h-5 text-destructive" />

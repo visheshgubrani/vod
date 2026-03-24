@@ -33,7 +33,7 @@ export function DashboardPageHeader({
             {eyebrow}
           </p>
         )}
-        <h1 className="mt-2.5 font-dashboard-heading text-[2rem] tracking-wide font-medium leading-tight text-foreground">
+        <h1 className="mt-1 lg:mt-2.5 font-dashboard-heading text-[1.7rem] lg:text-[2rem] tracking-wide font-medium leading-tight text-foreground">
           {title}
         </h1>
         <p className="mt-1.5 font-dashboard-copy text-sm text-foreground/65 md:text-[17px]">
@@ -41,9 +41,7 @@ export function DashboardPageHeader({
         </p>
       </div>
 
-      {actions ? (
-        <div className="flex items-center gap-2">{actions}</div>
-      ) : null}
+      {actions ? <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">{actions}</div> : null}
     </div>
   );
 }

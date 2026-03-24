@@ -269,7 +269,7 @@ export default function ApiKeysPage() {
 
       {/* Newly Created Key Banner */}
       {newlyCreatedKey && (
-        <div className="rounded-sm border border-lime-500/30 bg-lime-500/10 p-5">
+        <div className="rounded-sm border border-lime-500/30 bg-lime-500/10 p-4 md:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-sm bg-lime-500/20">
               <Key className="w-5 h-5 text-lime-400" />
@@ -279,7 +279,7 @@ export default function ApiKeysPage() {
                 API Key Created
               </h3>
               <p className="text-sm text-muted-foreground mb-4">
-                Make sure to copy your API key now. You won't be able to see it
+                Make sure to copy your API key now. You won&apos;t be able to see it
                 again!
               </p>
               <div className="flex items-center gap-2 p-3 rounded-sm bg-background/50 border border-border font-mono text-sm">
@@ -315,7 +315,7 @@ export default function ApiKeysPage() {
       {/* API Keys Table */}
       <div className="glass rounded-sm">
         {keys.length === 0 ? (
-          <div className="p-12 text-center">
+          <div className="md:px-6 px-4 py-12 text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-sm bg-muted/50">
               <Key className="w-8 h-8 text-muted-foreground" />
             </div>
@@ -433,7 +433,7 @@ export default function ApiKeysPage() {
       </div>
 
       {/* Usage Information */}
-      <div className="glass rounded-sm p-6">
+      <div className="glass rounded-sm p-4 md:p-6">
         <h3 className="text-lg font-semibold text-foreground mb-3">
           Using Your API Key
         </h3>
@@ -442,7 +442,7 @@ export default function ApiKeysPage() {
         </p>
         <div className="overflow-x-auto rounded-sm border border-border bg-muted-foreground/30 p-4 font-mono text-sm">
           <code className="text-foreground">
-            curl -H "Authorization: Bearer sk_live_xxxxx" \<br />
+            curl -H &quot;Authorization: Bearer sk_live_xxxxx&quot; \<br />
             &nbsp;&nbsp;{API_URL}/v1/videos
           </code>
         </div>
@@ -451,7 +451,7 @@ export default function ApiKeysPage() {
       {/* Create Key Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <h2 className="text-xl font-bold text-foreground mb-4">
               Create API Key
             </h2>
@@ -509,7 +509,7 @@ export default function ApiKeysPage() {
       {/* Delete Confirmation Modal */}
       {deleteKeyId && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-sm bg-destructive/20 flex items-center justify-center">
                 <AlertTriangle className="w-5 h-5 text-destructive" />
@@ -556,7 +556,7 @@ export default function ApiKeysPage() {
       {/* Regenerate Confirmation Modal */}
       {regenerateKeyId && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-sm bg-amber-500/20 flex items-center justify-center">
                 <RefreshCw className="w-5 h-5 text-amber-400" />

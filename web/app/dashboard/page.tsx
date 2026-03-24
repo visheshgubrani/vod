@@ -230,7 +230,7 @@ export default function DashboardPage() {
             <div className="min-w-[88px] rounded-sm font-medium bg-muted/30 px-3 py-1 text-center text-xs text-foreground/50">
               Page {currentPage} of {totalPages}
             </div>
-            <div className="flex sm:w-fit w-full items-center gap-2 self-end sm:self-auto">
+            <div className="flex md:flex-row flex-col sm:w-fit w-full items-center gap-2 self-end sm:self-auto">
               <Button
                 variant="outline"
                 size="sm"
@@ -261,7 +261,7 @@ export default function DashboardPage() {
 
       {videoToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-6">
+          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
             <div className="mb-4 flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-destructive/20">
                 <AlertTriangle className="h-5 w-5 text-destructive" />

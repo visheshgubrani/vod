@@ -135,8 +135,8 @@ export default function SettingsPage() {
       />
 
       {/* Organization Settings Card */}
-      <div className="glass rounded-sm p-6">
-        <div className="flex items-center gap-3 mb-6">
+      <div className="glass rounded-sm p-4 md:p-6">
+        <div className="flex items-start gap-3 mb-6">
           <div className="w-10 h-10 rounded-sm bg-gradient-to-br from-primary/40 to-accent/40 flex items-center justify-center">
             <Building2 className="w-5 h-5 text-white" />
           </div>
@@ -232,9 +232,9 @@ export default function SettingsPage() {
       </div>
 
       {/* Danger Zone */}
-      <div className="rounded-sm border border-destructive/20 bg-red-500/5 p-6">
-        <div className="flex items-center gap-3 mb-10">
-          <div className="size-11 rounded-sm bg-destructive/15 flex items-center justify-center">
+      <div className="rounded-sm border border-destructive/20 bg-red-500/5 p-4 md:p-6">
+        <div className="flex items-start gap-3 mb-10">
+          <div className="size-11 p-1 rounded-sm bg-destructive/15 flex items-center justify-center">
             <AlertTriangle className="w-5 h-5 text-red-400" />
           </div>
           <div>

@@ -53,7 +53,7 @@ export function DashboardHeader({
   };
 
   return (
-    <header className="relative z-20 flex h-16 items-center justify-between border-b border-border bg-card/30 px-6 backdrop-blur-sm">
+    <header className="relative z-20 flex h-16 items-center justify-between border-b border-border bg-card/30 px-4 md:px-6 backdrop-blur-sm">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-1 text-sm">
         <span className="hidden text-muted-foreground sm:inline">
@@ -66,8 +66,8 @@ export function DashboardHeader({
       {/* User Menu */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className="flex items-center border-2 border-mauve-400/50 p-0.5 gap-3 rounded-full hover:bg-muted/50 transition-colors">
-            <Avatar src={userImage} fallback={userName} size="md" />
+          <button className="flex items-center size-10 md:size-12  border-2 border-mauve-400/50 p-0.5 gap-3 rounded-full hover:bg-muted/50 transition-colors">
+            <Avatar src={userImage} fallback={userName} className="size-[33px] md:size-[41px]"/>
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="z-[80] rounded-sm bg-muted divide-y divide-muted-foreground/10 w-56">

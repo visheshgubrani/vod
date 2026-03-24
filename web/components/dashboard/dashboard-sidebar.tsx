@@ -91,13 +91,12 @@ function SidebarIconButton({
       aria-label={label}
       title={label}
     >
-      <Icon className={cn("size-5", iconClassName)} />
+      <Icon className={cn("size-6.5", iconClassName)} />
     </button>
   );
 }
 
 export function DashboardSidebar({
-  userName = "User",
   organizations = [],
   activeOrgId,
   onOrgChange,
@@ -107,16 +106,42 @@ export function DashboardSidebar({
   const [isOrgSwitcherOpen, setIsOrgSwitcherOpen] = React.useState(false);
   const [isCreateOrgOpen, setIsCreateOrgOpen] = React.useState(false);
   const [isCompactOrgOpen, setIsCompactOrgOpen] = React.useState(false);
+  const compactOrgSwitcherRef = React.useRef<HTMLDivElement | null>(null);
 
   const activeOrg =
     organizations.find((org) => org.id === activeOrgId) ?? organizations[0];
   const displayName = activeOrg?.name ?? "Workspace";
 
+  React.useEffect(() => {
+    if (!isCompactOrgOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (
+        compactOrgSwitcherRef.current &&
+        target instanceof Node &&
+        !compactOrgSwitcherRef.current.contains(target)
+      ) {
+        setIsCompactOrgOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isCompactOrgOpen]);
+
   return (
     <>
-      <aside className="flex h-screen w-18 flex-col border-r border-border bg-card/50 backdrop-blur-sm lg:w-66">
+      <aside className="relative z-40 flex h-screen shrink-0 md:w-18 flex-col border-r border-border bg-card/50 backdrop-blur-sm lg:w-66">
         <div className="lg:hidden border-b border-muted px-3 py-3">
-          <div className="relative flex flex-col items-center gap-3 pt-1">
+          <div
+            ref={compactOrgSwitcherRef}
+            className="relative z-30 flex flex-col items-center gap-3 pt-1"
+          >
             <SidebarIconButton
               label={displayName}
               icon={() => (
@@ -139,7 +164,9 @@ export function DashboardSidebar({
             />
 
             {isCompactOrgOpen ? (
-              <div className="absolute left-full top-0 z-20 ml-3 w-60 rounded-sm border border-border bg-card p-2 shadow-2xl">
+              <div className="absolute left-[calc(100%+0.75rem)] top-0 z-[90] w-[min(16rem,calc(100vw-5.5rem))] overflow-hidden rounded-sm border border-border/80 bg-background shadow-[0_20px_50px_rgba(0,0,0,0.45)]">
+                <div className="pointer-events-none absolute inset-0 bg-background/95" />
+                <div className="relative p-2">
                 <div className="border-b border-muted-foreground/15 px-2 pb-2">
                   <p className="truncate text-sm font-medium text-foreground">
                     {displayName}
@@ -188,6 +215,7 @@ export function DashboardSidebar({
                     <IoAddCircleOutline className="size-5" />
                     Create Organization
                   </button>
+                </div>
                 </div>
               </div>
             ) : null}

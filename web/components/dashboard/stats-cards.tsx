@@ -24,7 +24,7 @@ function StatCard({ title, icon, children, className }: StatCardProps) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-3 rounded-sm border border-border bg-card/65 p-5 backdrop-blur-sm transition-colors hover:bg-card/70",
+        "flex flex-col gap-3 rounded-sm border border-border bg-card/65 p-4 md:p-6 backdrop-blur-sm transition-colors hover:bg-card/70",
         className
       )}
     >

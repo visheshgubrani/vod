@@ -190,7 +190,9 @@ export default function UsagePage() {
 
     const fallbackCount = 5;
     const fallbackDays = Array.from({ length: fallbackCount }, (_, index) =>
-      createFallbackBandwidthPoint(subDays(new Date(), fallbackCount - 1 - index))
+      createFallbackBandwidthPoint(
+        subDays(new Date(), fallbackCount - 1 - index)
+      )
     );
 
     if (daily.length === 0) return fallbackDays;
@@ -243,7 +245,12 @@ export default function UsagePage() {
         title="Usage"
         description="Monitor your infrastructure consumption"
         actions={
-          <Button onClick={fetchUsage} variant="outline" size="sm" className="mt-4">
+          <Button
+            onClick={fetchUsage}
+            variant="outline"
+            size="sm"
+            className="mt-4"
+          >
             <RefreshCw className="w-4 h-4 mr-0.5" />
             Refresh
           </Button>
@@ -253,7 +260,7 @@ export default function UsagePage() {
       {/* Billing Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Storage Card */}
-        <div className="rounded-sm border border-primary/20 bg-card/60 p-6">
+        <div className="rounded-sm border border-primary/20 bg-card/60 p-4 md:p-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="rounded-sm bg-accent/15 p-2">
               <HardDrive className="w-5 h-5 text-purple-200" />
@@ -270,7 +277,7 @@ export default function UsagePage() {
         </div>
 
         {/* Bandwidth Card */}
-        <div className="rounded-sm border border-lime-500/20 bg-lime-500/10 p-6">
+        <div className="rounded-sm border border-lime-500/20 bg-lime-500/10 p-4 md:p-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="rounded-sm bg-lime-100/20 p-2">
               <TrendingUp className="w-5 h-5 text-lime-500" />
@@ -279,13 +286,13 @@ export default function UsagePage() {
               Bandwidth (Last 30 Days)
             </span>
           </div>
-          <div className="flex items-end justify-between mb-2">
+          <div className="mb-2 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <p className="text-4xl font-bold text-foreground">
               {bandwidth?.bandwidth.totalGB.toFixed(2) || "—"}{" "}
               <span className="text-xl text-muted-foreground">GB</span>
             </p>
             {sparklineData.length > 0 && (
-              <div className="w-32 h-12">
+              <div className="h-12 w-full sm:w-32">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={sparklineData}>
                     <Line
@@ -310,8 +317,8 @@ export default function UsagePage() {
 
       {/* Daily Bandwidth Chart */}
       {dailyBandwidth && (
-        <div className="rounded-sm border border-border bg-card/60 p-6">
-          <div className="flex items-center gap-3 mb-6">
+        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
+          <div className="flex items-start gap-3 mb-6">
             <div className="rounded-sm bg-accent/10 p-3">
               <Database className="size-6 text-accent" />
             </div>
@@ -322,11 +329,12 @@ export default function UsagePage() {
               <p className="text-sm text-muted-foreground">Last 30 days</p>
             </div>
           </div>
-          <div className="h-72">
+          <div className="h-64 sm:h-72">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
                 data={bandwidthChartData}
                 barCategoryGap={bandwidthChartData.length > 10 ? "12%" : "24%"}
+                margin={{ top: 8, right: 8, bottom: 8, left: -18 }}
               >
                 <CartesianGrid
                   strokeDasharray="3 3"
@@ -336,7 +344,9 @@ export default function UsagePage() {
                 <XAxis
                   dataKey="date"
                   ticks={bandwidthTicks}
-                  interval={0}
+                  interval="preserveStartEnd"
+                  minTickGap={20}
+                  tickMargin={10}
                   tickFormatter={(value: string) => {
                     try {
                       return format(parseISO(value), "MMM d");
@@ -350,6 +360,8 @@ export default function UsagePage() {
                 <YAxis
                   stroke="#888"
                   style={{ fontSize: "12px" }}
+                  width={75}
+                  tickMargin={8}
                   tickFormatter={(value: number) => `${value.toFixed(1)} GB`}
                 />
                 <Tooltip
@@ -378,7 +390,7 @@ export default function UsagePage() {
                   dataKey="gigabytes"
                   fill="hsl(var(--accent))"
                   radius={[4, 4, 0, 0]}
-                  barSize={bandwidthBarSize}
+                  barSize={Math.min(bandwidthBarSize, 24)}
                 />
               </BarChart>
             </ResponsiveContainer>
@@ -387,7 +399,7 @@ export default function UsagePage() {
       )}
 
       {/* Video Breakdown Table */}
-      <div className="rounded-sm border border-border bg-card/60 p-6">
+      <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="rounded-sm bg-accent/15 p-3">
@@ -550,7 +562,7 @@ export default function UsagePage() {
                 <div className="min-w-[88px] rounded-sm bg-muted/30 px-3 py-1 text-center text-xs font-medium text-foreground/50">
                   Page {currentPage} of {totalPages}
                 </div>
-                <div className="flex w-full items-center gap-2 self-end sm:w-fit sm:self-auto">
+                <div className="flex md:flex-row flex-col w-full items-center gap-2 self-end sm:w-fit sm:self-auto">
                   <Button
                     variant="outline"
                     size="sm"
@@ -584,7 +596,7 @@ export default function UsagePage() {
       </div>
 
       {/* Billing Info */}
-      <div className="rounded-sm border border-primary/10 bg-card/60 p-6">
+      <div className="rounded-sm border border-primary/10 bg-card/60 p-4 md:p-6">
         <div className="flex items-start gap-4">
           <div className="rounded-sm bg-accent/15 p-3">
             <Server className="w-6 h-6 text-purple-200" />
