@@ -21,10 +21,26 @@ const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 const VIDEOS_PER_PAGE = 10;
 
+interface UsageSummary {
+  storage: {
+    billedGB: number;
+  };
+}
+
+interface BandwidthSummary {
+  bandwidth: {
+    totalGB: number;
+  };
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { data: activeOrg } = useActiveOrganization();
   const [videos, setVideos] = React.useState<Video[]>([]);
+  const [usage, setUsage] = React.useState<UsageSummary | null>(null);
+  const [bandwidth, setBandwidth] = React.useState<BandwidthSummary | null>(
+    null
+  );
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -32,30 +48,64 @@ export default function DashboardPage() {
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [currentPage, setCurrentPage] = React.useState(1);
 
-  // Fetch videos from API
-  const fetchVideos = React.useCallback(async () => {
-    if (!activeOrg) return;
+  const fetchDashboardData = React.useCallback(
+    async (showLoadingState = false) => {
+      if (!activeOrg) {
+        setLoading(false);
+        return;
+      }
 
-    try {
-      const res = await fetch(`${API_URL}/video`, {
-        credentials: "include",
-      });
+      if (showLoadingState) {
+        setLoading(true);
+      }
 
-      if (!res.ok) throw new Error("Failed to fetch videos");
+      try {
+        const [videosRes, usageRes, bandwidthRes] = await Promise.all([
+          fetch(`${API_URL}/video`, {
+            credentials: "include",
+          }),
+          fetch(`${API_URL}/usage`, {
+            credentials: "include",
+          }),
+          fetch(`${API_URL}/usage/bandwidth?days=30`, {
+            credentials: "include",
+          }),
+        ]);
 
-      const data = await res.json();
-      setVideos(data.videos || []);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load videos");
-    } finally {
-      setLoading(false);
-    }
-  }, [activeOrg]);
+        if (!videosRes.ok) throw new Error("Failed to fetch videos");
+        if (!usageRes.ok) throw new Error("Failed to fetch usage data");
+
+        const videosData = await videosRes.json();
+        const usageData = (await usageRes.json()) as UsageSummary;
+
+        setVideos(videosData.videos || []);
+        setUsage(usageData);
+
+        if (bandwidthRes.ok) {
+          const bandwidthData =
+            (await bandwidthRes.json()) as BandwidthSummary;
+          setBandwidth(bandwidthData);
+        } else {
+          setBandwidth(null);
+        }
+
+        setError(null);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to load dashboard"
+        );
+      } finally {
+        if (showLoadingState) {
+          setLoading(false);
+        }
+      }
+    },
+    [activeOrg]
+  );
 
   React.useEffect(() => {
-    fetchVideos();
-  }, [fetchVideos]);
+    void fetchDashboardData(true);
+  }, [fetchDashboardData]);
 
   // Calculate stats from videos
   const readyCount = videos.filter((v) => v.status === "ready").length;
@@ -109,7 +159,7 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error("Failed to delete video");
 
       setVideoToDelete(null);
-      await fetchVideos();
+      await fetchDashboardData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete video");
     } finally {
@@ -142,9 +192,8 @@ export default function DashboardPage() {
 
       {/* Stats Cards */}
       <StatsCards
-        storageUsed={0}
-        storageTotal={100}
-        bandwidth={0}
+        storageUsed={usage?.storage.billedGB ?? 0}
+        bandwidth={bandwidth?.bandwidth.totalGB ?? null}
         totalVideos={readyCount}
         processingVideos={processingCount}
       />
