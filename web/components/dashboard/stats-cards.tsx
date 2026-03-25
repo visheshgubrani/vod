@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils";
 
 interface StatsCardsProps {
   storageUsed: number; // in GB
-  storageTotal: number; // in GB
-  bandwidth: number; // in GB
+  storageTotal?: number; // in GB
+  bandwidth: number | null; // in GB
   totalVideos: number;
   processingVideos?: number;
 }
@@ -46,7 +46,10 @@ export function StatsCards({
   totalVideos,
   processingVideos = 0,
 }: StatsCardsProps) {
-  const storagePercentage = (storageUsed / storageTotal) * 100;
+  const hasStorageLimit = typeof storageTotal === "number" && storageTotal > 0;
+  const storagePercentage = hasStorageLimit
+    ? (storageUsed / storageTotal) * 100
+    : 0;
   const storageVariant =
     storagePercentage > 90
       ? "danger"
@@ -64,30 +67,38 @@ export function StatsCards({
         <div className="flex flex-col items-start justify-between gap-6">
           <div className="flex items-baseline gap-1">
             <span className="text-2xl md:text-3xl font-semibold text-foreground">
-              {storageUsed.toFixed(1)}
+              {storageUsed.toFixed(2)}
             </span>
             <span className="text-sm text-foreground/80">
-              / {storageTotal} GB
+              {hasStorageLimit ? `/ ${storageTotal} GB` : "GB billed"}
             </span>
           </div>
-          <Progress
-            value={storageUsed}
-            max={storageTotal}
-            variant={storageVariant}
-          />
+          {hasStorageLimit ? (
+            <Progress
+              value={storageUsed}
+              max={storageTotal}
+              variant={storageVariant}
+            />
+          ) : (
+            <div className="text-xs font-light text-muted-foreground">
+              Based on transcoded output
+            </div>
+          )}
         </div>
       </StatCard>
 
       {/* Bandwidth */}
       <StatCard
-        title="Bandwidth (Current Month)"
+        title="Bandwidth (Last 30 Days)"
         icon={<Wifi className="size-4.5 text-purple-300" />}
       >
         <div className="flex items-baseline gap-1">
           <span className="text-2xl md:text-3xl font-semibold text-foreground">
-            {bandwidth}
+            {bandwidth === null ? "—" : bandwidth.toFixed(2)}
           </span>
-          <span className="text-sm text-foreground/80">GB</span>
+          {bandwidth !== null && (
+            <span className="text-sm text-foreground/80">GB</span>
+          )}
         </div>
         <div className="text-xs font-light text-muted-foreground">
           Updated just now

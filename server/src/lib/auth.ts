@@ -31,3 +31,4 @@ export const auth = betterAuth({
   plugins: [admin(), organization()],
   baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:4080',
 })
+

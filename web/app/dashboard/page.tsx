@@ -21,69 +21,97 @@ const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
 const VIDEOS_PER_PAGE = 10;
 
+interface UsageSummary {
+  storage: {
+    billedGB: number;
+  };
+}
+
+interface BandwidthSummary {
+  bandwidth: {
+    totalGB: number;
+  };
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { data: activeOrg } = useActiveOrganization();
   const [videos, setVideos] = React.useState<Video[]>([]);
+  const [usage, setUsage] = React.useState<UsageSummary | null>(null);
+  const [bandwidth, setBandwidth] = React.useState<BandwidthSummary | null>(
+    null
+  );
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [videoToDelete, setVideoToDelete] = React.useState<Video | null>(null);
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [currentPage, setCurrentPage] = React.useState(1);
-  const [storageUsed, setStorageUsed] = React.useState(0);
-  const [bandwidth, setBandwidth] = React.useState(0);
 
-  // Fetch videos from API
-  const fetchVideos = React.useCallback(async () => {
-    if (!activeOrg) return;
-
-    try {
-      const res = await fetch(`${API_URL}/video`, {
-        credentials: "include",
-      });
-
-      if (!res.ok) throw new Error("Failed to fetch videos");
-
-      const data = await res.json();
-      setVideos(data.videos || []);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load videos");
-    } finally {
-      setLoading(false);
-    }
-  }, [activeOrg]);
-
-  const fetchStats = React.useCallback(async () => {
-    if (!activeOrg) return;
-
-    try {
-      const [storageRes, bandwidthRes] = await Promise.all([
-        fetch(`${API_URL}/usage`, { credentials: "include" }),
-        fetch(`${API_URL}/usage/bandwidth`, { credentials: "include" })
-      ]);
-      
-      if (storageRes.ok) {
-        const storageData = await storageRes.json();
-        setStorageUsed(storageData.storage?.billedGB || 0);
+  const fetchDashboardData = React.useCallback(
+    async (showLoadingState = false) => {
+      if (!activeOrg) {
+        setLoading(false);
+        return;
       }
-      
-      if (bandwidthRes.ok) {
-        const bandwidthData = await bandwidthRes.json();
-        setBandwidth(bandwidthData.bandwidth?.totalGB || 0);
+
+      if (showLoadingState) {
+        setLoading(true);
       }
-    } catch (err) {
-      console.error("Failed to fetch stats:", err);
-    }
-  }, [activeOrg]);
+
+      try {
+        const [videosRes, usageRes, bandwidthRes] = await Promise.all([
+          fetch(`${API_URL}/video`, {
+            credentials: "include",
+          }),
+          fetch(`${API_URL}/usage`, {
+            credentials: "include",
+          }),
+          fetch(`${API_URL}/usage/bandwidth?days=30`, {
+            credentials: "include",
+          }),
+        ]);
+
+        if (!videosRes.ok) throw new Error("Failed to fetch videos");
+        if (!usageRes.ok) throw new Error("Failed to fetch usage data");
+
+        const videosData = await videosRes.json();
+        const usageData = (await usageRes.json()) as UsageSummary;
+
+        setVideos(videosData.videos || []);
+        setUsage(usageData);
+
+        if (bandwidthRes.ok) {
+          const bandwidthData =
+            (await bandwidthRes.json()) as BandwidthSummary;
+          setBandwidth(bandwidthData);
+        } else {
+          setBandwidth(null);
+        }
+
+        setError(null);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to load dashboard"
+        );
+      } finally {
+        if (showLoadingState) {
+          setLoading(false);
+        }
+      }
+    },
+    [activeOrg]
+  );
 
   React.useEffect(() => {
-    fetchVideos();
-    fetchStats();
-  }, [fetchVideos, fetchStats]);
+    void fetchDashboardData(true);
+  }, [fetchDashboardData]);
 
   // Calculate stats from videos
+  const readyCount = videos.filter((v) => v.status === "ready").length;
+  const processingCount = videos.filter(
+    (v) => v.status === "processing" || v.status === "uploading"
+  ).length;
   const filteredVideos = videos.filter((video) =>
     video.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -131,7 +159,7 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error("Failed to delete video");
 
       setVideoToDelete(null);
-      await fetchVideos();
+      await fetchDashboardData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete video");
     } finally {
@@ -164,10 +192,10 @@ export default function DashboardPage() {
 
       {/* Stats Cards */}
       <StatsCards
-        storageUsed={storageUsed}
-        storageTotal={100}
-        bandwidth={bandwidth}
-        totalVideos={videos.length}
+        storageUsed={usage?.storage.billedGB ?? 0}
+        bandwidth={bandwidth?.bandwidth.totalGB ?? null}
+        totalVideos={readyCount}
+        processingVideos={processingCount}
       />
 
       {/* Recent Videos Section */}
