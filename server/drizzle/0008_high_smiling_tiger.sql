@@ -1,0 +1,1 @@
+CREATE INDEX "video_organizationId_idx" ON "video" USING btree ("organization_id");
