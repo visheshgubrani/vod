@@ -108,9 +108,9 @@ export default function DashboardPage() {
   }, [fetchDashboardData]);
 
   // Calculate stats from videos
-  const readyCount = videos.filter((v) => v.status === "ready").length;
+  const readyCount = videos.filter((video) => video.status === "ready").length;
   const processingCount = videos.filter(
-    (v) => v.status === "processing" || v.status === "uploading"
+    (video) => video.status === "processing" || video.status === "uploading"
   ).length;
   const filteredVideos = videos.filter((video) =>
     video.title.toLowerCase().includes(searchQuery.toLowerCase())
