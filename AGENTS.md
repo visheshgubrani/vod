@@ -8,7 +8,7 @@ This is a monorepo with 4 packages:
 - **web**: Next.js 16 frontend (React 19, Tailwind 4, TypeScript)
 - **sdk**: TypeScript SDK for video uploads
 - **delivery**: Cloudflare Workers for media delivery
-- **server**: Hono backend API server
+- **server**: Hono API on Cloudflare Workers (Neon Postgres, WAE analytics)
 
 ---
 
@@ -52,14 +52,24 @@ pnpm test         # Run vitest tests
 pnpm cf-typegen   # Generate Cloudflare types
 ```
 
-### Server (Hono Backend)
+### Server (Hono API on Cloudflare Workers)
 
 ```bash
 cd server && pnpm install
 
-pnpm dev          # Dev server with hot reload (tsx watch)
-pnpm build        # Production build
+pnpm dev          # Local dev via wrangler dev (port 8787)
+pnpm deploy       # Deploy API worker to Cloudflare
+pnpm cf-typegen   # Generate Worker binding types
+
+# Database (Neon Postgres)
+pnpm db:push      # Push Drizzle schema to Neon
+pnpm db:migrate   # Run migrations
+pnpm db:seed      # Seed dev data
 ```
+
+Copy `server/.dev.vars.example` to `server/.dev.vars` and fill in secrets before running locally.
+
+**Stack:** Cloudflare Workers + Neon (Postgres) + Workers Analytics Engine (playback + bandwidth) + R2 + Modal/QStash for transcoding.
 
 ### Running a Single Test
 
@@ -197,10 +207,18 @@ try {
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` for local development. Key variables:
-- `NEXT_PUBLIC_*` - exposed to client (Next.js)
-- Server-side secrets go in `.env` (never commit)
-- Use Cloudflare secrets for production workers
+**Web:** set `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_AUTH_BASE_URL` (defaults to `http://localhost:8787` for wrangler dev).
+
+**Server (Cloudflare Worker):** copy `server/.dev.vars.example` → `server/.dev.vars` for local `wrangler dev`. Production secrets are set via `wrangler secret put`.
+
+Key server variables:
+- `DATABASE_URL` — Neon Postgres connection string
+- `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `FRONTEND_URL`
+- `ACCOUNT_ID`, `CLOUDFLARE_ANALYTICS_TOKEN` — Analytics Engine SQL API (playback + bandwidth)
+- `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, bucket names
+- `QSTASH_TOKEN`, `MODAL_WEBHOOK_URL`, `MODAL_WEBHOOK_SECRET`, `BACKEND_URL`
+- `JWT_SECRET`, `DELIVERY_WORKER_URL`
+- `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` (rate limiting)
 
 ---
 
@@ -208,8 +226,8 @@ Copy `.env.example` to `.env` for local development. Key variables:
 
 ### Adding a new API route (server)
 1. Create route file in `server/src/routes/`
-2. Register in main app in `server/src/index.ts`
-3. Add tests in `server/test/`
+2. Register in `server/src/app.ts`
+3. Use `c.executionCtx.waitUntil()` for fire-and-forget background work
 
 ### Adding a new component (web)
 1. Create in `web/components/` with proper subdirectory
@@ -226,6 +244,6 @@ Copy `.env.example` to `.env` for local development. Key variables:
 ## Dependencies
 
 - **web**: Next.js 16, React 19, Tailwind 4, better-auth, TanStack Query
-- **server**: Hono, Drizzle ORM, Neon, better-auth, AWS SDK
+- **server**: Hono, Drizzle ORM, Neon serverless, better-auth, AWS SDK (R2), Upstash QStash/Redis
 - **delivery**: Hono, Cloudflare Workers, jose
 - **sdk**: TypeScript, tsup

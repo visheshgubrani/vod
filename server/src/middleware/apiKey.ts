@@ -36,11 +36,13 @@ export const requireApiKey = createMiddleware(async (c, next) => {
     return c.json({ error: 'Invalid API key' }, 401)
   }
 
-  // Update last used timestamp (fire and forget)
-  db.update(apiKey)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(apiKey.id, keyRecord.id))
-    .catch(() => {}) // Ignore errors
+  c.executionCtx.waitUntil(
+    db
+      .update(apiKey)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(apiKey.id, keyRecord.id))
+      .catch(() => {}),
+  )
 
   // Inject organization ID into context
   c.set('organizationId', keyRecord.organizationId)

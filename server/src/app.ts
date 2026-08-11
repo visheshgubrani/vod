@@ -1,7 +1,5 @@
-import type { HttpBindings } from '@hono/node-server'
 import { Ratelimit, type Duration } from '@upstash/ratelimit'
 import { Redis } from '@upstash/redis'
-import helmet from 'helmet'
 import { type Context, Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { auth } from './lib/auth'
@@ -16,12 +14,9 @@ import webhooks from './routes/webhooks'
 import api from './routes/api'
 import analytics from './routes/analytics'
 import analyticsStats from './routes/analytics-stats'
-import { Bindings } from './types'
-import 'dotenv/config'
+import type { Bindings } from './types'
 
-type AppBindings = Bindings & Partial<HttpBindings>
-
-const app = new Hono<{ Bindings: AppBindings }>()
+const app = new Hono<{ Bindings: Bindings }>()
 
 const isProduction = process.env.NODE_ENV === 'production'
 const hasUpstashRedis =
@@ -61,51 +56,66 @@ const analyticsLimiterWindow = parseDuration(
   '1 m',
 )
 
-const redis = hasUpstashRedis ? Redis.fromEnv() : null
+let cachedRedis: Redis | null = null
+let cachedRedisKey: string | null = null
 
-if (!redis) {
-  logger.warn(
-    'UPSTASH_REDIS_REST_URL/TOKEN are missing. Rate limiting middleware is disabled.',
-  )
+const getRedis = (env?: Bindings): Redis | null => {
+  const url = env?.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_REDIS_REST_URL
+  const token = env?.UPSTASH_REDIS_REST_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+
+  if (!url || !token) return null
+  const key = `${url}:${token}`
+  if (cachedRedis && cachedRedisKey === key) return cachedRedis
+
+  cachedRedis = new Redis({ url, token })
+  cachedRedisKey = key
+  return cachedRedis
 }
+
+const limiterCache = new Map<string, Ratelimit>()
 
 const createRateLimiter = (
   scope: string,
   requests: number,
   window: Duration,
+  env?: Bindings,
 ): Ratelimit | null => {
+  const redis = getRedis(env)
   if (!redis) return null
 
-  return new Ratelimit({
+  const prefix = env?.RATE_LIMIT_PREFIX || RATE_LIMIT_PREFIX
+  const cacheKey = `${prefix}:${scope}:${requests}:${window}`
+  if (limiterCache.has(cacheKey)) {
+    return limiterCache.get(cacheKey)!
+  }
+
+  const limiter = new Ratelimit({
     redis,
     limiter: Ratelimit.slidingWindow(requests, window),
-    prefix: `${RATE_LIMIT_PREFIX}:${scope}`,
+    prefix: `${prefix}:${scope}`,
     analytics: RATE_LIMIT_ANALYTICS,
     ephemeralCache: new Map<string, number>(),
   })
+  limiterCache.set(cacheKey, limiter)
+  return limiter
 }
 
-const authRateLimiter = createRateLimiter(
-  'auth',
-  authLimiterRequests,
-  authLimiterWindow,
-)
-const apiRateLimiter = createRateLimiter('api', apiLimiterRequests, apiLimiterWindow)
-const analyticsRateLimiter = createRateLimiter(
-  'analytics',
-  analyticsLimiterRequests,
-  analyticsLimiterWindow,
-)
-
-const resolveRateLimiter = (path: string): Ratelimit | null => {
-  if (path === '/api/auth' || path.startsWith('/api/auth/')) return authRateLimiter
-  if (path === '/api/playback' || path.startsWith('/api/playback/')) {
-    return analyticsRateLimiter
+const resolveRateLimiter = (path: string, env?: Bindings): Ratelimit | null => {
+  if (path === '/api/auth' || path.startsWith('/api/auth/')) {
+    return createRateLimiter('auth', authLimiterRequests, authLimiterWindow, env)
   }
-  return apiRateLimiter
+  if (path === '/api/playback' || path.startsWith('/api/playback/')) {
+    return createRateLimiter(
+      'analytics',
+      analyticsLimiterRequests,
+      analyticsLimiterWindow,
+      env,
+    )
+  }
+  return createRateLimiter('api', apiLimiterRequests, apiLimiterWindow, env)
 }
 
-const getClientIp = (c: Context<{ Bindings: AppBindings }>): string => {
+const getClientIp = (c: Context<{ Bindings: Bindings }>): string => {
   const forwardedFor = c.req.header('x-forwarded-for')
   if (forwardedFor) {
     const firstIp = forwardedFor.split(',')[0]?.trim()
@@ -120,54 +130,20 @@ const getClientIp = (c: Context<{ Bindings: AppBindings }>): string => {
   )
 }
 
-const isNodeRequest = (
-  env: AppBindings,
-): env is Bindings & HttpBindings => {
-  return (
-    typeof env === 'object' &&
-    env !== null &&
-    'incoming' in env &&
-    'outgoing' in env &&
-    Boolean(env.incoming) &&
-    Boolean(env.outgoing)
-  )
+const applySecurityHeaders = (c: Context<{ Bindings: Bindings }>) => {
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('X-Frame-Options', 'SAMEORIGIN')
+  c.header('Referrer-Policy', 'no-referrer')
+  c.header('X-DNS-Prefetch-Control', 'off')
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  c.header('Cross-Origin-Resource-Policy', 'cross-origin')
+  if (isProduction) {
+    c.header(
+      'Strict-Transport-Security',
+      'max-age=15552000; includeSubDomains',
+    )
+  }
 }
-
-const helmetMiddleware = helmet({
-  contentSecurityPolicy: false,
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
-  strictTransportSecurity: isProduction
-    ? {
-        maxAge: 15552000, // 180 days
-        includeSubDomains: true,
-      }
-    : false,
-})
-
-const applyHelmet = (c: Context<{ Bindings: AppBindings }>) =>
-  new Promise<void>((resolve, reject) => {
-    if (!isNodeRequest(c.env)) {
-      // Fallback for non-node runtimes (tests/edge-like fetch calls)
-      c.header('X-Content-Type-Options', 'nosniff')
-      c.header('X-Frame-Options', 'SAMEORIGIN')
-      c.header('Referrer-Policy', 'no-referrer')
-      c.header('X-DNS-Prefetch-Control', 'off')
-      c.header('X-Download-Options', 'noopen')
-      c.header('X-Permitted-Cross-Domain-Policies', 'none')
-      c.header('Cross-Origin-Opener-Policy', 'same-origin')
-      c.header('Cross-Origin-Resource-Policy', 'cross-origin')
-      resolve()
-      return
-    }
-
-    helmetMiddleware(c.env.incoming, c.env.outgoing, (error?: unknown) => {
-      if (error) {
-        reject(error)
-        return
-      }
-      resolve()
-    })
-  })
 
 app.use('*', async (c, next) => {
   const requestId = c.req.header('x-request-id') || crypto.randomUUID()
@@ -212,7 +188,7 @@ app.onError((error, c) => {
   const requestLogger = c.var.logger ?? logger
   requestLogger.error(
     {
-      err: error,
+      err: error instanceof Error ? error.message : String(error),
       method: c.req.method,
       path: c.req.path,
       requestId: c.var.requestId,
@@ -223,17 +199,60 @@ app.onError((error, c) => {
 })
 
 app.use('*', async (c, next) => {
-  await applyHelmet(c)
+  applySecurityHeaders(c)
   await next()
 })
 
+const isAllowedOrigin = (origin: string, envFrontendUrl?: string): boolean => {
+  if (!origin) return false
+
+  // Local development origins
+  if (
+    origin === 'http://localhost:3000' ||
+    origin === 'http://localhost:3001' ||
+    origin === 'http://127.0.0.1:3000'
+  ) {
+    return true
+  }
+
+  // Production domain & subdomains
+  if (
+    origin === 'https://clipmux.com' ||
+    origin === 'https://www.clipmux.com' ||
+    origin.endsWith('.clipmux.com')
+  ) {
+    return true
+  }
+
+  // Cloudflare Pages deployments (e.g. *.clipmux-ui.pages.dev, *.pages.dev)
+  if (
+    origin === 'https://clipmux-ui.pages.dev' ||
+    origin.endsWith('.clipmux-ui.pages.dev') ||
+    origin.endsWith('.pages.dev')
+  ) {
+    return true
+  }
+
+  // Configured FRONTEND_URL environment variable (supports comma-separated origins)
+  if (envFrontendUrl) {
+    const origins = envFrontendUrl.split(',').map((o) => o.trim())
+    if (origins.includes(origin)) return true
+  }
+
+  if (process.env.FRONTEND_URL) {
+    const origins = process.env.FRONTEND_URL.split(',').map((o) => o.trim())
+    if (origins.includes(origin)) return true
+  }
+
+  return false
+}
+
 // Permissive CORS for B2B public API routes (/v1/*)
-// These routes use API keys or upload tokens for auth, so any origin is fine
 app.use(
   '/v1/*',
   cors({
-    origin: '*', // Allow any origin for B2B customers
-    allowHeaders: ['Content-Type', 'Authorization'],
+    origin: '*',
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
     allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
     exposeHeaders: ['Content-Length'],
     maxAge: 600,
@@ -241,34 +260,38 @@ app.use(
 )
 
 // Permissive CORS for playback telemetry (/api/playback/*)
-// The player can be embedded on any domain, so we allow all origins
 app.use(
   '/api/playback/*',
   cors({
     origin: '*',
-    allowHeaders: ['Content-Type', 'Authorization'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
     allowMethods: ['POST', 'GET', 'OPTIONS'],
     exposeHeaders: ['Content-Length'],
     maxAge: 600,
   }),
 )
 
-// Strict CORS for dashboard routes (/api/*)
-// These routes use session cookies, so we need to restrict origin
-const strictCors = cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  allowHeaders: ['Content-Type', 'Authorization'],
-  allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
-  exposeHeaders: ['Content-Length'],
-  maxAge: 600,
-  credentials: true,
-})
-
 app.use('/api/*', async (c, next) => {
   if (c.req.path.startsWith('/api/playback')) {
     return next()
   }
-  return strictCors(c, next)
+
+  const corsMiddleware = cors({
+    origin: (origin) => {
+      const envFrontendUrl = c.env?.FRONTEND_URL
+      if (isAllowedOrigin(origin, envFrontendUrl)) {
+        return origin
+      }
+      return envFrontendUrl || 'https://clipmux.com'
+    },
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
+    allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
+    exposeHeaders: ['Content-Length'],
+    maxAge: 600,
+    credentials: true,
+  })
+
+  return corsMiddleware(c, next)
 })
 
 app.use('*', async (c, next) => {
@@ -277,13 +300,12 @@ app.use('*', async (c, next) => {
     return
   }
 
-  // Don't rate-limit inbound webhook callbacks (server-to-server, trusted)
   if (c.req.path.startsWith('/api/webhook')) {
     await next()
     return
   }
 
-  const rateLimiter = resolveRateLimiter(c.req.path)
+  const rateLimiter = resolveRateLimiter(c.req.path, c.env)
   if (!rateLimiter) {
     await next()
     return
@@ -305,13 +327,15 @@ app.use('*', async (c, next) => {
   )
   c.header('RateLimit-Reset', String(resetSeconds))
 
-  void rateLimitResult.pending.catch((error) => {
-    const requestLogger = c.var.logger ?? logger
-    requestLogger.warn(
-      { err: error, requestId: c.var.requestId },
-      'rate limit analytics sync failed',
-    )
-  })
+  c.executionCtx.waitUntil(
+    rateLimitResult.pending.catch((error) => {
+      const requestLogger = c.var.logger ?? logger
+      requestLogger.warn(
+        { err: error instanceof Error ? error.message : String(error), requestId: c.var.requestId },
+        'rate limit analytics sync failed',
+      )
+    }),
+  )
 
   if (!rateLimitResult.success) {
     c.header('Retry-After', String(Math.max(1, resetSeconds)))
@@ -344,22 +368,14 @@ app.on(['POST', 'GET'], '/api/auth/*', (c) => {
   return auth.handler(c.req.raw)
 })
 
-// Dashboard routes (session auth)
 app.route('/api/upload', upload)
 app.route('/api/webhook', webhook)
 app.route('/api/video', video)
 app.route('/api/keys', keys)
 app.route('/api/usage', usage)
 app.route('/api/webhooks', webhooks)
-
-// Public upload routes - for B2B customer frontends
-// /token uses API key auth, others use upload token auth
 app.route('/v1/upload', uploadPublic)
-
-// Public API routes (API key auth) - for B2B customers
 app.route('/v1', api)
-
-// Playback telemetry ingest route (public, no auth)
 app.route('/api/playback', analytics)
 app.route('/api/analytics-stats', analyticsStats)
 

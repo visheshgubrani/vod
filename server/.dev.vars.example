@@ -1,0 +1,35 @@
+# Copy to .dev.vars for local `wrangler dev`
+DATABASE_URL=postgresql://user:password@host/db?sslmode=require
+BETTER_AUTH_SECRET=your-secret-at-least-32-chars
+BETTER_AUTH_URL=http://localhost:8787
+FRONTEND_URL=http://localhost:3000
+BACKEND_URL=http://localhost:8787
+
+# Cloudflare
+ACCOUNT_ID=your-cloudflare-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key
+R2_SECRET_ACCESS_KEY=your-r2-secret-key
+RAW_BUCKET_NAME=raw-bucket-uploads
+TRANSCODED_BUCKET_NAME=transcoded-bucket
+CLOUDFLARE_ANALYTICS_TOKEN=your-analytics-api-token
+
+# OAuth
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# Transcoding pipeline
+QSTASH_TOKEN=
+MODAL_WEBHOOK_URL=
+MODAL_WEBHOOK_SECRET=
+TRANSCODE_INGEST_SECRET=
+
+# Playback
+JWT_SECRET=your-jwt-secret
+DELIVERY_WORKER_URL=https://media.clipmux.com
+DELIVERY_URL=https://media.clipmux.com
+
+# Rate limiting (Upstash Redis REST)
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=

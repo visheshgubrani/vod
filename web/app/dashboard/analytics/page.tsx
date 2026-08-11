@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/chart";
 
 const API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
 
 type DateRangeDays = 7 | 30 | 90;
 

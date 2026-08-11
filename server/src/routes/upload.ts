@@ -163,7 +163,7 @@ app.post('/url', async (c) => {
   const url = await getSignedUrl(r2, command, { expiresIn: 3600 })
 
   // Dispatch webhook event
-  dispatchWebhook(organizationId, 'video.uploading', {
+  dispatchWebhook(c.executionCtx, organizationId, 'video.uploading', {
     videoId: fileId,
     title: title || filename,
     status: 'uploading',
@@ -248,7 +248,7 @@ app.post('/complete', async (c) => {
   }
 
   // Dispatch webhook event
-  dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
     videoId: fileId,
     title: videoRecord.title,
     status: 'processing',
@@ -331,7 +331,7 @@ app.post('/multipart/create', async (c) => {
   }
 
   // Dispatch webhook event
-  dispatchWebhook(organizationId, 'video.uploading', {
+  dispatchWebhook(c.executionCtx, organizationId, 'video.uploading', {
     videoId: fileId,
     title: title || filename,
     status: 'uploading',
@@ -558,7 +558,7 @@ app.post('/multipart/complete', async (c) => {
     }
 
     // Dispatch webhook event (inside if block where videoRecord is defined)
-    dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
+    dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
       videoId: fileId,
       title: videoRecord.title,
       status: 'processing',

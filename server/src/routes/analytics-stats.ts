@@ -2,56 +2,26 @@ import { Context, Hono } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { video } from '../db/schema'
 import { db } from '../lib/database'
+import {
+  escapeSqlString,
+  getAnalyticsConfig,
+  parseIntWithBounds,
+  parseOptionalIntWithBounds,
+  queryAnalyticsEngine,
+  VIEWER_IDENTITY_SQL,
+} from '../lib/analytics-engine'
 import { requireAuth } from '../middleware/auth'
+import type { Bindings } from '../types'
 
-const app = new Hono()
+const app = new Hono<{ Bindings: Bindings }>()
 app.use('/*', requireAuth)
 
-// ClickHouse configuration
-const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL || 'http://localhost:8123'
-const CLICKHOUSE_USER = process.env.CLICKHOUSE_USER || 'default'
-const CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD || ''
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
-type ClickHouseParamValue = string | number | boolean
 
 function validateVideoId(videoId: string): boolean {
   return UUID_REGEX.test(videoId)
 }
-
-function parseIntWithBounds(
-  value: string | undefined,
-  defaultValue: number,
-  min: number,
-  max: number,
-): number {
-  if (!value) return defaultValue
-
-  const parsed = Number.parseInt(value, 10)
-  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
-    return defaultValue
-  }
-
-  return Math.min(Math.max(parsed, min), max)
-}
-
-function parseOptionalIntWithBounds(
-  value: string | undefined,
-  min: number,
-  max: number,
-): number | null {
-  if (!value) return null
-
-  const parsed = Number.parseInt(value, 10)
-  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
-    return null
-  }
-
-  return Math.min(Math.max(parsed, min), max)
-}
-
-
 
 async function isVideoOwnedByOrganization(
   organizationId: string,
@@ -114,42 +84,26 @@ async function getValidatedOwnedVideoId(
   return { videoId, errorResponse: null }
 }
 
-/**
- * Helper to query ClickHouse via HTTP interface
- * Returns parsed JSON array from JSONEachRow format
- */
-async function queryClickHouse<T = Record<string, unknown>>(
-  sql: string,
-  params: Record<string, ClickHouseParamValue> = {},
-): Promise<T[]> {
-  const url = new URL(CLICKHOUSE_URL)
-  url.searchParams.set('query', `${sql} FORMAT JSONEachRow`)
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(`param_${key}`, String(value))
+function getConfigOrError(c: Context) {
+  const config = getAnalyticsConfig(c.env)
+  if (!config) {
+    return {
+      config: null,
+      errorResponse: c.json(
+        {
+          error: 'Playback analytics not configured',
+          message: 'Missing ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN',
+        },
+        501,
+      ),
+    }
   }
+  return { config, errorResponse: null }
+}
 
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    headers: {
-      ...(CLICKHOUSE_USER && { 'X-ClickHouse-User': CLICKHOUSE_USER }),
-      ...(CLICKHOUSE_PASSWORD && { 'X-ClickHouse-Key': CLICKHOUSE_PASSWORD }),
-    },
-  })
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    console.error('ClickHouse query error:', errorText)
-    throw new Error(`ClickHouse query failed: ${response.status}`)
-  }
-
-  const text = await response.text()
-  if (!text.trim()) return []
-
-  // Parse newline-delimited JSON
-  return text
-    .trim()
-    .split('\n')
-    .map((line) => JSON.parse(line) as T)
+function daysFilter(days: number | null): string {
+  if (days === null) return ''
+  return `AND timestamp > NOW() - INTERVAL '${days}' DAY`
 }
 
 // =============================================================================
@@ -157,44 +111,52 @@ async function queryClickHouse<T = Record<string, unknown>>(
 // =============================================================================
 app.get('/general', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   try {
-    const sql = `
-      SELECT
-        count() as views,
-        uniq(ifNull(user_id, toString(session_id))) as unique_views,
-        coalesce(sum(watch_seconds), 0) as total_watch_time,
-        coalesce(avg(watch_seconds), 0) as avg_watch_time,
-        if(sum(event_count) = 0, 0, sum(error_count) / sum(event_count)) as error_rate
-      FROM analytics.video_session_summary
-      WHERE video_id = {videoId:UUID}
-    `
+    const videoId = escapeSqlString(validated.videoId)
+    const rows = await queryAnalyticsEngine<{
+      views: number
+      unique_views: number
+      total_watch_time: number
+      error_events: number
+      total_events: number
+    }>(
+      `SELECT
+        sum(if(blob1 = 'play', _sample_interval, 0)) as views,
+        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_views,
+        sum(_sample_interval * double1) as total_watch_time,
+        sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
+        sum(_sample_interval) as total_events
+      FROM playback_events
+      WHERE blob2 = '${videoId}'`,
+      config.accountId,
+      config.apiToken,
+    )
 
-    const results = await queryClickHouse<{
-      views: string
-      unique_views: string
-      total_watch_time: string
-      avg_watch_time: string
-      error_rate: string
-    }>(sql, { videoId: validated.videoId })
-
-    const row = results[0] || {
-      views: '0',
-      unique_views: '0',
-      total_watch_time: '0',
-      avg_watch_time: '0',
-      error_rate: '0',
+    const row = rows[0] || {
+      views: 0,
+      unique_views: 0,
+      total_watch_time: 0,
+      error_events: 0,
+      total_events: 0,
     }
 
+    const views = Number(row.views) || 0
+    const uniqueViews = Number(row.unique_views) || 0
+    const totalWatchTime = Number(row.total_watch_time) || 0
+    const totalEvents = Number(row.total_events) || 0
+    const errorEvents = Number(row.error_events) || 0
+
     return c.json({
-      views: parseInt(row.views, 10),
-      uniqueViews: parseInt(row.unique_views, 10),
-      totalWatchTime: parseFloat(row.total_watch_time),
-      avgWatchTime: parseFloat(row.avg_watch_time),
-      errorRate: parseFloat(row.error_rate),
+      views,
+      uniqueViews,
+      totalWatchTime,
+      avgWatchTime: views > 0 ? totalWatchTime / views : 0,
+      errorRate: totalEvents > 0 ? errorEvents / totalEvents : 0,
     })
   } catch (error) {
     console.error('General stats error:', error)
@@ -203,36 +165,38 @@ app.get('/general', async (c) => {
 })
 
 // =============================================================================
-// 2. Retention Graph (Line Chart)
+// 2. Retention Graph (simplified MVP — play events by time bucket)
 // =============================================================================
 app.get('/retention', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   try {
-    const sql = `
-      SELECT
-        floor(current_time / 5) * 5 as bucket,
-        uniq(session_id) as viewers
-      FROM analytics.video_events_raw
-      WHERE video_id = {videoId:UUID}
-        AND watched_delta > 0
+    const videoId = escapeSqlString(validated.videoId)
+    const rows = await queryAnalyticsEngine<{
+      bucket: number
+      viewers: number
+    }>(
+      `SELECT
+        floor(double2 / 5) * 5 as bucket,
+        count(DISTINCT blob3) as viewers
+      FROM playback_events
+      WHERE blob2 = '${videoId}'
+        AND double1 > 0
       GROUP BY bucket
       ORDER BY bucket ASC
-      LIMIT 200
-    `
-
-    const results = await queryClickHouse<{
-      bucket: string
-      viewers: string
-    }>(sql, { videoId: validated.videoId })
+      LIMIT 200`,
+      config.accountId,
+      config.apiToken,
+    )
 
     return c.json(
-      results.map((r) => ({
-        bucket: parseFloat(r.bucket),
-        viewers: parseInt(r.viewers, 10),
+      rows.map((r) => ({
+        bucket: Number(r.bucket) || 0,
+        viewers: Number(r.viewers) || 0,
       })),
     )
   } catch (error) {
@@ -246,34 +210,36 @@ app.get('/retention', async (c) => {
 // =============================================================================
 app.get('/daily-views', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   try {
-    const sql = `
-      SELECT
-        toStartOfDay(started_at) as date,
-        count() as views,
-        sum(watch_seconds) as total_watch_time
-      FROM analytics.video_session_summary
-      WHERE video_id = {videoId:UUID}
-        AND started_at >= now() - INTERVAL 30 DAY
-      GROUP BY date
-      ORDER BY date ASC
-    `
-
-    const results = await queryClickHouse<{
+    const videoId = escapeSqlString(validated.videoId)
+    const rows = await queryAnalyticsEngine<{
       date: string
-      views: string
-      total_watch_time: string
-    }>(sql, { videoId: validated.videoId })
+      views: number
+      total_watch_time: number
+    }>(
+      `SELECT
+        toStartOfDay(timestamp) as date,
+        sum(if(blob1 = 'play', _sample_interval, 0)) as views,
+        sum(_sample_interval * double1) as total_watch_time
+      FROM playback_events
+      WHERE blob2 = '${videoId}'
+        AND timestamp > NOW() - INTERVAL '30' DAY
+      GROUP BY date
+      ORDER BY date ASC`,
+      config.accountId,
+      config.apiToken,
+    )
 
     return c.json(
-      results.map((r) => ({
+      rows.map((r) => ({
         date: r.date,
-        views: parseInt(r.views, 10),
-        totalWatchTime: parseFloat(r.total_watch_time),
+        views: Number(r.views) || 0,
+        totalWatchTime: Number(r.total_watch_time) || 0,
       })),
     )
   } catch (error) {
@@ -287,49 +253,48 @@ app.get('/daily-views', async (c) => {
 // =============================================================================
 app.get('/demographics', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   try {
-    // Run both queries in parallel
+    const videoId = escapeSqlString(validated.videoId)
     const [countries, devices] = await Promise.all([
-      queryClickHouse<{ country: string; viewers: string }>(
-        `
-        SELECT
-          country,
-          uniq(session_id) as viewers
-        FROM analytics.video_events_raw
-        WHERE video_id = {videoId:UUID}
+      queryAnalyticsEngine<{ country: string; viewers: number }>(
+        `SELECT
+          blob4 as country,
+          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers
+        FROM playback_events
+        WHERE blob2 = '${videoId}'
         GROUP BY country
         ORDER BY viewers DESC
-        LIMIT 5
-      `,
-        { videoId: validated.videoId },
+        LIMIT 5`,
+        config.accountId,
+        config.apiToken,
       ),
-      queryClickHouse<{ device: string; viewers: string }>(
-        `
-        SELECT
-          device,
-          uniq(session_id) as viewers
-        FROM analytics.video_events_raw
-        WHERE video_id = {videoId:UUID}
+      queryAnalyticsEngine<{ device: string; viewers: number }>(
+        `SELECT
+          blob5 as device,
+          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers
+        FROM playback_events
+        WHERE blob2 = '${videoId}'
         GROUP BY device
         ORDER BY viewers DESC
-        LIMIT 5
-      `,
-        { videoId: validated.videoId },
+        LIMIT 5`,
+        config.accountId,
+        config.apiToken,
       ),
     ])
 
     return c.json({
       countries: countries.map((r) => ({
-        country: r.country,
-        viewers: parseInt(r.viewers, 10),
+        country: r.country || 'unknown',
+        viewers: Number(r.viewers) || 0,
       })),
       devices: devices.map((r) => ({
-        device: r.device,
-        viewers: parseInt(r.viewers, 10),
+        device: r.device || 'unknown',
+        viewers: Number(r.viewers) || 0,
       })),
     })
   } catch (error) {
@@ -339,13 +304,14 @@ app.get('/demographics', async (c) => {
 })
 
 // =============================================================================
-// 5. Video Content Score
+// 5. Video Content Score (MVP — no peak concurrents / completion rate)
 // =============================================================================
 app.get('/video/content-score', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   try {
     const videoRow = await db
@@ -355,71 +321,42 @@ app.get('/video/content-score', async (c) => {
       .limit(1)
 
     const durationSeconds = Number(videoRow[0]?.duration) || 0
-    const completionThreshold = durationSeconds > 0 ? durationSeconds * 0.95 : 0
+    const videoId = escapeSqlString(validated.videoId)
 
-    const [scoreRows, peakRows] = await Promise.all([
-      queryClickHouse<{
-        total_sessions: string
-        avg_watch_seconds: string
-        total_watch_seconds: string
-        unique_viewers: string
-        completion_rate: string
-      }>(
-        `
-          SELECT
-            count() as total_sessions,
-            coalesce(avg(watch_seconds), 0) as avg_watch_seconds,
-            coalesce(sum(watch_seconds), 0) as total_watch_seconds,
-            uniq(ifNull(user_id, toString(session_id))) as unique_viewers,
-            if(
-              count() = 0 OR {durationSeconds:Float64} <= 0,
-              0,
-              countIf(max_position >= {completionThreshold:Float64}) / count()
-            ) as completion_rate
-          FROM analytics.video_session_summary
-          WHERE video_id = {videoId:UUID}
-        `,
-        {
-          videoId: validated.videoId,
-          durationSeconds,
-          completionThreshold,
-        },
-      ),
-      queryClickHouse<{ peak_concurrents: string }>(
-        `
-          SELECT
-            coalesce(max(active_sessions), 0) as peak_concurrents
-          FROM (
-            SELECT
-              toStartOfMinute(ts) as minute_bucket,
-              uniq(session_id) as active_sessions
-            FROM analytics.video_events_raw
-            WHERE video_id = {videoId:UUID}
-            GROUP BY minute_bucket
-          )
-        `,
-        { videoId: validated.videoId },
-      ),
-    ])
+    const rows = await queryAnalyticsEngine<{
+      total_sessions: number
+      unique_viewers: number
+      total_watch_seconds: number
+      avg_watch_seconds: number
+    }>(
+      `SELECT
+        count(DISTINCT blob3) as total_sessions,
+        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
+        sum(_sample_interval * double1) as total_watch_seconds,
+        if(count(DISTINCT blob3) = 0, 0, sum(_sample_interval * double1) / count(DISTINCT blob3)) as avg_watch_seconds
+      FROM playback_events
+      WHERE blob2 = '${videoId}'`,
+      config.accountId,
+      config.apiToken,
+    )
 
-    const score = scoreRows[0] || {
-      total_sessions: '0',
-      avg_watch_seconds: '0',
-      total_watch_seconds: '0',
-      unique_viewers: '0',
-      completion_rate: '0',
+    const score = rows[0] || {
+      total_sessions: 0,
+      unique_viewers: 0,
+      total_watch_seconds: 0,
+      avg_watch_seconds: 0,
     }
 
-    const peak = peakRows[0] || { peak_concurrents: '0' }
-
     return c.json({
-      totalSessions: parseInt(score.total_sessions, 10),
-      uniqueViewers: parseInt(score.unique_viewers, 10),
-      avgWatchSeconds: parseFloat(score.avg_watch_seconds),
-      totalWatchSeconds: parseFloat(score.total_watch_seconds),
-      completionRate: parseFloat(score.completion_rate),
-      completionRatePercent: parseFloat(score.completion_rate) * 100,
-      peakConcurrents: parseInt(peak.peak_concurrents, 10),
+      totalSessions: Number(score.total_sessions) || 0,
+      uniqueViewers: Number(score.unique_viewers) || 0,
+      avgWatchSeconds: Number(score.avg_watch_seconds) || 0,
+      totalWatchSeconds: Number(score.total_watch_seconds) || 0,
+      completionRate: 0,
+      completionRatePercent: 0,
+      completionRateAvailable: false,
+      peakConcurrents: 0,
+      peakConcurrentsAvailable: false,
       durationSeconds,
     })
   } catch (error) {
@@ -429,170 +366,119 @@ app.get('/video/content-score', async (c) => {
 })
 
 // =============================================================================
-// 6. Video Retention Curve (0%-100% progress)
+// 6. Video Retention Curve (stub — requires ClickHouse/Tinybird later)
 // =============================================================================
 app.get('/video/retention-curve', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
 
-  try {
-    const rows = await queryClickHouse<{
-      progress_percent: string
-      viewers_percent: string
-      viewers: string
-      total_sessions: string
-    }>(
-      `
-        WITH session_progress AS (
-          SELECT
-            session_id,
-            greatest(0.0, least(100.0, max(
-              if(duration > 0, (current_time / duration) * 100, 0)
-            ))) as max_progress
-          FROM analytics.video_events_raw
-          WHERE video_id = {videoId:UUID}
-          GROUP BY session_id
-        )
-        SELECT
-          progress_percent,
-          if(total_sessions = 0, 0, round(100.0 * viewers / total_sessions, 2)) as viewers_percent,
-          viewers,
-          total_sessions
-        FROM (
-          SELECT
-            bucket as progress_percent,
-            countIf(sp.max_progress >= bucket) as viewers,
-            count() as total_sessions
-          FROM session_progress as sp
-          CROSS JOIN (
-            SELECT number * 5 as bucket
-            FROM numbers(21)
-          ) as buckets
-          GROUP BY bucket
-        )
-        ORDER BY progress_percent ASC
-      `,
-      { videoId: validated.videoId },
-    )
-
-    const totalSessions =
-      rows.length > 0 ? parseInt(rows[0].total_sessions, 10) : 0
-
-    return c.json({
-      totalSessions,
-      curve: rows.map((row) => ({
-        progressPercent: parseFloat(row.progress_percent),
-        viewersPercent: parseFloat(row.viewers_percent),
-        viewers: parseInt(row.viewers, 10),
-      })),
-    })
-  } catch (error) {
-    console.error('Video retention curve error:', error)
-    return c.json({ error: 'Failed to fetch retention curve' }, 500)
-  }
+  return c.json({
+    totalSessions: 0,
+    curve: [],
+    comingSoon: true,
+    message: 'Detailed retention curves require advanced analytics (coming soon)',
+  })
 })
 
 // =============================================================================
-// 7. Video Tech Health
+// 7. Video Tech Health (MVP)
 // =============================================================================
 app.get('/video/tech-health', async (c) => {
   const validated = await getValidatedOwnedVideoId(c)
-  if (validated.errorResponse) {
-    return validated.errorResponse
-  }
+  if (validated.errorResponse) return validated.errorResponse
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   try {
+    const videoId = escapeSqlString(validated.videoId)
+
     const [summaryRows, seekRows, topErrorsRows] = await Promise.all([
-      queryClickHouse<{
-        total_sessions: string
-        total_errors: string
-        sessions_with_errors: string
-        total_events: string
-        error_event_rate: string
-        session_error_rate: string
+      queryAnalyticsEngine<{
+        total_sessions: number
+        total_events: number
+        error_events: number
+        sessions_with_errors: number
       }>(
-        `
-          SELECT
-            count() as total_sessions,
-            coalesce(sum(error_count), 0) as total_errors,
-            countIf(error_count > 0) as sessions_with_errors,
-            coalesce(sum(event_count), 0) as total_events,
-            if(sum(event_count) = 0, 0, sum(error_count) / sum(event_count)) as error_event_rate,
-            if(count() = 0, 0, countIf(error_count > 0) / count()) as session_error_rate
-          FROM analytics.video_session_summary
-          WHERE video_id = {videoId:UUID}
-        `,
-        { videoId: validated.videoId },
+        `SELECT
+          count(DISTINCT blob3) as total_sessions,
+          sum(_sample_interval) as total_events,
+          sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
+          count(DISTINCT if(blob1 = 'error' OR blob7 != '', blob3, NULL)) as sessions_with_errors
+        FROM playback_events
+        WHERE blob2 = '${videoId}'`,
+        config.accountId,
+        config.apiToken,
       ),
-      queryClickHouse<{
-        seek_events: string
-        sessions_with_seek: string
-        raw_total_sessions: string
+      queryAnalyticsEngine<{
+        seek_events: number
+        sessions_with_seek: number
+        raw_total_sessions: number
       }>(
-        `
-          SELECT
-            countIf(event = 'seeking') as seek_events,
-            uniqIf(session_id, event = 'seeking') as sessions_with_seek,
-            uniq(session_id) as raw_total_sessions
-          FROM analytics.video_events_raw
-          WHERE video_id = {videoId:UUID}
-        `,
-        { videoId: validated.videoId },
+        `SELECT
+          sum(if(blob1 = 'seeking', _sample_interval, 0)) as seek_events,
+          count(DISTINCT if(blob1 = 'seeking', blob3, NULL)) as sessions_with_seek,
+          count(DISTINCT blob3) as raw_total_sessions
+        FROM playback_events
+        WHERE blob2 = '${videoId}'`,
+        config.accountId,
+        config.apiToken,
       ),
-      queryClickHouse<{ error_code: string; count: string }>(
-        `
-          SELECT
-            if(error_code = '', 'unknown', error_code) as error_code,
-            count() as count
-          FROM analytics.video_events_raw
-          WHERE video_id = {videoId:UUID}
-            AND (event = 'error' OR error_code != '')
-          GROUP BY error_code
-          ORDER BY count DESC
-          LIMIT 5
-        `,
-        { videoId: validated.videoId },
+      queryAnalyticsEngine<{ error_code: string; count: number }>(
+        `SELECT
+          if(blob7 = '', 'unknown', blob7) as error_code,
+          sum(_sample_interval) as count
+        FROM playback_events
+        WHERE blob2 = '${videoId}'
+          AND (blob1 = 'error' OR blob7 != '')
+        GROUP BY error_code
+        ORDER BY count DESC
+        LIMIT 5`,
+        config.accountId,
+        config.apiToken,
       ),
     ])
 
     const summary = summaryRows[0] || {
-      total_sessions: '0',
-      total_errors: '0',
-      sessions_with_errors: '0',
-      total_events: '0',
-      error_event_rate: '0',
-      session_error_rate: '0',
+      total_sessions: 0,
+      total_events: 0,
+      error_events: 0,
+      sessions_with_errors: 0,
     }
-
     const seek = seekRows[0] || {
-      seek_events: '0',
-      sessions_with_seek: '0',
-      raw_total_sessions: '0',
+      seek_events: 0,
+      sessions_with_seek: 0,
+      raw_total_sessions: 0,
     }
 
-    const rawTotalSessions = parseInt(seek.raw_total_sessions, 10)
-    const sessionsWithSeek = parseInt(seek.sessions_with_seek, 10)
+    const totalSessions = Number(summary.total_sessions) || 0
+    const totalEvents = Number(summary.total_events) || 0
+    const errorEvents = Number(summary.error_events) || 0
+    const sessionsWithErrors = Number(summary.sessions_with_errors) || 0
+    const sessionsWithSeek = Number(seek.sessions_with_seek) || 0
+    const rawTotalSessions = Number(seek.raw_total_sessions) || 0
+    const errorEventRate = totalEvents > 0 ? errorEvents / totalEvents : 0
+    const sessionErrorRate =
+      totalSessions > 0 ? sessionsWithErrors / totalSessions : 0
     const bufferingSessionRate =
       rawTotalSessions > 0 ? sessionsWithSeek / rawTotalSessions : 0
 
     return c.json({
-      totalSessions: parseInt(summary.total_sessions, 10),
-      totalEvents: parseInt(summary.total_events, 10),
-      totalErrors: parseInt(summary.total_errors, 10),
-      sessionsWithErrors: parseInt(summary.sessions_with_errors, 10),
-      errorEventRate: parseFloat(summary.error_event_rate),
-      errorEventRatePercent: parseFloat(summary.error_event_rate) * 100,
-      sessionErrorRate: parseFloat(summary.session_error_rate),
-      sessionErrorRatePercent: parseFloat(summary.session_error_rate) * 100,
-      seekEvents: parseInt(seek.seek_events, 10),
+      totalSessions,
+      totalEvents,
+      totalErrors: errorEvents,
+      sessionsWithErrors,
+      errorEventRate,
+      errorEventRatePercent: errorEventRate * 100,
+      sessionErrorRate,
+      sessionErrorRatePercent: sessionErrorRate * 100,
+      seekEvents: Number(seek.seek_events) || 0,
       sessionsWithSeek,
       bufferingSessionRate,
       bufferingSessionRatePercent: bufferingSessionRate * 100,
       topErrors: topErrorsRows.map((row) => ({
         code: row.error_code,
-        count: parseInt(row.count, 10),
+        count: Number(row.count) || 0,
       })),
     })
   } catch (error) {
@@ -602,53 +488,60 @@ app.get('/video/tech-health', async (c) => {
 })
 
 // =============================================================================
-// 8. Organization Hero Stats (account-wide KPI cards)
+// 8. Organization Hero Stats
 // =============================================================================
 app.get('/organization/hero-stats', async (c) => {
   const organizationId = requireActiveOrganizationId(c)
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
   }
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
+
   const days = parseOptionalIntWithBounds(c.req.query('days'), 7, 365)
 
   try {
-    const sql = `
-      SELECT
-        count() as total_views,
-        coalesce(sum(watch_seconds), 0) as total_watch_seconds,
-        uniq(ifNull(user_id, toString(session_id))) as unique_viewers,
-        if(sum(event_count) = 0, 0, sum(error_count) / sum(event_count)) as error_rate
-      FROM analytics.video_session_summary
-      WHERE organization_id = {orgId:String}
-      ${days !== null ? 'AND started_at >= now() - INTERVAL {days:Int32} DAY' : ''}
-    `
+    const orgId = escapeSqlString(organizationId)
+    const rows = await queryAnalyticsEngine<{
+      total_views: number
+      total_watch_seconds: number
+      unique_viewers: number
+      error_events: number
+      total_events: number
+    }>(
+      `SELECT
+        sum(if(blob1 = 'play', _sample_interval, 0)) as total_views,
+        sum(_sample_interval * double1) as total_watch_seconds,
+        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
+        sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
+        sum(_sample_interval) as total_events
+      FROM playback_events
+      WHERE index1 = '${orgId}'
+      ${daysFilter(days)}`,
+      config.accountId,
+      config.apiToken,
+    )
 
-    const results = await queryClickHouse<{
-      total_views: string
-      total_watch_seconds: string
-      unique_viewers: string
-      error_rate: string
-    }>(sql, {
-      orgId: organizationId,
-      ...(days !== null ? { days } : {}),
-    })
-
-    const row = results[0] || {
-      total_views: '0',
-      total_watch_seconds: '0',
-      unique_viewers: '0',
-      error_rate: '0',
+    const row = rows[0] || {
+      total_views: 0,
+      total_watch_seconds: 0,
+      unique_viewers: 0,
+      error_events: 0,
+      total_events: 0,
     }
 
-    const totalWatchSeconds = parseFloat(row.total_watch_seconds)
-    const errorRate = parseFloat(row.error_rate)
+    const totalWatchSeconds = Number(row.total_watch_seconds) || 0
+    const totalEvents = Number(row.total_events) || 0
+    const errorEvents = Number(row.error_events) || 0
+    const errorRate = totalEvents > 0 ? errorEvents / totalEvents : 0
 
     return c.json({
       days,
-      totalViews: parseInt(row.total_views, 10),
+      totalViews: Number(row.total_views) || 0,
       watchTimeHours: totalWatchSeconds / 3600,
       watchTimeSeconds: totalWatchSeconds,
-      uniqueViewers: parseInt(row.unique_viewers, 10),
+      uniqueViewers: Number(row.unique_viewers) || 0,
       errorRate,
       errorRatePercent: errorRate * 100,
     })
@@ -659,7 +552,7 @@ app.get('/organization/hero-stats', async (c) => {
 })
 
 // =============================================================================
-// 6. Organization Growth (daily account timeline)
+// 9. Organization Growth
 // =============================================================================
 app.get('/organization/growth', async (c) => {
   const organizationId = requireActiveOrganizationId(c)
@@ -667,40 +560,41 @@ app.get('/organization/growth', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
+
   const days = parseIntWithBounds(c.req.query('days'), 30, 7, 365)
 
   try {
-    const sql = `
-      SELECT
-        toDate(started_at) as date,
-        count() as views,
-        uniq(ifNull(user_id, toString(session_id))) as unique_viewers,
-        coalesce(sum(watch_seconds), 0) as watch_seconds
-      FROM analytics.video_session_summary
-      WHERE organization_id = {orgId:String}
-        AND started_at >= now() - INTERVAL {days:Int32} DAY
-      GROUP BY date
-      ORDER BY date ASC
-    `
-
-    const results = await queryClickHouse<{
+    const orgId = escapeSqlString(organizationId)
+    const rows = await queryAnalyticsEngine<{
       date: string
-      views: string
-      unique_viewers: string
-      watch_seconds: string
-    }>(sql, {
-      orgId: organizationId,
-      days,
-    })
+      views: number
+      unique_viewers: number
+      watch_seconds: number
+    }>(
+      `SELECT
+        toStartOfDay(timestamp) as date,
+        sum(if(blob1 = 'play', _sample_interval, 0)) as views,
+        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
+        sum(_sample_interval * double1) as watch_seconds
+      FROM playback_events
+      WHERE index1 = '${orgId}'
+        AND timestamp > NOW() - INTERVAL '${days}' DAY
+      GROUP BY date
+      ORDER BY date ASC`,
+      config.accountId,
+      config.apiToken,
+    )
 
     return c.json({
       days,
-      timeline: results.map((row) => {
-        const watchSeconds = parseFloat(row.watch_seconds)
+      timeline: rows.map((row) => {
+        const watchSeconds = Number(row.watch_seconds) || 0
         return {
           date: row.date,
-          views: parseInt(row.views, 10),
-          uniqueViewers: parseInt(row.unique_viewers, 10),
+          views: Number(row.views) || 0,
+          uniqueViewers: Number(row.unique_viewers) || 0,
           watchTimeSeconds: watchSeconds,
           watchTimeHours: watchSeconds / 3600,
         }
@@ -713,7 +607,7 @@ app.get('/organization/growth', async (c) => {
 })
 
 // =============================================================================
-// 7. Organization Demographics (countries + device split)
+// 10. Organization Demographics
 // =============================================================================
 app.get('/organization/demographics', async (c) => {
   const organizationId = requireActiveOrganizationId(c)
@@ -721,54 +615,48 @@ app.get('/organization/demographics', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
+
   const days = parseIntWithBounds(c.req.query('days'), 30, 7, 365)
 
   try {
+    const orgId = escapeSqlString(organizationId)
     const [countries, devices] = await Promise.all([
-      queryClickHouse<{
+      queryAnalyticsEngine<{
         country: string
-        viewers: string
-        sessions: string
+        viewers: number
+        sessions: number
       }>(
-        `
-          SELECT
-            if(country = '', 'Unknown', country) as country,
-            uniq(ifNull(user_id, toString(session_id))) as viewers,
-            uniq(session_id) as sessions
-          FROM analytics.video_events_raw
-          WHERE organization_id = {orgId:String}
-            AND ts >= now() - INTERVAL {days:Int32} DAY
-          GROUP BY country
-          ORDER BY viewers DESC
-          LIMIT 8
-        `,
-        { orgId: organizationId, days },
+        `SELECT
+          if(blob4 = '', 'Unknown', blob4) as country,
+          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers,
+          count(DISTINCT blob3) as sessions
+        FROM playback_events
+        WHERE index1 = '${orgId}'
+          AND timestamp > NOW() - INTERVAL '${days}' DAY
+        GROUP BY country
+        ORDER BY viewers DESC
+        LIMIT 8`,
+        config.accountId,
+        config.apiToken,
       ),
-      queryClickHouse<{
+      queryAnalyticsEngine<{
         device_type: string
-        viewers: string
-        sessions: string
+        viewers: number
+        sessions: number
       }>(
-        `
-          SELECT
-            multiIf(
-              positionCaseInsensitive(device, 'mobile') > 0
-                OR positionCaseInsensitive(device, 'android') > 0
-                OR positionCaseInsensitive(device, 'iphone') > 0, 'Mobile',
-              positionCaseInsensitive(device, 'tablet') > 0
-                OR positionCaseInsensitive(device, 'ipad') > 0, 'Tablet',
-              positionCaseInsensitive(device, 'tv') > 0, 'TV',
-              'Desktop'
-            ) as device_type,
-            uniq(ifNull(user_id, toString(session_id))) as viewers,
-            uniq(session_id) as sessions
-          FROM analytics.video_events_raw
-          WHERE organization_id = {orgId:String}
-            AND ts >= now() - INTERVAL {days:Int32} DAY
-          GROUP BY device_type
-          ORDER BY viewers DESC
-        `,
-        { orgId: organizationId, days },
+        `SELECT
+          blob5 as device_type,
+          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers,
+          count(DISTINCT blob3) as sessions
+        FROM playback_events
+        WHERE index1 = '${orgId}'
+          AND timestamp > NOW() - INTERVAL '${days}' DAY
+        GROUP BY device_type
+        ORDER BY viewers DESC`,
+        config.accountId,
+        config.apiToken,
       ),
     ])
 
@@ -776,13 +664,13 @@ app.get('/organization/demographics', async (c) => {
       days,
       countries: countries.map((row) => ({
         country: row.country,
-        viewers: parseInt(row.viewers, 10),
-        sessions: parseInt(row.sessions, 10),
+        viewers: Number(row.viewers) || 0,
+        sessions: Number(row.sessions) || 0,
       })),
       devices: devices.map((row) => ({
-        device: row.device_type,
-        viewers: parseInt(row.viewers, 10),
-        sessions: parseInt(row.sessions, 10),
+        device: row.device_type || 'unknown',
+        viewers: Number(row.viewers) || 0,
+        sessions: Number(row.sessions) || 0,
       })),
     })
   } catch (error) {
@@ -792,43 +680,43 @@ app.get('/organization/demographics', async (c) => {
 })
 
 // =============================================================================
-// 8. Top Videos Leaderboard (organization-wide)
+// 11. Top Videos Leaderboard
 // =============================================================================
 async function getTopVideosLeaderboard(
   organizationId: string,
   limit: number,
   days: number | null,
+  accountId: string,
+  apiToken: string,
 ) {
-  const sql = `
-    SELECT
-      toString(video_id) as video_id,
-      count() as views,
-      uniq(ifNull(user_id, toString(session_id))) as unique_viewers,
-      coalesce(sum(watch_seconds), 0) as total_watch_seconds,
-      if(sum(event_count) = 0, 0, sum(error_count) / sum(event_count)) as error_rate
-    FROM analytics.video_session_summary
-    WHERE organization_id = {orgId:String}
-    ${days !== null ? 'AND started_at >= now() - INTERVAL {days:Int32} DAY' : ''}
+  const orgId = escapeSqlString(organizationId)
+  const results = await queryAnalyticsEngine<{
+    video_id: string
+    views: number
+    unique_viewers: number
+    total_watch_seconds: number
+    error_events: number
+    total_events: number
+  }>(
+    `SELECT
+      blob2 as video_id,
+      sum(if(blob1 = 'play', _sample_interval, 0)) as views,
+      count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
+      sum(_sample_interval * double1) as total_watch_seconds,
+      sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
+      sum(_sample_interval) as total_events
+    FROM playback_events
+    WHERE index1 = '${orgId}'
+    ${daysFilter(days)}
     GROUP BY video_id
     ORDER BY views DESC
-    LIMIT {limit:UInt16}
-  `
-
-  const results = await queryClickHouse<{
-    video_id: string
-    views: string
-    unique_viewers: string
-    total_watch_seconds: string
-    error_rate: string
-  }>(sql, {
-    orgId: organizationId,
-    limit,
-    ...(days !== null ? { days } : {}),
-  })
+    LIMIT ${limit}`,
+    accountId,
+    apiToken,
+  )
 
   if (results.length === 0) return []
 
-  // Fetch titles only for the videos that appear in results (small set)
   const videoRows = await db
     .select({ id: video.id, title: video.title })
     .from(video)
@@ -836,16 +724,22 @@ async function getTopVideosLeaderboard(
 
   const titleByVideoId = new Map(videoRows.map((row) => [row.id, row.title]))
 
-  return results.map((row) => ({
-    videoId: row.video_id,
-    title: titleByVideoId.get(row.video_id) || 'Unknown',
-    views: parseInt(row.views, 10),
-    uniqueViewers: parseInt(row.unique_viewers, 10),
-    totalWatchSeconds: parseFloat(row.total_watch_seconds),
-    totalWatchHours: parseFloat(row.total_watch_seconds) / 3600,
-    errorRate: parseFloat(row.error_rate),
-    errorRatePercent: parseFloat(row.error_rate) * 100,
-  }))
+  return results.map((row) => {
+    const totalEvents = Number(row.total_events) || 0
+    const errorEvents = Number(row.error_events) || 0
+    const errorRate = totalEvents > 0 ? errorEvents / totalEvents : 0
+
+    return {
+      videoId: row.video_id,
+      title: titleByVideoId.get(row.video_id) || 'Unknown',
+      views: Number(row.views) || 0,
+      uniqueViewers: Number(row.unique_viewers) || 0,
+      totalWatchSeconds: Number(row.total_watch_seconds) || 0,
+      totalWatchHours: (Number(row.total_watch_seconds) || 0) / 3600,
+      errorRate,
+      errorRatePercent: errorRate * 100,
+    }
+  })
 }
 
 app.get('/organization/top-videos', async (c) => {
@@ -854,6 +748,9 @@ app.get('/organization/top-videos', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
+
   const limit = parseIntWithBounds(c.req.query('limit'), 10, 1, 50)
   const days = parseOptionalIntWithBounds(c.req.query('days'), 7, 365)
 
@@ -862,6 +759,8 @@ app.get('/organization/top-videos', async (c) => {
       organizationId,
       limit,
       days,
+      config.accountId,
+      config.apiToken,
     )
     return c.json(leaderboard)
   } catch (error) {
@@ -870,12 +769,14 @@ app.get('/organization/top-videos', async (c) => {
   }
 })
 
-// Backward-compatible alias
 app.get('/top-videos', async (c) => {
   const organizationId = requireActiveOrganizationId(c)
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
   }
+
+  const { config, errorResponse } = getConfigOrError(c)
+  if (errorResponse || !config) return errorResponse
 
   const limit = parseIntWithBounds(c.req.query('limit'), 10, 1, 50)
   const days = parseOptionalIntWithBounds(c.req.query('days'), 7, 365)
@@ -885,6 +786,8 @@ app.get('/top-videos', async (c) => {
       organizationId,
       limit,
       days,
+      config.accountId,
+      config.apiToken,
     )
     return c.json(leaderboard)
   } catch (error) {
@@ -894,94 +797,3 @@ app.get('/top-videos', async (c) => {
 })
 
 export default app
-
-// CLickhouse schema (updated with organization_id)
-/* -- 1. Create the Database
-CREATE DATABASE IF NOT EXISTS analytics;
-
--- 2. Create the Raw Events Table (Ingest)
-CREATE TABLE analytics.video_events_raw (
-  -- Metadata
-  event LowCardinality(String),
-  ts DateTime64(3),
-  received_at DateTime64(3) CODEC(Delta, ZSTD(1)),
-
-  -- IDs
-  video_id UUID,
-  session_id UUID,
-  user_id Nullable(String) CODEC(ZSTD(1)),
-  organization_id String,
-
-  -- Metrics
-  current_time Float32 DEFAULT 0,
-  duration Float32 DEFAULT 0,
-  watched_delta Float32 DEFAULT 0,
-
-  -- Dimensions
-  country LowCardinality(String),
-  device LowCardinality(String),
-  browser LowCardinality(String),
-  error_code LowCardinality(String)
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMM(ts)
-ORDER BY (video_id, session_id, ts, received_at)
-TTL ts + INTERVAL 3 MONTH;
-
--- 3. Create the Summary Table (Aggregates)
-CREATE TABLE analytics.video_session_summary
-(
-    -- Primary Keys
-    video_id UUID,
-    session_id UUID,
-    user_id Nullable(String),
-    organization_id SimpleAggregateFunction(any, String),
-
-    -- Aggregates
-    started_at SimpleAggregateFunction(min, DateTime64(3)),
-    ended_at SimpleAggregateFunction(max, DateTime64(3)),
-    
-    -- FIXED: Using Float64 to prevent mismatch errors
-    watch_seconds SimpleAggregateFunction(sum, Float64),
-    max_position SimpleAggregateFunction(max, Float32),
-    
-    event_count SimpleAggregateFunction(sum, UInt64),
-    error_count SimpleAggregateFunction(sum, UInt64)
-)
-ENGINE = AggregatingMergeTree
-PARTITION BY toYYYYMM(started_at)
-ORDER BY (video_id, session_id);
-
--- 4. Create the Automation (Materialized View)
-CREATE MATERIALIZED VIEW analytics.video_session_summary_mv 
-TO analytics.video_session_summary
-AS SELECT
-    video_id,
-    session_id,
-    any(user_id) as user_id,
-    any(organization_id) as organization_id,
-
-    min(ts) as started_at,
-    max(ts) as ended_at,
-    
-    -- Summing the deltas
-    sum(watched_delta) as watch_seconds,
-    max(current_time) as max_position,
-    
-    count() as event_count,
-    countIf(error_code != '') as error_count
-
-FROM analytics.video_events_raw
-GROUP BY video_id, session_id; */
-
-/* Video Analytics Page, the "Buffering Signals" card shows 66.7%.
-
-    Context: This means 2 out of 3 sessions had a "seek" event (which you are using as a proxy for buffering or engagement).
-
-    Refinement: "Seeking" isn't always "Buffering."
-
-        Buffering: User waits for video to load (bad).
-
-        Seeking: User skips ahead (neutral/behavioral).
-
-        Correction: In the future, if your player emits a specific buffer_start / buffer_end event, log that separately in ClickHouse. For now, rename "Buffering Signals" to "Seek Rate" to be more precise, or keep it if you are sure your player only logs seek events during stalls. */
