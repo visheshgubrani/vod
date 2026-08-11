@@ -302,7 +302,7 @@ app.post('/:id/test', async (c) => {
   }
 
   // Temporarily enable for test dispatch
-  dispatchWebhook(organizationId, 'video.ready', testPayload)
+  dispatchWebhook(c.executionCtx, organizationId, 'video.ready', testPayload)
 
   return c.json({
     success: true,

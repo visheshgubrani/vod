@@ -1,11 +1,11 @@
 export type Bindings = {
-  // Buckets
-  RAW_BUCKET: string
-  PUBLIC_BUCKET: string
+  // Analytics Engine
+  PLAYBACK_ANALYTICS: AnalyticsEngineDataset
 
-  // Secrets (from .dev.vars)
+  // Secrets (wrangler secrets / .dev.vars)
   DATABASE_URL: string
   BETTER_AUTH_SECRET: string
+  BETTER_AUTH_URL?: string
   R2_ACCESS_KEY_ID: string
   R2_SECRET_ACCESS_KEY: string
   ACCOUNT_ID: string
@@ -17,11 +17,31 @@ export type Bindings = {
   GITHUB_CLIENT_SECRET: string
   MODAL_WEBHOOK_URL: string
   QSTASH_TOKEN: string
-  TRANSCODED_BUCKET_URL: string // URL prefix for transcoded content bucket
+  TRANSCODED_BUCKET_URL?: string
   DELIVERY_WORKER_URL: string
-  BACKEND_URL: string // Backend URL for callbacks (e.g. https://api.streamflow.io)
+  DELIVERY_URL?: string
+  BACKEND_URL: string
   MODAL_WEBHOOK_SECRET: string
-  PORT: number
+  JWT_SECRET: string
+  RAW_BUCKET_NAME?: string
+  TRANSCODED_BUCKET_NAME?: string
+  TRANSCODE_INGEST_SECRET?: string
+  CLOUDFLARE_ANALYTICS_TOKEN?: string
+
+  // Rate limiting
+  UPSTASH_REDIS_REST_URL?: string
+  UPSTASH_REDIS_REST_TOKEN?: string
+  RATE_LIMIT_PREFIX?: string
+  RATE_LIMIT_ANALYTICS?: string
+  RATE_LIMIT_AUTH_MAX?: string
+  RATE_LIMIT_AUTH_WINDOW?: string
+  RATE_LIMIT_API_MAX?: string
+  RATE_LIMIT_API_WINDOW?: string
+  RATE_LIMIT_ANALYTICS_MAX?: string
+  RATE_LIMIT_ANALYTICS_WINDOW?: string
+
+  NODE_ENV?: string
+  LOG_LEVEL?: string
 }
 
 // Context variables set by API key middleware

@@ -1,9 +1,8 @@
-import { timingSafeEqual } from 'node:crypto'
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
-import { dispatchWebhook } from '../utils/webhookDispatcher'
+import { dispatchWebhook, secretsMatch } from '../utils/webhookDispatcher'
 
 const app = new Hono()
 
@@ -21,17 +20,6 @@ function safeJsonParse<T>(s: unknown, fallback: T): T {
   } catch {
     return fallback
   }
-}
-
-function secretsMatch(value: string, expected: string): boolean {
-  const valueBuffer = Buffer.from(value)
-  const expectedBuffer = Buffer.from(expected)
-
-  if (valueBuffer.length !== expectedBuffer.length) {
-    return false
-  }
-
-  return timingSafeEqual(valueBuffer, expectedBuffer)
 }
 
 app.post('/transcode-complete', async (c) => {
@@ -101,7 +89,7 @@ app.post('/transcode-complete', async (c) => {
         .where(eq(video.id, videoId))
 
       // Dispatch webhook event for failure
-      dispatchWebhook(videoRecord.organizationId, 'video.failed', {
+      dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.failed', {
         videoId,
         title: videoRecord.title,
         error: message,
@@ -232,7 +220,7 @@ app.post('/transcode-complete', async (c) => {
     const transcodedBucketUrlFinal = transcodedBucketUrl
 
     // video.ready event
-    dispatchWebhook(videoRecord.organizationId, 'video.ready', {
+    dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.ready', {
       videoId,
       title: videoRecord.title,
       status: 'ready',
@@ -244,14 +232,14 @@ app.post('/transcode-complete', async (c) => {
     // subtitle events
     if (subtitle?.requested) {
       if (subtitleStatus === 'completed') {
-        dispatchWebhook(videoRecord.organizationId, 'subtitle.generated', {
+        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'subtitle.generated', {
           videoId,
           subtitleUrl: subtitleVtt
             ? joinUrl(transcodedBucketUrlFinal, subtitleVtt)
             : null,
         })
       } else if (subtitleStatus === 'failed') {
-        dispatchWebhook(videoRecord.organizationId, 'subtitle.failed', {
+        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'subtitle.failed', {
           videoId,
         })
       }
@@ -260,12 +248,12 @@ app.post('/transcode-complete', async (c) => {
     // chapters events
     if (chapters?.requested) {
       if (chaptersStatus === 'completed') {
-        dispatchWebhook(videoRecord.organizationId, 'chapters.generated', {
+        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'chapters.generated', {
           videoId,
           chapters: chaptersData,
         })
       } else if (chaptersStatus === 'failed') {
-        dispatchWebhook(videoRecord.organizationId, 'chapters.failed', {
+        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'chapters.failed', {
           videoId,
         })
       }

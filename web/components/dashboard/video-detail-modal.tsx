@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { ClipMuxPlayer } from "@/components/ui/clipmux-player";
 
 const API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080/api";
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
 
 interface VideoDetailModalProps {
   video: Video;

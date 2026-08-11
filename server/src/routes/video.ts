@@ -350,7 +350,7 @@ app.patch('/:id', async (c) => {
     .where(eq(video.id, videoId))
 
   // Dispatch webhook event
-  dispatchWebhook(videoRecord.organizationId, 'video.updated', {
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.updated', {
     videoId,
     title: updates.title || videoRecord.title,
     playbackPolicy: updates.playbackPolicy || videoRecord.playbackPolicy,
@@ -407,7 +407,7 @@ app.delete('/:id', async (c) => {
     .where(eq(video.id, videoId))
 
   // Dispatch webhook event
-  dispatchWebhook(videoRecord.organizationId, 'video.deleted', {
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.deleted', {
     videoId,
     title: videoRecord.title,
   })

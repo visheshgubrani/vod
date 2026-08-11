@@ -2,7 +2,7 @@ import { createAuthClient } from 'better-auth/react'
 import { organizationClient } from 'better-auth/client/plugins'
 
 const baseURL =
-  process.env.NEXT_PUBLIC_AUTH_BASE_URL ?? 'http://localhost:4080/api/auth'
+  process.env.NEXT_PUBLIC_AUTH_BASE_URL ?? 'http://localhost:8787/api/auth'
 
 const FRONTEND_URL =
   process.env.NEXT_PUBLIC_FRONTEND_URL || 'http://localhost:3000'

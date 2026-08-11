@@ -1,0 +1,22 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "vod-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-09-27",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true,
+	},
+	"analytics_engine_datasets": [
+		{
+			"binding": "PLAYBACK_ANALYTICS",
+			"dataset": "playback_events",
+		},
+	],
+	"routes": [
+		{
+			"pattern": "api.clipmux.com",
+			"custom_domain": true,
+		},
+	],
+}

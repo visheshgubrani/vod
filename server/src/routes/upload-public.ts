@@ -302,7 +302,7 @@ app.post('/create', async (c) => {
     )
 
     // Dispatch webhook
-    dispatchWebhook(organizationId!, 'video.uploading', {
+    dispatchWebhook(c.executionCtx, organizationId!, 'video.uploading', {
         videoId: fileId,
         title: title || filename,
         status: 'uploading',
@@ -539,7 +539,7 @@ app.post('/complete', async (c) => {
         }
 
         // Dispatch webhook
-        dispatchWebhook(videoRecord.organizationId, 'video.uploaded', {
+        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
             videoId: fileId,
             title: videoRecord.title,
             status: 'processing',

@@ -2,173 +2,176 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { video } from '../db/schema'
 import { db } from '../lib/database'
+import { WAE_MAX_DATA_POINTS_PER_INVOCATION } from '../lib/analytics-engine'
+import type { Bindings } from '../types'
 
-const app = new Hono()
+const app = new Hono<{ Bindings: Bindings }>()
 
-// ClickHouse configuration
-const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL || 'http://localhost:8123'
-const CLICKHOUSE_USER = process.env.CLICKHOUSE_USER || 'default'
-const CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD || ''
+interface AnalyticsEvent {
+  event: string
+  ts: string
+  videoId: string
+  sessionId: string
+  userId?: string | null
+  currentTime?: number
+  duration?: number
+  watchedDelta?: number
+  errorCode?: string
+}
 
-// Simple in-memory cache: videoId → organizationId (5-minute TTL)
-const orgCache = new Map<string, { orgId: string; expiresAt: number }>()
-const CACHE_TTL_MS = 5 * 60 * 1000
+type PlaybackRow = {
+  event: string
+  videoId: string
+  sessionId: string
+  userId: string
+  country: string
+  device: string
+  browser: string
+  errorCode: string
+  watchedDelta: number
+  currentTime: number
+  duration: number
+}
+
+function parseUserAgent(ua: string): { device: string; browser: string } {
+  let device = 'unknown'
+  let browser = 'unknown'
+
+  if (/mobile/i.test(ua)) {
+    device = 'mobile'
+  } else if (/tablet|ipad/i.test(ua)) {
+    device = 'tablet'
+  } else if (/smart-tv|smarttv|tv/i.test(ua)) {
+    device = 'tv'
+  } else {
+    device = 'desktop'
+  }
+
+  if (/firefox/i.test(ua)) {
+    browser = 'firefox'
+  } else if (/edg/i.test(ua)) {
+    browser = 'edge'
+  } else if (/chrome/i.test(ua)) {
+    browser = 'chrome'
+  } else if (/safari/i.test(ua)) {
+    browser = 'safari'
+  } else if (/opera|opr/i.test(ua)) {
+    browser = 'opera'
+  }
+
+  return { device, browser }
+}
 
 async function resolveOrganizationId(videoId: string): Promise<string> {
-    const cached = orgCache.get(videoId)
-    if (cached && cached.expiresAt > Date.now()) {
-        return cached.orgId
-    }
+  try {
+    const rows = await db
+      .select({ organizationId: video.organizationId })
+      .from(video)
+      .where(eq(video.id, videoId))
+      .limit(1)
 
-    try {
-        const rows = await db
-            .select({ organizationId: video.organizationId })
-            .from(video)
-            .where(eq(video.id, videoId))
-            .limit(1)
-
-        const orgId = rows[0]?.organizationId || ''
-        orgCache.set(videoId, { orgId, expiresAt: Date.now() + CACHE_TTL_MS })
-        return orgId
-    } catch {
-        return ''
-    }
+    return rows[0]?.organizationId || ''
+  } catch {
+    return ''
+  }
 }
 
-// Event type definition
-interface AnalyticsEvent {
-    event: string
-    ts: string
-    videoId: string
-    sessionId: string
-    userId?: string | null
-    currentTime?: number
-    duration?: number
-    watchedDelta?: number
-    errorCode?: string
+function writePlaybackEvents(
+  analytics: AnalyticsEngineDataset,
+  organizationId: string,
+  rows: PlaybackRow[],
+): number {
+  let written = 0
+  for (const row of rows) {
+    if (written >= WAE_MAX_DATA_POINTS_PER_INVOCATION) {
+      break
+    }
+    analytics.writeDataPoint({
+      blobs: [
+        row.event,
+        row.videoId,
+        row.sessionId,
+        row.country,
+        row.device,
+        row.browser,
+        row.errorCode,
+        row.userId,
+      ],
+      doubles: [row.watchedDelta, row.currentTime, row.duration],
+      indexes: [organizationId || 'unknown'],
+    })
+    written += 1
+  }
+  return written
 }
 
-// Parse User-Agent to extract device and browser info
-function parseUserAgent(ua: string): { device: string; browser: string } {
-    let device = 'unknown'
-    let browser = 'unknown'
-
-    // Device detection
-    if (/mobile/i.test(ua)) {
-        device = 'mobile'
-    } else if (/tablet|ipad/i.test(ua)) {
-        device = 'tablet'
-    } else if (/smart-tv|smarttv|tv/i.test(ua)) {
-        device = 'tv'
-    } else {
-        device = 'desktop'
-    }
-
-    // Browser detection
-    if (/firefox/i.test(ua)) {
-        browser = 'firefox'
-    } else if (/edg/i.test(ua)) {
-        browser = 'edge'
-    } else if (/chrome/i.test(ua)) {
-        browser = 'chrome'
-    } else if (/safari/i.test(ua)) {
-        browser = 'safari'
-    } else if (/opera|opr/i.test(ua)) {
-        browser = 'opera'
-    }
-
-    return { device, browser }
-}
-
-// POST /journal - Accept analytics events from the player
 app.post('/journal', async (c) => {
-    try {
-        const events = await c.req.json<AnalyticsEvent[]>()
+  try {
+    const events = await c.req.json<AnalyticsEvent[]>()
 
-        if (!Array.isArray(events) || events.length === 0) {
-            return c.json({ error: 'Invalid payload: expected non-empty array' }, 400)
-        }
-
-        // Extract headers for geo/device info
-        const country = c.req.header('CF-IPCountry') || 'unknown'
-        const userAgent = c.req.header('User-Agent') || ''
-        const platform = c.req.header('Sec-CH-UA-Platform')?.replace(/"/g, '') || ''
-
-        const { device: parsedDevice, browser } = parseUserAgent(userAgent)
-        // Prefer Sec-CH-UA-Platform if available, otherwise use parsed UA
-        const device = platform || parsedDevice
-
-        const receivedAt = new Date().toISOString().replace('T', ' ').replace('Z', '')
-
-        // Resolve organization_id from the video (cached, single lookup per batch)
-        const primaryVideoId = events[0]?.videoId || ''
-        const organizationId = primaryVideoId ? await resolveOrganizationId(primaryVideoId) : ''
-
-        // Map events to ClickHouse snake_case format
-        const rows = events.map((e) => {
-            // Format timestamp for DateTime64(3) - expects 'YYYY-MM-DD HH:mm:ss.SSS' format
-            const eventTs = e.ts
-                ? new Date(e.ts).toISOString().replace('T', ' ').replace('Z', '')
-                : receivedAt
-
-            return {
-                event: e.event || 'unknown',
-                ts: eventTs,
-                received_at: receivedAt,
-                video_id: e.videoId,
-                session_id: e.sessionId,
-                user_id: e.userId || null,
-                organization_id: organizationId,
-                current_time: e.currentTime ?? 0,
-                duration: e.duration ?? 0,
-                watched_delta: e.watchedDelta ?? 0,
-                country,
-                device,
-                browser,
-                error_code: e.errorCode || '',
-            }
-        })
-
-        // Convert to JSONEachRow format (newline-delimited JSON)
-        const body = rows.map((row) => JSON.stringify(row)).join('\n')
-
-        // Build ClickHouse URL with query params
-        const url = new URL(CLICKHOUSE_URL)
-        url.searchParams.set(
-            'query',
-            'INSERT INTO analytics.video_events_raw FORMAT JSONEachRow',
-        )
-        url.searchParams.set('async_insert', '1')
-
-        // Send to ClickHouse via HTTP interface
-        const response = await fetch(url.toString(), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(CLICKHOUSE_USER && {
-                    'X-ClickHouse-User': CLICKHOUSE_USER,
-                }),
-                ...(CLICKHOUSE_PASSWORD && {
-                    'X-ClickHouse-Key': CLICKHOUSE_PASSWORD,
-                }),
-            },
-            body,
-        })
-
-        if (!response.ok) {
-            const errorText = await response.text()
-            console.error('ClickHouse insert error:', errorText)
-            return c.json({ error: 'Failed to store events' }, 500)
-        }
-
-        return c.json({ success: true, count: events.length })
-    } catch (error) {
-        console.error('Analytics error:', error)
-        return c.json(
-            { error: error instanceof Error ? error.message : 'Unknown error' },
-            500,
-        )
+    if (!Array.isArray(events) || events.length === 0) {
+      return c.json({ error: 'Invalid payload: expected non-empty array' }, 400)
     }
+
+    const country = c.req.header('CF-IPCountry') || 'unknown'
+    const userAgent = c.req.header('User-Agent') || ''
+    const platform = c.req.header('Sec-CH-UA-Platform')?.replace(/"/g, '') || ''
+
+    const { device: parsedDevice, browser } = parseUserAgent(userAgent)
+    const device = platform || parsedDevice
+
+    const primaryVideoId = events[0]?.videoId || ''
+    const organizationId = primaryVideoId
+      ? await resolveOrganizationId(primaryVideoId)
+      : ''
+
+    const rows: PlaybackRow[] = events.map((e) => ({
+      event: e.event || 'unknown',
+      videoId: e.videoId,
+      sessionId: e.sessionId,
+      userId: e.userId || '',
+      country,
+      device,
+      browser,
+      errorCode: e.errorCode || '',
+      watchedDelta: e.watchedDelta ?? 0,
+      currentTime: e.currentTime ?? 0,
+      duration: e.duration ?? 0,
+    }))
+
+    const analytics = c.env.PLAYBACK_ANALYTICS
+    if (!analytics) {
+      return c.json({ error: 'Playback analytics not configured' }, 501)
+    }
+
+    // Cap before waitUntil so the response reflects what will actually be written
+    const toWrite = rows.slice(0, WAE_MAX_DATA_POINTS_PER_INVOCATION)
+    const truncated = rows.length > toWrite.length
+
+    c.executionCtx.waitUntil(
+      Promise.resolve().then(() => {
+        writePlaybackEvents(analytics, organizationId, toWrite)
+      }),
+    )
+
+    return c.json({
+      success: true,
+      count: toWrite.length,
+      received: events.length,
+      truncated,
+      ...(truncated
+        ? {
+            message: `Accepted ${toWrite.length} of ${events.length} events (WAE limit ${WAE_MAX_DATA_POINTS_PER_INVOCATION} per request)`,
+          }
+        : {}),
+    })
+  } catch (error) {
+    console.error('Analytics error:', error)
+    return c.json(
+      { error: error instanceof Error ? error.message : 'Unknown error' },
+      500,
+    )
+  }
 })
 
 export default app

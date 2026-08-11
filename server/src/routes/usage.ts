@@ -259,52 +259,11 @@ app.get('/transcoding-breakdown', async (c) => {
   })
 })
 
-// =============================================================================
-// Cloudflare Analytics Engine SQL API Helper
-// =============================================================================
-
-/**
- * Query Cloudflare Analytics Engine via the SQL API.
- * This properly supports _sample_interval for accurate sampled data.
- */
-async function queryAnalyticsEngine<T = Record<string, unknown>>(
-  sql: string,
-  accountId: string,
-  apiToken: string,
-): Promise<T[]> {
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiToken}`,
-      },
-      body: sql,
-    },
-  )
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    console.error('Analytics Engine SQL error:', response.status, errorText)
-    throw new Error(`Analytics Engine query failed: ${response.status}`)
-  }
-
-  const result = await response.json() as { data: T[] }
-  return result.data ?? []
-}
-
-/** Validate and return Analytics Engine config, or null if not configured */
-function getAnalyticsConfig() {
-  const accountId = process.env.ACCOUNT_ID
-  const apiToken = process.env.CLOUDFLARE_ANALYTICS_TOKEN
-  if (!accountId || !apiToken) return null
-  return { accountId, apiToken }
-}
-
-/** Parse days query param, clamped between 1 and 90 */
-function parseDays(param: string | undefined): number {
-  return Math.min(90, Math.max(1, parseInt(param || '30', 10) || 30))
-}
+import {
+  getAnalyticsConfig,
+  parseDays,
+  queryAnalyticsEngine,
+} from '../lib/analytics-engine'
 
 // =============================================================================
 // Bandwidth Endpoints

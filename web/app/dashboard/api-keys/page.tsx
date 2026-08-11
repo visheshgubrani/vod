@@ -26,7 +26,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
-const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4080";
+const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787";
 
 interface ApiKey {
   id: string;

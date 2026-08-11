@@ -14,7 +14,7 @@ export const triggerTranscoding = async (
 
   // Use BACKEND_URL for the callback since the webhook is in the worker
   // Falls back to constructing from localhost for local dev
-  const backendUrl = process.env.BACKEND_URL || 'http://localhost:4080'
+  const backendUrl = process.env.BACKEND_URL || 'http://localhost:8787'
 
   try {
     if (!ingestSecret) {

@@ -1,5 +1,5 @@
 import type { auth } from '../lib/auth'
-import type { Logger } from 'pino'
+import type { Logger } from '../lib/logger'
 
 declare module 'hono' {
   interface ContextVariableMap {
