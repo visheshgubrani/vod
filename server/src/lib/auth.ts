@@ -14,7 +14,7 @@ const trustedOrigins: string[] = [
   'http://127.0.0.1:3000',
 ]
 
-if (process.env.FRONTEND_URL) {
+if (typeof process !== 'undefined' && process.env?.FRONTEND_URL) {
   trustedOrigins.push(...process.env.FRONTEND_URL.split(',').map((s) => s.trim()))
 }
 
@@ -34,15 +34,17 @@ export const auth = betterAuth({
   socialProviders: {
     google: {
       prompt: 'select_account',
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: process.env.GOOGLE_CLIENT_ID || '',
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     },
     github: {
-      clientId: process.env.GITHUB_CLIENT_ID!,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+      clientId: process.env.GITHUB_CLIENT_ID || '',
+      clientSecret: process.env.GITHUB_CLIENT_SECRET || '',
     },
   },
   trustedOrigins,
   plugins: [admin(), organization()],
   baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:8787',
 })
+
+

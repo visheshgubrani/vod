@@ -26,9 +26,9 @@ import { video, uploadToken } from '../db/schema'
 import { r2 } from '../utils/R2'
 import { triggerTranscoding } from '../utils/queue'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
-import type { UploadTokenVariables } from '../types'
+import type { Bindings, UploadTokenVariables } from '../types'
 
-const app = new Hono<{ Variables: UploadTokenVariables }>()
+const app = new Hono<{ Bindings: Bindings; Variables: UploadTokenVariables }>()
 
 const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
 const MIN_PART_SIZE = 5 * 1024 * 1024
@@ -524,6 +524,7 @@ app.post('/complete', async (c) => {
                     videoRecord.generateSubtitle || false,
                     videoRecord.generateChapters || false,
                     videoRecord.organizationId,
+                    c.env,
                 )
             } catch (err) {
                 console.error(`Failed to queue transcoding for ${fileId}:`, err)

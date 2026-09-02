@@ -3,8 +3,9 @@ import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
 import { dispatchWebhook, secretsMatch } from '../utils/webhookDispatcher'
+import type { Bindings } from '../types'
 
-const app = new Hono()
+const app = new Hono<{ Bindings: Bindings }>()
 
 function joinUrl(base: string, path: string) {
   const b = (base || '').replace(/\/+$/, '')
@@ -23,31 +24,38 @@ function safeJsonParse<T>(s: unknown, fallback: T): T {
 }
 
 app.post('/transcode-complete', async (c) => {
+  console.log('[WEBHOOK] Received /api/webhook/transcode-complete callback request')
+  
   // 1) Webhook auth (MVP)
-  const expected = process.env.MODAL_WEBHOOK_SECRET
+  const expected = c.env?.MODAL_WEBHOOK_SECRET || process.env.MODAL_WEBHOOK_SECRET
   if (expected) {
     const got =
       c.req.header('x-webhook-secret') ||
       (c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '')
     if (!got || !secretsMatch(got, expected)) {
+      console.error(`[WEBHOOK AUTH FAILED] Secret mismatch or missing header`)
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    console.log('[WEBHOOK AUTH OK] Webhook secret verified successfully')
   }
 
   try {
     const payload = await c.req.json<any>()
-    console.log('Transcode webhook received:', JSON.stringify(payload))
+    console.log('[WEBHOOK PAYLOAD]', JSON.stringify(payload))
 
     const status = payload?.status
     if (status !== 'success' && status !== 'error') {
+      console.error(`[WEBHOOK ERROR] Invalid status received: ${status}`)
       return c.json({ error: 'Invalid status' }, 400)
     }
 
     const videoId = payload?.video_id || payload?.fileId
     if (!videoId || typeof videoId !== 'string') {
+      console.error('[WEBHOOK ERROR] Missing video_id or fileId in payload')
       return c.json({ error: 'Missing video_id or fileId' }, 400)
     }
 
+    console.log(`[WEBHOOK DB QUERY] Querying database for video ID: ${videoId}`)
     const rows = await db
       .select()
       .from(video)
@@ -55,9 +63,10 @@ app.post('/transcode-complete', async (c) => {
       .limit(1)
     const videoRecord = rows[0]
     if (!videoRecord) {
-      console.error(`Video not found: ${videoId}`)
-      return c.json({ error: 'Video not found' }, 404)
+      console.error(`[WEBHOOK 404 ERROR] Video not found in database for ID: ${videoId}`)
+      return c.json({ error: `Video not found: ${videoId}` }, 404)
     }
+    console.log(`[WEBHOOK DB MATCH] Found video record: ${videoRecord.id}, current status: ${videoRecord.status}`)
 
     // 2) Idempotency / state protection
     // If already ready, ignore any later callbacks (prevents out-of-order overwrite)

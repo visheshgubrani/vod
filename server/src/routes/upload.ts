@@ -19,8 +19,9 @@ import { video } from '../db/schema'
 import { triggerTranscoding } from '../utils/queue'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import { r2 } from '../utils/R2'
+import type { Bindings } from '../types'
 
-const app = new Hono()
+const app = new Hono<{ Bindings: Bindings }>()
 const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
 const TRANSCODED_BUCKET =
   process.env.TRANSCODED_BUCKET_NAME || 'transcoded-bucket'
@@ -134,6 +135,9 @@ app.post('/url', async (c) => {
 
   // GENERATE UNIQUE FILE PATH
   const { fileId, key } = getUploadKey(organizationId, filename)
+  const rawBucket = c.env?.RAW_BUCKET_NAME || process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
+
+  console.log(`[UPLOAD CREATED] Inserted video into DB with ID: ${fileId}, key: ${key}, bucket: ${rawBucket}`)
 
   // CREATE VIDEO ENTRY IN DATABASE with status 'uploading'
   await db.insert(video).values({
@@ -153,7 +157,7 @@ app.post('/url', async (c) => {
 
   // GENERATE PRESIGNED URL (For R2)
   const command = new PutObjectCommand({
-    Bucket: RAW_BUCKET,
+    Bucket: rawBucket,
     Key: key,
     ContentType: contentType,
     ContentLength: parsedSize,
@@ -161,6 +165,8 @@ app.post('/url', async (c) => {
 
   // The URL is valid for 1 hour
   const url = await getSignedUrl(r2, command, { expiresIn: 3600 })
+
+  console.log(`[PRESIGNED URL GENERATED] fileId: ${fileId}, url: ${url.slice(0, 120)}...`)
 
   // Dispatch webhook event
   dispatchWebhook(c.executionCtx, organizationId, 'video.uploading', {
@@ -176,10 +182,10 @@ app.post('/url', async (c) => {
   })
 })
 
-// Single file upload - complete (called after PUT succeeds)
 app.post('/complete', async (c) => {
   const organizationId = c.var.organizationId
   const { fileId } = await c.req.json()
+  console.log(`[UPLOAD COMPLETE REQ] Received /api/upload/complete for fileId: ${fileId}, orgId: ${organizationId}`)
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
   if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
@@ -192,11 +198,15 @@ app.post('/complete', async (c) => {
   const videoRecord = videos[0]
 
   if (!videoRecord) {
+    console.error(`[UPLOAD COMPLETE ERROR] Video not found in DB: ${fileId}`)
     return c.json({ error: 'Video not found' }, 404)
   }
   if (videoRecord.organizationId !== organizationId) {
+    console.error(`[UPLOAD COMPLETE ERROR] Access denied for video ${fileId}: org mismatch`)
     return c.json({ error: 'Access denied' }, 403)
   }
+
+  console.log(`[UPLOAD COMPLETE DB MATCH] Found video record ${fileId}, rawKey: ${videoRecord.rawKey}, status: ${videoRecord.status}`)
 
   // Only process if status is 'uploading' (idempotency check)
   if (videoRecord.status !== 'uploading') {
@@ -232,6 +242,7 @@ app.post('/complete', async (c) => {
         videoRecord.generateSubtitle || false,
         videoRecord.generateChapters || false,
         videoRecord.organizationId,
+        c.env,
       )
     } catch (err) {
       console.error(`Failed to queue transcoding for ${fileId}:`, err)
@@ -540,6 +551,7 @@ app.post('/multipart/complete', async (c) => {
           videoRecord.generateSubtitle || false,
           videoRecord.generateChapters || false,
           videoRecord.organizationId,
+          c.env,
         )
       } catch (err) {
         console.error(`Failed to queue transcoding for ${fileId}:`, err)
@@ -677,7 +689,7 @@ app.delete('/:fileId', async (c) => {
 
     if (listResponse.Contents && listResponse.Contents.length > 0) {
       // Batch delete all objects
-      const objectsToDelete = listResponse.Contents.map((obj) => ({
+      const objectsToDelete = listResponse.Contents.map((obj: { Key?: string }) => ({
         Key: obj.Key!,
       }))
 

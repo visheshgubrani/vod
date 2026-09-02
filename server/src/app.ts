@@ -146,6 +146,18 @@ const applySecurityHeaders = (c: Context<{ Bindings: Bindings }>) => {
 }
 
 app.use('*', async (c, next) => {
+  if (c.env) {
+    for (const key of Object.keys(c.env)) {
+      const val = (c.env as Record<string, unknown>)[key]
+      if (typeof val === 'string') {
+        process.env[key] = val
+      }
+    }
+  }
+  await next()
+})
+
+app.use('*', async (c, next) => {
   const requestId = c.req.header('x-request-id') || crypto.randomUUID()
   const requestLogger = logger.child({
     requestId,
@@ -159,8 +171,10 @@ app.use('*', async (c, next) => {
   c.header('x-request-id', requestId)
 
   const start = performance.now()
+  console.log(`[REQ START] ${c.req.method} ${c.req.path}`)
   await next()
   const durationMs = Number((performance.now() - start).toFixed(2))
+  console.log(`[REQ END] ${c.req.method} ${c.req.path} -> ${c.res.status} (${durationMs}ms)`)
 
   if (c.res.status >= 500) {
     requestLogger.error(

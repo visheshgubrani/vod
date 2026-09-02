@@ -20,6 +20,7 @@ import secrets
 import shutil
 import time
 import boto3
+from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import HTTPException, Request
 
@@ -217,18 +218,26 @@ def transcode_worker(payload: dict):
                 print(f"⬇️ Download attempt {attempt + 1}/3...")
                 
                 if "key" in payload and "bucket" in payload:
-                    print(f"📦 Downloading from R2: {payload['bucket']}/{payload['key']}")
+                    key_to_use = payload["key"] if attempt == 0 else unquote(payload["key"])
+                    r2_account_id = os.environ.get("R2_ACCOUNT_ID", "")
+                    r2_access_key = os.environ.get("R2_ACCESS_KEY_ID", "")
+                    print(f"📦 Downloading from R2: {payload['bucket']}/{key_to_use}")
+                    print(f"🔑 R2 Config: Account ID prefix={r2_account_id[:6]}..., Key ID prefix={r2_access_key[:6]}...")
+                    
+                    if not r2_account_id or not r2_access_key:
+                        raise RuntimeError("Missing R2_ACCOUNT_ID or R2_ACCESS_KEY_ID in Modal secrets")
+
                     # Download from R2 with multi-threaded transfer
                     s3 = boto3.client(
                         "s3",
-                        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-                        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                        endpoint_url=f"https://{r2_account_id}.r2.cloudflarestorage.com",
+                        aws_access_key_id=r2_access_key,
                         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
                         config=S3_CONFIG,
                     )
                     s3.download_file(
                         payload["bucket"],
-                        payload["key"],
+                        key_to_use,
                         str(local_input),
                         Config=TRANSFER_CONFIG  # Use multi-threaded downloads
                     )

@@ -68,6 +68,6 @@ ALLOWED_URL_HOSTS: Set[str] = {
 
 ALLOWED_CALLBACK_HOSTS: Set[str] = {
     h.strip().lower()
-    for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "").split(",")
+    for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "api.clipmux.com,clipmux.com").split(",")
     if h.strip()
 }
