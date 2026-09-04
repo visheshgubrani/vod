@@ -3,9 +3,13 @@ DATABASE_URL=postgresql://user:password@host/db?sslmode=require
 BETTER_AUTH_SECRET=your-secret-at-least-32-chars
 BETTER_AUTH_URL=http://localhost:8787
 FRONTEND_URL=http://localhost:3000
+# Comma-separated browser origins allowed by CORS. Supports `*.example.com`
+# wildcard subdomain patterns (e.g. *.vercel.app for preview deployments).
+# Exact entries are also added to better-auth trusted origins.
+CORS_ORIGINS=
 BACKEND_URL=http://localhost:8787
 
-# Cloudflare
+# Cloudflare (R2 storage — the BYOK pair)
 ACCOUNT_ID=your-cloudflare-account-id
 R2_ACCESS_KEY_ID=your-r2-access-key
 R2_SECRET_ACCESS_KEY=your-r2-secret-key
@@ -13,23 +17,31 @@ RAW_BUCKET_NAME=raw-bucket-uploads
 TRANSCODED_BUCKET_NAME=transcoded-bucket
 CLOUDFLARE_ANALYTICS_TOKEN=your-analytics-api-token
 
-# OAuth
+# OAuth (optional)
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 
-# Transcoding pipeline
+# Transcoding pipeline — direct HTTP dispatch is the default;
+# QStash is only used when QSTASH_TOKEN is set (optional adapter).
 QSTASH_TOKEN=
 MODAL_WEBHOOK_URL=
-MODAL_WEBHOOK_SECRET=
-TRANSCODE_INGEST_SECRET=
+TRANSCODE_INGEST_SECRET=any-long-random-string-shared-with-your-modal-app
+# MODAL_WEBHOOK_SECRET=legacy-alias-for-ingest-secret
 
-# Playback
-JWT_SECRET=your-jwt-secret
-DELIVERY_WORKER_URL=https://media.clipmux.com
-DELIVERY_URL=https://media.clipmux.com
+# Playback / delivery
+JWT_SECRET=your-jwt-secret-at-least-32-chars
+# Absolute base URL of your delivery worker (no scheme-less placeholders)
+DELIVERY_URL=https://media.yourdomain.com
 
-# Rate limiting (Upstash Redis REST)
+# Job sweeper (stuck-video recovery)
+# INTERNAL_SWEEP_SECRET=long-random-string  # required to call /api/internal/sweep
+# SWEEP_ENABLED=true                        # enables scheduled() runs (cron trigger)
+# SWEEP_PROCESSING_STALE_MIN=45
+# SWEEP_UPLOADING_STALE_HOURS=24
+# SWEEP_MAX_ATTEMPTS=3
+
+# Rate limiting (Upstash Redis REST — optional; in-memory fallback used when unset)
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=

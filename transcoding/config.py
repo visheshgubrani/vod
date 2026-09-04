@@ -66,8 +66,23 @@ ALLOWED_URL_HOSTS: Set[str] = {
     if h.strip()
 }
 
+# Callback destinations (the API's /api/webhook/transcode-complete URL).
+# NO DEFAULT HOSTS: when unset, callbacks are restricted to localhost and the
+# pipeline logs loudly. Set this to your API host, e.g.
+#   ALLOWED_CALLBACK_HOSTS=api.yourdomain.com
+# (comma-separated, lower-cased).
 ALLOWED_CALLBACK_HOSTS: Set[str] = {
     h.strip().lower()
-    for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "api.clipmux.com,clipmux.com").split(",")
+    for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "").split(",")
     if h.strip()
 }
+
+if not ALLOWED_CALLBACK_HOSTS:
+    print(
+        "[CONFIG] ALLOWED_CALLBACK_HOSTS is not set: transcode-complete "
+        "callbacks will only be delivered to localhost. Set it to your API "
+        "host (e.g. ALLOWED_CALLBACK_HOSTS=api.yourdomain.com) in the Modal "
+        "environment/secrets, otherwise jobs complete but the server never "
+        "learns about it.",
+        flush=True,
+    )
