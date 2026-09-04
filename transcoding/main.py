@@ -20,7 +20,6 @@ import secrets
 import shutil
 import time
 import boto3
-from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import HTTPException, Request
 
@@ -33,6 +32,15 @@ from config import (
 
 # Utilities
 from utils import send_callback, download_public_url
+
+# Typed pipeline errors
+from errors import (
+    ERROR_AUDIO_ONLY_UNSUPPORTED,
+    ERROR_EMPTY_FILE,
+    ERROR_INSUFFICIENT_DISK,
+    TranscodeError,
+    classify_error,
+)
 from utils.storage import upload_to_r2
 
 # Video processing
@@ -196,8 +204,11 @@ def transcode_worker(payload: dict):
         free_gb = disk.free / (1024**3)
         print(f"💾 Disk space: {free_gb:.2f} GB free")
         
-        if free_gb < 10:
-            raise RuntimeError(f"Insufficient disk space: {free_gb:.2f} GB (need 10+ GB)")
+        if free_gb < 2:
+            raise TranscodeError(
+                ERROR_INSUFFICIENT_DISK,
+                f"Insufficient disk space: {free_gb:.2f} GB free (<2 GB)",
+            )
         
         # Setup working directories
         if work_dir.exists():
@@ -218,7 +229,8 @@ def transcode_worker(payload: dict):
                 print(f"⬇️ Download attempt {attempt + 1}/3...")
                 
                 if "key" in payload and "bucket" in payload:
-                    key_to_use = payload["key"] if attempt == 0 else unquote(payload["key"])
+                    # Decode exactly once — retry unquoting mangled %xx keys.
+                    key_to_use = payload["key"]
                     r2_account_id = os.environ.get("R2_ACCOUNT_ID", "")
                     r2_access_key = os.environ.get("R2_ACCESS_KEY_ID", "")
                     print(f"📦 Downloading from R2: {payload['bucket']}/{key_to_use}")
@@ -267,6 +279,23 @@ def transcode_worker(payload: dict):
         download_time = time.time() - download_start
         file_size_mb = local_input.stat().st_size / (1024 * 1024)
         print(f"✅ Downloaded {file_size_mb:.1f} MB in {download_time:.1f}s")
+
+        # ── post-download preflight ────────────────────────────────────────
+        if local_input.stat().st_size <= 1024:
+            raise TranscodeError(
+                ERROR_EMPTY_FILE,
+                f"Downloaded file is {local_input.stat().st_size} bytes — empty/truncated input",
+            )
+
+        required_gb = max(4.0, file_size_mb / 1024.0 * 2.2 + 2.0)
+        disk_after = shutil.disk_usage("/tmp")
+        free_after_gb = disk_after.free / (1024**3)
+        if free_after_gb < required_gb:
+            raise TranscodeError(
+                ERROR_INSUFFICIENT_DISK,
+                f"Insufficient disk space: {free_after_gb:.2f} GB free, "
+                f"estimated need {required_gb:.2f} GB for a {file_size_mb:.0f} MB source",
+            )
         
         # ═══════════════════════════════════════════════════════════════════════
         # ANALYZE VIDEO
@@ -287,7 +316,18 @@ def transcode_worker(payload: dict):
         # GENERATE POSTER
         # ═══════════════════════════════════════════════════════════════════════
         
-        generate_poster(str(local_input), str(output_dir / "poster.jpg"), metadata.duration)
+        if not metadata.has_video:
+            raise TranscodeError(
+                ERROR_AUDIO_ONLY_UNSUPPORTED,
+                "Audio-only inputs are not supported yet (file has no video stream)",
+            )
+
+        poster_generated = False
+        try:
+            generate_poster(str(local_input), str(output_dir / "poster.jpg"), metadata.duration)
+            poster_generated = True
+        except Exception as e:
+            print(f"⚠️ Poster generation failed (non-fatal): {e}")
         
         # ═══════════════════════════════════════════════════════════════════════
         # PARALLEL TRANSCODING (+ AI TRANSCRIPTION)
@@ -488,7 +528,7 @@ def transcode_worker(payload: dict):
                 "renditions": [p.label for p in profiles],
                 "hls_playlist": f"{R2_PREFIX}/{video_id}/playlist.m3u8",
                 "dash_manifest": f"{R2_PREFIX}/{video_id}/manifest.mpd",
-                "poster": f"{R2_PREFIX}/{video_id}/poster.jpg",
+                "poster": f"{R2_PREFIX}/{video_id}/poster.jpg" if poster_generated else None,
                 "subtitles": f"{R2_PREFIX}/{video_id}/subtitles.vtt" if subtitle_path else None,
             },
             "subtitle": {
@@ -500,7 +540,15 @@ def transcode_worker(payload: dict):
             "chapters": {
                 "requested": generate_chapters_flag,
                 "generated": chapters_data is not None,
-                "status": "completed" if chapters_data else ("failed" if generate_chapters_flag else None),
+                "status": (
+                    "completed"
+                    if chapters_data
+                    else (
+                        "skipped"
+                        if generate_chapters_flag and not subtitle_path
+                        else ("failed" if generate_chapters_flag else None)
+                    )
+                ),
                 "data": chapters_data,
             },
             "processing": {
@@ -539,6 +587,7 @@ def transcode_worker(payload: dict):
             "video_id": video_id,
             "message": str(e),
             "error_type": type(e).__name__,
+            "error_code": classify_error(e),
             "processing_time": round(error_time, 2),
         }
         
