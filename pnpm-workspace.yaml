@@ -1,0 +1,7 @@
+packages:
+  - server
+  - delivery
+  - sdk
+  - player
+  - web
+  - clipmux-docs

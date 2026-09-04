@@ -1,0 +1,23 @@
+{
+  "name": "openvod",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r --if-present test",
+    "test:server": "pnpm --filter vod-api test",
+    "test:delivery": "pnpm --filter ./delivery test",
+    "test:sdk": "pnpm --filter ./sdk test",
+    "test:player": "pnpm --filter ./player test",
+    "test:python": "cd transcoding && .venv/bin/python -m pytest",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck:tsc": "pnpm --filter vod-api exec tsc --noEmit && pnpm --filter ./delivery exec tsc --noEmit",
+    "db:migrate": "pnpm --filter vod-api db:migrate",
+    "db:push": "pnpm --filter vod-api db:push"
+  }
+}

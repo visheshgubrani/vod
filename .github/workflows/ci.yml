@@ -5,52 +5,48 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  PNPM_VERSION: 10.12.4
+
 jobs:
-  js-packages:
-    name: ${{ matrix.package }} (${{ matrix.command }})
+  js-workspace:
+    name: ${{ matrix.command }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - package: server
-            command: test
-          - package: server
-            command: typecheck
-          - package: delivery
-            command: test
-          - package: delivery
-            command: typecheck
-          - package: sdk
-            command: test
-          - package: sdk
-            command: typecheck
-          - package: player
-            command: test
-          - package: player
-            command: typecheck
-          - package: web
-            command: lint
+        command: [test, typecheck, 'typecheck:tsc']
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.12.4
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: ${{ matrix.package }}/pnpm-lock.yaml
-      - name: Install
+      - name: Install workspace
         run: pnpm install --frozen-lockfile
-        working-directory: ${{ matrix.package }}
       - name: Run ${{ matrix.command }}
         run: pnpm ${{ matrix.command }}
-        working-directory: ${{ matrix.package }}
-      - name: Typecheck (tsc for server/delivery)
-        if: matrix.package == 'server' || matrix.package == 'delivery'
-        run: pnpm exec tsc --noEmit
-        working-directory: ${{ matrix.package }}
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm --filter ./web lint
+      - name: Build (standalone)
+        run: pnpm --filter ./web build
 
   transcoding-python:
     runs-on: ubuntu-latest
@@ -65,35 +61,14 @@ jobs:
         working-directory: transcoding
         run: python -m pytest tests
 
-  web-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.12.4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Install
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-      - name: Lint
-        working-directory: web
-        run: pnpm lint
-      - name: Build (standalone)
-        working-directory: web
-        run: pnpm build
-
   branding-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Forbid residual brand strings in source
         run: |
-          if grep -rInE 'clipmux|indiemux' --include='*.ts' --include='*.tsx' --include='*.py' --include='*.md' server delivery web sdk player transcoding docs README.md; then
+          if grep -rInE 'clipmux|indiemux' --include='*.ts' --include='*.tsx' --include='*.py' \
+             server delivery web sdk player transcoding docs README.md CONTRIBUTING.md; then
             echo "Residual brand strings found (see above). Rename pass incomplete."
             exit 1
           fi
