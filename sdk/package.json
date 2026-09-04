@@ -1,40 +1,44 @@
 {
-    "name": "@clipmux/uploader",
-    "version": "0.1.1",
-    "description": "Clipmux video uploader SDK with multipart upload support",
-    "type": "module",
-    "main": "./dist/index.js",
-    "module": "./dist/index.js",
-    "types": "./dist/index.d.ts",
-    "exports": {
-        ".": {
-            "import": "./dist/index.js",
-            "types": "./dist/index.d.ts"
-        }
-    },
-    "files": [
-        "dist",
-        "README.md"
-    ],
-    "scripts": {
-        "build": "tsup src/index.ts --format esm --dts --clean",
-        "dev": "tsup src/index.ts --format esm --dts --watch",
-        "typecheck": "tsc --noEmit",
+  "name": "@openvod/uploader",
+  "version": "0.1.1",
+  "description": "OpenVOD video uploader SDK with multipart upload support",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
-    },
-    "devDependencies": {
-        "@types/node": "^22.0.0",
-        "tsup": "^8.0.0",
-        "typescript": "^5.0.0",
-        "vitest": "~3.2.7"
-    },
-    "keywords": [
-        "video",
-        "upload",
-        "multipart",
-        "clipmux",
-        "streaming"
-    ],
-    "license": "MIT"
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "~3.2.7"
+  },
+  "keywords": [
+    "video",
+    "upload",
+    "multipart",
+    "clipmux",
+    "streaming"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
 }

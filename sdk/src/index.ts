@@ -1,8 +1,9 @@
 /**
- * Clipmux Uploader SDK
+ * OpenVOD Uploader SDK
  *
- * A lightweight SDK for uploading videos to Clipmux with:
+ * A lightweight SDK for uploading videos to OpenVOD with:
  * - Automatic multipart chunking for large files
+ * - Windowed presigned-URL fetching (URLs never expire mid-upload)
  * - Parallel uploads for maximum speed
  * - Progress tracking with callbacks
  * - Automatic retry with exponential backoff
@@ -10,10 +11,10 @@
  *
  * @example
  * ```typescript
- * import { ClipmuxUploader } from '@clipmux/uploader'
+ * import { OpenVodUploader } from '@openvod/uploader'
  *
- * const uploader = new ClipmuxUploader({
- *   baseUrl: 'https://api.clipmux.com',
+ * const uploader = new OpenVodUploader({
+ *   baseUrl: 'https://api.yourvod.com',
  *   uploadToken: 'ut_abc123...',
  * })
  *
@@ -29,6 +30,8 @@
  */
 
 export { ClipmuxUploader } from './uploader'
+/** Alias matching the @openvod/uploader package scope. */
+export { ClipmuxUploader as OpenVodUploader } from './uploader'
 export type {
     ClipmuxUploaderConfig,
     UploadOptions,
@@ -36,4 +39,6 @@ export type {
     UploadResult,
     CreateUploadResponse,
     CompleteUploadResponse,
+    PartsWindow,
+    PartInfo,
 } from './types'

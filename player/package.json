@@ -1,7 +1,7 @@
 {
-  "name": "@clipmux/player",
+  "name": "@openvod/player",
   "version": "0.1.2",
-  "description": "ClipMux video player \u2014 drop-in React component with built-in analytics",
+  "description": "OpenVOD video player \u2014 drop-in React component with built-in analytics",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -22,7 +22,8 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
     "react": ">=18",
@@ -50,5 +51,8 @@
   "license": "MIT",
   "dependencies": {
     "@vidstack/react": "^1.12.13"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
