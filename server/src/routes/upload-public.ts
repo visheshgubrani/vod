@@ -300,24 +300,9 @@ app.post('/create', async (c) => {
     // Increment token usage
     await incrementUploadTokenUsage(uploadTokenId)
 
-    // Generate presigned URLs for all parts
-    const urls = await Promise.all(
-        Array.from({ length: partCount }, (_, i) => i + 1).map(async (partNumber) => {
-            const partCommand = new UploadPartCommand({
-                Bucket: RAW_BUCKET,
-                Key: key,
-                UploadId: response.UploadId,
-                PartNumber: partNumber,
-            })
-            const url = await getSignedUrl(r2, partCommand, { expiresIn: 3600 })
-            const expectedSize =
-                partNumber === partCount
-                    ? size - (partCount - 1) * partSize
-                    : partSize
-
-            return { part_number: partNumber, url, size: expectedSize }
-        }),
-    )
+    // Presigned URLs are NOT minted up front (10k URLs would exceed payload
+    // limits and expire during slow uploads). Clients fetch them in windows
+    // via POST /v1/upload/parts (capped at 100 part numbers per request).
 
     // Dispatch webhook
     dispatchWebhook(c.executionCtx, organizationId!, 'video.uploading', {
@@ -332,7 +317,6 @@ app.post('/create', async (c) => {
         key,
         part_size: partSize,
         part_count: partCount,
-        urls,
     })
 })
 

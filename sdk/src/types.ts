@@ -16,6 +16,12 @@ export interface ClipmuxUploaderConfig {
     maxRetries?: number
     /** Base delay for exponential backoff in ms (default: 1000) */
     retryDelay?: number
+    /** Presigned URLs are fetched in windows of this size (default: 32).
+     *  Each window is fetched right before its parts upload, so presigned
+     *  URLs never expire mid-upload. Must be <= 100 (server cap). */
+    windowSize?: number
+    /** Injectable fetch (defaults to global fetch) — for tests/proxies. */
+    fetchImpl?: typeof fetch
 }
 
 /**
@@ -73,6 +79,24 @@ export interface CreateUploadResponse {
     upload_id: string
     file_id: string
     key: string
+    part_size: number
+    part_count: number
+    /**
+     * Optional presigned URLs returned by the create endpoint. Newer servers
+     * omit these (URLs are fetched windowed via /parts); keep it optional for
+     * backward compatibility with servers that still pre-mint them.
+     */
+    urls?: Array<{
+        part_number: number
+        url: string
+        size: number
+    }>
+}
+
+/**
+ * One window of presigned part URLs (POST /v1/upload/parts response)
+ */
+export interface PartsWindow {
     part_size: number
     part_count: number
     urls: Array<{
