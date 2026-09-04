@@ -1,0 +1,43 @@
+---
+title: Quickstart
+description: Deploy OpenVOD with your own Cloudflare R2 + Modal keys in about five minutes.
+---
+
+The canonical, always-current Quickstart lives in the repository
+[README](https://github.com/visheshgubrani/vod#readme). This page summarizes
+the two supported hosting paths.
+
+## Requirements
+
+- Cloudflare account (R2 buckets + Workers for API/delivery)
+- Postgres database (Neon free tier or any Postgres)
+- Modal account for GPU transcoding
+
+## Path A — Cloudflare Workers + Vercel
+
+1. `scripts/setup.sh` to generate `server/.dev.vars` with your keys.
+2. `pnpm db:push` (or run the API container which migrates on boot).
+3. Deploy the API + delivery workers (`wrangler deploy` in `server/` and
+   `delivery/`) and point `DELIVERY_URL` at your media domain.
+4. `cd transcoding && modal deploy main.py` after creating the `r2-creds` /
+   `groq-creds` Modal secrets; set `ALLOWED_CALLBACK_HOSTS` and
+   `ALLOWED_SOURCE_BUCKETS` in the Modal environment.
+5. Frontend: import `web/` into Vercel (set the `NEXT_PUBLIC_*` env vars) or
+   run the Docker image.
+
+## Path B — Docker Compose (VPS)
+
+```bash
+docker compose up -d
+```
+
+Postgres + API + web boot together; the API container runs
+`drizzle` migrations before listening (advisory-locked, idempotent). The
+dashboard is then at `http://localhost:3000` and the API at
+`http://localhost:8787` (`GET /health/config` shows readiness).
+
+## Verify
+
+- `curl <api>/health` → `ok`
+- `curl <api>/health/config` → JSON capability checks
+- Open `<frontend>/setup` for the BYOK status page.

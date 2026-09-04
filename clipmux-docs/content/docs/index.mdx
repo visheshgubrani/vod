@@ -1,44 +1,38 @@
 ---
-title: ClipMux Documentation
-description: Build video upload, encoding, playback, and delivery workflows with ClipMux.
+title: OpenVOD Documentation
+description: Build video upload, encoding, playback, and delivery workflows with OpenVOD — bring your own Cloudflare R2 + Modal keys.
 ---
 
-ClipMux is a developer-first VOD platform for ingesting files, preparing adaptive streams, and delivering playback globally without the pricing overhead of traditional enterprise video platforms.
+OpenVOD is an open-source, self-hosted VOD platform (Apache-2.0). Paste your
+Cloudflare R2 credentials and Modal API key and get Mux-style HLS/DASH
+ingestion: multipart uploads, GPU transcoding with adaptive-bitrate ladders,
+signed playback URLs, AI subtitles & chapters, tenant webhooks and analytics.
 
-This docs site is the working home for the platform docs. For now it covers the broad product shape and key concepts. We will tighten the details later as the APIs and workflows settle.
+> This docs site is the working home for the platform docs. The full
+> Quickstart, BYOK walkthrough, environment reference and API details live in
+> the repository README and the `docs/` folder (delivery contract, security
+> model, branding). Content here is being migrated/expanded from there.
 
 <Cards>
   <Card
+    title="Quickstart"
+    href="/docs/quickstart"
+    description="Go from clone to first playback in ~5 minutes on your own accounts."
+  />
+  <Card
+    title="Deployment"
+    href="/docs/deploy"
+    description="Cloudflare Workers + Docker/VPS options, zero-touch migrations."
+  />
+  <Card
     title="Overview"
-    href="/overview"
-    description="Start with the product model, core building blocks, and the current platform scope."
-  />
-  <Card
-    title="Upload Pipeline"
-    href="/overview#upload-and-processing"
-    description="Understand how assets move from raw file upload to playback-ready renditions."
-  />
-  <Card
-    title="Playback and Delivery"
-    href="/overview#playback-and-delivery"
-    description="See how ClipMux handles manifests, signed access, CDN delivery, and player integration."
+    href="/docs/overview"
+    description="Product model, pipeline stages and platform scope."
   />
 </Cards>
 
-## Why ClipMux
+## Why OpenVOD
 
-- Lower the cost of operating a video platform without losing the core building blocks developers expect.
-- Provide one place for upload, transcoding, packaging, playback access, and delivery controls.
-- Stay API-first so product teams can build fully custom video experiences instead of adapting to a rigid dashboard.
-
-## What You Can Expect
-
-- Asset ingestion for VOD workflows
-- Transcoding and playback preparation
-- Signed delivery patterns for controlled access
-- Developer-friendly API and SDK surfaces
-- Documentation that will expand alongside the platform
-
-## Current State
-
-This documentation is intentionally broad for now. It is meant to establish the platform story and give you a stable starting point while we fill in endpoint-level detail, examples, and operational guidance.
+- Bring-your-own-keys: no vendor lock-in for storage, compute or database.
+- Mux-style DX: upload tokens, typed transcode callbacks, signed playback.
+- Truly open: Apache-2.0, no metered SaaS behind the scenes.

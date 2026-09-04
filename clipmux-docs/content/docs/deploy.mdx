@@ -1,0 +1,21 @@
+---
+title: Deployment
+description: Hosting options, environment variables and zero-touch migrations.
+---
+
+Full deployment guidance (wrangler routes/secrets, R2 bucket + S3 CORS setup,
+Modal secrets, cost estimates) lives in the repo README and `docs/`. Key facts:
+
+- The API runs on **Cloudflare Workers** (Neon HTTP driver) or as a **Node
+  container** (`DB_DRIVER=pg`, `@hono/node-server` runtime) — same code.
+- The **delivery worker** is Cloudflare-only (R2 binding, JWT verification,
+  manifest rewriting, bandwidth metering). Set `DEFAULT_POLICY=signed` to fail
+  closed on objects missing policy metadata.
+- The **web dashboard** builds as Next.js standalone (Vercel or Docker).
+- **Zero-touch boot**: the API container runs `src/node/migrate.ts` before
+  serving; migrations are advisory-locked and idempotent across restarts.
+- **Health**: `GET /health` (liveness), `GET /health/config` (BYOK capability
+  flags, no secrets), delivery `GET /health`, Modal `GET /healthz`.
+- **Recovery**: a heartbeat-aware job sweeper retries/fails stuck videos;
+  trigger it via cron (`SWEEP_ENABLED`) or `POST /api/internal/sweep` with
+  `INTERNAL_SWEEP_SECRET`.
