@@ -131,6 +131,22 @@ def require_ingest_auth(request: Request) -> None:
 # HTTP ENDPOINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.function(image=image)
+@modal.fastapi_endpoint(method="GET")
+def healthz(request: Request):
+    """
+    Liveness/health probe for the BYOK setup wizard and uptime checks.
+    Optional auth: when TRANSCODE_INGEST_SECRET / MODAL_WEBHOOK_SECRET is set,
+    the caller must pass it via x-transcode-secret.
+    """
+    expected = os.environ.get("TRANSCODE_INGEST_SECRET") or os.environ.get("MODAL_WEBHOOK_SECRET")
+    if expected:
+        presented = request.headers.get("x-transcode-secret", "")
+        if not presented or not secrets.compare_digest(presented, expected):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"status": "ok", "service": "openvod-transcoder"}
+
+
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("r2-creds")],
