@@ -9,8 +9,6 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "pages:build": "NEXT_PUBLIC_API_BASE_URL=https://api.clipmux.com/api NEXT_PUBLIC_AUTH_BASE_URL=https://api.clipmux.com/api/auth NEXT_PUBLIC_FRONTEND_URL=https://clipmux.com next build",
-    "pages:deploy": "wrangler pages deploy ./out --project-name clipmux-ui --branch main",
     "start": "next start",
     "lint": "eslint"
   },
