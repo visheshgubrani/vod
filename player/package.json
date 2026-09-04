@@ -1,7 +1,7 @@
 {
   "name": "@clipmux/player",
   "version": "0.1.2",
-  "description": "ClipMux video player — drop-in React component with built-in analytics",
+  "description": "ClipMux video player \u2014 drop-in React component with built-in analytics",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -20,7 +20,9 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "peerDependencies": {
     "react": ">=18",
@@ -32,7 +34,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "~3.2.7"
   },
   "keywords": [
     "video",
