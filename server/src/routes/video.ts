@@ -6,6 +6,10 @@ import { db } from '../lib/database'
 import { video, member } from '../db/schema'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import {
+  readDeliveryBaseUrl,
+  requirePlaybackJwtSecret,
+} from '../lib/config'
+import {
   buildPlaybackBindingClaims,
   getUserAgentFromHeaders,
   normalizePlaybackUserAgent,
@@ -16,7 +20,7 @@ const app = new Hono()
 
 // JWT token expiration (default)
 const TOKEN_EXPIRATION = '4h'
-const JWT_ISSUER = 'clipmux'
+const JWT_ISSUER = 'openvod'
 const JWT_AUDIENCE = 'playback'
 const DEFAULT_RESTRICTIONS = {
   allowed_domains: ['*'],
@@ -57,7 +61,7 @@ async function generatePlaybackToken(
   bindingClaims: PlaybackBindingClaims,
   restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS,
 ): Promise<string> {
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET)
+  const secret = new TextEncoder().encode(requirePlaybackJwtSecret())
   const claims = {
     ...bindingClaims,
     ...restrictions,
@@ -122,7 +126,8 @@ app.get('/:id', async (c) => {
   }
 
   // Build response
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
+  // Never fabricate a placeholder host: relative URLs when unconfigured.
+  const deliveryUrl = readDeliveryBaseUrl() ?? ''
   
   // Helper to resolve URLs - don't double-prefix if already absolute
   const resolveUrl = (url: string | null) => {
@@ -273,7 +278,8 @@ app.get('/', async (c) => {
     .where(eq(video.organizationId, organizationId))
     .orderBy(desc(video.createdAt))
 
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
+  // Never fabricate a placeholder host: relative URLs when unconfigured.
+  const deliveryUrl = readDeliveryBaseUrl() ?? ''
 
   // Helper to resolve URLs - don't double-prefix if already absolute
   const resolveUrl = (url: string | null) => {

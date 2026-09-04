@@ -4,6 +4,8 @@ import { type Context, Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { auth } from './lib/auth'
 import { logger } from './lib/logger'
+import { matchOrigin, parseOriginList } from './lib/config'
+import health from './routes/health'
 import upload from './routes/upload'
 import uploadPublic from './routes/upload-public'
 import webhook from './routes/webhook'
@@ -217,48 +219,25 @@ app.use('*', async (c, next) => {
   await next()
 })
 
-const isAllowedOrigin = (origin: string, envFrontendUrl?: string): boolean => {
-  if (!origin) return false
+// Origins that are always allowed while developing (matches legacy behavior).
+const LOCAL_DEV_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+]
 
-  // Local development origins
-  if (
-    origin === 'http://localhost:3000' ||
-    origin === 'http://localhost:3001' ||
-    origin === 'http://127.0.0.1:3000'
-  ) {
-    return true
-  }
-
-  // Production domain & subdomains
-  if (
-    origin === 'https://clipmux.com' ||
-    origin === 'https://www.clipmux.com' ||
-    origin.endsWith('.clipmux.com')
-  ) {
-    return true
-  }
-
-  // Cloudflare Pages deployments (e.g. *.clipmux-ui.pages.dev, *.pages.dev)
-  if (
-    origin === 'https://clipmux-ui.pages.dev' ||
-    origin.endsWith('.clipmux-ui.pages.dev') ||
-    origin.endsWith('.pages.dev')
-  ) {
-    return true
-  }
-
-  // Configured FRONTEND_URL environment variable (supports comma-separated origins)
-  if (envFrontendUrl) {
-    const origins = envFrontendUrl.split(',').map((o) => o.trim())
-    if (origins.includes(origin)) return true
-  }
-
-  if (process.env.FRONTEND_URL) {
-    const origins = process.env.FRONTEND_URL.split(',').map((o) => o.trim())
-    if (origins.includes(origin)) return true
-  }
-
-  return false
+/**
+ * Resolve the CORS origin allowlist for a request from deployment env vars.
+ * - FRONTEND_URL: comma-separated exact origins (legacy, also feeds better-auth)
+ * - CORS_ORIGINS: comma-separated patterns; supports `*.example.com` wildcards
+ * Patterns are matched host-level; no hardcoded brand domains.
+ */
+const resolveCorsPatterns = (envFrontend?: string, envCors?: string): string[] => {
+  const frontendUrl =
+    envFrontend || (typeof process !== 'undefined' ? process.env?.FRONTEND_URL : undefined)
+  const corsOrigins =
+    envCors || (typeof process !== 'undefined' ? process.env?.CORS_ORIGINS : undefined)
+  return [...parseOriginList(frontendUrl), ...parseOriginList(corsOrigins)]
 }
 
 // Permissive CORS for B2B public API routes (/v1/*)
@@ -285,6 +264,24 @@ app.use(
   }),
 )
 
+// Permissive CORS for public health probes (no credentials involved)
+app.use(
+  '/health',
+  cors({
+    origin: '*',
+    allowMethods: ['GET', 'HEAD', 'OPTIONS'],
+    maxAge: 600,
+  }),
+)
+app.use(
+  '/health/*',
+  cors({
+    origin: '*',
+    allowMethods: ['GET', 'HEAD', 'OPTIONS'],
+    maxAge: 600,
+  }),
+)
+
 app.use('/api/*', async (c, next) => {
   if (c.req.path.startsWith('/api/playback')) {
     return next()
@@ -292,11 +289,12 @@ app.use('/api/*', async (c, next) => {
 
   const corsMiddleware = cors({
     origin: (origin) => {
-      const envFrontendUrl = c.env?.FRONTEND_URL
-      if (isAllowedOrigin(origin, envFrontendUrl)) {
+      const patterns = resolveCorsPatterns(c.env?.FRONTEND_URL, c.env?.CORS_ORIGINS)
+      if (matchOrigin(origin, [...patterns, ...LOCAL_DEV_ORIGINS])) {
         return origin
       }
-      return envFrontendUrl || 'https://clipmux.com'
+      // Unknown origin: send no CORS header. Do not fabricate a fallback origin.
+      return null
     },
     allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
     allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -382,6 +380,7 @@ app.on(['POST', 'GET'], '/api/auth/*', (c) => {
   return auth.handler(c.req.raw)
 })
 
+app.route('/health', health)
 app.route('/api/upload', upload)
 app.route('/api/webhook', webhook)
 app.route('/api/video', video)
@@ -392,7 +391,5 @@ app.route('/v1/upload', uploadPublic)
 app.route('/v1', api)
 app.route('/api/playback', analytics)
 app.route('/api/analytics-stats', analyticsStats)
-
-app.get('/health', (c) => c.text('ok'))
 
 export default app

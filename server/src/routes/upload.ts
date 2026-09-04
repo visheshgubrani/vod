@@ -216,24 +216,21 @@ app.post('/complete', async (c) => {
     return c.json({ success: true, fileId, skipped: true })
   }
 
-  // Update video status to 'processing' atomically
-  const updated = await db
-    .update(video)
-    .set({
-      status: 'processing',
-      updatedAt: new Date(),
-    })
-    .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
-    .returning()
+    // Dispatch the transcode job BEFORE flipping state: a failed dispatch must
+    // never leave the row stuck in 'processing'. triggerTranscoding throws a
+    // typed DispatchError on final failure.
+    if (!videoRecord.rawKey) {
+      console.error(`[UPLOAD COMPLETE ERROR] Video ${fileId} has no rawKey`)
+      await db
+        .update(video)
+        .set({ status: 'failed', updatedAt: new Date() })
+        .where(eq(video.id, fileId))
+      return c.json(
+        { error: 'Upload has no stored object; please upload the file again' },
+        400,
+      )
+    }
 
-  // If no rows updated, another request already started processing
-  if (updated.length === 0) {
-    console.log(`Video ${fileId} processing already started by another request`)
-    return c.json({ success: true, fileId, skipped: true })
-  }
-
-  // Queue for transcoding
-  if (videoRecord.rawKey) {
     try {
       await triggerTranscoding(
         videoRecord.rawKey,
@@ -246,26 +243,41 @@ app.post('/complete', async (c) => {
       )
     } catch (err) {
       console.error(`Failed to queue transcoding for ${fileId}:`, err)
-      // Revert status so user knows it failed and can retry
       await db
         .update(video)
-        .set({ status: 'failed' })
+        .set({ status: 'failed', updatedAt: new Date() })
         .where(eq(video.id, fileId))
       return c.json(
-        { error: 'Upload complete but transcoding failed to start' },
+        {
+          error: `Upload complete but transcoding failed to start: ${err instanceof Error ? err.message : String(err)}`,
+        },
         500,
       )
     }
-  }
 
-  // Dispatch webhook event
-  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
-    videoId: fileId,
-    title: videoRecord.title,
-    status: 'processing',
-  })
+    // Transcode job accepted — transition uploading -> processing atomically.
+    const updated = await db
+      .update(video)
+      .set({
+        status: 'processing',
+        updatedAt: new Date(),
+      })
+      .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
+      .returning()
 
-  return c.json({ success: true, fileId })
+    if (updated.length === 0) {
+      console.log(`Video ${fileId} status changed before transition; skipping`)
+      return c.json({ success: true, fileId, skipped: true })
+    }
+
+    // Dispatch webhook event
+    dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
+      videoId: fileId,
+      title: videoRecord.title,
+      status: 'processing',
+    })
+
+    return c.json({ success: true, fileId })
 })
 
 // Multipart upload - create
@@ -530,7 +542,33 @@ app.post('/multipart/complete', async (c) => {
       })
     }
 
-    // Atomic update - only update if still 'uploading'
+    // Dispatch the transcode job BEFORE flipping state: a failed dispatch must
+    // never leave the row stuck in 'processing'.
+    try {
+      await triggerTranscoding(
+        key,
+        fileId,
+        videoRecord.playbackPolicy || 'public',
+        videoRecord.generateSubtitle || false,
+        videoRecord.generateChapters || false,
+        videoRecord.organizationId,
+        c.env,
+      )
+    } catch (err) {
+      console.error(`Failed to queue transcoding for ${fileId}:`, err)
+      await db
+        .update(video)
+        .set({ status: 'failed', updatedAt: new Date() })
+        .where(eq(video.id, fileId))
+      return c.json(
+        {
+          error: `Upload complete but transcoding failed to start: ${err instanceof Error ? err.message : String(err)}`,
+        },
+        500,
+      )
+    }
+
+    // Transcode job accepted — transition uploading -> processing atomically.
     const updated = await db
       .update(video)
       .set({
@@ -540,36 +578,19 @@ app.post('/multipart/complete', async (c) => {
       .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
       .returning()
 
-    // Only queue if we successfully updated the status
-    if (updated.length > 0) {
-      try {
-        const playbackPolicy = videoRecord.playbackPolicy || 'public'
-        await triggerTranscoding(
-          key,
-          fileId,
-          playbackPolicy,
-          videoRecord.generateSubtitle || false,
-          videoRecord.generateChapters || false,
-          videoRecord.organizationId,
-          c.env,
-        )
-      } catch (err) {
-        console.error(`Failed to queue transcoding for ${fileId}:`, err)
-        // Revert status so user knows it failed and can retry
-        await db
-          .update(video)
-          .set({ status: 'failed' })
-          .where(eq(video.id, fileId))
-        return c.json(
-          { error: 'Upload complete but transcoding failed to start' },
-          500,
-        )
-      }
-    } else {
-      console.log(`Video ${fileId} status changed, skipping transcoding`)
+    if (updated.length === 0) {
+      console.log(`Video ${fileId} status changed before transition; skipping`)
+      return c.json({
+        location: response.Location,
+        bucket: response.Bucket,
+        key: response.Key,
+        etag: response.ETag,
+        fileId,
+        skipped: true,
+      })
     }
 
-    // Dispatch webhook event (inside if block where videoRecord is defined)
+    // Dispatch webhook event
     dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
       videoId: fileId,
       title: videoRecord.title,

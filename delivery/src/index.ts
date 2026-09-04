@@ -25,7 +25,7 @@ interface Env {
 	USAGE_ANALYTICS?: AnalyticsEngineDataset;  // For bandwidth tracking
 }
 
-const JWT_ISSUER = 'clipmux';
+const JWT_ISSUER = 'openvod';
 const JWT_AUDIENCE = 'playback';
 const UNKNOWN_USER_AGENT = 'unknown';
 const ANY_DOMAIN_PATTERN = '*';

@@ -12,6 +12,7 @@ import { eq, and } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
+import { requirePlaybackJwtSecret } from '../lib/config'
 import { video, uploadToken } from '../db/schema'
 import type { ApiKeyVariables } from '../types'
 import {
@@ -24,7 +25,7 @@ const app = new Hono<{ Variables: ApiKeyVariables }>()
 
 // JWT token expiration (customizable per request)
 const DEFAULT_EXPIRATION = '4h'
-const JWT_ISSUER = 'clipmux'
+const JWT_ISSUER = 'openvod'
 const JWT_AUDIENCE = 'playback'
 const DEFAULT_ALLOWED_DOMAINS = ['*']
 const DEFAULT_ALLOW_NO_REFERRER = true
@@ -101,7 +102,7 @@ async function generatePlaybackToken(
   bindingClaims: PlaybackBindingClaims | null,
   restrictions: PlaybackRestrictionsClaims,
 ): Promise<{ token: string; expiresAt: number }> {
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET)
+  const secret = new TextEncoder().encode(requirePlaybackJwtSecret())
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
   const claims = {
     ...(bindingClaims ?? {}),
