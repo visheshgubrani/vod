@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
-import { eq, and, desc } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { video, member } from '../db/schema'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
+import type { Bindings } from '../types'
+import { triggerTranscoding } from '../utils/queue'
 import {
   readDeliveryBaseUrl,
   requirePlaybackJwtSecret,
@@ -16,7 +18,7 @@ import {
   type PlaybackBindingClaims,
 } from '../utils/playbackBinding'
 
-const app = new Hono()
+const app = new Hono<{ Bindings: Bindings }>()
 
 // JWT token expiration (default)
 const TOKEN_EXPIRATION = '4h'
@@ -498,6 +500,108 @@ app.post('/:id/transcribe', async (c) => {
     message: 'Transcription queued',
     videoId,
     subtitleStatus: 'pending',
+  })
+})
+
+/**
+ * POST /api/video/:id/retry
+ * Re-dispatch transcoding for a failed (or stuck/stale processing) video.
+ * Explicit retry is the only path that moves a video out of 'failed' —
+ * the state machine forbids late callbacks from resurrecting it.
+ */
+app.post('/:id/retry', async (c) => {
+  const session = c.var.session
+  const videoId = c.req.param('id')
+
+  const videos = await db
+    .select()
+    .from(video)
+    .where(eq(video.id, videoId))
+    .limit(1)
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  const members = await db
+    .select()
+    .from(member)
+    .where(
+      and(
+        eq(member.userId, session.userId),
+        eq(member.organizationId, videoRecord.organizationId),
+      ),
+    )
+    .limit(1)
+  if (members.length === 0) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  if (videoRecord.status !== 'failed' && videoRecord.status !== 'processing') {
+    return c.json(
+      { error: `Only failed or stuck processing videos can be retried (current: ${videoRecord.status})` },
+      400,
+    )
+  }
+  if (!videoRecord.rawKey) {
+    return c.json({ error: 'Video has no raw source object to re-transcode' }, 400)
+  }
+
+  // Dispatch first: only flip state once the job is accepted.
+  try {
+    await triggerTranscoding(
+      videoRecord.rawKey,
+      videoId,
+      videoRecord.playbackPolicy || 'public',
+      videoRecord.generateSubtitle || false,
+      videoRecord.generateChapters || false,
+      videoRecord.organizationId,
+      c.env,
+    )
+  } catch (err) {
+    console.error(`[RETRY] dispatch failed for ${videoId}:`, err)
+    await db
+      .update(video)
+      .set({ failureCode: 'DISPATCH_FAILED', updatedAt: new Date() })
+      .where(eq(video.id, videoId))
+    return c.json(
+      {
+        error: `Retry dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      502,
+    )
+  }
+
+  const updated = await db
+    .update(video)
+    .set({
+      status: 'processing',
+      processingStartedAt: new Date(),
+      jobAttempts: sql`COALESCE(${video.jobAttempts}, 0) + 1`,
+      lastHeartbeatAt: null,
+      failureCode: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(video.id, videoId))
+    .returning({ id: video.id, jobAttempts: video.jobAttempts })
+
+  if (updated.length === 0) {
+    return c.json({ error: 'Video changed state concurrently; retry again' }, 409)
+  }
+
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.processing', {
+    videoId,
+    title: videoRecord.title,
+    retried: true,
+    attempts: updated[0].jobAttempts,
+  })
+
+  return c.json({
+    success: true,
+    status: 'processing',
+    videoId,
+    attempts: updated[0].jobAttempts,
   })
 })
 

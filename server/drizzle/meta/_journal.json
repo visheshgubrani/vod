@@ -64,6 +64,13 @@
       "when": 1773252345573,
       "tag": "0008_high_smiling_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788521377130,
+      "tag": "0009_high_mystique",
+      "breakpoints": true
     }
   ]
 }

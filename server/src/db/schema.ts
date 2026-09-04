@@ -209,12 +209,19 @@ export const video = pgTable('video', {
   // Processing metrics
   transcodedTime: integer('transcoded_time'), // Transcoding duration in seconds
 
+  // Job lifecycle tracking (heartbeats, sweeps, retries)
+  processingStartedAt: timestamp('processing_started_at'), // when the current job attempt started
+  jobAttempts: integer('job_attempts').default(0), // successful dispatch attempts
+  lastHeartbeatAt: timestamp('last_heartbeat_at'), // last heartbeat from the transcoder
+  failureCode: text('failure_code'), // typed machine-readable failure reason
+
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at')
     .defaultNow()
     .$onUpdate(() => new Date()),
 }, (table) => [
   index('video_organizationId_idx').on(table.organizationId),
+  index('video_status_updatedAt_idx').on(table.status, table.updatedAt),
 ])
 
 export const apiKey = pgTable(

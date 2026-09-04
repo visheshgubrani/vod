@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { and, eq, inArray } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { decideCallbackTransition, type VideoStatus } from '../lib/videoState'
@@ -27,18 +27,10 @@ function safeJsonParse<T>(s: unknown, fallback: T): T {
 app.post('/transcode-complete', async (c) => {
   console.log('[WEBHOOK] Received /api/webhook/transcode-complete callback request')
   
-  // 1) Webhook auth (MVP)
-  const expected = c.env?.MODAL_WEBHOOK_SECRET || process.env.MODAL_WEBHOOK_SECRET
-  if (expected) {
-    const got =
-      c.req.header('x-webhook-secret') ||
-      (c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '')
-    if (!got || !secretsMatch(got, expected)) {
-      console.error(`[WEBHOOK AUTH FAILED] Secret mismatch or missing header`)
-      return c.json({ error: 'Unauthorized' }, 401)
-    }
-    console.log('[WEBHOOK AUTH OK] Webhook secret verified successfully')
-  }
+  // 1) Webhook auth — REQUIRED (fail-closed): an unconfigured secret is a
+  // server misconfiguration, never a reason to accept unsigned callbacks.
+  const authError = authenticateWebhook(c)
+  if (authError) return authError
 
   try {
     const payload = await c.req.json<any>()
@@ -309,6 +301,60 @@ app.post('/transcode-complete', async (c) => {
       500,
     )
   }
+})
+function authenticateWebhook(c: Context<{ Bindings: Bindings }>): Response | null {
+  const expected =
+    c.env?.MODAL_WEBHOOK_SECRET ||
+    (typeof process !== 'undefined' ? process.env?.MODAL_WEBHOOK_SECRET : undefined) ||
+    c.env?.TRANSCODE_INGEST_SECRET ||
+    (typeof process !== 'undefined' ? process.env?.TRANSCODE_INGEST_SECRET : undefined)
+  if (!expected) {
+    return c.json({ error: 'Webhook secret not configured on server' }, 503)
+  }
+  const got =
+    c.req.header('x-webhook-secret') ||
+    (c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '')
+  if (!got || !secretsMatch(got, expected)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  return null
+}
+
+/**
+ * POST /api/webhook/heartbeat
+ * Transcoder liveness beats during long jobs. Non-fatal for the transcoder:
+ * the worker swallows heartbeat failures; the server sweep uses these to keep
+ * jobs alive past the stale window.
+ */
+app.post('/heartbeat', async (c) => {
+  const authError = authenticateWebhook(c)
+  if (authError) return authError
+
+  const body = await c.req.json<any>().catch(() => null)
+  if (!body) return c.json({ error: 'Invalid payload' }, 400)
+
+  const videoId = body?.video_id || body?.fileId || body?.videoId
+  if (!videoId || typeof videoId !== 'string') {
+    return c.json({ error: 'Missing video_id' }, 400)
+  }
+
+  const updated = await db
+    .update(video)
+    .set({ lastHeartbeatAt: new Date() })
+    .where(
+      and(
+        eq(video.id, videoId),
+        inArray(video.status, ['processing', 'uploading']),
+      ),
+    )
+    .returning({ id: video.id })
+
+  if (updated.length === 0) {
+    // Terminal or unknown video — nothing to keep alive. Acknowledge so the
+    // transcoder never treats a heartbeat rejection as fatal.
+    return c.json({ success: true, ignored: true })
+  }
+  return c.json({ success: true })
 })
 
 export default app

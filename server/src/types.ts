@@ -41,6 +41,13 @@ export type Bindings = {
   RATE_LIMIT_ANALYTICS_MAX?: string
   RATE_LIMIT_ANALYTICS_WINDOW?: string
 
+  // Job sweeper (stuck-video recovery)
+  INTERNAL_SWEEP_SECRET?: string
+  SWEEP_ENABLED?: string
+  SWEEP_PROCESSING_STALE_MIN?: string
+  SWEEP_UPLOADING_STALE_HOURS?: string
+  SWEEP_MAX_ATTEMPTS?: string
+
   NODE_ENV?: string
   LOG_LEVEL?: string
 }

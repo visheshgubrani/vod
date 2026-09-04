@@ -6,6 +6,7 @@ import { auth } from './lib/auth'
 import { logger } from './lib/logger'
 import { matchOrigin, parseOriginList } from './lib/config'
 import health from './routes/health'
+import internal from './routes/internal'
 import upload from './routes/upload'
 import uploadPublic from './routes/upload-public'
 import webhook from './routes/webhook'
@@ -381,6 +382,7 @@ app.on(['POST', 'GET'], '/api/auth/*', (c) => {
 })
 
 app.route('/health', health)
+app.route('/api/internal', internal)
 app.route('/api/upload', upload)
 app.route('/api/webhook', webhook)
 app.route('/api/video', video)
