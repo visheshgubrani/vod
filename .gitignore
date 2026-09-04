@@ -1,0 +1,44 @@
+# =========================================================
+# OpenVOD — root ignore file
+# Per-package ignores live in each package; this catches
+# anything that falls between them.
+# =========================================================
+
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds & caches
+dist/
+.next/
+out/
+*.tsbuildinfo
+.parcel-cache/
+.cache/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# environment & secrets (keep committed examples)
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+secrets.json
+
+# cloudflare / wrangler
+.wrangler/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# misc
+.DS_Store
+coverage/
+*.tgz
