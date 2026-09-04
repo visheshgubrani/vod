@@ -44,3 +44,20 @@ coverage/
 *.tgz
 .npmrc
 .pnpm-cache/
+
+# pnpm store farm occasionally materializes at clipmux-docs/ root (root cause
+# TBD); keep the real project files only.
+clipmux-docs/*
+!clipmux-docs/app/
+!clipmux-docs/components/
+!clipmux-docs/content/
+!clipmux-docs/lib/
+!clipmux-docs/package.json
+!clipmux-docs/next.config.mjs
+!clipmux-docs/postcss.config.mjs
+!clipmux-docs/source.config.ts
+!clipmux-docs/tsconfig.json
+!clipmux-docs/eslint.config.mjs
+!clipmux-docs/mdx-components.tsx
+!clipmux-docs/README.md
+!clipmux-docs/.gitignore
