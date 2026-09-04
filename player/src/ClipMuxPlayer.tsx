@@ -8,6 +8,7 @@ import {
     Poster,
     Track,
 } from '@vidstack/react'
+import { planRefreshForToken } from './tokenRefresh'
 import {
     defaultLayoutIcons,
     DefaultVideoLayout,
@@ -45,6 +46,17 @@ export interface ClipMuxPlayerProps {
 
     /** Signed playback token for private content. Appended to the URL as `?token=`. */
     token?: string
+
+    /**
+     * Optional endpoint (absolute or relative) that returns
+     * `{ "token": "<new playback token>" }` — e.g. `/api/video/:id/token`.
+     * When set together with `token`, the player refreshes the token before
+     * it expires and swaps it into the playback URL seamlessly.
+     */
+    tokenRefreshEndpoint?: string
+
+    /** Refresh lead time before token expiry in ms (default: 60_000). */
+    tokenRefreshLeadMs?: number
 
     /** Video title shown in the player chrome. */
     title?: string
@@ -356,6 +368,8 @@ export function ClipMuxPlayer({
     src,
     envKey,
     token,
+    tokenRefreshEndpoint,
+    tokenRefreshLeadMs,
     title,
     poster,
     subtitles,
@@ -373,11 +387,54 @@ export function ClipMuxPlayer({
     // Resolve video ID — playbackId is preferred, fall back to extracting from src
     const videoId = playbackId || 'unknown'
 
+    // Live token state: `token` from props is the initial/static value; a
+    // successful refresh swaps in a new one without unmounting playback.
+    const [liveToken, setLiveToken] = React.useState<string | null>(null)
+    const effectiveToken = liveToken ?? token
+
     // Resolve the playback URL
     const videoSrc = React.useMemo(
-        () => resolveSourceUrl({ playbackId, src, token }),
-        [playbackId, src, token],
+        () => resolveSourceUrl({ playbackId, src, token: effectiveToken }),
+        [playbackId, src, effectiveToken],
     )
+
+    // ── Signed-token auto-refresh ─────────────────────────────────────────
+    React.useEffect(() => {
+        if (!token || !tokenRefreshEndpoint || typeof window === 'undefined') return
+        let cancelled = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+
+        const schedule = () => {
+            const plan = planRefreshForToken(
+                liveToken ?? token,
+                Date.now() / 1000,
+                tokenRefreshLeadMs,
+            )
+            if (!plan) return
+            const delayMs = Math.max(plan.delayMs, 1_000)
+            timer = setTimeout(async () => {
+                if (cancelled) return
+                try {
+                    const res = await fetch(tokenRefreshEndpoint, { credentials: 'include' })
+                    if (!res.ok) throw new Error(`token refresh failed: ${res.status}`)
+                    const data = (await res.json()) as { token?: string }
+                    if (data.token) {
+                        setLiveToken(data.token)
+                    } else {
+                        schedule() // no token yet — retry on the next cycle
+                    }
+                } catch {
+                    schedule() // transient failure — never interrupt playback
+                }
+            }, delayMs)
+        }
+        schedule()
+
+        return () => {
+            cancelled = true
+            if (timer) clearTimeout(timer)
+        }
+    }, [token, tokenRefreshEndpoint, tokenRefreshLeadMs, liveToken])
 
     // Player state ref for analytics
     const playerStateRef = React.useRef<{ currentTime: number; duration: number } | null>(null)
@@ -393,13 +450,13 @@ export function ClipMuxPlayer({
 
     const posterSrc = React.useMemo(() => {
         if (!poster) return undefined
-        return withToken(poster, token)
-    }, [poster, token])
+        return withToken(poster, effectiveToken)
+    }, [poster, effectiveToken])
 
     const subtitlesSrc = React.useMemo(() => {
         if (!subtitles) return undefined
-        return withToken(subtitles, token)
-    }, [subtitles, token])
+        return withToken(subtitles, effectiveToken)
+    }, [subtitles, effectiveToken])
 
     // Build inline style with theme CSS variables
     const mergedStyle = React.useMemo(() => {
