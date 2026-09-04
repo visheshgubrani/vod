@@ -15,6 +15,7 @@ const PAYLOAD: DispatchPayload = {
   generateChapters: false,
   organizationId: 'org1',
   callbackUrl: 'https://api.example.com/api/webhook/transcode-complete',
+  heartbeatUrl: 'https://api.example.com/api/webhook/heartbeat',
 }
 
 const fetchMock = vi.fn()
@@ -66,6 +67,7 @@ describe('dispatchDirectHttp', () => {
     expect(body.fileId).toBe('video-1')
     expect(body.bucket).toBe('raw-uploads')
     expect(body.callbackUrl).toBe(PAYLOAD.callbackUrl)
+    expect(body.heartbeatUrl).toBe('https://api.example.com/api/webhook/heartbeat')
   })
 
   it('retries with exponential backoff on 5xx and throws a typed error on final failure', async () => {

@@ -3,6 +3,7 @@ Network utilities for callbacks and URL validation.
 """
 import os
 import time
+import random
 import socket
 import ipaddress
 from urllib.parse import urlparse, urljoin
@@ -38,6 +39,19 @@ def _host_resolves_to_public_ip(host: str) -> bool:
     return True
 
 
+def _callback_secret() -> str:
+    """Secret authenticating callbacks/heartbeats to the API."""
+    return os.environ.get("TRANSCODE_INGEST_SECRET") or os.environ.get("MODAL_WEBHOOK_SECRET") or ""
+
+
+def _auth_headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    secret = _callback_secret()
+    if secret:
+        headers["X-Webhook-Secret"] = secret
+    return headers
+
+
 def send_callback(url: str, data: dict, max_retries: int = 3) -> None:
     """
     Send webhook callback with exponential backoff retry.
@@ -54,27 +68,73 @@ def send_callback(url: str, data: dict, max_retries: int = 3) -> None:
     print(f"📞 Sending callback to {url}...")
     for attempt in range(max_retries):
         try:
-            headers = {"Content-Type": "application/json"}
-            secret = os.environ.get("MODAL_WEBHOOK_SECRET")
-            if secret:
-                headers["X-Webhook-Secret"] = secret
-
             resp = requests.post(
                 url,
                 json=data,
-                headers=headers,
+                headers=_auth_headers(),
                 timeout=15
             )
             resp.raise_for_status()
             print(f"✅ Callback delivered: {resp.status_code}")
             return
+        except requests.HTTPError as http_err:
+            status = http_err.response.status_code if http_err.response is not None else 0
+            if 400 <= status < 500 and status != 429:
+                # Client rejection — retrying will not help.
+                print(f"❌ Callback rejected with HTTP {status}: not retrying")
+                return
+            e: BaseException = http_err
+        except Exception as e:  # noqa: F841
+            pass
+        if attempt == max_retries - 1:
+            print(f"❌ Callback failed after {max_retries} attempts")
+        else:
+            wait_time = (2 ** attempt) + random.uniform(0, 0.5)  # jitter
+            print(f"⚠️ Callback attempt {attempt+1} failed. Retrying in {wait_time:.1f}s...")
+            time.sleep(wait_time)
+
+
+def send_heartbeat(
+    url: str,
+    video_id: str,
+    stage: str,
+    progress: float,
+    max_attempts: int = 2,
+) -> None:
+    """
+    Send a liveness beat to the API. STRICTLY NON-FATAL: any failure (network,
+    validation, HTTP error) is caught and logged — a transient server blip must
+    never abort a running transcode. The server's sweeper tolerates missed
+    beats; it only needs recent ones to keep jobs alive.
+    """
+    if not is_allowed_callback_url(url):
+        print(f"[SECURITY] Blocked heartbeat URL: {url}")
+        return
+    import datetime
+    for attempt in range(max_attempts):
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "video_id": video_id,
+                    "stage": stage,
+                    "progress": round(float(progress), 4),
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                },
+                headers=_auth_headers(),
+                timeout=5,
+            )
+            if resp.ok:
+                return
+            if resp.status_code == 401:
+                print(f"[HEARTBEAT] rejected (auth) — check shared secret")
+                return
         except Exception as e:
-            if attempt == max_retries - 1:
-                print(f"❌ Callback failed after {max_retries} attempts: {e}")
+            if attempt == max_attempts - 1:
+                print(f"[HEARTBEAT] failed (non-fatal): {e}")
             else:
-                wait_time = 2 ** attempt
-                print(f"⚠️ Callback attempt {attempt+1} failed. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
+                time.sleep(0.5)
+    # last-resort swallow: never raise
 
 
 def is_public_host(url: str) -> bool:

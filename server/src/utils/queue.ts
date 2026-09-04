@@ -24,6 +24,8 @@ export type DispatchPayload = {
   generateChapters: boolean
   organizationId: string
   callbackUrl: string
+  /** Transcoder liveness endpoint derived from the callback URL. */
+  heartbeatUrl?: string
 }
 
 export type DispatchErrorCode =
@@ -223,6 +225,7 @@ export async function triggerTranscoding(
     )
   }
 
+  const callbackUrl = buildCallbackUrl(envMap.BACKEND_URL)
   const payload: DispatchPayload = {
     key: fileKey,
     bucket: rawBucketName,
@@ -231,7 +234,11 @@ export async function triggerTranscoding(
     generateSubtitle,
     generateChapters,
     organizationId,
-    callbackUrl: buildCallbackUrl(envMap.BACKEND_URL),
+    callbackUrl,
+    heartbeatUrl: callbackUrl.replace(
+      '/api/webhook/transcode-complete',
+      '/api/webhook/heartbeat',
+    ),
   }
 
   const adapter = pickDispatcher(envMap)

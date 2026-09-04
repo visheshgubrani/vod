@@ -19,6 +19,7 @@ import re
 import secrets
 import shutil
 import time
+import threading
 import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import HTTPException, Request
@@ -31,7 +32,7 @@ from config import (
 )
 
 # Utilities
-from utils import send_callback, download_public_url
+from utils import send_callback, download_public_url, send_heartbeat
 
 # Typed pipeline errors
 from errors import (
@@ -55,7 +56,7 @@ from video import (
 )
 
 # Packaging
-from packaging import package_with_shaka
+from packaging import choose_segment_duration, package_with_shaka
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -69,9 +70,13 @@ image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("ffmpeg", "wget", "curl", "mediainfo")
     .pip_install("boto3", "requests", "fastapi[standard]", "pillow", "faster-whisper", "groq")
+    .env({"HF_HOME": "/root/.cache/huggingface"})
     .run_commands(
         "wget https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager",
-        "chmod +x /usr/local/bin/packager"
+        "chmod +x /usr/local/bin/packager",
+        # Pre-bake Whisper weights so cold starts never download ~1.6GB.
+        # WHISPER_MODEL=large-v3-turbo (default) maps to this repo.
+        "python -c \"from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3-turbo')\""
     )
     # Add local Python modules
     .add_local_python_source("config")
@@ -217,6 +222,28 @@ def transcode_worker(payload: dict):
         fmp4_dir.mkdir()
         output_dir.mkdir()
         
+        # ── heartbeat thread (strictly non-fatal) ─────────────────────────
+        heartbeat_url = payload.get("heartbeatUrl")
+        beat_state = {"stage": "download", "progress": 0.0}
+        stop_event = threading.Event()
+
+        def report_stage(stage: str, progress: float) -> None:
+            beat_state["stage"] = stage
+            beat_state["progress"] = progress
+            if heartbeat_url:
+                send_heartbeat(heartbeat_url, video_id, stage, progress)
+
+        def _heartbeat_loop() -> None:
+            while not stop_event.wait(30):
+                if heartbeat_url:
+                    send_heartbeat(
+                        heartbeat_url, video_id,
+                        beat_state["stage"], beat_state["progress"],
+                    )
+
+        if heartbeat_url:
+            threading.Thread(target=_heartbeat_loop, daemon=True, name="heartbeat").start()
+        
         # ═══════════════════════════════════════════════════════════════════════
         # DOWNLOAD WITH RETRY
         # ═══════════════════════════════════════════════════════════════════════
@@ -301,6 +328,7 @@ def transcode_worker(payload: dict):
         # ANALYZE VIDEO
         # ═══════════════════════════════════════════════════════════════════════
         
+        report_stage("analyze", 0.25)
         print("🔍 Analyzing video...")
         metadata = get_video_metadata(str(local_input))
         profiles = select_optimal_ladder(metadata)
@@ -334,6 +362,7 @@ def transcode_worker(payload: dict):
         # ═══════════════════════════════════════════════════════════════════════
         
         transcode_start = time.time()
+        report_stage("transcode", 0.4)
         
         # Check if we should generate subtitles
         generate_subtitle = payload.get("generateSubtitle", False)
@@ -396,7 +425,7 @@ def transcode_worker(payload: dict):
                     transcribe_to_vtt,
                     local_input,
                     subtitle_file,
-                    "large-v3-turbo"  # Model size
+                    os.environ.get("WHISPER_MODEL", "large-v3-turbo")
                 )
                 futures[transcription_future] = ("subtitle", "subtitles")
             
@@ -460,13 +489,15 @@ def transcode_worker(payload: dict):
         # ═══════════════════════════════════════════════════════════════════════
         
         package_start = time.time()
+        report_stage("package", 0.65)
+        segment_duration = choose_segment_duration(metadata.duration)
         
         playback_policy = payload.get("playbackPolicy", "public")
         organization_id = payload.get("organizationId")
         # Note: For "signed" videos, security is enforced at the delivery 
         # worker level via JWT tokens (Mux-style), not content encryption.
         
-        package_with_shaka(renditions, output_dir)
+        package_with_shaka(renditions, output_dir, segment_duration=segment_duration)
         
         package_time = time.time() - package_start
         print(f"✅ Packaging complete in {package_time:.1f}s")
@@ -476,6 +507,7 @@ def transcode_worker(payload: dict):
         # ═══════════════════════════════════════════════════════════════════════
         
         upload_start = time.time()
+        report_stage("upload", 0.85)
         
         s3_upload = boto3.client(
             "s3",
@@ -485,7 +517,7 @@ def transcode_worker(payload: dict):
             config=S3_CONFIG,
         )
         
-        uploaded_count = upload_to_r2(
+        upload_stats = upload_to_r2(
             output_dir,
             video_id,
             s3_upload,
@@ -493,6 +525,14 @@ def transcode_worker(payload: dict):
             playback_policy=playback_policy,
             organization_id=organization_id,
         )
+        uploaded_count = upload_stats.uploaded
+        if not upload_stats.complete:
+            failed_preview = ", ".join(upload_stats.failed[:10])
+            raise TranscodeError(
+                ERROR_PARTIAL_UPLOAD,
+                f"Uploaded {upload_stats.uploaded}/{upload_stats.total} files "
+                f"(failed: {failed_preview or 'unknown'})",
+            )
         
         upload_time = time.time() - upload_start
         print(f"✅ Upload complete in {upload_time:.1f}s")
@@ -567,6 +607,7 @@ def transcode_worker(payload: dict):
         }
         
         print(f"✅ [JOB COMPLETE] {video_id} in {total_time:.1f}s ({processing_speed:.2f}x realtime)")
+        report_stage("complete", 1.0)
         
         # Send success callback
         if "callbackUrl" in payload:
@@ -598,6 +639,9 @@ def transcode_worker(payload: dict):
         return error_result
     
     finally:
+        # Stop the heartbeat thread
+        stop_event.set()
+
         # Always cleanup temp files
         if work_dir.exists():
             shutil.rmtree(work_dir, ignore_errors=True)

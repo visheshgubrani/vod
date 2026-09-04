@@ -4,7 +4,22 @@ Storage utilities for R2/S3 uploads.
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+from dataclasses import dataclass, field
+from typing import List
+
 from config import R2_PREFIX, TRANSFER_CONFIG
+
+
+@dataclass
+class UploadStats:
+    """Outcome of an R2 upload pass."""
+    total: int = 0
+    uploaded: int = 0
+    failed: List[str] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return self.uploaded == self.total and self.failed == []
 
 
 def upload_to_r2(
@@ -14,7 +29,7 @@ def upload_to_r2(
     bucket: str,
     playback_policy: str = "public",
     organization_id: str = None
-) -> int:
+) -> UploadStats:
     """
     Upload packaged files to R2 with proper metadata.
     
@@ -83,8 +98,12 @@ def upload_to_r2(
     
     with ThreadPoolExecutor(max_workers=50) as executor:
         results = list(executor.map(upload_file, files))
-        uploaded = sum(results)
+    uploaded = sum(1 for r in results if r)
+    failed = [f.name for f, ok in zip(files, results) if not ok]
     
-    print(f"✅ Uploaded {uploaded}/{len(files)} files")
-    return uploaded
+    stats = UploadStats(total=len(files), uploaded=uploaded, failed=failed)
+    print(f"✅ Uploaded {stats.uploaded}/{stats.total} files")
+    if stats.failed:
+        print(f"❌ Failed uploads: {', '.join(stats.failed)}")
+    return stats
 

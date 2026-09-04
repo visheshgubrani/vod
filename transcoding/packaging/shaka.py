@@ -8,9 +8,28 @@ from config import SEGMENT_DURATION
 from utils.cmd import run_cmd
 
 
+def choose_segment_duration(duration: float) -> float:
+    """
+    Segment duration for the packager, safe for short clips.
+
+    - >= 8s content: standard 4s segments
+    - 1s .. 8s: half the duration (>= 1s)
+    - < 1s clips: half the duration, floored at 0.05s
+    (Shaka fails when the segment duration exceeds the media duration.)
+    """
+    if duration is None or duration <= 0:
+        return SEGMENT_DURATION
+    if duration >= 8.0:
+        return float(SEGMENT_DURATION)
+    if duration >= 1.0:
+        return max(1.0, duration * 0.5)
+    return max(0.05, duration * 0.5)
+
+
 def package_with_shaka(
     renditions: Dict[str, Path],
     output_dir: Path,
+    segment_duration: float = SEGMENT_DURATION,
 ) -> None:
     """
     Package fMP4 files into HLS and DASH manifests using Shaka Packager.
@@ -60,7 +79,7 @@ def package_with_shaka(
         *audio_inputs,
         
         # Segment settings
-        "--segment_duration", str(SEGMENT_DURATION),
+        "--segment_duration", f"{segment_duration:.3f}",
         
         # HLS output
         "--hls_master_playlist_output", str(output_dir / "playlist.m3u8"),
