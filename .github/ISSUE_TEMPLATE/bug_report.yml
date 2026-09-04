@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a bug in OpenVOD (server, delivery, web, sdk, player, transcoding)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report. Security issues must **not** be reported here — see SECURITY.md.
+  - type: input
+    id: package
+    attributes:
+      label: Affected package(s)
+      description: server / delivery / web / sdk / player / transcoding / docs
+      placeholder: e.g. server + delivery
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Commit hash or release version you are running
+      placeholder: e.g. main @ 1ace851d
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Steps, payloads, and configuration needed to reproduce. Include upload/trancode settings, video metadata (codec, resolution, audio), env shape (Worker vs Docker), and any relevant logs.
+      placeholder: |
+        1. Upload a ... video with ...
+        2. Call ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy-mode
+    attributes:
+      label: Deployment mode
+      options:
+        - Cloudflare Workers (api + delivery)
+        - Docker compose / VPS
+        - Local dev (wrangler dev)
+        - Modal transcoding
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / errors
+      description: Redact any secrets (keys, tokens, Authorization headers) before pasting.
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else relevant.

@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a feature or improvement for OpenVOD
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What can't you do today, or what is painful? Avoid prescribing a solution yet.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should happen? How does it fit the BYOK / self-hosted model?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Ingestion / upload (SDK, tokens, presigned URLs)
+        - Transcoding pipeline (Modal, FFmpeg, packaging, Whisper)
+        - Delivery (worker, signed URLs, caching)
+        - Dashboard / onboarding (web)
+        - Analytics / usage / billing
+        - Webhooks / API (v1, keys)
+        - Deployment / Docker / workspace tooling
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am interested in implementing this (test-first) myself
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, sketches, or notes.
