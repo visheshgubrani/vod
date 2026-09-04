@@ -1,5 +1,25 @@
 # AGENTS.md - Agentic Coding Guidelines
 
+> ## Workspace note (supersedes package-local instructions below)
+>
+> The repo is now a **single pnpm workspace** rooted at the top level
+> (`pnpm-workspace.yaml` + root `pnpm-lock.yaml`). Install once at the root
+> and run everything through filters:
+>
+> ```bash
+> pnpm install            # root — do NOT run pnpm install inside a package
+> pnpm test               # runs server/delivery/sdk/player suites
+> pnpm --filter ./server test     # one package (filters match paths)
+> pnpm --filter ./web lint
+> pnpm --filter vod-api exec tsc --noEmit
+> (cd transcoding && .venv/bin/python -m pytest)   # python logic tests
+> ```
+>
+> The per-package "cd <pkg> && pnpm install" blocks below are legacy; treat
+> root workspace commands as authoritative. Secret/hygiene rules still apply
+> everywhere (never commit `.env*`/`.dev.vars*` except `.example` files).
+
+
 This document provides guidelines for agents working on the Vod-app codebase.
 
 ## Project Overview
