@@ -19,5 +19,11 @@
     "typecheck:tsc": "pnpm --filter vod-api exec tsc --noEmit && pnpm --filter ./delivery exec tsc --noEmit",
     "db:migrate": "pnpm --filter vod-api db:migrate",
     "db:push": "pnpm --filter vod-api db:push"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
   }
 }
