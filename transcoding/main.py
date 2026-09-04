@@ -26,6 +26,8 @@ from fastapi import HTTPException, Request
 
 # Configuration
 from config import (
+    ALLOWED_SOURCE_BUCKETS,
+    ALLOWED_URL_HOSTS,
     S3_CONFIG,
     TRANSFER_CONFIG,
     R2_PREFIX,
@@ -74,6 +76,8 @@ image = (
     .run_commands(
         "wget https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager",
         "chmod +x /usr/local/bin/packager",
+        # Pin v3.2.0 by checksum (supply-chain guard on the image build).
+        "printf '%s  /usr/local/bin/packager\\n' 05af2e9ef5f12d58b9d615b7d31dc0eb61c32aee632c71965340b43c1556043e | sha256sum -c -",
         # Pre-bake Whisper weights so cold starts never download ~1.6GB.
         # WHISPER_MODEL=large-v3-turbo (default) maps to this repo.
         "python -c \"from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3-turbo')\""
@@ -156,6 +160,18 @@ def transcode_video(request: Request, payload: dict):
         return {
             "status": "error",
             "message": "Provide either {bucket,key} or input_url"
+        }
+
+    if has_r2 and ALLOWED_SOURCE_BUCKETS and (payload.get("bucket") or "").lower() not in ALLOWED_SOURCE_BUCKETS:
+        return {
+            "status": "error",
+            "message": f"Bucket '{payload.get('bucket')}' is not in ALLOWED_SOURCE_BUCKETS",
+        }
+
+    if has_url and not ALLOWED_URL_HOSTS:
+        return {
+            "status": "error",
+            "message": "input_url is disabled: set ALLOWED_URL_HOSTS to allow URL sources",
         }
     
     safe_payload = dict(payload)
@@ -331,7 +347,8 @@ def transcode_worker(payload: dict):
         report_stage("analyze", 0.25)
         print("🔍 Analyzing video...")
         metadata = get_video_metadata(str(local_input))
-        profiles = select_optimal_ladder(metadata)
+        is_audio_only = not metadata.has_video
+        profiles = [] if is_audio_only else select_optimal_ladder(metadata)
         
         print(f"📊 Video Info:")
         print(f"   - Resolution: {metadata.width}x{metadata.height} ({metadata.aspect_ratio})")
@@ -344,18 +361,16 @@ def transcode_worker(payload: dict):
         # GENERATE POSTER
         # ═══════════════════════════════════════════════════════════════════════
         
-        if not metadata.has_video:
-            raise TranscodeError(
-                ERROR_AUDIO_ONLY_UNSUPPORTED,
-                "Audio-only inputs are not supported yet (file has no video stream)",
-            )
+        if is_audio_only:
+            print("🎧 Audio-only input detected — no video renditions, poster skipped")
 
         poster_generated = False
-        try:
-            generate_poster(str(local_input), str(output_dir / "poster.jpg"), metadata.duration)
-            poster_generated = True
-        except Exception as e:
-            print(f"⚠️ Poster generation failed (non-fatal): {e}")
+        if not is_audio_only:
+            try:
+                generate_poster(str(local_input), str(output_dir / "poster.jpg"), metadata.duration)
+                poster_generated = True
+            except Exception as e:
+                print(f"⚠️ Poster generation failed (non-fatal): {e}")
         
         # ═══════════════════════════════════════════════════════════════════════
         # PARALLEL TRANSCODING (+ AI TRANSCRIPTION)

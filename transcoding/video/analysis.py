@@ -52,9 +52,14 @@ def _fps_value(stream: dict) -> float:
             fps = num / denom if denom > 0 else 30.0
         except ValueError:
             fps = 30.0
-    if not fps or fps <= 0 or fps > 120:
+    if not fps or fps <= 0:
         print(f"[ANALYSIS] Unusable fps {raw!r} — normalizing to 30.0")
-        fps = 30.0
+        return 30.0
+    if fps > 60:
+        # Cap source fps at 60 (encoding ladder assumption); prevents
+        # absurd-fps encode crashes and wasteful high-fps renditions.
+        print(f"[ANALYSIS] fps {fps:.1f} exceeds cap — clamping to 60.0")
+        return 60.0
     return fps
 
 

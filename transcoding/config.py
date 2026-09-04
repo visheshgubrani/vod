@@ -71,6 +71,24 @@ ALLOWED_URL_HOSTS: Set[str] = {
 # pipeline logs loudly. Set this to your API host, e.g.
 #   ALLOWED_CALLBACK_HOSTS=api.yourdomain.com
 # (comma-separated, lower-cased).
+# Source R2 buckets the ingest endpoint accepts (payload {bucket,key}).
+# When unset, any bucket under the R2 credentials is accepted — set it to
+# your raw upload bucket for defense in depth.
+#   ALLOWED_SOURCE_BUCKETS=raw-bucket-uploads
+ALLOWED_SOURCE_BUCKETS: Set[str] = {
+    h.strip().lower()
+    for h in os.getenv("ALLOWED_SOURCE_BUCKETS", "").split(",")
+    if h.strip()
+}
+
+if not ALLOWED_SOURCE_BUCKETS:
+    print(
+        "[CONFIG] ALLOWED_SOURCE_BUCKETS is not set: ingest payloads may "
+        "reference any bucket under the R2 credentials. Set it to your raw "
+        "upload bucket (e.g. ALLOWED_SOURCE_BUCKETS=raw-bucket-uploads).",
+        flush=True,
+    )
+
 ALLOWED_CALLBACK_HOSTS: Set[str] = {
     h.strip().lower()
     for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "").split(",")

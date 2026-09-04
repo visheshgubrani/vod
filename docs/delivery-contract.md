@@ -71,13 +71,34 @@ Playlists must use relative URIs (Shaka packager output does).
   "generateSubtitle": false,
   "generateChapters": false,
   "organizationId": "<org>",
-  "callbackUrl": "https://<api>/api/webhook/transcode-complete"
+  "callbackUrl": "https://<api>/api/webhook/transcode-complete",
+  "heartbeatUrl": "https://<api>/api/webhook/heartbeat" // derived
 }
 ```
 
-Callback (`success`/`error`) is retried by the transcoder; heartbeats POST to
-`/api/webhook/heartbeat` with `{ video_id, stage, progress, ts }`. Both are
-authenticated with the ingest secret (bearer / `x-webhook-secret`).
+Callback (`success`/`error`) is retried by the transcoder (4xx never retried,
+backoff + jitter); heartbeats POST to `/api/webhook/heartbeat` with
+`{ video_id, stage, progress, ts }`. Both are authenticated with the ingest
+secret (bearer / `x-webhook-secret`). Heartbeats are strictly non-fatal on the
+worker side: the pipeline never aborts because a beat failed.
+
+Error callbacks carry a stable `error_code` (server stores it in
+`video.failure_code`):
+
+| code | meaning |
+| --- | --- |
+| `INVALID_CONTAINER` | ffprobe found no audio/video stream |
+| `EMPTY_FILE` | zero-byte/truncated file, or no duration |
+| `INVALID_METADATA` | video stream present but unusable dimensions |
+| `INSUFFICIENT_DISK` | /tmp cannot hold this source |
+| `PARTIAL_UPLOAD` | some transcoded files failed to reach R2 |
+| `AUDIO_ONLY_UNSUPPORTED` | reserved legacy code (audio-only now packaged) |
+| `TRANSCODE_FAILED` | any other pipeline failure |
+
+Ingest guards (Modal env): `ALLOWED_SOURCE_BUCKETS` restricts payload
+`bucket` values when set; `input_url` sources require `ALLOWED_URL_HOSTS`;
+`ALLOWED_CALLBACK_HOSTS` must list your API host for callbacks/heartbeats
+(unset = localhost only, loud startup warning).
 
 ## 6. Health probes
 

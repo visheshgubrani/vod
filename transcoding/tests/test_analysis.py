@@ -118,11 +118,17 @@ class TestParseFfprobe:
             parse_ffprobe(data)
         assert exc.value.code == ERROR_INVALID_METADATA
 
-    def test_zero_or_absurd_fps_is_sanitized_to_30(self):
-        for fps in ("0/1", "0/0", "240/1", "not-a-ratio"):
+    def test_zero_or_unparseable_fps_is_sanitized_to_30(self):
+        for fps in ("0/1", "0/0", "not-a-ratio"):
             data = {"streams": [make_stream(r_frame_rate=fps)], "format": {"duration": "10"}}
             meta = parse_ffprobe(data)
             assert meta.fps == 30.0
+
+    def test_fps_is_capped_at_60(self):
+        for fps in ("61/1", "120/1", "240/1"):
+            data = {"streams": [make_stream(r_frame_rate=fps)], "format": {"duration": "10"}}
+            meta = parse_ffprobe(data)
+            assert meta.fps == 60.0
 
     def test_fractional_frame_rate(self):
         data = {
