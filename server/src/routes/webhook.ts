@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { db } from '../lib/database'
+import { decideCallbackTransition, type VideoStatus } from '../lib/videoState'
 import { video } from '../db/schema'
 import { dispatchWebhook, secretsMatch } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
@@ -68,10 +69,15 @@ app.post('/transcode-complete', async (c) => {
     }
     console.log(`[WEBHOOK DB MATCH] Found video record: ${videoRecord.id}, current status: ${videoRecord.status}`)
 
-    // 2) Idempotency / state protection
-    // If already ready, ignore any later callbacks (prevents out-of-order overwrite)
-    if (videoRecord.status === 'ready') {
-      return c.json({ success: true, status: 'ready', ignored: true })
+    // 2) State-machine guard: late/duplicate/out-of-order callbacks must never
+    // corrupt status — no resurrecting failed videos, no downgrading ready ones.
+    const decision = decideCallbackTransition(
+      videoRecord.status as VideoStatus,
+      status === 'success' ? 'success' : 'error',
+    )
+    if (!decision.apply) {
+      console.log(`[WEBHOOK GUARD] ${decision.reason}`)
+      return c.json({ success: true, status: videoRecord.status, ignored: true })
     }
 
     const transcodedBucketUrl = process.env.DELIVERY_WORKER_URL || ''
@@ -84,7 +90,7 @@ app.post('/transcode-complete', async (c) => {
         {},
       )
 
-      await db
+      const updated = await db
         .update(video)
         .set({
           status: 'failed',
@@ -95,7 +101,17 @@ app.post('/transcode-complete', async (c) => {
           }),
           updatedAt: new Date(),
         })
-        .where(eq(video.id, videoId))
+        .where(
+          and(
+            eq(video.id, videoId),
+            inArray(video.status, ['uploading', 'processing']),
+          ),
+        )
+        .returning()
+
+      if (updated.length === 0) {
+        return c.json({ success: true, status: 'failed', ignored: true })
+      }
 
       // Dispatch webhook event for failure
       dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.failed', {
@@ -171,7 +187,7 @@ app.post('/transcode-complete', async (c) => {
         ? Math.round(processing.transcode_time)
         : null
 
-    await db
+    const updated = await db
       .update(video)
       .set({
         status: 'ready',
@@ -223,7 +239,18 @@ app.post('/transcode-complete', async (c) => {
         }),
         updatedAt: new Date(),
       })
-      .where(eq(video.id, videoId))
+      .where(
+        and(
+          eq(video.id, videoId),
+          inArray(video.status, ['uploading', 'processing']),
+        ),
+      )
+      .returning()
+
+    if (updated.length === 0) {
+      // A concurrent callback won the race; do not double-dispatch events.
+      return c.json({ success: true, status: 'ready', ignored: true })
+    }
 
     // Dispatch webhook events
     const transcodedBucketUrlFinal = transcodedBucketUrl
