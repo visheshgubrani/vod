@@ -42,3 +42,5 @@ pnpm-debug.log*
 .DS_Store
 coverage/
 *.tgz
+.npmrc
+.pnpm-cache/
