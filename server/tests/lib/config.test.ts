@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { loadConfig, requirePlaybackJwtSecret, readDeliveryBaseUrl } from '../../src/lib/config'
+import {
+  loadConfig,
+  requirePlaybackJwtSecret,
+  readDeliveryBaseUrl,
+  maxUploadBytes,
+  DEFAULT_MAX_UPLOAD_BYTES,
+} from '../../src/lib/config'
 
 const FULL_ENV = {
   DATABASE_URL: 'postgresql://user:pass@db.example.com/neondb?sslmode=require',
@@ -154,5 +160,23 @@ describe('readDeliveryBaseUrl', () => {
   it('trailing slashes are stripped', () => {
     const cfg = loadConfig({ ...FULL_ENV, DELIVERY_URL: 'https://media.example.com///' })
     expect(cfg.deliveryUrl).toBe('https://media.example.com')
+  })
+})
+
+describe('maxUploadBytes', () => {
+  it('defaults to 25 GiB when unset or invalid', () => {
+    expect(maxUploadBytes({})).toBe(DEFAULT_MAX_UPLOAD_BYTES)
+    expect(maxUploadBytes({ MAX_UPLOAD_SIZE_BYTES: 'not-a-number' })).toBe(
+      DEFAULT_MAX_UPLOAD_BYTES,
+    )
+    expect(maxUploadBytes({ MAX_UPLOAD_SIZE_BYTES: '-5' })).toBe(
+      DEFAULT_MAX_UPLOAD_BYTES,
+    )
+  })
+
+  it('uses a configured positive value', () => {
+    expect(maxUploadBytes({ MAX_UPLOAD_SIZE_BYTES: String(2 * 1024 ** 3) })).toBe(
+      2 * 1024 ** 3,
+    )
   })
 })
