@@ -60,12 +60,12 @@ const CACHE_CONTROL = {
 	default: 'public, max-age=3600',
 };
 
-function getMimeType(path: string): string {
+export function getMimeType(path: string): string {
 	const ext = path.substring(path.lastIndexOf('.')).toLowerCase();
 	return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
-function getCacheControl(path: string): string {
+export function getCacheControl(path: string): string {
 	if (path.endsWith('.m3u8') || path.endsWith('.mpd')) return CACHE_CONTROL.playlist;
 	if (path.endsWith('.ts') || path.endsWith('.m4s') || path.endsWith('.mp4')) return CACHE_CONTROL.segment;
 	if (path.endsWith('.key')) return CACHE_CONTROL.key;
@@ -73,13 +73,39 @@ function getCacheControl(path: string): string {
 	return CACHE_CONTROL.default;
 }
 
-function extractVideoId(path: string): string | null {
+/**
+ * Resolve an object's playback policy: metadata wins; objects without
+ * metadata fall back to env DEFAULT_POLICY (fail-closed option 'signed').
+ */
+export function resolvePlaybackPolicy(
+	metadataValue: string | undefined,
+	envDefault: string | undefined
+): 'public' | 'signed' {
+	if (metadataValue === 'signed' || metadataValue === 'public') {
+		return metadataValue;
+	}
+	return envDefault === 'signed' ? 'signed' : 'public';
+}
+
+/**
+ * Cache-Control for an object, aware of the playback policy. Signed segments
+ * keep only a day of cacheability (token-bearing URLs must not sit in shared
+ * caches for a year); public segments stay immutable.
+ */
+export function cacheControlFor(path: string, isSigned: boolean): string {
+	if (isSigned && (path.endsWith('.ts') || path.endsWith('.m4s') || path.endsWith('.mp4'))) {
+		return 'public, max-age=86400';
+	}
+	return getCacheControl(path);
+}
+
+export function extractVideoId(path: string): string | null {
 	const match = path.match(/^videos\/([^\/]+)\//);
 	return match ? match[1] : null;
 }
 
 /** Resources that must never be cached for signed videos (playlists contain token-bearing URLs). */
-function isNoCacheResource(path: string): boolean {
+export function isNoCacheResource(path: string): boolean {
 	return (
 		path.endsWith('.m3u8') ||
 		path.endsWith('.mpd') ||
@@ -93,7 +119,7 @@ type NormalizedRange = {
 	length: number;
 };
 
-function withTokenQuery(uri: string, token: string): string {
+export function withTokenQuery(uri: string, token: string): string {
 	if (!uri || uri.startsWith('data:') || uri.startsWith('blob:')) {
 		return uri;
 	}
@@ -109,7 +135,7 @@ function withTokenQuery(uri: string, token: string): string {
 	return `${uri}${separator}token=${token}`;
 }
 
-function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null {
+export function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null {
 	if (totalSize <= 0) return null;
 
 	if ('suffix' in range) {
@@ -141,7 +167,7 @@ function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null
 	return null;
 }
 
-function normalizePlaybackUserAgent(value: string | null | undefined): string {
+export function normalizePlaybackUserAgent(value: string | null | undefined): string {
 	if (!value) return UNKNOWN_USER_AGENT;
 	const normalized = value.trim().replace(/\s+/g, ' ').toLowerCase();
 	if (!normalized) return UNKNOWN_USER_AGENT;
@@ -168,7 +194,7 @@ function normalizePlaybackUserAgent(value: string | null | undefined): string {
 	return UNKNOWN_USER_AGENT;
 }
 
-function getUserAgentFromRequest(request: Request): string {
+export function getUserAgentFromRequest(request: Request): string {
 	return normalizePlaybackUserAgent(request.headers.get('user-agent'));
 }
 
@@ -204,7 +230,7 @@ function getRequestPlaybackDomain(request: Request): {
 	return { domain: null, source: 'none', referer, origin };
 }
 
-function normalizeDomainPattern(value: string): string | null {
+export function normalizeDomainPattern(value: string): string | null {
 	const trimmed = value.trim().toLowerCase();
 	if (!trimmed) return null;
 	if (trimmed === ANY_DOMAIN_PATTERN) return ANY_DOMAIN_PATTERN;
@@ -242,7 +268,7 @@ function normalizeAllowedDomainsClaim(value: unknown): string[] {
 	return normalized.length > 0 ? normalized : [ANY_DOMAIN_PATTERN];
 }
 
-function domainMatchesPattern(domain: string, pattern: string): boolean {
+export function domainMatchesPattern(domain: string, pattern: string): boolean {
 	if (pattern === ANY_DOMAIN_PATTERN) return true;
 	if (pattern.startsWith('*.')) {
 		const base = pattern.slice(2);
@@ -251,7 +277,7 @@ function domainMatchesPattern(domain: string, pattern: string): boolean {
 	return domain === pattern;
 }
 
-function isDomainAllowed(
+export function isDomainAllowed(
 	requestDomain: string | null,
 	allowedDomains: string[],
 	allowNoReferrer: boolean
@@ -267,7 +293,7 @@ function isDomainAllowed(
 	return allowedDomains.some((pattern) => domainMatchesPattern(requestDomain, pattern));
 }
 
-async function hashPlaybackValue(value: string): Promise<string> {
+export async function hashPlaybackValue(value: string): Promise<string> {
 	const data = new TextEncoder().encode(value);
 	const digest = await crypto.subtle.digest('SHA-256', data);
 	return Array.from(new Uint8Array(digest))
@@ -587,9 +613,7 @@ export default {
 			const metadataPolicy =
 				object.customMetadata?.['playback-policy'] ||
 				object.customMetadata?.playback_policy;
-			// Objects without metadata fall back to DEFAULT_POLICY (default
-			// 'public'); self-hosters can set 'signed' to fail closed.
-			const playbackPolicy = metadataPolicy || env.DEFAULT_POLICY || 'public';
+			const playbackPolicy = resolvePlaybackPolicy(metadataPolicy, env.DEFAULT_POLICY);
 			const isSigned = playbackPolicy === 'signed';
 			const organizationId = object.customMetadata?.['organization-id'];
 			const videoId = extractVideoId(key);
@@ -613,7 +637,7 @@ export default {
 			// 4. PREPARE HEADERS
 			const headers = new Headers({
 				'Content-Type': getMimeType(key),
-				'Cache-Control': getCacheControl(key),
+				'Cache-Control': cacheControlFor(key, isSigned),
 				ETag: object.httpEtag,
 				'Accept-Ranges': 'bytes',
 				...corsHeaders,
@@ -629,6 +653,11 @@ export default {
 
 			if (organizationId) {
 				headers.set('X-Org-Id', organizationId);
+			}
+
+			// Purge-friendly tag for signed segments (opt-in purge tooling).
+			if (isSigned && videoId && (key.endsWith('.m4s') || key.endsWith('.ts') || key.endsWith('.mp4'))) {
+				headers.set('Cache-Tag', `vod-${videoId}`);
 			}
 
 			// Determine file type for analytics categorization
