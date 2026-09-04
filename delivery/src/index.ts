@@ -94,7 +94,15 @@ type NormalizedRange = {
 };
 
 function withTokenQuery(uri: string, token: string): string {
-	if (!uri || uri.startsWith('data:') || uri.startsWith('blob:') || /(?:\?|&)token=/.test(uri)) {
+	if (!uri || uri.startsWith('data:') || uri.startsWith('blob:')) {
+		return uri;
+	}
+	if (/(?:\?|&)token=/.test(uri)) {
+		return uri; // already carries a token
+	}
+	// Never append our token to absolute (foreign-host) URLs — that would
+	// exfiltrate the playback token. Manifests from Shaka use relative URIs.
+	if (/^https?:\/\//i.test(uri)) {
 		return uri;
 	}
 	const separator = uri.includes('?') ? '&' : '?';
@@ -496,6 +504,41 @@ function logBandwidth(
 	);
 }
 
+
+/**
+ * Rewrite a signed manifest so every sub-resource URI carries the playback
+ * token. Pure function: content in, content out. Never rewrites data:/blob:
+ * URIs or absolute http(s) URLs (foreign hosts would leak the token).
+ */
+export function rewriteSignedManifest(
+	content: string,
+	token: string,
+	kind: 'hls' | 'dash'
+): string {
+	if (kind === 'hls') {
+		let rewritten = content.replace(
+			/(#(?:EXT-X-(?:KEY|MAP|MEDIA|I-FRAME-STREAM-INF|SESSION-KEY|IMAGE-STREAM-INF|PRELOAD-HINT|RENDITION-REPORT)):.*?URI=")([^"]+)(")/g,
+			(match, prefix, uri, suffix) => `${prefix}${withTokenQuery(uri, token)}${suffix}`
+		);
+
+		// Standalone variant playlists and segments, preserving CRLF.
+		rewritten = rewritten.replace(
+			/^([^#\s][^\r\n]*\.(?:m3u8|mp4|m4s|ts)(?:\?[^\r\n]*)?)(\r?)$/gm,
+			(match, uri, carriageReturn) => `${withTokenQuery(uri, token)}${carriageReturn}`
+		);
+		return rewritten;
+	}
+
+	// DASH: media/initialization templates plus relative <BaseURL> elements.
+	let rewritten = content.replace(/(media=")([^"]+)(")/g, (m, pre, uri, suf) =>
+		`${pre}${withTokenQuery(uri, token)}${suf}`);
+	rewritten = rewritten.replace(/(initialization=")([^"]+)(")/g, (m, pre, uri, suf) =>
+		`${pre}${withTokenQuery(uri, token)}${suf}`);
+	rewritten = rewritten.replace(/<BaseURL>([^<]+)<\/BaseURL>/g, (m, uri) =>
+		`<BaseURL>${withTokenQuery((uri as string).trim(), token)}</BaseURL>`);
+	return rewritten;
+}
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const corsHeaders = {
@@ -599,31 +642,11 @@ export default {
 			};
 			const fileType = getFileType(key);
 
-			// 5. MANIFEST REWRITING
+			// 5. MANIFEST REWRITING (pure helper — unit tested)
       if (isSigned && token && (key.endsWith('.m3u8') || key.endsWith('.mpd'))) {
         const content = await object.text();
-        let rewritten = content;
-
-        if (key.endsWith('.m3u8')) {
-          // 1. Rewrite #EXT-X-KEY, #EXT-X-MAP, and #EXT-X-MEDIA URIs (combined for efficiency)
-          rewritten = rewritten.replace(/(#(?:EXT-X-KEY|EXT-X-MAP|EXT-X-MEDIA):.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
-          });
-
-          // 2. Rewrite standalone variant playlists and segments, safely capturing the optional \r
-          rewritten = rewritten.replace(/^([^#\s][^\r\n]*\.(?:m3u8|mp4|m4s|ts)(?:\?[^\r\n]*)?)(\r?)$/gm, (match, uri, carriageReturn) => {
-            return `${withTokenQuery(uri, token)}${carriageReturn}`;
-          });
-          
-        } else if (key.endsWith('.mpd')) {
-          // 3. DASH Rewriting: Catch media and initialization paths inside the XML
-          rewritten = rewritten.replace(/(media=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
-          });
-          rewritten = rewritten.replace(/(initialization=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
-          });
-        }
+        const kind = key.endsWith('.mpd') ? 'dash' : 'hls';
+        const rewritten = rewriteSignedManifest(content, token, kind);
 
         const rewrittenBytes = new TextEncoder().encode(rewritten).length;
 
