@@ -175,7 +175,7 @@ app.post('/url', async (c) => {
   // The URL is valid for 1 hour
   const url = await getSignedUrl(r2, command, { expiresIn: 3600 })
 
-  console.log(`[PRESIGNED URL GENERATED] fileId: ${fileId}, url: ${url.slice(0, 120)}...`)
+  console.log(`[PRESIGNED URL GENERATED] fileId: ${fileId} (single-file PUT)`)
 
   // Dispatch webhook event
   dispatchWebhook(c.executionCtx, organizationId, 'video.uploading', {

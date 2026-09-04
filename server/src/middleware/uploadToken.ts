@@ -12,7 +12,6 @@ import { uploadToken } from '../db/schema'
  */
 export const requireUploadToken = createMiddleware(async (c, next) => {
     const authHeader = c.req.header('Authorization')
-    console.log('[UploadToken] Auth header:', authHeader)
 
     if (!authHeader?.startsWith('UploadToken ')) {
         console.log('[UploadToken] Header does not start with "UploadToken "')
@@ -21,7 +20,6 @@ export const requireUploadToken = createMiddleware(async (c, next) => {
 
     const token = authHeader.slice(12).trim() // Remove "UploadToken "
 
-    console.log('[UploadToken] Extracted token:', token)
 
     if (!token) {
         return c.json({ error: 'Upload token required' }, 401)
@@ -34,7 +32,6 @@ export const requireUploadToken = createMiddleware(async (c, next) => {
         .where(eq(uploadToken.token, token))
         .limit(1)
 
-    console.log('[UploadToken] Found tokens:', tokens.length)
 
     const tokenRecord = tokens[0]
 
@@ -43,14 +40,16 @@ export const requireUploadToken = createMiddleware(async (c, next) => {
         return c.json({ error: 'Invalid upload token' }, 401)
     }
 
-    // Check if token has expired
-    if (new Date() > tokenRecord.expiresAt) {
+    // Check if token has expired. Only enforced on /create: an upload started
+    // before expiry must be allowed to finish (/parts, /complete, /abort) —
+    // otherwise slow uploads get stranded mid-flight when the token lapses.
+    const isCreateRequest = c.req.path.endsWith('/create')
+    if (isCreateRequest && new Date() > tokenRecord.expiresAt) {
         return c.json({ error: 'Upload token has expired' }, 401)
     }
 
     // Check if token has been exhausted (used all allowed uploads)
     // Only enforce this limit for /create - allow /parts, /complete, /abort to proceed
-    const isCreateRequest = c.req.path.endsWith('/create')
     if (
         isCreateRequest &&
         tokenRecord.maxFiles !== null &&

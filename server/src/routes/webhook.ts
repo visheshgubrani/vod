@@ -34,7 +34,7 @@ app.post('/transcode-complete', async (c) => {
 
   try {
     const payload = await c.req.json<any>()
-    console.log('[WEBHOOK PAYLOAD]', JSON.stringify(payload))
+    console.log('[WEBHOOK PAYLOAD]', JSON.stringify({ status: payload?.status, video_id: payload?.video_id || payload?.fileId }))
 
     const status = payload?.status
     if (status !== 'success' && status !== 'error') {
