@@ -10,7 +10,7 @@ export default function CookiesPage() {
           </p>
           <h1 className="text-3xl md:text-4xl font-bold mb-3">Cookie Policy</h1>
           <p className="text-muted-foreground">
-            This Cookie Policy explains how ClipMux uses cookies and similar
+            This Cookie Policy explains how OpenVOD uses cookies and similar
             technologies on our website and product surfaces.
           </p>
           <div className="mt-4 flex items-center gap-4 text-sm">
@@ -34,7 +34,7 @@ export default function CookiesPage() {
 
           <section>
             <h2 className="text-xl font-semibold mb-2">2. How We Use Cookies</h2>
-            <p>ClipMux uses cookies and similar technologies to:</p>
+            <p>OpenVOD uses cookies and similar technologies to:</p>
             <ul className="list-disc pl-5 mt-2 space-y-2">
               <li>Keep you signed in and maintain session security.</li>
               <li>Remember account and interface preferences.</li>
@@ -64,7 +64,7 @@ export default function CookiesPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">4. Third-Party Cookies</h2>
             <p>
-              Some third-party services integrated with ClipMux may set cookies
+              Some third-party services integrated with OpenVOD may set cookies
               for security, analytics, or payment processing. Their cookie use is
               governed by their own policies.
             </p>
@@ -100,10 +100,10 @@ export default function CookiesPage() {
             <p>
               For questions about cookie use, contact{" "}
               <a
-                href="mailto:privacy@clipmux.io"
+                href="mailto:privacy@openvod.dev"
                 className="text-primary hover:underline"
               >
-                privacy@clipmux.io
+                privacy@openvod.dev
               </a>
               .
             </p>

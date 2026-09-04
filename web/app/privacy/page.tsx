@@ -10,7 +10,7 @@ export default function PrivacyPage() {
           </p>
           <h1 className="text-3xl md:text-4xl font-bold mb-3">Privacy Policy</h1>
           <p className="text-muted-foreground">
-            This Privacy Policy explains how ClipMux collects, uses, and protects
+            This Privacy Policy explains how OpenVOD collects, uses, and protects
             personal information when you use our video infrastructure platform.
           </p>
           <div className="mt-4 flex items-center gap-4 text-sm">
@@ -38,7 +38,7 @@ export default function PrivacyPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">2. How We Use Information</h2>
             <ul className="list-disc pl-5 space-y-2">
-              <li>Provide, operate, and secure the ClipMux services.</li>
+              <li>Provide, operate, and secure the OpenVOD services.</li>
               <li>Process uploads, transcoding, playback delivery, and analytics.</li>
               <li>Manage subscriptions, invoices, and fraud prevention.</li>
               <li>Respond to support requests and service communications.</li>
@@ -114,7 +114,7 @@ export default function PrivacyPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">9. Children&apos;s Privacy</h2>
             <p>
-              ClipMux is not directed to children under 13, and we do not
+              OpenVOD is not directed to children under 13, and we do not
               knowingly collect personal information from children under 13.
             </p>
           </section>
@@ -132,10 +132,10 @@ export default function PrivacyPage() {
             <p>
               For privacy questions or requests, contact{" "}
               <a
-                href="mailto:privacy@clipmux.io"
+                href="mailto:privacy@openvod.dev"
                 className="text-primary hover:underline"
               >
-                privacy@clipmux.io
+                privacy@openvod.dev
               </a>
               .
             </p>

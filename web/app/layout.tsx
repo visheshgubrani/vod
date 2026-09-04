@@ -39,14 +39,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ClipMux",
+  title: "OpenVOD",
   icons: {
     icon: "/logo.svg",
     shortcut: "/logo.svg",
     apple: "/logo.svg",
   },
   description:
-    "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing. Simple API, global CDN, instant encoding. Start free today.",
+    "OpenVOD is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
   keywords: [
     "video streaming",
     "VOD platform",
@@ -56,29 +56,29 @@ export const metadata: Metadata = {
     "Mux alternative",
     "affordable video hosting",
   ],
-  authors: [{ name: "ClipMux" }],
+  authors: [{ name: "OpenVOD" }],
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://clipmux.io",
-    siteName: "ClipMux",
-    title: "ClipMux | Video Streaming at 90% Less Cost",
+    url: "https://openvod.dev",
+    siteName: "OpenVOD",
+    title: "OpenVOD | Open-source video infrastructure (bring your own keys)",
     description:
-      "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing.",
+      "OpenVOD is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
     images: [
       {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "ClipMux - Affordable Video Streaming",
+        alt: "OpenVOD - Open-source video platform",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "ClipMux | Video Streaming at 90% Less Cost",
+    title: "OpenVOD | Open-source video infrastructure (bring your own keys)",
     description:
-      "The developer-first video platform that delivers Mux-quality streaming without the enterprise pricing.",
+      "OpenVOD is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
     images: ["/og-image.png"],
   },
   robots: {

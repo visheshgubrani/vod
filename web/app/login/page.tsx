@@ -78,7 +78,7 @@ export default function LoginPage() {
   return (
     <AuthLayout
       title="Welcome back"
-      subtitle="Sign in to your ClipMux account"
+      subtitle="Sign in to your OpenVOD account"
       topLink={
         <>
           Don&apos;t have an account?{" "}

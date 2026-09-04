@@ -10,7 +10,7 @@ export default function TermsPage() {
           </p>
           <h1 className="text-3xl md:text-4xl font-bold mb-3">Terms of Service</h1>
           <p className="text-muted-foreground">
-            These Terms govern your access to and use of the ClipMux platform,
+            These Terms govern your access to and use of the OpenVOD platform,
             APIs, dashboard, and related services.
           </p>
           <div className="mt-4 flex items-center gap-4 text-sm">
@@ -27,7 +27,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">1. Acceptance of Terms</h2>
             <p>
-              By using ClipMux, you agree to these Terms. If you use ClipMux on
+              By using OpenVOD, you agree to these Terms. If you use OpenVOD on
               behalf of an organization, you represent that you have authority to
               bind that organization.
             </p>
@@ -45,7 +45,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">3. Service Use</h2>
             <p>
-              ClipMux provides tools for video upload, processing, storage,
+              OpenVOD provides tools for video upload, processing, storage,
               delivery, and analytics. Service features may evolve, and we may
               add, modify, or discontinue features.
             </p>
@@ -54,7 +54,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">4. Customer Content</h2>
             <p>
-              You retain ownership of your content. You grant ClipMux a limited
+              You retain ownership of your content. You grant OpenVOD a limited
               license to host, process, transmit, and display content solely to
               provide the service.
             </p>
@@ -83,9 +83,9 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">7. Intellectual Property</h2>
             <p>
-              ClipMux and its software, marks, and documentation are owned by
-              ClipMux or its licensors. These Terms do not grant ownership rights
-              in ClipMux IP.
+              OpenVOD and its software, marks, and documentation are owned by
+              OpenVOD or its licensors. These Terms do not grant ownership rights
+              in OpenVOD IP.
             </p>
           </section>
 
@@ -111,7 +111,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">10. Limitation of Liability</h2>
             <p>
-              To the maximum extent permitted by law, ClipMux is not liable for
+              To the maximum extent permitted by law, OpenVOD is not liable for
               indirect, incidental, special, consequential, or punitive damages,
               or loss of profits, revenue, data, or goodwill.
             </p>
@@ -120,7 +120,7 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">11. Indemnification</h2>
             <p>
-              You agree to indemnify and hold ClipMux harmless from claims,
+              You agree to indemnify and hold OpenVOD harmless from claims,
               liabilities, and expenses arising from your content, use of the
               service, or violation of these Terms.
             </p>
@@ -131,7 +131,7 @@ export default function TermsPage() {
             <p>
               These Terms are governed by applicable laws in the jurisdiction
               specified in your service agreement or, if none, the laws where
-              ClipMux is established.
+              OpenVOD is established.
             </p>
           </section>
 
@@ -148,10 +148,10 @@ export default function TermsPage() {
             <p>
               Questions about these Terms can be sent to{" "}
               <a
-                href="mailto:legal@clipmux.io"
+                href="mailto:legal@openvod.dev"
                 className="text-primary hover:underline"
               >
-                legal@clipmux.io
+                legal@openvod.dev
               </a>
               .
             </p>
