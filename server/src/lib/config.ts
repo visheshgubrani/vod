@@ -53,6 +53,24 @@ function secretValue(env: EnvLike, key: string): string | null {
 
 const MIN_SECRET_LENGTH = 32
 
+export const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 ** 3 // 25 GiB
+
+/**
+ * Global upload size cap from MAX_UPLOAD_SIZE_BYTES (bytes). Invalid/negative
+ * values fall back to the default rather than disabling the cap.
+ */
+export function maxUploadBytes(env?: Record<string, unknown>): number {
+  const binding = env ? (env['MAX_UPLOAD_SIZE_BYTES'] as unknown) : undefined
+  const raw =
+    (typeof binding === 'string' ? binding : undefined) ??
+    (typeof process !== 'undefined' ? process.env?.MAX_UPLOAD_SIZE_BYTES : undefined)
+  const parsed = Number(raw)
+  if (raw && Number.isFinite(parsed) && parsed > 0) {
+    return Math.floor(parsed)
+  }
+  return DEFAULT_MAX_UPLOAD_BYTES
+}
+
 export function loadConfig(env: EnvLike): OpenVodConfig {
   const problems: string[] = []
   const advisories: string[] = []

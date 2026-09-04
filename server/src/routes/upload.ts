@@ -15,10 +15,11 @@ import { eq, and } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
+import { maxUploadBytes } from '../lib/config'
 import { video } from '../db/schema'
 import { triggerTranscoding } from '../utils/queue'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
-import { r2 } from '../utils/R2'
+import { headObjectSize, r2 } from '../utils/R2'
 import type { Bindings } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -28,6 +29,7 @@ const TRANSCODED_BUCKET =
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
+const MAX_PARTS_PER_REQUEST = 100
 
 const getUploadKey = (
   organizationId: string | null | undefined,
@@ -119,6 +121,13 @@ app.post('/url', async (c) => {
   }
   if (!Number.isInteger(parsedSize)) {
     return c.json({ error: 'Size must be an integer' }, 400)
+  }
+  const maxBytesUrl = maxUploadBytes(c.env)
+  if (parsedSize > maxBytesUrl) {
+    return c.json(
+      { error: `File exceeds the maximum allowed size (${maxBytesUrl} bytes)` },
+      400,
+    )
   }
 
   // Validate: chapters require subtitles (need transcription first)
@@ -216,6 +225,30 @@ app.post('/complete', async (c) => {
     return c.json({ success: true, fileId, skipped: true })
   }
 
+    // Verify the object actually landed in R2 at the declared size before
+    // spending a transcode dispatch on a missing/truncated file.
+    const verifyKey = videoRecord.rawKey
+    const headSize = verifyKey ? await headObjectSize(RAW_BUCKET, verifyKey) : null
+    if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
+      await db
+        .update(video)
+        .set({
+          status: 'failed',
+          failureCode: headSize === null ? 'OBJECT_MISSING' : 'SIZE_MISMATCH',
+          updatedAt: new Date(),
+        })
+        .where(eq(video.id, fileId))
+      return c.json(
+        {
+          error:
+            headSize === null
+              ? 'File was not uploaded; please upload the file again'
+              : 'Uploaded file size does not match the declared size; abort and re-upload',
+        },
+        409,
+      )
+    }
+
     // Dispatch the transcode job BEFORE flipping state: a failed dispatch must
     // never leave the row stuck in 'processing'. triggerTranscoding throws a
     // typed DispatchError on final failure.
@@ -310,6 +343,14 @@ app.post('/multipart/create', async (c) => {
     return c.json({ error: message }, 400)
   }
 
+  const maxBytesMp = maxUploadBytes(c.env)
+  if (parsedSize > maxBytesMp) {
+    return c.json(
+      { error: `File exceeds the maximum allowed size (${maxBytesMp} bytes)` },
+      400,
+    )
+  }
+
   // Ensure user has an active organization
   if (!organizationId) {
     return c.json({ error: 'No active organization' }, 400)
@@ -346,9 +387,16 @@ app.post('/multipart/create', async (c) => {
     ContentType: contentType,
   })
 
-  const response = await r2.send(command)
+  let response
+  try {
+    response = await r2.send(command)
+  } catch (err) {
+    // Rollback: never leave an orphan 'uploading' row behind.
+    console.error('Failed to create multipart upload:', err)
+    await db.delete(video).where(eq(video.id, fileId))
+    return c.json({ error: 'Failed to create multipart upload' }, 500)
+  }
   if (!response.UploadId) {
-    // Rollback: delete the video entry if R2 upload creation fails
     await db.delete(video).where(eq(video.id, fileId))
     return c.json({ error: 'Failed to create multipart upload' }, 500)
   }
@@ -427,6 +475,13 @@ app.post('/multipart/parts', async (c) => {
   }
 
   uniquePartNumbers.sort((a, b) => a - b)
+
+  if (uniquePartNumbers.length > MAX_PARTS_PER_REQUEST) {
+    return c.json(
+      { error: `Too many part_numbers per request (max ${MAX_PARTS_PER_REQUEST})` },
+      400,
+    )
+  }
 
   for (const partNumber of uniquePartNumbers) {
     if (
@@ -540,6 +595,30 @@ app.post('/multipart/complete', async (c) => {
         fileId,
         skipped: true,
       })
+    }
+
+    // Verify the object actually landed in R2 at the declared size before
+    // spending a transcode dispatch on a missing/truncated file.
+    const verifyKey = videoRecord.rawKey
+    const headSize = verifyKey ? await headObjectSize(RAW_BUCKET, verifyKey) : null
+    if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
+      await db
+        .update(video)
+        .set({
+          status: 'failed',
+          failureCode: headSize === null ? 'OBJECT_MISSING' : 'SIZE_MISMATCH',
+          updatedAt: new Date(),
+        })
+        .where(eq(video.id, fileId))
+      return c.json(
+        {
+          error:
+            headSize === null
+              ? 'File was not uploaded; please upload the file again'
+              : 'Uploaded file size does not match the declared size; abort and re-upload',
+        },
+        409,
+      )
     }
 
     // Dispatch the transcode job BEFORE flipping state: a failed dispatch must

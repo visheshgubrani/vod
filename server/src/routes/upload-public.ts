@@ -22,8 +22,9 @@ import {
     incrementUploadTokenUsage,
 } from '../middleware/uploadToken'
 import { db } from '../lib/database'
+import { maxUploadBytes } from '../lib/config'
 import { video, uploadToken } from '../db/schema'
-import { r2 } from '../utils/R2'
+import { headObjectSize, r2 } from '../utils/R2'
 import { triggerTranscoding } from '../utils/queue'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings, UploadTokenVariables } from '../types'
@@ -34,6 +35,7 @@ const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
+const MAX_PARTS_PER_REQUEST = 100
 
 const getUploadKey = (
     organizationId: string | null | undefined,
@@ -241,6 +243,14 @@ app.post('/create', async (c) => {
         )
     }
 
+    const maxBytes = maxUploadBytes(c.env)
+    if (size > maxBytes) {
+        return c.json(
+            { error: `File exceeds the maximum allowed size (${maxBytes} bytes)` },
+            400,
+        )
+    }
+
     let partSize: number
     let partCount: number
     try {
@@ -273,7 +283,15 @@ app.post('/create', async (c) => {
         ContentType: contentType,
     })
 
-    const response = await r2.send(command)
+    let response
+    try {
+        response = await r2.send(command)
+    } catch (err) {
+        // Rollback: never leave an orphan 'uploading' row behind.
+        console.error('Failed to create multipart upload:', err)
+        await db.delete(video).where(eq(video.id, fileId))
+        return c.json({ error: 'Failed to create multipart upload' }, 500)
+    }
     if (!response.UploadId) {
         await db.delete(video).where(eq(video.id, fileId))
         return c.json({ error: 'Failed to create multipart upload' }, 500)
@@ -380,6 +398,13 @@ app.post('/parts', async (c) => {
     }
 
     uniquePartNumbers.sort((a, b) => a - b)
+
+    if (uniquePartNumbers.length > MAX_PARTS_PER_REQUEST) {
+        return c.json(
+            { error: `Too many part_numbers per request (max ${MAX_PARTS_PER_REQUEST})` },
+            400,
+        )
+    }
 
     for (const partNumber of uniquePartNumbers) {
         if (
@@ -503,6 +528,30 @@ app.post('/complete', async (c) => {
                 file_id: fileId,
                 skipped: true,
             })
+        }
+
+        // Verify the object actually landed in R2 at the declared size before
+        // spending a transcode dispatch on a missing/truncated file.
+        const verifyKey = videoRecord.rawKey
+        const headSize = verifyKey ? await headObjectSize(RAW_BUCKET, verifyKey) : null
+        if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
+            await db
+                .update(video)
+                .set({
+                    status: 'failed',
+                    failureCode: headSize === null ? 'OBJECT_MISSING' : 'SIZE_MISMATCH',
+                    updatedAt: new Date(),
+                })
+                .where(eq(video.id, fileId))
+            return c.json(
+                {
+                    error:
+                        headSize === null
+                            ? 'File was not uploaded; please upload the file again'
+                            : 'Uploaded file size does not match the declared size; abort and re-upload',
+                },
+                409,
+            )
         }
 
         // Dispatch the transcode job BEFORE flipping state: a failed dispatch

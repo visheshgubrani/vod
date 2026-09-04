@@ -5,6 +5,7 @@ import { cors } from 'hono/cors'
 import { auth } from './lib/auth'
 import { logger } from './lib/logger'
 import { matchOrigin, parseOriginList } from './lib/config'
+import { InMemorySlidingWindow } from './lib/rateLimit/memory'
 import health from './routes/health'
 import internal from './routes/internal'
 import upload from './routes/upload'
@@ -75,35 +76,85 @@ const getRedis = (env?: Bindings): Redis | null => {
   return cachedRedis
 }
 
-const limiterCache = new Map<string, Ratelimit>()
+/**
+ * Unified limiter surface so the Redis-backed Upstash adapter and the
+ * zero-dependency in-memory fallback share one call site.
+ */
+type RateLimitDecision = {
+  success: boolean
+  limit: number
+  remaining: number
+  /** Epoch ms when the window resets. */
+  reset: number
+  pending: Promise<unknown>
+}
+
+type RateLimiterLike = {
+  limit: (identifier: string) => Promise<RateLimitDecision>
+}
+
+const DURATION_UNIT_MS: Record<string, number> = {
+  ms: 1,
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+}
+
+const parseDurationToMs = (value: Duration | undefined, fallbackMs: number): number => {
+  if (!value) return fallbackMs
+  const normalized = String(value).trim()
+  const match = normalized.match(/^(\d+)\s*(ms|s|m|h|d)$/)
+  if (!match) return fallbackMs
+  return Number(match[1]) * (DURATION_UNIT_MS[match[2]] ?? 1)
+}
+
+const limiterCache = new Map<string, RateLimiterLike>()
 
 const createRateLimiter = (
   scope: string,
   requests: number,
   window: Duration,
   env?: Bindings,
-): Ratelimit | null => {
+): RateLimiterLike => {
   const redis = getRedis(env)
-  if (!redis) return null
 
   const prefix = env?.RATE_LIMIT_PREFIX || RATE_LIMIT_PREFIX
-  const cacheKey = `${prefix}:${scope}:${requests}:${window}`
+  const cacheKey = `${prefix}:${scope}:${requests}:${window}:${redis ? 'redis' : 'memory'}`
   if (limiterCache.has(cacheKey)) {
     return limiterCache.get(cacheKey)!
   }
 
-  const limiter = new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(requests, window),
-    prefix: `${prefix}:${scope}`,
-    analytics: RATE_LIMIT_ANALYTICS,
-    ephemeralCache: new Map<string, number>(),
-  })
+  let limiter: RateLimiterLike
+  if (redis) {
+    const upstashLimiter = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(requests, window),
+      prefix: `${prefix}:${scope}`,
+      analytics: RATE_LIMIT_ANALYTICS,
+      ephemeralCache: new Map<string, number>(),
+    })
+    limiter = { limit: (id) => upstashLimiter.limit(id) as unknown as Promise<RateLimitDecision> }
+  } else {
+    // In-memory fallback: bounded sliding window per isolate. Multi-instance
+    // deployments must configure Upstash Redis instead (documented).
+    const memoryLimiter = new InMemorySlidingWindow({
+      max: requests,
+      windowMs: parseDurationToMs(window, 60_000),
+    })
+    limiter = {
+      limit: async (id) => {
+        const result = memoryLimiter.limit(id)
+        return { ...result, pending: Promise.resolve() }
+      },
+    }
+  }
+
   limiterCache.set(cacheKey, limiter)
   return limiter
 }
 
-const resolveRateLimiter = (path: string, env?: Bindings): Ratelimit | null => {
+const resolveRateLimiter = (path: string, env?: Bindings): RateLimiterLike | null => {
   if (path === '/api/auth' || path.startsWith('/api/auth/')) {
     return createRateLimiter('auth', authLimiterRequests, authLimiterWindow, env)
   }
@@ -320,8 +371,12 @@ app.use('*', async (c, next) => {
 
   const rateLimiter = resolveRateLimiter(c.req.path, c.env)
   if (!rateLimiter) {
-    await next()
-    return
+    // Window/limit misconfiguration — fail open on health probes only.
+    if (c.req.path === '/health' || c.req.path.startsWith('/health/')) {
+      await next()
+      return
+    }
+    return c.json({ error: 'Rate limiter misconfigured' }, 500)
   }
 
   const rateLimitResult = await rateLimiter.limit(getClientIp(c))

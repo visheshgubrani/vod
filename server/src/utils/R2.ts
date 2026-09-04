@@ -1,4 +1,4 @@
-import { S3Client } from '@aws-sdk/client-s3'
+import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import type { Bindings } from '../types'
 
 let cachedR2: S3Client | null = null
@@ -48,3 +48,18 @@ export const r2 = new Proxy({} as S3Client, {
   },
 })
 
+
+
+/**
+ * HEAD an object and return its ContentLength, or null when the object is
+ * missing/unreadable. Used to verify uploads actually landed at the declared
+ * size before a transcode job is dispatched.
+ */
+export async function headObjectSize(bucket: string, key: string): Promise<number | null> {
+  try {
+    const result = await r2.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))
+    return typeof result.ContentLength === 'number' ? result.ContentLength : null
+  } catch {
+    return null
+  }
+}
