@@ -1,5 +1,7 @@
 # Copy to .dev.vars for local `wrangler dev`
 DATABASE_URL=postgresql://user:password@host/db?sslmode=require
+# Driver: unset/neon-http for Neon over HTTP (Workers); 'pg' for compose/self-hosted Postgres (Docker mode)
+DB_DRIVER=
 BETTER_AUTH_SECRET=your-secret-at-least-32-chars
 BETTER_AUTH_URL=http://localhost:8787
 FRONTEND_URL=http://localhost:3000

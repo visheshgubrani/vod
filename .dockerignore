@@ -1,0 +1,21 @@
+# Docker build context (repo root) exclusions
+.git
+**/node_modules
+node_modules
+.pnpm-store
+.pnpm-cache
+**/dist
+**/dist-node
+**/.next
+**/out
+**/.wrangler
+**/.venv
+**/__pycache__
+**/*.pyc
+*.log
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+docs
+.dockerignore

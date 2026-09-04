@@ -4,7 +4,7 @@ services:
     container_name: vod-postgres-dev
     restart: unless-stopped
     ports:
-      - "5433:5432" # 5432 is taken by vm-postgres-1
+      - "5433:5432" # Host mapping for `wrangler dev` / local tooling
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -16,6 +16,46 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: vod-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8787:4080"
+    env_file:
+      - path: ./server/.dev.vars
+        required: false
+    environment:
+      # Container networking: the API talks to compose Postgres directly.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/vod_dev}
+      DB_DRIVER: pg
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:8787}
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:8787}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-0123456789abcdef}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-better-auth-secret-change-me-0123456}
+      NODE_ENV: production
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8787/api
+        NEXT_PUBLIC_AUTH_BASE_URL: http://localhost:8787/api/auth
+        NEXT_PUBLIC_FRONTEND_URL: http://localhost:3000
+    container_name: vod-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
 
 volumes:
   vod_postgres_dev_data:

@@ -1,39 +1,34 @@
-# --- STAGE 1: BUILDER ---
-FROM node:22-slim AS builder
-WORKDIR /app
+# syntax=docker/dockerfile:1
+# OpenVOD API — Node runtime via tsx (no bundler binaries in image).
+# Zero-touch boot: migrations run before the server starts.
+# Build context MUST be the repo root (monorepo workspace).
+
+FROM node:22-slim
+WORKDIR /repo
 RUN corepack enable
 
-# 1. Install ALL dependencies (including devDeps for building)
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY server/package.json server/package.json
+COPY web/package.json web/package.json
+COPY sdk/package.json sdk/package.json
+COPY player/package.json player/package.json
+COPY delivery/package.json delivery/package.json
+COPY clipmux-docs/package.json clipmux-docs/package.json
 
-# 2. Copy source and build
-COPY . .
+RUN pnpm install --frozen-lockfile --filter vod-api
 
-RUN pnpm build 
+COPY server ./server
 
-# 3. Prune dependencies (remove devDeps like typescript/tsx)
-ENV CI=true
-RUN pnpm prune --prod
-
-
-# --- STAGE 2: RUNNER (Production) ---
-FROM node:22-slim AS runner
-WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=4080
+ENV HOSTNAME=0.0.0.0
+ENV DB_DRIVER=pg
 
-# 1. Security: Don't run as root
-USER node
-
-# 2. Copy only necessary files from builder
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./package.json
-
-# Copy Drizzle config if you run migrations at runtime (optional)
-COPY --from=builder /app/drizzle ./drizzle 
+WORKDIR /repo/server
 
 EXPOSE 4080
 
-# 3. Run pure JS (Fast & Low Memory)
-CMD ["node", "dist/index.js"]
+HEALTHCHECK --interval=15s --timeout=5s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:4080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["sh", "-c", "node_modules/.bin/tsx src/node/migrate.ts && exec node_modules/.bin/tsx src/node/server.ts"]

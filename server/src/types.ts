@@ -4,6 +4,7 @@ export type Bindings = {
 
   // Secrets (wrangler secrets / .dev.vars)
   DATABASE_URL: string
+  DB_DRIVER?: string
   BETTER_AUTH_SECRET: string
   BETTER_AUTH_URL?: string
   R2_ACCESS_KEY_ID: string
