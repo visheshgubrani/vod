@@ -23,6 +23,15 @@ interface Env {
 	TRANSCODED_BUCKET: R2Bucket;
 	JWT_SECRET: string;
 	USAGE_ANALYTICS?: AnalyticsEngineDataset;  // For bandwidth tracking
+	// Policy applied to objects that carry no playback-policy metadata.
+	// Defaults to 'public' (historical behavior); set to 'signed' to fail
+	// closed for objects whose metadata was never written.
+	DEFAULT_POLICY?: string;
+	// Set 'true' to enable verbose per-request debug logs (raw UA/referer).
+	DELIVERY_DEBUG?: string;
+	// Comma-separated user-agent keywords exempt from UA binding
+	// (default: crkey,chromecast,roku,tizen,webos,appletv).
+	CAST_UA_KEYWORDS?: string;
 }
 
 const JWT_ISSUER = 'openvod';
@@ -263,9 +272,12 @@ async function verifyToken(
 	secret: string,
 	videoId: string,
 	request: Request,
+	env: Env | undefined,
 	organizationId?: string,
 	resourceKey?: string
 ): Promise<boolean> {
+	// Debug logging is opt-in: raw UA/referer data is PII-ish and noisy.
+	const dbg = env?.DELIVERY_DEBUG === 'true';
 	try {
 		const secretKey = new TextEncoder().encode(secret);
 		const { payload } = await jose.jwtVerify(token, secretKey, {
@@ -275,7 +287,7 @@ async function verifyToken(
 		const tokenSubject = typeof payload.sub === 'string' ? payload.sub : undefined;
 		const tokenVideoId = typeof payload.video_id === 'string' ? payload.video_id : tokenSubject;
 		if (tokenVideoId !== videoId) {
-			console.warn('[playback-ip-debug] reject: video-id mismatch', {
+			if (dbg) console.warn('[playback-ip-debug] reject: video-id mismatch', {
 				resourceKey: resourceKey || null,
 				requestVideoId: videoId,
 				tokenVideoId: tokenVideoId || null,
@@ -291,7 +303,7 @@ async function verifyToken(
 		const requestRawUserAgent = request.headers.get('user-agent');
 		const requestNormalizedUserAgent = getUserAgentFromRequest(request);
 
-		console.log('[playback-ip-debug] verify-start', {
+		if (dbg) console.log('[playback-ip-debug] verify-start', {
 			resourceKey: resourceKey || null,
 			videoId,
 			tokenVideoId: tokenVideoId || null,
@@ -311,7 +323,7 @@ async function verifyToken(
 			const requestUserAgentHash = await hashPlaybackValue(requestNormalizedUserAgent);
 			const isUserAgentHashMatch = tokenUserAgentHash === requestUserAgentHash;
 
-			console.log('[playback-ip-debug] verify-ua-compare', {
+			if (dbg) console.log('[playback-ip-debug] verify-ua-compare', {
 				resourceKey: resourceKey || null,
 				requestNormalizedUserAgent,
 				requestUserAgentHash,
@@ -324,17 +336,14 @@ async function verifyToken(
 				const isAppleCoreMedia = userAgent.includes('applecoremedia');
 				
 				// Common casting and smart TV user agents
-				const isCastingDevice = userAgent.includes('crkey') || 
-					userAgent.includes('chromecast') || 
-					userAgent.includes('roku') || 
-					userAgent.includes('tizen') || 
-					userAgent.includes('webos') || 
-					userAgent.includes('appletv');
+				const castKeywords = (env?.CAST_UA_KEYWORDS || 'crkey,chromecast,roku,tizen,webos,appletv')
+					.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
+				const isCastingDevice = castKeywords.some((k) => userAgent.includes(k));
 
 				// Native players and casting devices change the User-Agent. 
 				// If alternate playback device is detected, allow user-agent mismatch.
 				if (isAppleCoreMedia || isCastingDevice) {
-					console.log('[playback-ip-debug] allow: user-agent exception', {
+					if (dbg) console.log('[playback-ip-debug] allow: user-agent exception', {
 						resourceKey: resourceKey || null,
 						isAppleCoreMedia,
 						isCastingDevice,
@@ -342,7 +351,7 @@ async function verifyToken(
 						requestNormalizedUserAgent,
 					});
 				} else {
-					console.warn('[playback-ip-debug] reject: binding mismatch', {
+					if (dbg) console.warn('[playback-ip-debug] reject: binding mismatch', {
 						resourceKey: resourceKey || null,
 						isAppleCoreMedia,
 						isCastingDevice,
@@ -355,7 +364,7 @@ async function verifyToken(
 				}
 			}
 		} else {
-			console.warn('[playback-ip-debug] warn: missing ua_hash claim, skipping ua binding', {
+			if (dbg) console.warn('[playback-ip-debug] warn: missing ua_hash claim, skipping ua binding', {
 				resourceKey: resourceKey || null,
 			});
 		}
@@ -365,7 +374,7 @@ async function verifyToken(
 			tokenAllowedDomains,
 			tokenAllowNoReferrer
 		);
-		console.log('[playback-ip-debug] verify-domain-compare', {
+		if (dbg) console.log('[playback-ip-debug] verify-domain-compare', {
 			resourceKey: resourceKey || null,
 			requestDomain: requestPlaybackDomain.domain,
 			requestDomainSource: requestPlaybackDomain.source,
@@ -374,7 +383,7 @@ async function verifyToken(
 			domainAllowed,
 		});
 		if (!domainAllowed) {
-			console.warn('[playback-ip-debug] reject: domain restriction mismatch', {
+			if (dbg) console.warn('[playback-ip-debug] reject: domain restriction mismatch', {
 				resourceKey: resourceKey || null,
 				requestDomain: requestPlaybackDomain.domain,
 				requestDomainSource: requestPlaybackDomain.source,
@@ -388,7 +397,7 @@ async function verifyToken(
 			const tokenOrgId = typeof payload.org_id === 'string' ? payload.org_id : undefined;
 			const isOrgMatch = tokenOrgId === organizationId;
 			if (!isOrgMatch) {
-				console.warn('[playback-ip-debug] reject: org mismatch', {
+				if (dbg) console.warn('[playback-ip-debug] reject: org mismatch', {
 					resourceKey: resourceKey || null,
 					tokenOrgId: tokenOrgId || null,
 					requestOrgId: organizationId,
@@ -397,7 +406,7 @@ async function verifyToken(
 			return isOrgMatch;
 		}
 
-		console.log('[playback-ip-debug] allow: token verified', {
+		if (dbg) console.log('[playback-ip-debug] allow: token verified', {
 			resourceKey: resourceKey || null,
 			videoId,
 		});
@@ -505,6 +514,9 @@ export default {
 		}
 
 		const url = new URL(request.url);
+		if (url.pathname === '/health') {
+			return new Response('ok', { status: 200, headers: corsHeaders });
+		}
 		const key = url.pathname.slice(1);
 		const token = url.searchParams.get('token');
 
@@ -529,7 +541,12 @@ export default {
 
 
 			// 3. CHECK AUTH
-			const playbackPolicy = object.customMetadata?.['playback-policy'] || object.customMetadata?.playback_policy || 'public';
+			const metadataPolicy =
+				object.customMetadata?.['playback-policy'] ||
+				object.customMetadata?.playback_policy;
+			// Objects without metadata fall back to DEFAULT_POLICY (default
+			// 'public'); self-hosters can set 'signed' to fail closed.
+			const playbackPolicy = metadataPolicy || env.DEFAULT_POLICY || 'public';
 			const isSigned = playbackPolicy === 'signed';
 			const organizationId = object.customMetadata?.['organization-id'];
 			const videoId = extractVideoId(key);
@@ -544,7 +561,7 @@ export default {
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
-				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, organizationId, key);
+				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, env, organizationId, key);
 				if (!isValid) {
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}
