@@ -440,7 +440,8 @@ def transcode_worker(payload: dict):
                     transcribe_to_vtt,
                     local_input,
                     subtitle_file,
-                    os.environ.get("WHISPER_MODEL", "large-v3-turbo")
+                    os.environ.get("WHISPER_MODEL", "large-v3-turbo"),
+                    os.environ.get("TRANSCRIBE_LANGUAGE") or None,
                 )
                 futures[transcription_future] = ("subtitle", "subtitles")
             
@@ -516,6 +517,12 @@ def transcode_worker(payload: dict):
         
         package_time = time.time() - package_start
         print(f"✅ Packaging complete in {package_time:.1f}s")
+
+        # Progressive staging cleanup: fMP4 intermediates are no longer needed
+        # once Shaka has written its segments — reclaim disk before upload.
+        if fmp4_dir.exists():
+            shutil.rmtree(fmp4_dir, ignore_errors=True)
+            print(f"🧹 Cleaned fMP4 staging ({fmp4_dir})")
         
         # ═══════════════════════════════════════════════════════════════════════
         # UPLOAD TO R2
