@@ -1,5 +1,5 @@
 /**
- * ClipMux Delivery Worker
+ * OpenVOD Delivery Worker
  *
  * SECURITY MODEL FOR SIGNED VIDEOS:
  * ─────────────────────────────────
