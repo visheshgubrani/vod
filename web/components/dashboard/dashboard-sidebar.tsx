@@ -147,7 +147,7 @@ export function DashboardSidebar({
               icon={() => (
                 <Image
                   src="/logo.svg"
-                  alt="ClipMux logo"
+                  alt="OpenVOD logo"
                   width={24}
                   height={24}
                   className="size-8 w-auto shrink-0"
@@ -236,7 +236,7 @@ export function DashboardSidebar({
                 <div className="flex items-center justify-center shrink-0">
                   <Image
                     src="/logo.svg"
-                    alt="ClipMux logo"
+                    alt="OpenVOD logo"
                     width={34}
                     height={34}
                     className="size-9 w-auto shrink-0"
