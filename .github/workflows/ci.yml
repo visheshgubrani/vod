@@ -76,8 +76,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Forbid residual brand strings in source
         run: |
-          if grep -rInE 'clipmux|indiemux' --include='*.ts' --include='*.tsx' --include='*.py' \
-             server delivery web sdk player transcoding docs README.md CONTRIBUTING.md; then
+          if grep -rInE 'clipmux|indiemux' \
+            --include='*.ts' --include='*.tsx' --include='*.py' \
+            --include='*.md' --include='*.mdx' --include='*.jsonc' --include='*.css' \
+            --include='*.json' \
+            server delivery web sdk player transcoding docs docs-site \
+            README.md CONTRIBUTING.md AGENTS.md; then
             echo "Residual brand strings found (see above). Rename pass incomplete."
             exit 1
           fi

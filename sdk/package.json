@@ -34,11 +34,19 @@
     "video",
     "upload",
     "multipart",
-    "clipmux",
+    "openvod",
     "streaming"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visheshgubrani/vod.git"
+  },
+  "homepage": "https://github.com/visheshgubrani/vod/tree/main/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/visheshgubrani/vod/issues"
   }
 }

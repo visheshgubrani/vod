@@ -1,37 +1,35 @@
-# @clipmux/uploader
+# @openvod/uploader
 
-A lightweight SDK for uploading videos to Clipmux with multipart upload support.
+A lightweight SDK for uploading videos to a self-hosted OpenVOD API with windowed multipart upload support.
 
 ## Features
 
-- 🚀 **Automatic multipart chunking** - Large files are split automatically
-- ⚡ **Parallel uploads** - Upload multiple parts simultaneously for speed
-- 📊 **Progress tracking** - Real-time progress with callbacks
-- 🔄 **Automatic retry** - Exponential backoff for failed parts
-- ❌ **Cancellation** - AbortController support for cancelling uploads
-- 📝 **TypeScript first** - Full type definitions included
+- Automatic multipart chunking — large files are split automatically
+- Windowed presigned URLs — URLs are fetched just-in-time so they never expire mid-upload
+- Parallel uploads — multiple parts at once
+- Progress tracking — real-time callbacks
+- Automatic retry — exponential backoff for failed parts
+- Cancellation — AbortController support
+- TypeScript first — full type definitions included
 
 ## Installation
 
 ```bash
-npm install @clipmux/uploader
+npm install @openvod/uploader
 ```
 
 ## Quick Start
 
 ```typescript
-import { ClipmuxUploader } from '@clipmux/uploader'
+import { OpenVodUploader } from '@openvod/uploader'
 
-// Get an upload token from your backend
 const uploadToken = await getUploadTokenFromYourBackend()
 
-// Create uploader instance
-const uploader = new ClipmuxUploader({
-  baseUrl: 'https://api.clipmux.com',
+const uploader = new OpenVodUploader({
+  baseUrl: 'https://api.yourvod.com',
   uploadToken,
 })
 
-// Upload a file
 const result = await uploader.upload(file, {
   title: 'My Video',
   onProgress: (progress) => {
@@ -45,33 +43,34 @@ console.log(`Video ID: ${result.fileId}`)
 ## Authentication Flow
 
 1. **Your backend** requests an upload token using your API key:
+
    ```bash
-   curl -X POST https://api.clipmux.com/v1/upload/token \
+   curl -X POST https://api.yourvod.com/v1/upload/token \
      -H "Authorization: Bearer sk_live_YOUR_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"expires_in": "1h", "max_files": 1}'
    ```
 
 2. **Your frontend** uses the token to upload directly:
+
    ```typescript
-   const uploader = new ClipmuxUploader({
-     baseUrl: 'https://api.clipmux.com',
-     uploadToken: 'ut_abc123...', // Token from step 1
+   const uploader = new OpenVodUploader({
+     baseUrl: 'https://api.yourvod.com',
+     uploadToken: 'ut_abc123...',
    })
    ```
 
 ## Configuration Options
 
 ```typescript
-const uploader = new ClipmuxUploader({
-  // Required
-  baseUrl: 'https://api.clipmux.com',
+const uploader = new OpenVodUploader({
+  baseUrl: 'https://api.yourvod.com',
   uploadToken: 'ut_abc123...',
 
-  // Optional
-  concurrency: 3,     // Parts to upload in parallel (default: 3)
-  maxRetries: 3,      // Retry attempts for failed parts (default: 3)
-  retryDelay: 1000,   // Base delay for backoff in ms (default: 1000)
+  concurrency: 3,
+  maxRetries: 3,
+  retryDelay: 1000,
+  windowSize: 32,
 })
 ```
 
@@ -79,10 +78,10 @@ const uploader = new ClipmuxUploader({
 
 ```typescript
 await uploader.upload(file, {
-  title: 'My Video',           // Optional, defaults to filename
-  playbackPolicy: 'public',    // 'public' or 'signed'
-  generateSubtitle: true,      // Generate subtitles (default: false)
-  generateChapters: true,      // Generate chapters (default: false, requires generateSubtitle)
+  title: 'My Video',
+  playbackPolicy: 'public',
+  generateSubtitle: true,
+  generateChapters: true,
   onProgress: (progress) => {
     // progress.percentage (0-100)
     // progress.bytesUploaded
@@ -91,7 +90,7 @@ await uploader.upload(file, {
     // progress.partsCompleted
     // progress.partsTotal
   },
-  signal: abortController.signal,  // For cancellation
+  signal: abortController.signal,
 })
 ```
 
@@ -100,12 +99,10 @@ await uploader.upload(file, {
 ```typescript
 const controller = new AbortController()
 
-// Start upload
 const uploadPromise = uploader.upload(file, {
   signal: controller.signal,
 })
 
-// Cancel after 5 seconds
 setTimeout(() => controller.abort(), 5000)
 
 try {
@@ -119,4 +116,4 @@ try {
 
 ## License
 
-MIT
+Apache-2.0

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { ClipmuxUploader } from '../src/uploader'
+import { OpenVodUploader } from '../src/uploader'
 
 /**
  * Protocol-level fake server: exercises the exact API surface the SDK talks
@@ -85,12 +85,12 @@ function makeFile(bytes: number): File {
 
 const BASE = 'https://api.example.com'
 
-describe('ClipmuxUploader windowed upload', () => {
+describe('OpenVodUploader windowed upload', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('fetches part URLs in windows of the configured size', async () => {
     const { server, windowCalls, state } = makeProtocolServer(7, 1024 * 1024)
-    const uploader = new ClipmuxUploader({
+    const uploader = new OpenVodUploader({
       baseUrl: BASE,
       uploadToken: 'ut_token',
       windowSize: 3,
@@ -113,7 +113,7 @@ describe('ClipmuxUploader windowed upload', () => {
 
   it('retries expired presigned URLs once per window by refetching', async () => {
     const { server, state } = makeProtocolServer(4)
-    const uploader = new ClipmuxUploader({
+    const uploader = new OpenVodUploader({
       baseUrl: BASE,
       uploadToken: 'ut_token',
       windowSize: 4,
@@ -136,7 +136,7 @@ describe('ClipmuxUploader windowed upload', () => {
 
   it('retries transient 5xx PUT failures with backoff', async () => {
     const { server, state } = makeProtocolServer(2)
-    const uploader = new ClipmuxUploader({
+    const uploader = new OpenVodUploader({
       baseUrl: BASE,
       uploadToken: 'ut_token',
       windowSize: 2,
@@ -153,7 +153,7 @@ describe('ClipmuxUploader windowed upload', () => {
 
   it('surfaces progress totals and part counts', async () => {
     const { server } = makeProtocolServer(3, 1024 * 1024)
-    const uploader = new ClipmuxUploader({
+    const uploader = new OpenVodUploader({
       baseUrl: BASE,
       uploadToken: 'ut_token',
       windowSize: 2,
@@ -171,7 +171,7 @@ describe('ClipmuxUploader windowed upload', () => {
 
   it('supports abort via AbortSignal before parts start', async () => {
     const { server } = makeProtocolServer(4)
-    const uploader = new ClipmuxUploader({
+    const uploader = new OpenVodUploader({
       baseUrl: BASE,
       uploadToken: 'ut_token',
       fetchImpl: server as unknown as typeof fetch,
@@ -185,7 +185,7 @@ describe('ClipmuxUploader windowed upload', () => {
 
   it('calls the abort endpoint for explicit abort()', async () => {
     const { server } = makeProtocolServer(4)
-    const uploader = new ClipmuxUploader({
+    const uploader = new OpenVodUploader({
       baseUrl: BASE,
       uploadToken: 'ut_token',
       fetchImpl: server as unknown as typeof fetch,

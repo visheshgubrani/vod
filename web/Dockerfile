@@ -11,11 +11,11 @@ COPY server/package.json server/package.json
 COPY sdk/package.json sdk/package.json
 COPY player/package.json player/package.json
 COPY delivery/package.json delivery/package.json
-COPY clipmux-docs/package.json clipmux-docs/package.json
+COPY docs-site/package.json docs-site/package.json
 
-# clipmux-docs runs `fumadocs-mdx` in postinstall, which cannot run inside
+# docs-site runs `fumadocs-mdx` in postinstall, which cannot run inside
 # this image — strip it before installing (scripts are not part of the lockfile).
-RUN node -e "const fs=require('fs');const p='clipmux-docs/package.json';const j=JSON.parse(fs.readFileSync(p));if(j.scripts&&j.scripts.postinstall)delete j.scripts.postinstall;fs.writeFileSync(p,JSON.stringify(j,null,2))"
+RUN node -e "const fs=require('fs');const p='docs-site/package.json';const j=JSON.parse(fs.readFileSync(p));if(j.scripts&&j.scripts.postinstall)delete j.scripts.postinstall;fs.writeFileSync(p,JSON.stringify(j,null,2))"
 
 RUN pnpm install --frozen-lockfile
 

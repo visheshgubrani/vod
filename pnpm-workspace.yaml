@@ -4,4 +4,4 @@ packages:
   - sdk
   - player
   - web
-  - clipmux-docs
+  - docs-site

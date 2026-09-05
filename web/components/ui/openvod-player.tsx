@@ -9,7 +9,7 @@ import {
 
 import '@vidstack/react/player/styles/default/theme.css'
 import '@vidstack/react/player/styles/default/layouts/video.css'
-import './clipmux-player.css'
+import './openvod-player.css'
 
 type Chapter = {
   startTime: number
@@ -17,7 +17,7 @@ type Chapter = {
   title: string
 }
 
-type ClipMuxPlayerProps = {
+type OpenVodPlayerProps = {
   src: string
   videoId: string
   title?: string
@@ -282,7 +282,7 @@ function useVideoAnalytics(
   }
 }
 
-export function ClipMuxPlayer({
+export function OpenVodPlayer({
   src,
   videoId,
   title,
@@ -290,7 +290,7 @@ export function ClipMuxPlayer({
   subtitles,
   chapters,
   userId,
-}: ClipMuxPlayerProps) {
+}: OpenVodPlayerProps) {
   // Ref to access player state
   const playerStateRef = React.useRef<{ currentTime: number; duration: number } | null>(null)
 

@@ -18,7 +18,7 @@ const run = async () => {
     .values({
       id: newUserId,
       name: 'Admin Dev',
-      email: 'admin@indiemux.com',
+      email: 'admin@localhost',
       emailVerified: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -31,8 +31,8 @@ const run = async () => {
     .insert(organization)
     .values({
       id: newOrgId,
-      name: 'Indie Mux HQ',
-      slug: 'indie-mux-hq', // Unique slug
+      name: 'OpenVOD Local',
+      slug: 'openvod-local', // Unique slug
       createdAt: new Date(),
     })
     .onConflictDoNothing()

@@ -1,21 +1,29 @@
 ---
 title: Deployment
-description: Hosting options, environment variables and zero-touch migrations.
+description: Wrangler default vs Docker API/web. Delivery stays on Cloudflare Workers.
 ---
 
-Full deployment guidance (wrangler routes/secrets, R2 bucket + S3 CORS setup,
-Modal secrets, cost estimates) lives in the repo README and `docs/`. Key facts:
+OpenVOD is hybrid: the **API and dashboard** run on Cloudflare Workers (default)
+or Docker/Node. The **delivery worker is Cloudflare-only**. Compose does not
+serve signed HLS/DASH.
 
-- The API runs on **Cloudflare Workers** (Neon HTTP driver) or as a **Node
-  container** (`DB_DRIVER=pg`, `@hono/node-server` runtime) — same code.
-- The **delivery worker** is Cloudflare-only (R2 binding, JWT verification,
-  manifest rewriting, bandwidth metering). Set `DEFAULT_POLICY=signed` to fail
-  closed on objects missing policy metadata.
-- The **web dashboard** builds as Next.js standalone (Vercel or Docker).
+The canonical walkthrough is [`docs/deploy.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deploy.md)
+in the repository. Key facts:
+
+- **API**: Cloudflare Workers (`DB_DRIVER=neon-http`) or Node container
+  (`DB_DRIVER=pg`, `@hono/node-server`) — same Hono app.
+- **Delivery**: Cloudflare Worker (R2 binding, JWT verification, manifest
+  rewriting, bandwidth metering). Set `DEFAULT_POLICY=signed` to fail closed
+  on objects missing policy metadata. Add your custom domain after
+  `wrangler deploy` (configs ship with commented examples, not live hostnames).
+- **Storage**: Cloudflare R2. Generic S3/MinIO is not implemented yet.
+- **Transcoding**: Modal GPU only.
+- **Web dashboard**: Next.js standalone (Vercel or Docker). `NEXT_PUBLIC_*`
+  is baked at image build time.
 - **Zero-touch boot**: the API container runs `src/node/migrate.ts` before
   serving; migrations are advisory-locked and idempotent across restarts.
 - **Health**: `GET /health` (liveness), `GET /health/config` (BYOK capability
-  flags, no secrets), delivery `GET /health`, Modal `GET /healthz`.
-- **Recovery**: a heartbeat-aware job sweeper retries/fails stuck videos;
-  trigger it via cron (`SWEEP_ENABLED`) or `POST /api/internal/sweep` with
-  `INTERNAL_SWEEP_SECRET`.
+  flags including an advisory `delivery` check, no secrets), delivery
+  `GET /health`, Modal `GET /healthz`.
+- **Recovery**: heartbeat-aware job sweeper; Workers cron (`SWEEP_ENABLED` +
+  `triggers.crons`) or `POST /api/internal/sweep` with `INTERNAL_SWEEP_SECRET`.

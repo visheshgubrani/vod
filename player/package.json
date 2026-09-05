@@ -42,17 +42,25 @@
     "video",
     "player",
     "hls",
-    "clipmux",
+    "openvod",
     "vidstack",
     "react",
     "analytics",
     "streaming"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@vidstack/react": "^1.12.13"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visheshgubrani/vod.git"
+  },
+  "homepage": "https://github.com/visheshgubrani/vod/tree/main/player#readme",
+  "bugs": {
+    "url": "https://github.com/visheshgubrani/vod/issues"
   }
 }

@@ -17,7 +17,7 @@ import {
 // Vidstack CSS — vendored locally to avoid sideEffects:false tree-shaking.
 // tsup's injectStyle will bundle these into the JS output.
 import './vidstack-styles.css'
-import './clipmux-player.css'
+import './openvod-player.css'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -27,19 +27,25 @@ export type Chapter = {
     title: string
 }
 
-export interface ClipMuxPlayerProps {
+export interface OpenVodPlayerProps {
     /**
-     * The ClipMux video ID. Used to resolve the HLS URL and track analytics.
-     * At minimum, one of `playbackId` or `src` must be provided.
+     * The OpenVOD video ID. Used with `cdnBase` to resolve the HLS URL and
+     * to tag analytics events. At minimum, one of `src` or (`cdnBase` +
+     * `playbackId`) must be provided.
      */
     playbackId?: string
 
     /**
-     * Direct HLS/DASH URL. Escape hatch for custom CDNs, proxies, or local files.
-     * If both `playbackId` and `src` are provided, `src` takes precedence for playback
-     * but `playbackId` is still sent to analytics.
+     * Direct HLS/DASH URL. Takes precedence over `cdnBase` + `playbackId`.
      */
     src?: string
+
+    /**
+     * Delivery origin used to build `{cdnBase}/{playbackId}/playlist.m3u8`
+     * when `src` is omitted (e.g. `https://media.example.com/videos`).
+     * There is no hosted default — set this to your own delivery worker.
+     */
+    cdnBase?: string
 
     /** Environment/public key identifying the tenant. */
     envKey?: string
@@ -90,9 +96,8 @@ export interface ClipMuxPlayerProps {
     style?: React.CSSProperties
 
     /**
-     * Override the analytics ingestion URL.
-     * Default: the ClipMux production beacon endpoint.
-     * Set to `false` to disable analytics entirely.
+     * Analytics ingestion URL. Off by default (no phone-home).
+     * Pass your API's `/api/playback/journal` to enable; `false` also disables.
      */
     analyticsEndpoint?: string | false
 
@@ -106,20 +111,6 @@ export interface ClipMuxPlayerProps {
     onEnded?: () => void
 }
 
-// ─── Constants ──────────────────────────────────────────────────────
-
-/**
- * Default analytics beacon URL.
- * Override with the `analyticsEndpoint` prop if you run your own proxy.
- */
-const DEFAULT_ANALYTICS_URL = 'https://api.clipmux.com/api/playback/journal'
-
-/**
- * CDN pattern for resolving playbackId → HLS URL.
- * Override with `src` prop if using a custom CDN.
- */
-const CDN_BASE = 'https://delivery.clipmux.com/videos'
-
 // ─── Helpers ────────────────────────────────────────────────────────
 
 /** Append signed playback token to a URL if needed. */
@@ -130,8 +121,15 @@ function withToken(url: string, token?: string): string {
 }
 
 /** Resolve the playback source URL from props. */
-function resolveSourceUrl(props: Pick<ClipMuxPlayerProps, 'playbackId' | 'src' | 'token'>): string {
-    const url = props.src || `${CDN_BASE}/${props.playbackId}/playlist.m3u8`
+function resolveSourceUrl(
+    props: Pick<OpenVodPlayerProps, 'playbackId' | 'src' | 'token' | 'cdnBase'>,
+): string {
+    const fromCdn =
+        props.cdnBase && props.playbackId
+            ? `${props.cdnBase.replace(/\/$/, '')}/${props.playbackId}/playlist.m3u8`
+            : ''
+    const url = props.src || fromCdn
+    if (!url) return ''
     return withToken(url, props.token)
 }
 
@@ -171,22 +169,10 @@ type AnalyticsEvent = {
 function useVideoAnalytics(
     videoId: string,
     envKey: string | undefined,
-    analyticsUrl: string | false,
+    analyticsUrl: string | false | undefined,
     playerRef: React.RefObject<{ currentTime: number; duration: number } | null>,
 ) {
-    // Disabled — return no-op handlers
-    if (analyticsUrl === false) {
-        return {
-            onPlay: () => { },
-            onPause: () => { },
-            onSeeking: () => { },
-            onSeeked: () => { },
-            onEnded: () => { },
-            onError: (_code?: string) => { },
-        }
-    }
-
-    const url = analyticsUrl || DEFAULT_ANALYTICS_URL
+    const url = typeof analyticsUrl === 'string' && analyticsUrl.length > 0 ? analyticsUrl : ''
 
     // Session ID — generated once per component mount
     const sessionIdRef = React.useRef<string>('')
@@ -229,6 +215,7 @@ function useVideoAnalytics(
 
     const flushEvents = React.useCallback(
         async (useBeacon: boolean = false) => {
+            if (!url) return
             const watchedDelta = watchTimeAccumulatorRef.current
             watchTimeAccumulatorRef.current = 0
 
@@ -262,9 +249,10 @@ function useVideoAnalytics(
 
     const queueEvent = React.useCallback(
         (eventType: string, errorCode?: string) => {
+            if (!url) return
             eventQueueRef.current.push(createEvent(eventType, 0, errorCode))
         },
-        [createEvent],
+        [createEvent, url],
     )
 
     const flushImmediate = React.useCallback(() => {
@@ -330,6 +318,7 @@ function useVideoAnalytics(
 
     // Heartbeat interval (10s) + watchTime ticker (1s) + beforeunload
     React.useEffect(() => {
+        if (!url) return
         heartbeatIntervalRef.current = setInterval(() => {
             tickWatchTime()
             flushEvents(false)
@@ -356,16 +345,17 @@ function useVideoAnalytics(
             tickWatchTime()
             flushEvents(true)
         }
-    }, [tickWatchTime, flushEvents])
+    }, [tickWatchTime, flushEvents, url])
 
     return { onPlay, onPause, onSeeking, onSeeked, onEnded, onError }
 }
 
 // ─── Component ──────────────────────────────────────────────────────
 
-export function ClipMuxPlayer({
+export function OpenVodPlayer({
     playbackId,
     src,
+    cdnBase,
     envKey,
     token,
     tokenRefreshEndpoint,
@@ -383,7 +373,7 @@ export function ClipMuxPlayer({
     onReady,
     onError,
     onEnded: onEndedCallback,
-}: ClipMuxPlayerProps) {
+}: OpenVodPlayerProps) {
     // Resolve video ID — playbackId is preferred, fall back to extracting from src
     const videoId = playbackId || 'unknown'
 
@@ -394,8 +384,8 @@ export function ClipMuxPlayer({
 
     // Resolve the playback URL
     const videoSrc = React.useMemo(
-        () => resolveSourceUrl({ playbackId, src, token: effectiveToken }),
-        [playbackId, src, effectiveToken],
+        () => resolveSourceUrl({ playbackId, src, token: effectiveToken, cdnBase }),
+        [playbackId, src, effectiveToken, cdnBase],
     )
 
     // ── Signed-token auto-refresh ─────────────────────────────────────────
@@ -440,7 +430,7 @@ export function ClipMuxPlayer({
     const playerStateRef = React.useRef<{ currentTime: number; duration: number } | null>(null)
 
     // Analytics hook
-    const analytics = useVideoAnalytics(videoId, envKey, analyticsEndpoint ?? DEFAULT_ANALYTICS_URL, playerStateRef)
+    const analytics = useVideoAnalytics(videoId, envKey, analyticsEndpoint, playerStateRef)
 
     // Chapters → VTT
     const chaptersVttUrl = React.useMemo(() => {
@@ -468,7 +458,7 @@ export function ClipMuxPlayer({
 
     return (
         <MediaPlayer
-            className={`clipmux-player ${className || ''}`}
+            className={`openvod-player ${className || ''}`}
             title={title}
             src={videoSrc}
             autoPlay={autoPlay}

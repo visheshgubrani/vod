@@ -1,7 +1,7 @@
 # AGENTS.md - Agentic Coding Guidelines
 
 Guidelines for agents working on the **OpenVOD** codebase (open-source BYOK
-VOD platform; working title — final name decided at rename pass).
+VOD platform).
 
 ## Repository layout (single pnpm workspace at the repo root)
 
@@ -12,7 +12,7 @@ web/           Next.js dashboard + Developer Welcome (/setup BYOK page)
 sdk/           @openvod/uploader — TS upload SDK (windowed multipart)
 player/        @openvod/player — Vidstack React player (token auto-refresh)
 transcoding/   Modal Python GPU pipeline (FFmpeg + Shaka + Whisper) + pytest
-clipmux-docs/  Fumadocs documentation site (package: openvod-docs)
+docs-site/     Fumadocs documentation site (package: openvod-docs)
 docs/          Long-form markdown (delivery contract, security model)
 scripts/       setup.sh (BYOK env wizard) + verify-env.sh
 ```
@@ -34,8 +34,8 @@ pnpm --filter vod-api exec tsc --noEmit
 Per-package: `web` (Next 16 standalone: `output: "standalone"`), `sdk`/`player`
 (tsup + vitest), `delivery` (wrangler + vitest pool-workers),
 `server` (wrangler dev :8787; drizzle `db:push`/`db:migrate`/`db:seed`;
-`build:node` + `start:node` for the Docker Node runtime; migrations run
-automatically in the container before boot via `src/node/migrate.ts`).
+the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
+`build:node` + `start:node` remain available for a bundled Node runtime).
 
 ## Stack notes (verified)
 
@@ -78,7 +78,7 @@ automatically in the container before boot via `src/node/migrate.ts`).
   behind env flags (`DELIVERY_DEBUG`, `LOG_LEVEL`).
 - This repo's history was rewritten to purge a leaked R2 key — treat that as
   the precedent: rotate first, then scrub, verify with git grep.
-- `clipmux-docs/` has a root gitignore allowlist (pnpm intermittently
+- `docs-site/` has a root gitignore allowlist (pnpm intermittently
   materializes a store farm there) — keep it in sync if you add files.
 
 ## Code style

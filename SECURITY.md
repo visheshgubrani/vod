@@ -11,7 +11,7 @@ issues responsibly.
 - Report privately by emailing **maintainers@openvod.dev** (PGP key published
   here when available), or
 - If you have access, use GitHub's private vulnerability reporting
-  (Security → Report a vulnerability) once the repository is public.
+  (Security → Report a vulnerability).
 
 Include, if possible:
 

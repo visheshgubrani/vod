@@ -44,7 +44,7 @@ describe('GET /health/config', () => {
       expect(body.service).toBe('openvod')
       expect(body.ready).toBe(false)
       expect(Object.keys(body.checks).sort()).toEqual(
-        ['ai', 'analytics', 'auth', 'database', 'storage', 'transcoder'].sort(),
+        ['ai', 'analytics', 'auth', 'database', 'delivery', 'storage', 'transcoder'].sort(),
       )
       expect(Object.values(body.checks).every((v) => v === false)).toBe(true)
       expect(body.problems.length).toBeGreaterThanOrEqual(6)

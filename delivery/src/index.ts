@@ -498,7 +498,7 @@ function rewritePlaylist(content: string, token: string): string {
 }
 
 /**
- * Log bandwidth usage to Analytics Engine for billing/analytics.
+ * Log bandwidth usage to Analytics Engine for usage metering.
  * Non-blocking - uses waitUntil to prevent impacting response latency.
  */
 function logBandwidth(

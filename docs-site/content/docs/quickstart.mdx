@@ -25,7 +25,7 @@ the two supported hosting paths.
 5. Frontend: import `web/` into Vercel (set the `NEXT_PUBLIC_*` env vars) or
    run the Docker image.
 
-## Path B — Docker Compose (VPS)
+## Path B — Docker Compose (API + web + Postgres)
 
 ```bash
 docker compose up -d
@@ -35,6 +35,9 @@ Postgres + API + web boot together; the API container runs
 `drizzle` migrations before listening (advisory-locked, idempotent). The
 dashboard is then at `http://localhost:3000` and the API at
 `http://localhost:8787` (`GET /health/config` shows readiness).
+
+**Playback still needs the Cloudflare delivery worker** in front of R2 — Compose
+does not include it. Deploy `delivery/` with Wrangler and set `DELIVERY_URL`.
 
 ## Verify
 

@@ -11,11 +11,11 @@ export function baseOptions(): BaseLayoutProps {
     ],
     nav: {
       title: (
-        <span className="clipmux-nav-title">
-          <span className="clipmux-nav-mark" aria-hidden="true" />
-          <span className="clipmux-nav-copy">
-            <span>ClipMux</span>
-            <span className="clipmux-nav-docs">Docs</span>
+        <span className="openvod-nav-title">
+          <span className="openvod-nav-mark" aria-hidden="true" />
+          <span className="openvod-nav-copy">
+            <span>OpenVOD</span>
+            <span className="openvod-nav-docs">Docs</span>
           </span>
         </span>
       ),

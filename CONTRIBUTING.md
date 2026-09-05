@@ -18,9 +18,9 @@ delivery/       Cloudflare Worker — media delivery (JWT, manifest rewrite, met
 web/            Next.js dashboard + Developer Welcome (standalone build; Vercel or Docker)
 sdk/            @openvod/uploader — TypeScript upload SDK
 player/         @openvod/player — Vidstack-based React player
-transcoding/    Modal Python GPU pipeline (FFmpeg + Shaka + Whisper)
-clipmux-docs/   Fumadocs documentation site
-docs/           Long-form markdown (integration guides, contracts, branding)
+transcoding/   Modal Python GPU pipeline (FFmpeg + Shaka + Whisper)
+docs-site/     Fumadocs documentation site
+docs/          Long-form markdown (integration guides, contracts)
 ```
 
 The repo is a single [pnpm workspace](https://pnpm.io/workspaces) rooted at
@@ -40,7 +40,7 @@ pnpm typecheck        # type-check every package
 2. Per-package local configuration lives in `.dev.vars` (server/delivery) or
    `.env` — copy the `.example`/`.env.example` file in each package first.
 3. Run services in separate terminals:
-   - `pnpm --filter server dev` (wrangler dev, port 8787)
+   - `pnpm --filter vod-api dev` (wrangler dev, port 8787)
    - `pnpm --filter web dev` (Next.js, port 3000)
    - `docker compose up -d postgres` for the local dev database
    - `pnpm --filter delivery dev` for the delivery worker
@@ -61,7 +61,7 @@ of the docs for the full seam table.
 Test suites per package:
 
 ```bash
-pnpm --filter server test        # vitest (unit + integration w/ TEST_DATABASE_URL)
+pnpm --filter vod-api test       # vitest (unit + integration w/ TEST_DATABASE_URL)
 pnpm --filter delivery test      # vitest + @cloudflare/vitest-pool-workers
 pnpm --filter sdk test           # vitest
 pnpm --filter player test        # vitest
@@ -87,8 +87,8 @@ when it is unset. CI provides a Postgres service.
 2. Add or update tests for every behavior change (red → green).
 3. Run `pnpm lint`, `pnpm typecheck`, `pnpm test` and fix failures.
 4. Open the PR. CI must pass: lint/typecheck/tests, package builds, Docker
-   build smoke, and the branding grep gate (no `clipmux`/`indiemux` strings in
-   source).
+   build smoke, and the branding grep gate (legacy product names must not
+   appear in source).
 5. Two approvals are not required — maintainers review and merge.
 
 ## Reporting bugs & security issues

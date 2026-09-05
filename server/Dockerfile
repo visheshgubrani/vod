@@ -13,7 +13,7 @@ COPY web/package.json web/package.json
 COPY sdk/package.json sdk/package.json
 COPY player/package.json player/package.json
 COPY delivery/package.json delivery/package.json
-COPY clipmux-docs/package.json clipmux-docs/package.json
+COPY docs-site/package.json docs-site/package.json
 
 RUN pnpm install --frozen-lockfile --filter vod-api
 

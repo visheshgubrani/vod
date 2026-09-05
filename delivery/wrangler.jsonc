@@ -17,12 +17,8 @@
 		},
 	],
 	"analytics_engine_datasets": [{ "binding": "USAGE_ANALYTICS", "dataset": "bandwidth_usage" }],
-	"routes": [
-		{
-			"pattern": "media.clipmux.com",
-			"custom_domain": true,
-		},
-	],
+	// Bind a custom domain after first deploy, e.g.:
+	// "routes": [{ "pattern": "media.example.com", "custom_domain": true }],
 
 	/**
 	 * Smart Placement

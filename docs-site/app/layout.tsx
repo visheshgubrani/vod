@@ -22,11 +22,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: 'ClipMux Docs',
-    template: '%s | ClipMux Docs',
+    default: 'OpenVOD Docs',
+    template: '%s | OpenVOD Docs',
   },
   description:
-    'Documentation for ClipMux, the developer-first VOD platform for video ingestion, encoding, playback, and delivery.',
+    'Documentation for OpenVOD, the open-source BYOK VOD platform for video ingestion, encoding, playback, and delivery.',
 };
 
 export const viewport: Viewport = {
@@ -40,7 +40,7 @@ export default function Layout({ children }: LayoutProps<'/'>) {
       className={`dark scroll-smooth ${inter.variable} ${commissioner.variable} ${geistMono.variable}`}
       suppressHydrationWarning
     >
-      <body className="clipmux-docs flex min-h-screen flex-col antialiased">
+      <body className="openvod-docs flex min-h-screen flex-col antialiased">
         <RootProvider>{children}</RootProvider>
       </body>
     </html>

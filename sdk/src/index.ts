@@ -29,11 +29,9 @@
  * ```
  */
 
-export { ClipmuxUploader } from './uploader'
-/** Alias matching the @openvod/uploader package scope. */
-export { ClipmuxUploader as OpenVodUploader } from './uploader'
+export { OpenVodUploader } from './uploader'
 export type {
-    ClipmuxUploaderConfig,
+    OpenVodUploaderConfig,
     UploadOptions,
     UploadProgress,
     UploadResult,

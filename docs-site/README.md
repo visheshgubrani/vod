@@ -1,5 +1,9 @@
 # .
 
+OpenVOD documentation site (Fumadocs). Documentation content is licensed
+[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/); the site software
+is Apache-2.0 like the rest of the repository.
+
 This is a Next.js application generated with
 [Create Fumadocs](https://github.com/fuma-nama/fumadocs).
 

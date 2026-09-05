@@ -8,7 +8,7 @@ importers:
 
   .: {}
 
-  clipmux-docs:
+  docs-site:
     dependencies:
       '@takumi-rs/image-response':
         specifier: ^0.69.5

@@ -13,10 +13,8 @@
 			"dataset": "playback_events",
 		},
 	],
-	"routes": [
-		{
-			"pattern": "api.clipmux.com",
-			"custom_domain": true,
-		},
-	],
+	// Bind a custom domain after first deploy, e.g.:
+	// "routes": [{ "pattern": "api.example.com", "custom_domain": true }],
+	// Enable the job sweeper on a cron (also requires SWEEP_ENABLED=true):
+	// "triggers": { "crons": ["*/15 * * * *"] },
 }

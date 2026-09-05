@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { ClipMuxPlayer } from "@/components/ui/clipmux-player";
+import { OpenVodPlayer } from "@/components/ui/openvod-player";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
@@ -266,7 +266,7 @@ export function VideoDetailModal({
                     <p className="text-sm text-muted-foreground">
                       Preview Player
                     </p>
-                    <ClipMuxPlayer
+                    <OpenVodPlayer
                       src={detail.playbackUrl}
                       videoId={video.id}
                       title={detail?.title || video.title}

@@ -35,6 +35,7 @@ describe('loadConfig', () => {
     expect(cfg.checks.auth).toBe(false)
     expect(cfg.checks.analytics).toBe(false)
     expect(cfg.checks.ai).toBe(false)
+    expect(cfg.checks.delivery).toBe(false)
     expect(cfg.problems.length).toBeGreaterThanOrEqual(6)
     expect(cfg.problems.some((p) => p.includes('DATABASE_URL'))).toBe(true)
     expect(cfg.problems.some((p) => p.includes('JWT_SECRET'))).toBe(true)
@@ -52,6 +53,7 @@ describe('loadConfig', () => {
       auth: true,
       analytics: true,
       ai: true,
+      delivery: true,
     })
     expect(cfg.jwtSecret).toBe(FULL_ENV.JWT_SECRET)
     expect(cfg.deliveryUrl).toBe('https://media.example.com')
@@ -70,6 +72,15 @@ describe('loadConfig', () => {
 
     expect(cfg.problems.some((p) => p.includes('DELIVERY_URL'))).toBe(true)
     expect(cfg.deliveryUrl).toBeNull()
+    expect(cfg.checks.delivery).toBe(false)
+  })
+
+  it('treats a missing delivery URL as advisory, not a ready blocker', () => {
+    const cfg = loadConfig({ ...FULL_ENV, DELIVERY_URL: undefined })
+
+    expect(cfg.ready).toBe(true)
+    expect(cfg.checks.delivery).toBe(false)
+    expect(cfg.advisories.some((a) => a.includes('DELIVERY_URL'))).toBe(true)
   })
 
   it('never coerces a missing secret into the string "undefined"', () => {

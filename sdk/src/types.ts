@@ -5,7 +5,7 @@
 /**
  * Configuration options for the VOD uploader
  */
-export interface ClipmuxUploaderConfig {
+export interface OpenVodUploaderConfig {
     /** Base URL of the VOD API (e.g., 'https://api.yourvod.com') */
     baseUrl: string
     /** Upload token obtained from your backend */

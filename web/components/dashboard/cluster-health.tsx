@@ -23,6 +23,7 @@ const CHECK_DEFINITIONS: CheckDefinition[] = [
   { key: "auth", label: "Auth / JWT", hint: "Sessions and keys" },
   { key: "analytics", label: "Analytics", hint: "Playback + bandwidth" },
   { key: "ai", label: "AI", hint: "Subtitles" },
+  { key: "delivery", label: "Delivery", hint: "Media worker URL" },
 ];
 
 type CheckStatus = "ok" | "down" | "unknown";

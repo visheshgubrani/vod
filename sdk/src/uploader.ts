@@ -11,7 +11,7 @@
  */
 
 import type {
-    ClipmuxUploaderConfig,
+    OpenVodUploaderConfig,
     UploadOptions,
     UploadProgress,
     UploadResult,
@@ -24,7 +24,7 @@ const DEFAULT_WINDOW_SIZE = 32
 /** Server cap for one /parts request (kept in sync with the API). */
 const MAX_WINDOW_SIZE = 100
 
-export class ClipmuxUploader {
+export class OpenVodUploader {
     private baseUrl: string
     private uploadToken: string
     private concurrency: number
@@ -33,7 +33,7 @@ export class ClipmuxUploader {
     private windowSize: number
     private http: typeof fetch
 
-    constructor(config: ClipmuxUploaderConfig) {
+    constructor(config: OpenVodUploaderConfig) {
         this.baseUrl = config.baseUrl.replace(/\/$/, '') // Remove trailing slash
         this.uploadToken = config.uploadToken
         this.concurrency = config.concurrency ?? 3

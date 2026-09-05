@@ -1,81 +1,74 @@
 ---
 title: Overview
-description: A high-level introduction to the ClipMux platform and the VOD workflow it is designed to support.
+description: A high-level introduction to OpenVOD and the self-hosted VOD workflow it is designed to support.
 ---
 
-ClipMux is built for teams that need hosted video infrastructure without inheriting the cost profile of products like Mux or Cloudflare Stream. The goal is simple: make video ingestion, processing, playback, and delivery feel like a clean developer workflow instead of a black box.
+OpenVOD is open-source video infrastructure you run on your own accounts. Paste Cloudflare R2 credentials and a Modal API key and you get Mux-style ingestion, GPU transcoding, signed playback, and a dashboard — without a metered SaaS in the middle.
 
-## What ClipMux Does
+## What OpenVOD Does
 
-At a high level, ClipMux helps you:
+At a high level, OpenVOD helps you:
 
-- upload source video files
-- process them into playback-ready outputs
-- serve those outputs through a global delivery layer
+- upload source video files (direct-to-storage multipart)
+- process them into playback-ready HLS/DASH outputs
+- serve those outputs through a Cloudflare delivery worker
 - control access with signed or public playback rules
 - integrate the experience into your own product, UI, and backend
 
-The platform is focused on VOD use cases first. Live streaming, advanced analytics, and richer workflow automation can come later, but the current foundation is built around reliable hosted video-on-demand.
+The platform is focused on VOD first. Live streaming can come later; the current foundation is reliable video-on-demand on infrastructure you control.
 
 ## Core Concepts
 
 ### Assets
 
-An asset is the canonical video object inside ClipMux. It begins as an uploaded source file and becomes the reference point for processing status, playback metadata, and delivery configuration.
+An asset is the canonical video object inside OpenVOD. It begins as an uploaded source file and becomes the reference point for processing status, playback metadata, and delivery configuration.
 
 ### Processing
 
-After ingestion, ClipMux can analyze and transcode the source into formats suitable for streaming playback. This stage is where a raw upload becomes a usable media asset for web and app experiences.
+After ingestion, OpenVOD analyzes and transcodes the source (Modal GPU pipeline: FFmpeg, Shaka, optional Whisper) into formats suitable for streaming playback.
 
 ### Playback
 
-Playback is the consumer-facing side of the platform. Once an asset is ready, ClipMux can expose a playback URL, manifest, or signed access path that your player uses to stream the content.
+Once an asset is ready, OpenVOD exposes a playback URL and, for private assets, a short-lived JWT. `@openvod/player` consumes that URL.
 
 ### Delivery
 
-Delivery is responsible for getting the right media segments to viewers quickly and consistently. In practice that means cache-friendly output, edge delivery, and access controls that are compatible with real production traffic.
+Delivery is a **Cloudflare Worker** (not the Docker/Node API). It verifies playback JWTs, rewrites manifests, serves byte ranges, and meters bandwidth into Analytics Engine.
 
 ## Upload and Processing
 
-The intended ClipMux workflow looks like this:
+The intended workflow looks like this:
 
-1. Your app creates or requests an upload target.
-2. The source file is sent to ClipMux storage.
-3. A processing pipeline prepares the asset for playback.
+1. Your app requests an upload token from the OpenVOD API.
+2. The source file is uploaded to your R2 raw bucket via presigned URLs.
+3. The Modal pipeline prepares adaptive-bitrate output in your transcoded bucket.
 4. Your backend or frontend retrieves playback details when the asset is ready.
 
-This model is designed to work for both dashboard-driven workflows and fully custom product flows where your own application owns the UI and business logic.
+This model works for dashboard-driven workflows and fully custom product flows where your application owns the UI and business logic.
 
 ## Playback and Delivery
 
-For playback, ClipMux is designed around the same practical concerns teams care about on larger platforms:
+Playback is designed around the same concerns as larger platforms:
 
 - fast startup time
 - adaptive delivery
-- controlled access
+- controlled access (signed JWTs with UA/domain binding)
 - predictable URLs and playback identifiers
-- straightforward player integration
+- a drop-in React player (`@openvod/player`)
 
-The exact delivery model can evolve, but the direction is consistent: ClipMux should provide a secure playback layer that is easy to consume from your application code and efficient to serve globally.
+The delivery worker is Cloudflare-only. The API and dashboard can run on Workers **or** Docker/Node; signed playback still goes through the delivery worker in front of R2. See [Deployment](/docs/deploy).
 
 ## API-First by Default
 
-The platform is being shaped for developers first. That means the API surface matters as much as the dashboard:
+The platform is shaped for developers first:
 
-- backend services should be able to create and manage assets programmatically
-- frontend apps should have safe, limited ways to initiate upload flows
-- SDKs should reduce ceremony around upload and playback integration
-- webhook-style events should fit naturally into existing product workflows
+- backend services create and manage assets programmatically
+- frontend apps initiate upload flows with short-lived upload tokens
+- SDKs reduce ceremony around upload and playback
+- webhooks fit into existing product workflows
 
 ## Where This Documentation Goes Next
 
-This page is intentionally broad. Over time, this docs site should expand into:
-
-- upload guides
-- asset lifecycle reference
-- playback authentication details
-- delivery architecture notes
-- SDK examples
-- operational and pricing guidance
-
-For now, treat this page as the product map: it explains the role ClipMux plays in a modern VOD stack, even while the implementation details are still being refined.
+- [Quickstart](/docs/quickstart) — clone to first playback
+- [Deployment](/docs/deploy) — Wrangler default vs Docker API/web
+- Long-form contracts in the repo `docs/` folder (delivery contract, upload integration)

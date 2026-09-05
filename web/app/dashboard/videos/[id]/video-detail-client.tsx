@@ -35,7 +35,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ClipMuxPlayer } from "@/components/ui/clipmux-player";
+import { OpenVodPlayer } from "@/components/ui/openvod-player";
 import {
   DashboardSectionSkeleton,
   DashboardVideoDetailSkeleton,
@@ -486,7 +486,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
         <div className="lg:col-span-3">
           <div className="overflow-hidden rounded-sm bg-black shadow-2xl">
             {video.status === "ready" && video.playbackUrl ? (
-              <ClipMuxPlayer
+              <OpenVodPlayer
                 src={video.playbackUrl}
                 videoId={video.id}
                 title={video.title}

@@ -1,0 +1,9 @@
+/* OpenVOD Player — Default Styles */
+
+.openvod-player[data-view-type="video"] {
+    aspect-ratio: 16 / 9;
+}
+
+.openvod-player .vds-video-layout {
+    --video-brand: hsl(0, 0%, 96%);
+}

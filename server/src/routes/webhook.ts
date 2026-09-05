@@ -167,7 +167,7 @@ app.post('/transcode-complete', async (c) => {
       }
     }
 
-    // Extract transcoded size for billing (in bytes)
+    // Extract transcoded size for usage metering (in bytes)
     const transcodedSize =
       typeof processing?.transcoded_size === 'number'
         ? processing.transcoded_size
@@ -195,7 +195,7 @@ app.post('/transcode-complete', async (c) => {
         // Chapters fields
         chaptersStatus: chaptersStatus,
         chapters: chaptersData,
-        // Storage tracking for billing
+        // Storage tracking for usage metering
         transcodedSize: transcodedSize,
         // Processing metrics
         transcodedTime: transcodedTime,

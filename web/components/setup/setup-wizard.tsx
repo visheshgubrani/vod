@@ -11,6 +11,7 @@ type HealthConfig = {
     auth: boolean;
     analytics: boolean;
     ai: boolean;
+    delivery: boolean;
   };
   problems: string[];
   advisories?: string[];
@@ -23,6 +24,7 @@ const CHECK_LABELS: Record<keyof HealthConfig["checks"], string> = {
   auth: "Auth secrets (JWT / session)",
   analytics: "Analytics (optional)",
   ai: "AI subtitles (optional)",
+  delivery: "Delivery worker URL (advisory)",
 };
 
 const API_BASE =

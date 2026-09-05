@@ -1,6 +1,8 @@
 {
   "name": "vod-api",
   "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.12.4",
   "scripts": {
     "dev": "wrangler dev",

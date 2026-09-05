@@ -203,7 +203,7 @@ export const video = pgTable('video', {
   chaptersStatus: text('chapters_status'), // 'pending' | 'processing' | 'completed' | 'failed'
   chapters: jsonb('chapters').$type<Array<{ startTime: number; endTime: number; title: string }>>(),
 
-  // Storage tracking for billing
+  // Storage tracking for usage metering
   transcodedSize: bigint('transcoded_size', { mode: 'number' }), // Total bytes of transcoded files (HLS + poster + subtitles)
 
   // Processing metrics

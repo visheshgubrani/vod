@@ -6,7 +6,7 @@ export default function CookiesPage() {
       <div className="max-w-4xl mx-auto px-6 py-14 md:py-20">
         <header className="mb-10">
           <p className="text-sm text-muted-foreground mb-3">
-            Last updated: March 6, 2026
+            Last updated: September 5, 2026
           </p>
           <h1 className="text-3xl md:text-4xl font-bold mb-3">Cookie Policy</h1>
           <p className="text-muted-foreground">
@@ -64,9 +64,10 @@ export default function CookiesPage() {
           <section>
             <h2 className="text-xl font-semibold mb-2">4. Third-Party Cookies</h2>
             <p>
-              Some third-party services integrated with OpenVOD may set cookies
-              for security, analytics, or payment processing. Their cookie use is
-              governed by their own policies.
+              Some third-party services the operator integrated (for example
+              auth or analytics) may set cookies. Their cookie use is governed
+              by their own policies. This software does not include a payment
+              processor.
             </p>
           </section>
 

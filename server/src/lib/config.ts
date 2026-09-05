@@ -21,6 +21,8 @@ export type CapabilityChecks = {
   auth: boolean
   analytics: boolean
   ai: boolean
+  /** Delivery worker base URL configured (advisory — does not block ready). */
+  delivery: boolean
 }
 
 export type OpenVodConfig = {
@@ -146,6 +148,8 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
     } else {
       problems.push('DELIVERY_URL must be an absolute http(s) URL (no placeholder allowed)')
     }
+  } else {
+    advisories.push('DELIVERY_URL is not set (signed playback URLs will be relative)')
   }
 
   return {
@@ -162,6 +166,7 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
       ),
       analytics: Boolean(accountId && analyticsToken),
       ai: Boolean(groqKey),
+      delivery: Boolean(deliveryUrl),
     },
     problems,
     advisories,
