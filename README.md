@@ -16,6 +16,13 @@ accounts you control.
 - **Open**: Apache-2.0. Optional integrations (QStash, Upstash Redis, Workers
   Analytics Engine) have a fallback or a documented no-op.
 
+**Fastest path:** `pnpm install && ./scripts/bootstrap.sh` — logs into Cloudflare
+and Modal, creates the two R2 buckets, deploys workers + the GPU pipeline,
+writes `.dev.vars`. You still paste an **R2 S3 API token** (Wrangler cannot
+mint those) and a **Postgres URI** unless you choose Docker.
+
+---
+
 ## Prerequisites
 
 Create these **before** you clone and fill env files. The dashboard cannot mint
@@ -71,6 +78,24 @@ Put these in `server/.dev.vars` (or run `scripts/setup.sh`, which also mirrors
 ---
 
 ## Setup
+
+Run the installer from the repo root. It opens browser logins for Wrangler and
+Modal, creates buckets, and deploys what it can:
+
+```bash
+pnpm install
+./scripts/bootstrap.sh                 # interactive
+./scripts/bootstrap.sh --runtime docker
+./scripts/bootstrap.sh --force         # overwrite existing .dev.vars
+```
+
+You will paste two things from dashboards (the CLIs cannot create them):
+
+1. **R2 S3 API token** — [Manage API Tokens](https://dash.cloudflare.com/?to=/:account/r2/api-tokens), Object Read & Write on both buckets.
+2. **DATABASE_URL** — [Neon](https://console.neon.tech) (skip if you chose Docker).
+
+Then open `/setup` on the dashboard. The rest of this section is the same
+flow if you prefer to do it by hand.
 
 ### 1. Create two R2 buckets
 

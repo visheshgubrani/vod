@@ -18,7 +18,7 @@
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
     "typecheck:tsc": "pnpm --filter vod-api exec tsc --noEmit && pnpm --filter ./delivery exec tsc --noEmit",
-    "db:migrate": "pnpm --filter vod-api db:migrate",
+    "bootstrap": "bash scripts/bootstrap.sh",
     "db:push": "pnpm --filter vod-api db:push"
   },
   "pnpm": {

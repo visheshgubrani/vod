@@ -1,7 +1,8 @@
 # Deploying OpenVOD
 
-First-run (create two R2 buckets, R2 API token, Modal account, which keys go
-where): **[README — Prerequisites and Setup](../README.md#prerequisites)**.
+First-run: **[README](../README.md)** or `./scripts/bootstrap.sh` (Cloudflare +
+Modal login, R2 buckets, deploys). You still paste R2 S3 keys from the
+dashboard — Wrangler cannot mint them.
 
 This page is the architecture split after those accounts exist.
 

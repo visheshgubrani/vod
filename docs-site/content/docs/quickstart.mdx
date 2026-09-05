@@ -14,9 +14,9 @@ You need **before clone**:
 - Postgres (Neon) **or** Docker Compose’s Postgres
 - Modal account (`pip install modal && modal setup`)
 
-Then `pnpm install`, `scripts/setup.sh`, deploy `delivery/` with Wrangler
-(set `bucket_name` to your transcoded bucket), deploy the API (Workers or
-Compose), `modal deploy` in `transcoding/`, open `/setup`.
+Then `pnpm install && ./scripts/bootstrap.sh`. The installer logs into
+Cloudflare and Modal, creates the R2 buckets, deploys workers + Modal, and
+asks you to paste the R2 S3 token (and a Neon URI unless you pick Docker).
 
 ## Path A — Cloudflare Workers + Vercel
 
