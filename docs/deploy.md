@@ -1,5 +1,10 @@
 # Deploying OpenVOD
 
+First-run (create two R2 buckets, R2 API token, Modal account, which keys go
+where): **[README — Prerequisites and Setup](../README.md#prerequisites)**.
+
+This page is the architecture split after those accounts exist.
+
 OpenVOD is **hybrid by design**:
 
 | Piece | Wrangler (default) | Docker / Node |

@@ -1,29 +1,31 @@
 ---
 title: Quickstart
-description: Deploy OpenVOD with your own Cloudflare R2 + Modal keys in about five minutes.
+description: Accounts, keys, and the first deploy — Cloudflare R2, Modal, and Postgres.
 ---
 
-The canonical, always-current Quickstart lives in the repository
-[README](https://github.com/visheshgubrani/vod#readme). This page summarizes
-the two supported hosting paths.
+The full first-run guide (what to create in Cloudflare, which keys to copy,
+R2 CORS, Modal secrets) is the repository
+[README](https://github.com/visheshgubrani/vod#prerequisites).
 
-## Requirements
+You need **before clone**:
 
-- Cloudflare account (R2 buckets + Workers for API/delivery)
-- Postgres database (Neon free tier or any Postgres)
-- Modal account for GPU transcoding
+- Cloudflare account → two R2 buckets (raw + transcoded) + R2 API token
+- Wrangler login (delivery worker is always Cloudflare)
+- Postgres (Neon) **or** Docker Compose’s Postgres
+- Modal account (`pip install modal && modal setup`)
+
+Then `pnpm install`, `scripts/setup.sh`, deploy `delivery/` with Wrangler
+(set `bucket_name` to your transcoded bucket), deploy the API (Workers or
+Compose), `modal deploy` in `transcoding/`, open `/setup`.
 
 ## Path A — Cloudflare Workers + Vercel
 
-1. `scripts/setup.sh` to generate `server/.dev.vars` with your keys.
-2. `pnpm db:push` (or run the API container which migrates on boot).
-3. Deploy the API + delivery workers (`wrangler deploy` in `server/` and
-   `delivery/`) and point `DELIVERY_URL` at your media domain.
-4. `cd transcoding && modal deploy main.py` after creating the `r2-creds` /
-   `groq-creds` Modal secrets; set `ALLOWED_CALLBACK_HOSTS` and
-   `ALLOWED_SOURCE_BUCKETS` in the Modal environment.
-5. Frontend: import `web/` into Vercel (set the `NEXT_PUBLIC_*` env vars) or
-   run the Docker image.
+1. `scripts/setup.sh` (choose **workers** → `DB_DRIVER=neon-http`).
+2. `pnpm db:push`.
+3. `wrangler deploy` in `server/` and `delivery/`. Set `DELIVERY_URL`.
+4. Modal secrets `r2-creds` / `groq-creds`, then `modal deploy main.py`.
+   Set `ALLOWED_CALLBACK_HOSTS` and `ALLOWED_SOURCE_BUCKETS`.
+5. Import `web/` into Vercel (`NEXT_PUBLIC_*`) or run the Docker web image.
 
 ## Path B — Docker Compose (API + web + Postgres)
 
@@ -31,13 +33,11 @@ the two supported hosting paths.
 docker compose up -d
 ```
 
-Postgres + API + web boot together; the API container runs
-`drizzle` migrations before listening (advisory-locked, idempotent). The
-dashboard is then at `http://localhost:3000` and the API at
-`http://localhost:8787` (`GET /health/config` shows readiness).
+Postgres + API + web boot together; the API migrates before listen.
+Dashboard: `http://localhost:3000`. API: `http://localhost:8787`.
 
-**Playback still needs the Cloudflare delivery worker** in front of R2 — Compose
-does not include it. Deploy `delivery/` with Wrangler and set `DELIVERY_URL`.
+**Playback still needs the Cloudflare delivery worker** in front of R2.
+Compose does not include it.
 
 ## Verify
 
