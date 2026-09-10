@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, isNull, lt, or, sql } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { eventOutbox, webhookDelivery, webhookEndpoint, member } from '../db/schema'
@@ -280,7 +280,7 @@ app.post('/deliveries/:id/replay', async (c) => {
   const id = c.req.param('id')
 
   const rows = await db
-    .select({ id: webhookDelivery.id, status: webhookDelivery.status })
+    .select({ id: webhookDelivery.id })
     .from(webhookDelivery)
     .innerJoin(eventOutbox, eq(eventOutbox.id, webhookDelivery.eventId))
     .where(and(eq(webhookDelivery.id, id), eq(eventOutbox.organizationId, organizationId)))
@@ -288,7 +288,14 @@ app.post('/deliveries/:id/replay', async (c) => {
 
   if (rows.length === 0) return c.json({ error: 'Delivery not found' }, 404)
 
-  await db
+  // The lease is re-asserted in the UPDATE, not just read beforehand.
+  //
+  // Clearing `lease_owner` unconditionally would *hand a live delivery to a
+  // second runner*: a runner already sending holds the lease precisely to stop
+  // another one doing so, and stripping it makes the row immediately claimable.
+  // Routing replay through the queue does not help if replay first removes the
+  // lock that protects it.
+  const replayed = await db
     .update(webhookDelivery)
     .set({
       status: 'pending',
@@ -299,7 +306,26 @@ app.post('/deliveries/:id/replay', async (c) => {
       lastError: null,
       responseStatus: null,
     })
-    .where(eq(webhookDelivery.id, id))
+    .where(
+      and(
+        eq(webhookDelivery.id, id),
+        or(
+          isNull(webhookDelivery.leaseOwner),
+          lt(webhookDelivery.leaseExpiresAt, new Date()),
+        ),
+      ),
+    )
+    .returning({ id: webhookDelivery.id })
+
+  if (replayed.length === 0) {
+    return c.json(
+      {
+        error: 'A delivery attempt is in flight; retry once its lease expires',
+        retryable: true,
+      },
+      409,
+    )
+  }
 
   return c.json({ success: true, id, status: 'pending' })
 })

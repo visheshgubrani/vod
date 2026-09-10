@@ -98,7 +98,7 @@ describe.skipIf(!hasTestDatabase)('atomic intent writes (real Postgres)', () => 
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = createTestDb()
+    handle = await createTestDb({ database: 'openvod_t_atomicwrite' })
     await handle.exec(GUARD_DDL)
   })
 
@@ -242,7 +242,7 @@ describe.skipIf(!hasTestDatabase)('runAtomically (real Postgres)', () => {
   })
 
   beforeAll(async () => {
-    handle = createTestDb()
+    handle = await createTestDb({ database: 'openvod_t_atomicwrite_tx' })
     await handle.exec(GUARD_DDL)
   })
 

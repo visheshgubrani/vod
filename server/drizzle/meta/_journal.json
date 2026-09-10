@@ -113,6 +113,13 @@
       "when": 1789038947716,
       "tag": "0015_rare_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789039597093,
+      "tag": "0016_trigger_writer_retirement",
+      "breakpoints": true
     }
   ]
 }

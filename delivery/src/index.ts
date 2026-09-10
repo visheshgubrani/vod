@@ -301,7 +301,14 @@ export async function hashPlaybackValue(value: string): Promise<string> {
 		.join('');
 }
 
-async function verifyToken(
+/**
+ * Verify a playback token against the signed-content rules.
+ *
+ * Exported for testing: the algorithm and expiry restrictions below are
+ * security-relevant, and an unexported verifier is one nothing can regression-
+ * test — which is exactly how they went missing the first time.
+ */
+export async function verifyToken(
 	token: string,
 	secret: string,
 	videoId: string,
@@ -317,6 +324,16 @@ async function verifyToken(
 		const { payload } = await jose.jwtVerify(token, secretKey, {
 			issuer: JWT_ISSUER,
 			audience: JWT_AUDIENCE,
+			// Both are load-bearing, and their absence was a live gap rather
+			// than a hardening: without `algorithms` jose accepts any HS*
+			// variant, and without `requiredClaims` a token that simply omits
+			// `exp` never expires. Verified against jose@5.10.0 — an HS384
+			// token and an HS256 token with no expiry were both accepted.
+			//
+			// Safe to enforce: both mint sites (server routes video.ts and
+			// api.ts) already declare HS256 and always set an expiry.
+			algorithms: ['HS256'],
+			requiredClaims: ['exp'],
 		});
 		const tokenSubject = typeof payload.sub === 'string' ? payload.sub : undefined;
 		const tokenVideoId = typeof payload.video_id === 'string' ? payload.video_id : tokenSubject;

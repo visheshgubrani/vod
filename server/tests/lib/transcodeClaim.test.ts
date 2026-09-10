@@ -7,7 +7,7 @@ import {
   type ClaimRejection,
 } from '../../src/lib/transcodeClaim'
 import { normalizeRows } from '../../src/lib/atomicWrite'
-import { createTestDb, hasTestDatabase, type TestDbHandle } from '../helpers/db'
+import { connectTestDb, createTestDb, hasTestDatabase, type TestDbHandle } from '../helpers/db'
 
 // ────────────────────────────────────────────────────────────────────────────
 // Rejection classification — pure, so it is checked with literals.
@@ -79,7 +79,7 @@ describe.skipIf(!hasTestDatabase)('claimTranscodeAttempt (real Postgres)', () =>
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = createTestDb()
+    handle = await createTestDb({ database: 'openvod_t_claim' })
     await handle.exec(DDL)
   })
 
@@ -245,7 +245,7 @@ describe.skipIf(!hasTestDatabase)('claimTranscodeAttempt (real Postgres)', () =>
   it('lets exactly one of two concurrent claims win', async () => {
     await newVideo(VIDEO_5, 'org-claim-a')
     // Racer needs its own connection: a single-connection handle serializes.
-    const racer = createTestDb({ max: 1 })
+    const racer = await connectTestDb({ database: 'openvod_t_claim' })
 
     try {
       const results = await Promise.allSettled([
@@ -287,7 +287,7 @@ describe.skipIf(!hasTestDatabase)('claimTranscodeAttempt (real Postgres)', () =>
     await newVideo(VIDEO_6, 'org-claim-cap')
     await newVideo(VIDEO_7, 'org-claim-cap')
 
-    const racer = createTestDb({ max: 1 })
+    const racer = await connectTestDb({ database: 'openvod_t_claim' })
     try {
       const [a, b] = await Promise.all([
         claimTranscodeAttempt(handle.db, {

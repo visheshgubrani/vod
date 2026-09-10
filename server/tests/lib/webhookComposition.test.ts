@@ -2,7 +2,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { normalizeRows } from '../../src/lib/atomicWrite'
 import { DEFAULT_WEBHOOK_RETRY } from '../../src/lib/retryPolicy'
-import { createTestDb, hasTestDatabase, type TestDbHandle } from '../helpers/db'
+import {
+  createTestDb,
+  hasTestDatabase,
+  testDatabaseUrl,
+  type TestDbHandle,
+} from '../helpers/db'
 
 /**
  * Webhook composition — the acceptance matrix.
@@ -23,7 +28,11 @@ const SECRET = 'whsec_compose_secret'
 const INGEST_SECRET = 'ingest-secret-for-tests'
 const ATTEMPT = 'att-compose-1'
 
-process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? ''
+// Must point at THIS suite's database, not the shared base URL: the route and
+// the drain talk to the module-level `db` proxy, and pointing them at a shared
+// database would put other suites' rows in reach of this suite's assertions.
+const SUITE_DATABASE = 'openvod_t_composition'
+process.env.DATABASE_URL = testDatabaseUrl(SUITE_DATABASE)
 process.env.DB_DRIVER = 'pg'
 process.env.MODAL_WEBHOOK_SECRET = INGEST_SECRET
 
@@ -77,8 +86,23 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
   let handle: TestDbHandle
   let route: { request: (path: string, init?: RequestInit, env?: unknown, ctx?: unknown) => Promise<Response> }
 
+  /**
+   * Bring the suite to a known state: our own database is already isolated, but
+   * each TEST must also be independent of its neighbours. Running a single test
+   * in isolation previously failed on state an earlier test created.
+   */
+  const givenDeliveredEvent = async (options: { deliver?: boolean } = {}) => {
+    await resetOrg()
+    await handle.exec(resetVideo())
+    nextStatus = options.deliver === false ? 503 : 200
+    received = []
+    const response = await postCallback(successCallback())
+    expect(response.status).toBe(200)
+    return String((await readEvents())[0]?.id)
+  }
+
   beforeAll(async () => {
-    handle = createTestDb()
+    handle = await createTestDb({ database: 'openvod_t_composition' })
     await handle.exec(DDL)
     const mod = await import('../../src/routes/webhook')
     route = mod.default as unknown as typeof route
@@ -209,6 +233,7 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
   })
 
   it('row 2: a repeated callback adds no second event or delivery', async () => {
+    await givenDeliveredEvent()
     const response = await postCallback(successCallback())
     expect(response.status).toBe(200)
 
@@ -217,6 +242,7 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
   })
 
   it('row 3: a second claim cannot take a delivery whose lease is live', async () => {
+    await givenDeliveredEvent()
     const { claimDueDeliveries } = await import('../../src/lib/webhookDelivery')
 
     await handle.exec(`
@@ -284,6 +310,7 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
     // The receiver committed, then the connection died before we could read the
     // response. Our side cannot tell that from "never arrived", so it must
     // retry — and the receiver deduplicates on the stable event id.
+    await givenDeliveredEvent()
     await handle.exec(`
       UPDATE webhook_delivery
       SET status='pending', attempts=1, next_attempt_at=now() - interval '1 minute',
@@ -341,6 +368,7 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
   })
 
   it('row 6: a runner that dies on its final attempt leaves visible, recoverable state', async () => {
+    await givenDeliveredEvent()
     // Simulate: attempts spent, lease expired, no runner left to finalize.
     await handle.exec(`
       UPDATE webhook_delivery
@@ -372,6 +400,7 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
   })
 
   it('row 7: sends begin under a live lease, and none can finalize under an expired one', async () => {
+    await givenDeliveredEvent()
     await handle.exec(`
       UPDATE webhook_delivery
       SET status='pending', attempts=1, next_attempt_at=now() - interval '1 minute',

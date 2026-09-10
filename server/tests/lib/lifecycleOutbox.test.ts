@@ -44,7 +44,7 @@ describe.skipIf(!hasTestDatabase)('writeLifecycleEvent (real Postgres)', () => {
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = createTestDb()
+    handle = await createTestDb({ database: 'openvod_t_outbox' })
     await handle.exec(DDL)
   })
 

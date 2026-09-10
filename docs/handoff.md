@@ -5,12 +5,46 @@ what is deliberately not done, and what to check before deploying.
 
 ## Deploy checklist
 
-Five migrations are new (`0010`–`0015`). **Nothing works until they are applied.**
+Seven migrations are new (`0010`–`0016`). **Nothing works until they are applied.**
 
 ```bash
-pnpm db:push                      # Workers/Neon
+pnpm --filter vod-api db:migrate   # applies the committed SQL, in order
 # or, Docker: the API container migrates on boot
 ```
+
+**Use `db:migrate`, not `db:push`.** `push` derives changes from the TypeScript
+schema, so it cannot create the hand-written objects in migrations `0013`,
+`0014` and `0016` — the `AFTER DELETE` cleanup trigger and the unique index that
+deduplicates cleanup jobs. A deployment that has only ever been `push`ed will be
+missing the trigger, and deleting a video through a cascade will silently leak
+its bytes.
+
+Verify after migrating:
+
+```bash
+psql "$DATABASE_URL" -tAc \
+  "SELECT tgname FROM pg_trigger WHERE tgname = 'video_enqueue_storage_cleanup';"
+# expect one row
+```
+
+### Baselining an existing `push`-managed database
+
+`db:migrate` records applied migrations in `drizzle.__drizzle_migrations`. A
+database built by `push` has the tables but no migration history, so a plain
+migrate would try to replay `0010`+ and fail on already-existing columns.
+
+1. Back up.
+2. Apply the hand-written objects by hand — the trigger function plus
+   `CREATE TRIGGER video_enqueue_storage_cleanup` from `0013`, the partial
+   unique index from `0014`, and `CREATE OR REPLACE FUNCTION` from `0016`.
+   These are all idempotent (`OR REPLACE`, `IF NOT EXISTS`, `DROP TRIGGER IF
+   EXISTS`).
+3. Mark the earlier migrations applied by inserting their journal hashes into
+   `drizzle.__drizzle_migrations`, or simply diff `db:push` against the schema
+   and let `migrate` start from `0013`.
+
+Simplest reliable route for a small deployment: dump the data, create a fresh
+database, `db:migrate`, and restore. That avoids hand-reconciling history.
 
 Then set two things that are off by default:
 
@@ -89,32 +123,44 @@ the documented cron never retried a single webhook. Docker now has a
 
 ## Verified
 
-250 tests: 160 server (38 against real Postgres), 40 setup, 35 delivery,
+257 tests: 160 server (38 against real Postgres), 42 delivery, 40 setup,
 9 player, 6 sdk. Typecheck and lint clean.
 
-Integration suites read `TEST_DATABASE_URL` and skip cleanly when unset; CI runs
-a Postgres service so they actually run there.
+Integration suites read `TEST_DATABASE_URL` and skip cleanly when unset. Each
+suite creates and migrates **its own database**, so CI needs no separate
+migration step — verified by running the whole suite against a database with
+zero tables (160/160 pass).
 
-Two claims were checked by deliberately breaking the code and confirming the
-test fails:
+Three claims were checked by deliberately breaking the code and confirming the
+test fails, rather than trusting a green run:
 
 - **Two videos, one slot, concurrent:** without the organization lock both
   claims succeed (`got 2`); with it exactly one does.
-- **JWT hardening:** on `jose@5.10.0` a token with no `exp` and an HS384 token
-  are both **accepted** today, and both **rejected** with
-  `algorithms:['HS256']` + `requiredClaims:['exp']`.
+- **Playback token restrictions:** without `algorithms`/`requiredClaims`, a
+  correctly-signed HS384 token and an HS256 token with no `exp` are both
+  **accepted** (`delivery/src/token-verify.test.ts` fails on both); with them,
+  both are rejected.
+- **Soft-delete guard:** the CI check fails on any `video` read that neither
+  composes `notDeleted` nor carries an explicit exemption.
+
+## Test isolation
+
+Each suite creates and migrates its own database. Sharing one is not fixable by
+tidier cleanup, because the maintenance passes are global by design:
+`sendDueDeliveries` and `runObjectCleanup` claim whatever is due, not just what
+the current file created, and `AFTER DELETE ON video` fires for every suite. A
+shared database therefore makes test order significant — a suite that passes
+alone can fail in a full run, which is what happened here.
+
+Concurrency tests open an *additional* connection to the suite's existing
+database via `connectTestDb`. They must not call `createTestDb`, which drops and
+recreates the database and would destroy the rows mid-suite.
+
+Every test sets up its own fixtures (`givenDeliveredEvent`), so any single test
+passes in isolation.
 
 ## Known gaps
 
-- **The integration suites share one Postgres database and are order- and
-  state-sensitive.** Mitigated by serialising test files
-  (`fileParallelism: false`), scoping every cleanup to its own organization, and
-  making the composition suite's reset verify itself. Two intermittent failures
-  were observed during development, both traceable to residue from a
-  *previously failed* run rather than the code; ten consecutive clean runs
-  (standalone and via the root script) after that fix. If CI ever shows a
-  count-mismatch in `webhookComposition`, clean the database before suspecting
-  the code.
 - **No route-level tests for the delivery-log/replay endpoints** or for the
   callback → outbox → delivery path under the *full* app. The full app needs
   better-auth sessions to mount; the composition suite mounts the webhook router

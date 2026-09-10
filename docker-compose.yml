@@ -63,7 +63,12 @@ services:
       - path: ./server/.dev.vars
         required: false
     environment:
-      INTERNAL_SWEEP_SECRET: ${INTERNAL_SWEEP_SECRET:-}
+      # Deliberately NOT setting INTERNAL_SWEEP_SECRET here. Compose gives
+      # `environment` precedence over `env_file`, so an entry like
+      # ${INTERNAL_SWEEP_SECRET:-} would substitute an empty string whenever the
+      # secret lives only in server/.dev.vars (the documented location) — and
+      # blank the value env_file had just provided, putting this service into
+      # its "refusing to start" branch.
       MAINTENANCE_INTERVAL_SECONDS: ${MAINTENANCE_INTERVAL_SECONDS:-900}
     command: >
       sh -c '

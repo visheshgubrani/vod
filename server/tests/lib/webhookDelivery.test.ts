@@ -9,7 +9,7 @@ import {
 } from '../../src/lib/webhookDelivery'
 import { normalizeRows } from '../../src/lib/atomicWrite'
 import { DEFAULT_WEBHOOK_RETRY } from '../../src/lib/retryPolicy'
-import { createTestDb, hasTestDatabase, type TestDbHandle } from '../helpers/db'
+import { connectTestDb, createTestDb, hasTestDatabase, type TestDbHandle } from '../helpers/db'
 
 /**
  * Outbox drain and webhook delivery, against real Postgres.
@@ -47,7 +47,7 @@ describe.skipIf(!hasTestDatabase)('outbox drain and delivery (real Postgres)', (
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = createTestDb()
+    handle = await createTestDb({ database: 'openvod_t_delivery' })
     await handle.exec(DDL)
   })
 
@@ -180,7 +180,7 @@ describe.skipIf(!hasTestDatabase)('outbox drain and delivery (real Postgres)', (
 
   it('lets only one of two concurrent claimers take the same event', async () => {
     await seedEvent(EVENT_1)
-    const racer = createTestDb({ max: 1 })
+    const racer = await connectTestDb({ database: 'openvod_t_delivery' })
 
     try {
       const [a, b] = await Promise.all([

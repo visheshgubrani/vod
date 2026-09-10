@@ -71,10 +71,16 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
   await recordHeartbeat({ startedAt: new Date() })
   const limit = readPositiveInt(env, 'MAINTENANCE_BATCH_SIZE', 50)
 
+  // Execution and success are recorded separately. A pass that runs but whose
+  // subsystems all fail is NOT a healthy pass, and recording it as one would
+  // make a broken deployment look fresh forever.
+  const failures: string[] = []
+
   let videos: SweepStats = { retried: 0, failed: 0, aborted: 0 }
   try {
     videos = await runSweep(new Date(), sweepLimitsFromEnv(env), createSweepAdapters(env))
   } catch (err) {
+    failures.push(`sweep: ${err instanceof Error ? err.message : String(err)}`)
     console.error('[MAINTENANCE] video sweep failed:', err)
   }
 
@@ -93,6 +99,7 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
     // process that died right after the atomic write recoverable.
     deliveries = await drainOutbox({ deliveryLimit: limit })
   } catch (err) {
+    failures.push(`deliveries: ${err instanceof Error ? err.message : String(err)}`)
     console.error('[MAINTENANCE] webhook delivery pass failed:', err)
   }
 
@@ -105,11 +112,20 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
     // No buckets configured means storage is not set up yet; that is a
     // configuration state, not an error, and the jobs simply wait.
   } catch (err) {
+    failures.push(`cleanup: ${err instanceof Error ? err.message : String(err)}`)
     console.error('[MAINTENANCE] storage cleanup pass failed:', err)
   }
 
   const durationMs = Date.now() - started
-  await recordHeartbeat({ succeededAt: new Date(), durationMs })
+  await recordHeartbeat({
+    durationMs,
+    // Only a fully-successful pass advances success. A partial failure keeps
+    // the previous timestamp (so `stale` eventually trips) and records why.
+    ...(failures.length === 0
+      ? { succeededAt: new Date() }
+      : {}),
+    error: failures.length > 0 ? failures.join('; ') : null,
+  })
 
   return { videos, deliveries, cleanup, durationMs }
 }
