@@ -35,7 +35,7 @@ pnpm --filter vod-api exec tsc --noEmit
 
 Per-package: `web` (Next 16 standalone: `output: "standalone"`), `sdk`/`player`
 (tsup + vitest), `delivery` (wrangler + vitest pool-workers),
-`server` (wrangler dev :8787; drizzle `db:push`/`db:migrate`/`db:seed`;
+`server` (wrangler dev :8787; drizzle `db:migrate` (authoritative — `db:push` cannot create the hand-written trigger)/`db:seed`;
 the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
 `build:node` + `start:node` remain available for a bundled Node runtime).
 

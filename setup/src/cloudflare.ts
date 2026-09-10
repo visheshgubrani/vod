@@ -181,10 +181,19 @@ export async function putWorkerSecrets(
   }
 }
 
-/** Push the drizzle schema against DATABASE_URL (never printed). */
-export async function dbPush(root: string, databaseUrl: string): Promise<void> {
-  logStep('Pushing the database schema (pnpm db:push)…')
-  const result = await runCapture(['pnpm', 'db:push'], {
+/**
+ * Apply the committed migrations against DATABASE_URL (never printed).
+ *
+ * This must be `db:migrate`, not `db:push`. `push` derives the schema from the
+ * TypeScript definitions, so it cannot create the objects that only exist as
+ * hand-written SQL — most importantly the `AFTER DELETE ON video` trigger that
+ * enqueues storage cleanup. A wizard-provisioned database built with `push`
+ * therefore silently leaks bytes: deleting a video through an organization or
+ * user cascade never queues its reclamation.
+ */
+export async function dbMigrate(root: string, databaseUrl: string): Promise<void> {
+  logStep('Applying database migrations (pnpm db:migrate)…')
+  const result = await runCapture(['pnpm', 'db:migrate'], {
     cwd: root,
     env: { DATABASE_URL: databaseUrl },
     timeoutMs: 0,
@@ -193,7 +202,7 @@ export async function dbPush(root: string, databaseUrl: string): Promise<void> {
   })
   if (result.code !== 0) {
     throw new WizardError(
-      'db:push failed — once DATABASE_URL is reachable, re-run: pnpm db:push',
+      'db:migrate failed — once DATABASE_URL is reachable, re-run: pnpm db:migrate',
     )
   }
 }

@@ -15,7 +15,7 @@ import { WizardError } from './errors'
 import {
   applyBucketCors,
   cfAccountId,
-  dbPush,
+  dbMigrate,
   deployWorker,
   ensureBucket,
   ensureCfLogin,
@@ -205,7 +205,7 @@ export async function runDeployPhase(
     } else {
       const databaseUrl = serverEnv['DATABASE_URL'] ?? ''
       if (!databaseUrl) throw new WizardError('DATABASE_URL missing from server/.dev.vars')
-      await dbPush(root, databaseUrl)
+      await dbMigrate(root, databaseUrl)
 
       const apiUrl = await deployWorker(root, 'server')
       if (apiUrl) {

@@ -122,6 +122,16 @@ describe.skipIf(!hasTestDatabase)('atomic intent writes (real Postgres)', () => 
   })
 
   it('is idempotent: replaying the same statement neither re-applies nor inserts', async () => {
+    // Establish the initial write HERE rather than relying on the previous
+    // test: running this test alone previously failed, because the guard still
+    // matched and the first call legitimately applied.
+    await handle.exec(`UPDATE atomic_probe_guard SET applied_at = NULL WHERE id = 1`)
+    await handle.exec(`DELETE FROM atomic_probe_effect`)
+
+    const first = await runAtomicIntent<{ ref_id: number }>(handle.db, GUARDED_CTE)
+    expect(first.applied).toBe(true)
+    expect(await countEffects()).toBe(1)
+
     // Second delivery of the same intent — the guard no longer matches.
     const outcome = await runAtomicIntent<{ ref_id: number }>(handle.db, GUARDED_CTE)
 

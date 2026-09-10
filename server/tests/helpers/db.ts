@@ -64,6 +64,23 @@ export type TestDbHandle = {
 }
 
 /**
+ * Identifies this test *run*, not just this suite.
+ *
+ * `createTestDb` drops and recreates its database, so two concurrent
+ * invocations sharing a name would destroy each other's fixtures mid-suite — a
+ * confusing failure with no obvious cause. A per-run suffix makes that
+ * impossible. Override with `TEST_DB_RUN_ID` when you want to inspect the
+ * databases afterwards.
+ */
+export const TEST_RUN_ID =
+  process.env.TEST_DB_RUN_ID || Math.random().toString(36).slice(2, 8)
+
+/** Final database name for a suite in this run. */
+export function suiteDatabaseName(name: string): string {
+  return `${name}_${TEST_RUN_ID}`
+}
+
+/**
  * URL of a suite's own database. Available synchronously so a suite can point
  * `process.env.DATABASE_URL` at it *before* importing application modules that
  * capture the connection lazily.
@@ -71,8 +88,26 @@ export type TestDbHandle = {
 export function testDatabaseUrl(name: string): string {
   if (!hasTestDatabase) return ''
   const url = new URL(TEST_DATABASE_URL)
-  url.pathname = `/${name}`
+  url.pathname = `/${suiteDatabaseName(name)}`
   return url.toString()
+}
+
+/** Drop a suite database. Best-effort: an empty database is not worth failing on. */
+async function dropDatabase(name: string): Promise<void> {
+  try {
+    const admin = postgres(TEST_DATABASE_URL, clientOptions(TEST_DATABASE_URL, 1))
+    try {
+      await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)
+    } finally {
+      await admin.end({ timeout: 5 })
+    }
+  } catch (err) {
+    // Leaving a database behind is untidy, never a test failure — but it must
+    // not be silent either, or the leak goes unnoticed for exactly this long.
+    console.warn(
+      `[test-db] could not drop ${name}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
 }
 
 function isLocalHost(url: string): boolean {
@@ -129,7 +164,7 @@ export async function createTestDb(
     throw new Error('TEST_DATABASE_URL is not set')
   }
 
-  const name = options.database
+  const name = suiteDatabaseName(options.database)
   if (!/^[a-z0-9_]+$/.test(name)) {
     throw new Error(`unsafe test database name: ${name}`)
   }
@@ -143,7 +178,7 @@ export async function createTestDb(
     await admin.end({ timeout: 5 })
   }
 
-  const url = testDatabaseUrl(name)
+  const url = testDatabaseUrl(options.database)
   const client = postgres(url, clientOptions(url, options.max ?? 1))
   const db = drizzle(client)
 
@@ -156,6 +191,12 @@ export async function createTestDb(
     db,
     url,
     exec: (statement: string) => client.unsafe(statement),
-    close: () => client.end({ timeout: 5 }),
+    // Dropping on close keeps the server tidy across runs. Only handles from
+    // `createTestDb` drop; a `connectTestDb` handle would otherwise destroy the
+    // suite database out from under the suite that owns it.
+    close: async () => {
+      await client.end({ timeout: 5 })
+      await dropDatabase(name)
+    },
   }
 }

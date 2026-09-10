@@ -217,11 +217,16 @@ Postgres: `localhost:5433`. Rebuild the web image if you change
 
 Still deploy **delivery** (step 5). Compose does not include it.
 
-Push schema (Workers path; Docker migrates on boot):
+Apply the schema (Workers path; Docker migrates on boot):
 
 ```bash
-pnpm db:push
+pnpm db:migrate
 ```
+
+Use `db:migrate`, not `db:push`. `push` derives the schema from the TypeScript
+definitions, so it cannot create the hand-written objects in the migrations — in
+particular the `AFTER DELETE` trigger that queues a deleted video's bytes for
+reclamation. A database built with `push` leaks storage silently.
 
 ### 7. Deploy the transcoder to Modal
 

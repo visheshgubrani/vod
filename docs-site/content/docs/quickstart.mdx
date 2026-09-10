@@ -25,7 +25,8 @@ deploys) is the opt-in `--deploy` phase.
 
 1. `./scripts/bootstrap.sh` (choose the **Workers** runtime →
    `DB_DRIVER=neon-http`).
-2. `pnpm db:push`.
+2. `pnpm db:migrate` (committed migrations — not `db:push`, which
+   cannot create the hand-written cleanup trigger).
 3. `wrangler deploy` in `server/` and `delivery/`. Set `DELIVERY_URL`.
 4. Modal secrets `r2-creds` / `groq-creds`, then `modal deploy main.py`.
    Set `ALLOWED_CALLBACK_HOSTS` and `ALLOWED_SOURCE_BUCKETS`.

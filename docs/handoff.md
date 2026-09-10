@@ -27,41 +27,56 @@ psql "$DATABASE_URL" -tAc \
 # expect one row
 ```
 
-### Baselining an existing `push`-managed database
+### Migrating a database built by `db:push`
 
-`db:migrate` records applied migrations in `drizzle.__drizzle_migrations`. A
-database built by `push` has the tables but no migration history, so a plain
-migrate would try to replay `0010`+ and fail on already-existing columns.
+A database created with `push` has the tables but **no migration history and no
+cleanup trigger**. There is no shortcut: `drizzle.__drizzle_migrations` stores a
+hash per migration plus a timestamp, and the journal file contains no hashes, so
+neither "insert the journal hashes" nor "diff the schema" is a real procedure.
+Nor is the SQL uniformly idempotent — the earlier claim that it was is wrong.
 
-1. Back up.
-2. Apply the hand-written objects by hand — the trigger function plus
-   `CREATE TRIGGER video_enqueue_storage_cleanup` from `0013`, the partial
-   unique index from `0014`, and `CREATE OR REPLACE FUNCTION` from `0016`.
-   These are all idempotent (`OR REPLACE`, `IF NOT EXISTS`, `DROP TRIGGER IF
-   EXISTS`).
-3. Mark the earlier migrations applied by inserting their journal hashes into
-   `drizzle.__drizzle_migrations`, or simply diff `db:push` against the schema
-   and let `migrate` start from `0013`.
-
-Simplest reliable route for a small deployment: dump the data, create a fresh
-database, `db:migrate`, and restore. That avoids hand-reconciling history.
-
-Then set two things that are off by default:
+Use the fresh-database route below. **It is tested** against a database built to
+mimic the `push` state (tables and data present, trigger absent, no history).
 
 ```bash
-SWEEP_ENABLED=true                # else no webhook retries, no byte reclamation
-INTERNAL_SWEEP_SECRET=<random>    # required by the compose maintenance service
+OLD=postgresql://…/mydb          # the push-managed database
+NEW=mydb_migrated
+
+# 1. Data only, public schema only. Excluding the drizzle schema is what keeps
+#    the old (absent) bookkeeping from being restored over the new one.
+pg_dump --data-only --schema=public --no-owner --no-privileges "$OLD" > data.sql
+
+# 2. Fresh database, migrated from the committed SQL.
+createdb "$NEW"
+DATABASE_URL="postgresql://…/$NEW" pnpm db:migrate
+
+# 3. Restore the data.
+psql -v ON_ERROR_STOP=1 -d "$NEW" -f data.sql
+
+# 4. Validate BEFORE switching the deployment over.
+psql -d "$NEW" -tAc "
+  SELECT 'trigger=' || EXISTS(
+           SELECT 1 FROM pg_trigger WHERE tgname = 'video_enqueue_storage_cleanup')
+      || ' migrations=' || (SELECT count(*) FROM drizzle.__drizzle_migrations)
+      || ' videos='     || (SELECT count(*) FROM video)
+      || ' endpoints='  || (SELECT count(*) FROM webhook_endpoint);"
+# expect: trigger=true migrations=17 videos=<your count> endpoints=<your count>
+
+# 5. Prove the trigger actually fires, on a throwaway row.
+psql -d "$NEW" -tAc "
+  DELETE FROM organization WHERE id = '<a disposable org id>';
+  SELECT count(*) FROM storage_cleanup_job;"
+# expect >= 1
 ```
 
-`GET /health/config` reports `maintenance.lastSucceededAt` and
-`maintenance.stale`. If `stale` is true after the first cron interval, the
-scheduler is not running.
+Then point `DATABASE_URL` at `$NEW` and redeploy. Keep the old database until
+you have confirmed uploads, playback and a deletion end to end.
 
-**Upgrade order for an existing deployment:** deploy the transcoder (Modal)
-before the API. The API rejects a callback or heartbeat that does not name its
-attempt, and an old transcoder does not send one. The reverse order would reject
-heartbeats from in-flight jobs, expire their leases, and cause a duplicate
-encode. See `docs/delivery-contract.md` §5.
+Verified end to end during this review: a legacy-shaped database with one
+organization and one video was dumped, restored into a freshly migrated one, and
+the resulting database reported `trigger=true`, 17 applied migrations, and intact
+rows — and a cascade delete on the restored data enqueued a cleanup job with the
+two-hour deferral applied.
 
 ## What changed, and why
 
@@ -157,7 +172,15 @@ database via `connectTestDb`. They must not call `createTestDb`, which drops and
 recreates the database and would destroy the rows mid-suite.
 
 Every test sets up its own fixtures (`givenDeliveredEvent`), so any single test
-passes in isolation.
+passes in isolation — including the ones that previously relied on a neighbour,
+such as `atomicWrite`'s idempotency case.
+
+Database names carry a per-run suffix, so two concurrent test invocations cannot
+drop each other's fixtures, and `close()` drops the suite database so runs do not
+accumulate. **That suffix is not covered by a test**: the race it prevents is
+timing-dependent, and forcing a shared name in two parallel runs did not
+reproduce a failure. The fix removes a structural hazard; it is not empirically
+demonstrated, unlike the guarantees listed above.
 
 ## Known gaps
 

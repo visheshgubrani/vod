@@ -41,7 +41,7 @@ bind a production hostname for you.
 
 ```bash
 ./scripts/bootstrap.sh     # wizard: choose the Workers runtime, paste R2/Neon keys
-pnpm db:push              # or drizzle-kit migrate
+pnpm db:migrate           # committed migrations; db:push cannot create the cleanup trigger
 cd server && pnpm exec wrangler deploy
 cd ../delivery && pnpm exec wrangler deploy
 cd ../transcoding && modal deploy main.py
