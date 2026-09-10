@@ -1,6 +1,7 @@
 import { Context, Hono } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
 import { db } from '../lib/database'
 import {
   escapeSqlString,
@@ -30,7 +31,7 @@ async function isVideoOwnedByOrganization(
   const rows = await db
     .select({ id: video.id })
     .from(video)
-    .where(and(eq(video.id, videoId), eq(video.organizationId, organizationId)))
+    .where(and(notDeleted, eq(video.id, videoId), eq(video.organizationId, organizationId)))
     .limit(1)
 
   return rows.length > 0
@@ -317,7 +318,7 @@ app.get('/video/content-score', async (c) => {
     const videoRow = await db
       .select({ duration: video.duration })
       .from(video)
-      .where(eq(video.id, validated.videoId))
+      .where(and(notDeleted, eq(video.id, validated.videoId)))
       .limit(1)
 
     const durationSeconds = Number(videoRow[0]?.duration) || 0
@@ -720,9 +721,11 @@ async function getTopVideosLeaderboard(
   const videoRows = await db
     .select({ id: video.id, title: video.title })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
 
-  const titleByVideoId = new Map(videoRows.map((row) => [row.id, row.title]))
+  const titleByVideoId = new Map<string, string>(
+    videoRows.map((row) => [row.id, row.title] as const),
+  )
 
   return results.map((row) => {
     const totalEvents = Number(row.total_events) || 0

@@ -14,7 +14,8 @@ player/        @openvod/player — Vidstack React player (token auto-refresh)
 transcoding/   Modal Python GPU pipeline (FFmpeg + Shaka + Whisper) + pytest
 docs-site/     Fumadocs documentation site (package: openvod-docs)
 docs/          Long-form markdown (delivery contract, security model)
-scripts/       setup.sh (BYOK env wizard) + verify-env.sh
+scripts/       bootstrap.sh launcher (toolchain + wizard exec) + verify-env.sh
+setup/         openvod-setup — interactive bootstrap wizard (TS, clack TUI)
 ```
 
 ## Commands (workspace)
@@ -24,6 +25,7 @@ pnpm install                  # root ONLY — never inside a package
 pnpm test                     # server/delivery/sdk/player suites
 pnpm build                    # builds packages that define build
 pnpm lint                     # web (eslint) + others that define it
+pnpm test:setup                # openvod-setup wizard unit tests
 pnpm typecheck                # sdk/player typecheck scripts
 pnpm typecheck:tsc            # server + delivery tsc --noEmit
 (cd transcoding && .venv/bin/python -m pytest)   # python logic tests

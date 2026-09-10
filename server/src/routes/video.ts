@@ -3,10 +3,12 @@ import { and, desc, eq, sql } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
-import { video, member } from '../db/schema'
+import { member, video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
+import { deleteVideoWithCleanup } from '../lib/objectCleanup'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
-import { triggerTranscoding } from '../utils/queue'
+import { dispatchTranscodeJob, dispatchFailureStatus } from '../utils/dispatchTranscode'
 import {
   readDeliveryBaseUrl,
   requirePlaybackJwtSecret,
@@ -102,7 +104,7 @@ app.get('/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -200,7 +202,7 @@ app.get('/:id/token', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -277,7 +279,7 @@ app.get('/', async (c) => {
       createdAt: video.createdAt,
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
     .orderBy(desc(video.createdAt))
 
   // Never fabricate a placeholder host: relative URLs when unconfigured.
@@ -310,7 +312,7 @@ app.patch('/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -380,7 +382,9 @@ app.delete('/:id', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
 
-  // Get video
+  // Deliberately unfiltered: a repeat delete of an already soft-deleted video
+  // must still find the row to verify ownership and answer idempotently, rather
+  // than 404 on a video the caller genuinely owns.
   const videos = await db
     .select()
     .from(video)
@@ -389,7 +393,7 @@ app.delete('/:id', async (c) => {
 
   const videoRecord = videos[0]
 
-  if (!videoRecord) {
+  if (!videoRecord || videoRecord.deletedAt) {
     return c.json({ error: 'Video not found' }, 404)
   }
 
@@ -409,18 +413,22 @@ app.delete('/:id', async (c) => {
     return c.json({ error: 'Access denied' }, 403)
   }
 
-  // Delete the video record
-  await db
-    .delete(video)
-    .where(eq(video.id, videoId))
+  // Soft-delete and enqueue byte reclamation in one statement, so the row can
+  // never be marked deleted without the cleanup debt being recorded. Bytes are
+  // reclaimed asynchronously once outstanding writers have retired — a logged
+  // deletion is not the same thing as storage freed.
+  await deleteVideoWithCleanup({
+    executor: db,
+    videoId,
+    organizationId: videoRecord.organizationId,
+    deletedBy: session.userId,
+  })
 
   // Dispatch webhook event
   dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.deleted', {
     videoId,
     title: videoRecord.title,
   })
-
-  // TODO: Delete R2 files
 
   return c.json({
     success: true,
@@ -441,7 +449,7 @@ app.post('/:id/transcribe', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -516,7 +524,7 @@ app.post('/:id/retry', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
   const videoRecord = videos[0]
 
@@ -548,41 +556,48 @@ app.post('/:id/retry', async (c) => {
     return c.json({ error: 'Video has no raw source object to re-transcode' }, 400)
   }
 
-  // Dispatch first: only flip state once the job is accepted.
-  try {
-    await triggerTranscoding(
-      videoRecord.rawKey,
-      videoId,
-      videoRecord.playbackPolicy || 'public',
-      videoRecord.generateSubtitle || false,
-      videoRecord.generateChapters || false,
-      videoRecord.organizationId,
-      c.env,
-    )
-  } catch (err) {
-    console.error(`[RETRY] dispatch failed for ${videoId}:`, err)
-    await db
-      .update(video)
-      .set({ failureCode: 'DISPATCH_FAILED', updatedAt: new Date() })
-      .where(eq(video.id, videoId))
+  // Retry goes through the claim, which owns the state transition, the attempt
+  // id and the job_attempts bump. A stuck `processing` row is reclaimed by
+  // naming the attempt we observed; if that attempt's lease is still live the
+  // claim is refused, because dispatching would start a second GPU run for a
+  // job that is still running.
+  const dispatchResult = await dispatchTranscodeJob({
+    videoId,
+    rawKey: videoRecord.rawKey,
+    organizationId: videoRecord.organizationId,
+    playbackPolicy: videoRecord.playbackPolicy || 'public',
+    generateSubtitle: videoRecord.generateSubtitle || false,
+    generateChapters: videoRecord.generateChapters || false,
+    expectedAttemptId:
+      videoRecord.status === 'processing' ? videoRecord.transcodeAttemptId : null,
+    env: c.env,
+  })
+
+  if (!dispatchResult.dispatched) {
+    if (dispatchResult.reason === 'dispatch-failed') {
+      console.error(`[RETRY] dispatch failed for ${videoId}:`, dispatchResult.error)
+      await db
+        .update(video)
+        .set({ failureCode: 'DISPATCH_FAILED', updatedAt: new Date() })
+        .where(eq(video.id, videoId))
+      return c.json(
+        {
+          error: `Retry dispatch failed: ${dispatchResult.error?.message ?? 'unknown error'}`,
+        },
+        502,
+      )
+    }
+
+    const status = dispatchFailureStatus(dispatchResult.reason)
     return c.json(
-      {
-        error: `Retry dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
-      },
-      502,
+      { error: `Retry not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
+      status,
     )
   }
 
   const updated = await db
     .update(video)
-    .set({
-      status: 'processing',
-      processingStartedAt: new Date(),
-      jobAttempts: sql`COALESCE(${video.jobAttempts}, 0) + 1`,
-      lastHeartbeatAt: null,
-      failureCode: null,
-      updatedAt: new Date(),
-    })
+    .set({ failureCode: null, updatedAt: new Date() })
     .where(eq(video.id, videoId))
     .returning({ id: video.id, jobAttempts: video.jobAttempts })
 

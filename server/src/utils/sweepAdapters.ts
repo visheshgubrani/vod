@@ -1,7 +1,8 @@
 import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { video } from '../db/schema'
-import { triggerTranscoding } from './queue'
+import { notDeleted } from '../db/predicates'
+import { dispatchTranscodeJob } from './dispatchTranscode'
 import type { SweepableVideo, SweepAdapters, SweepLimits } from './jobSweeper'
 import type { Bindings } from '../types'
 
@@ -52,6 +53,7 @@ function toSweepable(row: typeof video.$inferSelect): SweepableVideo {
     playbackPolicy: row.playbackPolicy ?? 'public',
     generateSubtitle: row.generateSubtitle ?? false,
     generateChapters: row.generateChapters ?? false,
+    transcodeAttemptId: row.transcodeAttemptId,
   }
 }
 
@@ -61,7 +63,7 @@ export function createSweepAdapters(env?: Bindings): SweepAdapters {
       const rows = await db
         .select()
         .from(video)
-        .where(and(inArray(video.status, ['processing']), lt(ACTIVITY_EXPR, before)))
+        .where(and(notDeleted, inArray(video.status, ['processing']), lt(ACTIVITY_EXPR, before)))
         .orderBy(asc(video.updatedAt))
         .limit(limit)
       return rows.map(toSweepable)
@@ -71,35 +73,32 @@ export function createSweepAdapters(env?: Bindings): SweepAdapters {
       const rows = await db
         .select()
         .from(video)
-        .where(and(eq(video.status, 'uploading'), lt(video.updatedAt, before)))
+        .where(and(notDeleted, eq(video.status, 'uploading'), lt(video.updatedAt, before)))
         .orderBy(asc(video.updatedAt))
         .limit(limit)
       return rows.map(toSweepable)
     },
 
     async dispatchRetry(sweepable) {
-      await triggerTranscoding(
-        sweepable.rawKey!,
-        sweepable.id,
-        sweepable.playbackPolicy,
-        sweepable.generateSubtitle,
-        sweepable.generateChapters,
-        sweepable.organizationId,
+      // Reclaim only the attempt this sweep actually observed. If a newer
+      // attempt has taken ownership since the rows were read, the claim is
+      // refused and nothing is dispatched — see transcodeClaim.ts.
+      const result = await dispatchTranscodeJob({
+        videoId: sweepable.id,
+        rawKey: sweepable.rawKey!,
+        organizationId: sweepable.organizationId,
+        playbackPolicy: sweepable.playbackPolicy,
+        generateSubtitle: sweepable.generateSubtitle,
+        generateChapters: sweepable.generateChapters,
+        expectedAttemptId: sweepable.transcodeAttemptId,
         env,
-      )
-    },
+      })
 
-    async recordRetry(videoId) {
-      await db
-        .update(video)
-        .set({
-          status: 'processing',
-          jobAttempts: sql`COALESCE(${video.jobAttempts}, 0) + 1`,
-          processingStartedAt: new Date(),
-          lastHeartbeatAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(video.id, videoId))
+      if (!result.dispatched) {
+        // A refused reclaim must not be counted as a retry: throwing here lets
+        // runSweep leave the row for a later pass instead of claiming progress.
+        throw new Error(`transcode reclaim refused: ${result.reason}`)
+      }
     },
 
     async markFailed(videoId, failureCode) {

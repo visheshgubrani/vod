@@ -18,7 +18,7 @@ echo "OpenVOD environment verifier"
 echo "============================"
 
 if [[ ! -f "$VARS" ]]; then
-  echo "✗ server/.dev.vars missing — run scripts/setup.sh first"
+  echo "✗ server/.dev.vars missing — run ./scripts/bootstrap.sh first"
   exit 1
 fi
 

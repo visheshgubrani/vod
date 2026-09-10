@@ -99,6 +99,7 @@ def send_heartbeat(
     video_id: str,
     stage: str,
     progress: float,
+    attempt_id: str = "",
     max_attempts: int = 2,
 ) -> None:
     """
@@ -106,21 +107,31 @@ def send_heartbeat(
     validation, HTTP error) is caught and logged — a transient server blip must
     never abort a running transcode. The server's sweeper tolerates missed
     beats; it only needs recent ones to keep jobs alive.
+
+    ``attempt_id`` identifies which attempt this beat belongs to. The API
+    rejects a beat whose attempt no longer owns the row, and uses accepted
+    beats to extend that attempt's lease. A beat without an attempt id is
+    ignored for any row that has an owner, so omitting it means a long job
+    loses its lease and becomes reclaimable.
     """
     if not is_allowed_callback_url(url):
         print(f"[SECURITY] Blocked heartbeat URL: {url}")
         return
     import datetime
+    body = {
+        "video_id": video_id,
+        "stage": stage,
+        "progress": round(float(progress), 4),
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    if attempt_id:
+        body["attempt_id"] = attempt_id
+
     for attempt in range(max_attempts):
         try:
             resp = requests.post(
                 url,
-                json={
-                    "video_id": video_id,
-                    "stage": stage,
-                    "progress": round(float(progress), 4),
-                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                },
+                json=body,
                 headers=_auth_headers(),
                 timeout=5,
             )

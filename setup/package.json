@@ -1,0 +1,24 @@
+{
+  "name": "openvod-setup",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "OpenVOD interactive bootstrap wizard — BYOK env configuration with an opt-in Cloudflare/Modal provision & deploy phase",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "~3.2.7"
+  }
+}

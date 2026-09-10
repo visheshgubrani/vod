@@ -26,6 +26,14 @@ export type DispatchPayload = {
   callbackUrl: string
   /** Transcoder liveness endpoint derived from the callback URL. */
   heartbeatUrl?: string
+  /**
+   * Attempt id that owns this row (see `lib/transcodeClaim.ts`).
+   *
+   * The transcoder must (a) suppress a repeat delivery of the same attempt id
+   * and (b) echo it on every callback and heartbeat, so a stalled attempt's
+   * callback cannot mutate a row that a newer attempt now owns.
+   */
+  attemptId: string
 }
 
 export type DispatchErrorCode =
@@ -37,12 +45,47 @@ export type DispatchErrorCode =
 
 export class DispatchError extends Error {
   readonly code: DispatchErrorCode
+  /**
+   * HTTP status, when the failure was a response. Carried so callers can tell a
+   * definitive rejection (4xx — the request arrived and was refused) from an
+   * ambiguous one (5xx/timeout — it may have been accepted).
+   */
+  readonly status?: number
 
-  constructor(code: DispatchErrorCode, message: string) {
+  constructor(code: DispatchErrorCode, message: string, status?: number) {
     super(message)
     this.name = 'DispatchError'
     this.code = code
+    this.status = status
   }
+}
+
+/**
+ * Did this failure leave the dispatch outcome unknown?
+ *
+ * The transcoder endpoint *starts work* when it accepts a request. So a network
+ * error, a timeout, or a 5xx may mean the job is running even though we never
+ * saw a response. Treating that as "failed" is wrong twice over: it marks a
+ * live job failed, and it hides the job from reconciliation. The correct move
+ * is to keep the attempt claim and let its lease expire, so the sweeper
+ * reconciles against the attempt id it actually observed.
+ *
+ * A 4xx is different: the request definitely arrived and was definitely
+ * refused, so nothing is running.
+ */
+export function isUncertainDispatch(error: DispatchError): boolean {
+  if (error.code === 'CONFIG_MISSING' || error.code === 'ENVELOPE_ERROR') {
+    return false
+  }
+  if (
+    error.code === 'HTTP_STATUS' &&
+    error.status != null &&
+    error.status >= 400 &&
+    error.status < 500
+  ) {
+    return false
+  }
+  return true
 }
 
 export type DispatchEnv = {
@@ -179,6 +222,7 @@ export async function dispatchDirectHttp(
     lastError = new DispatchError(
       'HTTP_STATUS',
       `Transcoder responded with HTTP ${response.status}`,
+      response.status,
     )
     if (!shouldRetry) throw lastError
     await deps.sleep(BACKOFF_BASE_MS * 2 ** attempt + deps.jitter())
@@ -189,19 +233,46 @@ export async function dispatchDirectHttp(
 }
 
 /**
+ * A transcode dispatch request.
+ *
+ * An options object rather than positional arguments specifically so that
+ * `attemptId` cannot be omitted: dispatching without naming the attempt that
+ * owns the row is the bug this field exists to prevent.
+ */
+export type TranscodeDispatchRequest = {
+  key: string
+  fileId: string
+  organizationId: string
+  attemptId: string
+  playbackPolicy?: 'public' | 'signed'
+  generateSubtitle?: boolean
+  generateChapters?: boolean
+  env?: Bindings
+}
+
+/**
  * Queue a transcode job. Resolves once the job is accepted by the backend;
  * throws a typed `DispatchError` on final failure (missing config, HTTP
  * rejection after retries, queue errors).
+ *
+ * Callers must hold the attempt claim before calling this — see
+ * `utils/dispatchTranscode.ts`, which packages claim + dispatch + failure
+ * handling so no call site can dispatch an unowned job.
  */
 export async function triggerTranscoding(
-  fileKey: string,
-  fileId: string,
-  playbackPolicy: 'public' | 'signed' = 'public',
-  generateSubtitle = false,
-  generateChapters = false,
-  organizationId: string,
-  env?: Bindings,
+  request: TranscodeDispatchRequest,
 ): Promise<void> {
+  const {
+    key: fileKey,
+    fileId,
+    organizationId,
+    attemptId,
+    playbackPolicy = 'public',
+    generateSubtitle = false,
+    generateChapters = false,
+    env,
+  } = request
+
   const envMap = resolveEnv(env)
 
   const ingestSecret = envMap.TRANSCODE_INGEST_SECRET ?? envMap.MODAL_WEBHOOK_SECRET
@@ -239,6 +310,7 @@ export async function triggerTranscoding(
       '/api/webhook/transcode-complete',
       '/api/webhook/heartbeat',
     ),
+    attemptId,
   }
 
   const adapter = pickDispatcher(envMap)

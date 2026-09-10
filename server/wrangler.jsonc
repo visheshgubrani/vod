@@ -15,6 +15,15 @@
 	],
 	// Bind a custom domain after first deploy, e.g.:
 	// "routes": [{ "pattern": "api.example.com", "custom_domain": true }],
-	// Enable the job sweeper on a cron (also requires SWEEP_ENABLED=true):
-	// "triggers": { "crons": ["*/15 * * * *"] },
+
+	/**
+	 * Background maintenance: transcode job sweeps, webhook retries, and
+	 * storage reclamation for deleted videos.
+	 *
+	 * Enabled by default because leaving it off is not inert — webhook retries
+	 * and byte reclamation stop too, so deleted videos keep costing storage.
+	 * Also requires SWEEP_ENABLED=true in the environment (see .dev.vars.example).
+	 * `GET /health/config` reports whether it is on.
+	 */
+	"triggers": { "crons": ["*/15 * * * *"] },
 }

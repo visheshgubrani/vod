@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
 import { db } from '../lib/database'
 import { WAE_MAX_DATA_POINTS_PER_INVOCATION } from '../lib/analytics-engine'
 import type { Bindings } from '../types'
@@ -67,7 +68,7 @@ async function resolveOrganizationId(videoId: string): Promise<string> {
     const rows = await db
       .select({ organizationId: video.organizationId })
       .from(video)
-      .where(eq(video.id, videoId))
+      .where(and(notDeleted, eq(video.id, videoId)))
       .limit(1)
 
     return rows[0]?.organizationId || ''

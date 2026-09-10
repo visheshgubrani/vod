@@ -42,6 +42,44 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-better-auth-secret-change-me-0123456}
       NODE_ENV: production
 
+  # Background maintenance for the Docker runtime.
+  #
+  # The Workers deployment gets this from the cron trigger in
+  # server/wrangler.jsonc; a container has no equivalent, and without something
+  # calling the endpoint the system silently stops reconciling: webhook retries
+  # never run, and deleted videos keep their bytes forever. This service is that
+  # something.
+  #
+  # It calls the same `runMaintenance` path the cron does, so both runtimes do
+  # identical work. Requires INTERNAL_SWEEP_SECRET (set it in server/.dev.vars).
+  maintenance:
+    image: alpine:3.20
+    container_name: vod-maintenance
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    env_file:
+      - path: ./server/.dev.vars
+        required: false
+    environment:
+      INTERNAL_SWEEP_SECRET: ${INTERNAL_SWEEP_SECRET:-}
+      MAINTENANCE_INTERVAL_SECONDS: ${MAINTENANCE_INTERVAL_SECONDS:-900}
+    command: >
+      sh -c '
+        if [ -z "$$INTERNAL_SWEEP_SECRET" ]; then
+          echo "[maintenance] INTERNAL_SWEEP_SECRET is not set; refusing to start."
+          echo "[maintenance] Webhook retries and storage reclamation will NOT run."
+          sleep infinity;
+        fi;
+        echo "[maintenance] running every $${MAINTENANCE_INTERVAL_SECONDS}s";
+        while true; do
+          sleep "$$MAINTENANCE_INTERVAL_SECONDS";
+          wget -q -O- --header="x-sweep-secret: $$INTERNAL_SWEEP_SECRET" \
+            --post-data="" http://api:4080/api/internal/sweep \
+            || echo "[maintenance] pass failed; will retry";
+        done'
+
   web:
     build:
       context: .

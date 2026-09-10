@@ -9,16 +9,23 @@ change them together and keep this document in sync.
 Every transcoded video lives under a folder keyed by its UUID:
 
 ```
-videos/<video_id>/playlist.m3u8        # HLS master playlist
-videos/<video_id>/stream_<label>.m3u8  # per-rendition playlists
-videos/<video_id>/video_<label>_<n>.m4s  # fMP4 segments (+ init .mp4)
-videos/<video_id>/manifest.mpd         # DASH manifest
+videos/<video_id>/playlist.m3u8           # HLS master playlist
+videos/<video_id>/manifest.mpd            # DASH manifest
+videos/<video_id>/video_<label>/init.mp4  # per-rendition fMP4 init segment
+videos/<video_id>/video_<label>/<n>.m4s   # per-rendition media segments
+videos/<video_id>/audio/init.mp4          # audio rendition, when packaged
+videos/<video_id>/audio/<n>.m4s
 videos/<video_id>/poster.jpg
-videos/<video_id>/subtitles.vtt        # when generated
-videos/<video_id>/chapters.json        # when generated
+videos/<video_id>/subtitles.vtt           # when generated
+videos/<video_id>/chapters.json           # when generated
 ```
 
-The delivery worker extracts the video id with `^videos/([^/]+)/`.
+`<label>` is the rendition label from the encoding ladder (`360p` … `2160p`),
+and segment names are Shaka's zero-based `$Number$` output.
+
+The delivery worker extracts the video id with `^videos/([^/]+)/`, so anything
+that lists or deletes a video's output must use the `videos/<id>/` prefix — a
+bare `<id>/` matches nothing.
 
 ## 2. Object metadata (S3 custom metadata)
 
@@ -67,6 +74,7 @@ Playlists must use relative URIs (Shaka packager output does).
   "key": "orgs/<org>/raw/<video_id>/<file>.mp4", // raw bucket key
   "bucket": "<raw bucket>",
   "fileId": "<video_id>",
+  "attemptId": "<uuid>",                          // required — see below
   "playbackPolicy": "public | signed",
   "generateSubtitle": false,
   "generateChapters": false,
@@ -76,11 +84,45 @@ Playlists must use relative URIs (Shaka packager output does).
 }
 ```
 
-Callback (`success`/`error`) is retried by the transcoder (4xx never retried,
-backoff + jitter); heartbeats POST to `/api/webhook/heartbeat` with
-`{ video_id, stage, progress, ts }`. Both are authenticated with the ingest
-secret (bearer / `x-webhook-secret`). Heartbeats are strictly non-fatal on the
-worker side: the pipeline never aborts because a beat failed.
+### Attempt ownership (required)
+
+`attemptId` identifies which attempt owns the video row. It is not advisory:
+
+- The API claims the row with this id before dispatching. A claim that loses —
+  because another attempt is live, the video is deleted, or the organization is
+  at its concurrency cap — means **no dispatch happens at all**.
+- The transcoder must **suppress a repeat delivery of an attempt id it has
+  already accepted**. The API's dispatcher retries a POST whose response was
+  lost; without suppression that retry spawns a second GPU container for the
+  same video and the tenant pays twice. Suppression lives in a Modal `Dict`
+  written *before* the worker spawns.
+- A retry of an **uncertain** dispatch must reuse the **same** `attemptId`.
+  Minting a new one is indistinguishable from starting a second job.
+- Every callback and heartbeat must echo `attempt_id`. The API rejects a
+  callback or beat whose attempt id does not match the row's current owner, and
+  uses accepted beats to extend that attempt's lease.
+
+### Upgrade order
+
+These components deploy separately, so this change is **ordered**:
+
+1. **Deploy the transcoder first.** A new transcoder against an old API is
+   harmless: the old API ignores the extra `attempt_id` field.
+2. **Then deploy the API.**
+
+Deploying the API first would reject heartbeats from the old transcoder (a row
+dispatched by the new code has an owner, so an unidentified beat is refused).
+The lease would then expire mid-encode, the sweeper would reclaim the job, and
+the same video would encode twice — the exact failure attempt ownership exists
+to prevent.
+
+### Callback and heartbeat payloads
+
+Callbacks are retried by the transcoder (4xx never retried, backoff + jitter).
+Heartbeats POST to `/api/webhook/heartbeat` with
+`{ video_id, stage, progress, ts, attempt_id }`. Both are authenticated with
+the ingest secret (bearer / `x-webhook-secret`). Heartbeats are strictly
+non-fatal on the worker side: the pipeline never aborts because a beat failed.
 
 Error callbacks carry a stable `error_code` (server stores it in
 `video.failure_code`):

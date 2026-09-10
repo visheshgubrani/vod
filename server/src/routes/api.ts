@@ -8,12 +8,14 @@
  */
 
 import { Hono } from 'hono'
-import { eq, and } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
 import { requirePlaybackJwtSecret } from '../lib/config'
-import { video, uploadToken } from '../db/schema'
+import { uploadToken, video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
+import { deleteVideoWithCleanup } from '../lib/objectCleanup'
 import type { ApiKeyVariables } from '../types'
 import {
   buildPlaybackBindingClaims,
@@ -221,12 +223,9 @@ app.post('/video/:id/playback-token', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
+    .where(and(notDeleted, eq(video.id, videoId),
         eq(video.organizationId, organizationId)
-      )
-    )
+      ))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -314,12 +313,9 @@ app.get('/video/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
+    .where(and(notDeleted, eq(video.id, videoId),
         eq(video.organizationId, organizationId)
-      )
-    )
+      ))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -367,7 +363,7 @@ app.get('/videos', async (c) => {
       createdAt: video.createdAt,
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
     .limit(limit)
     .orderBy(video.createdAt)
 
@@ -404,12 +400,9 @@ app.patch('/video/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
+    .where(and(notDeleted, eq(video.id, videoId),
         eq(video.organizationId, organizationId)
-      )
-    )
+      ))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -460,24 +453,26 @@ app.delete('/video/:id', async (c) => {
   const organizationId = c.var.organizationId
   const videoId = c.req.param('id')
 
+  // Unfiltered lookup: deleting an already-deleted video is idempotent, and the
+  // tenant check below still applies, so it must not 404 on a repeat call.
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
-        eq(video.organizationId, organizationId)
-      )
-    )
+    .where(and(eq(video.id, videoId), eq(video.organizationId, organizationId)))
     .limit(1)
 
-  if (videos.length === 0) {
+  const videoRecord = videos[0]
+  if (!videoRecord || videoRecord.deletedAt) {
     return c.json({ error: 'Video not found' }, 404)
   }
 
-  await db
-    .delete(video)
-    .where(eq(video.id, videoId))
+  // Soft-delete + enqueue reclamation atomically (see objectCleanup.ts).
+  await deleteVideoWithCleanup({
+    executor: db,
+    videoId,
+    organizationId,
+    deletedBy: null,
+  })
 
   return c.json({
     deleted: true,

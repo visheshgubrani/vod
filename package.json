@@ -14,11 +14,13 @@
     "test:delivery": "pnpm --filter ./delivery test",
     "test:sdk": "pnpm --filter ./sdk test",
     "test:player": "pnpm --filter ./player test",
+    "test:setup": "pnpm --filter openvod-setup test",
     "test:python": "cd transcoding && .venv/bin/python -m pytest",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
     "typecheck:tsc": "pnpm --filter vod-api exec tsc --noEmit && pnpm --filter ./delivery exec tsc --noEmit",
     "bootstrap": "bash scripts/bootstrap.sh",
+    "setup": "bash scripts/bootstrap.sh",
     "db:push": "pnpm --filter vod-api db:push"
   },
   "pnpm": {

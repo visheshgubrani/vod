@@ -67,6 +67,18 @@ from packaging import choose_segment_duration, package_with_shaka
 
 app = modal.App("vod-production-pipeline")
 
+# Durable duplicate suppression for transcode attempts.
+#
+# Keyed by the API's attempt id, written before a worker is spawned. Shared
+# across containers, so it survives the ingest container being recycled between
+# a lost dispatch response and the retry that follows it.
+attempts = modal.Dict.from_name("transcode-attempts", create_if_missing=True)
+
+# How long an "accepted" marker suppresses a repeat delivery. Long enough to
+# cover the API's dispatch retries; short enough that a crash between recording
+# and spawning costs one retry rather than the job.
+ATTEMPT_MARKER_TTL_SECONDS = int(os.environ.get("ATTEMPT_MARKER_TTL_SECONDS", "300"))
+
 # Production-optimized container
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
@@ -161,6 +173,33 @@ def transcode_video(request: Request, payload: dict):
       - {bucket, key} OR input_url (required)
       - callbackUrl (optional)
       - playbackPolicy (optional): "public" or "signed"
+      - attempt_id (required by the API): identifies the owning attempt
+
+    Duplicate suppression
+    ---------------------
+    The API's dispatcher retries a POST whose response was lost. Without
+    suppression that retry spawns a *second* GPU container for the same video:
+    two encodes, two uploads to the same prefix, and the tenant billed twice.
+
+    So an accepted `attempt_id` is recorded before the worker spawns, and a
+    repeat delivery of the same id returns without spawning. The API holds the
+    same id across its retries for exactly this reason.
+
+    The marker carries a timestamp and is only honoured while it is *fresh*. A
+    marker with no expiry would turn a crash between "record accepted" and
+    "spawn worker" into a permanently suppressed job: the retry would see the
+    marker, skip, and the video would never encode. A marker older than
+    `ATTEMPT_MARKER_TTL_SECONDS` is treated as a failed accept and the retry is
+    allowed through.
+
+    Residual windows, stated rather than papered over:
+      - `modal.Dict` is not an atomic compare-and-set, so two genuinely
+        simultaneous requests carrying one attempt id could both pass. The API
+        only retries after the previous request failed, so they are not
+        simultaneous in practice.
+      - If the dedupe store is unreachable we log loudly and continue, because
+        failing closed would stop all transcoding on a Dict outage. The API's
+        attempt claim is the primary guard; this is defence in depth.
     """
     require_ingest_auth(request)
 
@@ -168,7 +207,9 @@ def transcode_video(request: Request, payload: dict):
         video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
     except ValueError as e:
         return {"status": "error", "message": str(e)}
-    
+
+    attempt_id = str(payload.get("attempt_id") or payload.get("attemptId") or "").strip()
+
     has_r2 = "key" in payload and "bucket" in payload
     has_url = "input_url" in payload
     
@@ -189,17 +230,57 @@ def transcode_video(request: Request, payload: dict):
             "status": "error",
             "message": "input_url is disabled: set ALLOWED_URL_HOSTS to allow URL sources",
         }
-    
+
+    # Suppress a repeat delivery of an attempt we already accepted. Recorded
+    # BEFORE the spawn so a retry arriving mid-spawn is also suppressed.
+    if attempt_id:
+        try:
+            seen = attempts.get(attempt_id)
+        except Exception as e:
+            seen = None
+            print(f"[WARN] Dedupe store unreachable, proceeding: {e}")
+
+        if isinstance(seen, dict):
+            age = time.time() - float(seen.get("ts") or 0)
+            if age < ATTEMPT_MARKER_TTL_SECONDS:
+                print(f"♻️ Duplicate attempt {attempt_id} for {video_id}: not spawning again")
+                return {
+                    "status": "duplicate",
+                    "video_id": video_id,
+                    "attempt_id": attempt_id,
+                    "message": "Attempt already accepted; not started again",
+                }
+            # Stale marker: the previous accept never produced a worker (the
+            # process died between recording and spawning). Let the retry run.
+            print(
+                f"[WARN] Stale attempt marker for {attempt_id} "
+                f"({age:.0f}s > {ATTEMPT_MARKER_TTL_SECONDS}s): retrying rather than suppressing"
+            )
+
+        try:
+            attempts[attempt_id] = {
+                "video_id": video_id,
+                "state": "accepted",
+                "ts": time.time(),
+            }
+        except Exception as e:
+            # A dedupe-store outage must not block transcoding outright; the API's
+            # attempt claim is still the primary guard.
+            print(f"[WARN] Could not record attempt {attempt_id}: {e}")
+
     safe_payload = dict(payload)
     safe_payload["video_id"] = video_id
     safe_payload["fileId"] = video_id
+    if attempt_id:
+        safe_payload["attempt_id"] = attempt_id
 
-    print(f"🚀 Spawning production worker for: {video_id}")
+    print(f"🚀 Spawning production worker for: {video_id} (attempt {attempt_id or 'unidentified'})")
     transcode_worker.spawn(safe_payload)
     
     return {
         "status": "accepted",
         "video_id": video_id,
+        "attempt_id": attempt_id or None,
         "message": "Transcoding job queued"
     }
 
@@ -256,6 +337,9 @@ def transcode_worker(payload: dict):
         
         # ── heartbeat thread (strictly non-fatal) ─────────────────────────
         heartbeat_url = payload.get("heartbeatUrl")
+        # Every beat names its attempt: the API ignores a beat from an attempt
+        # that no longer owns the row, and extends the lease of one that does.
+        attempt_id = str(payload.get("attempt_id") or "").strip()
         beat_state = {"stage": "download", "progress": 0.0}
         stop_event = threading.Event()
 
@@ -263,7 +347,7 @@ def transcode_worker(payload: dict):
             beat_state["stage"] = stage
             beat_state["progress"] = progress
             if heartbeat_url:
-                send_heartbeat(heartbeat_url, video_id, stage, progress)
+                send_heartbeat(heartbeat_url, video_id, stage, progress, attempt_id)
 
         def _heartbeat_loop() -> None:
             while not stop_event.wait(30):
@@ -271,6 +355,7 @@ def transcode_worker(payload: dict):
                     send_heartbeat(
                         heartbeat_url, video_id,
                         beat_state["stage"], beat_state["progress"],
+                        attempt_id,
                     )
 
         if heartbeat_url:
@@ -591,6 +676,7 @@ def transcode_worker(payload: dict):
         
         result = {
             "status": "success",
+            "attempt_id": attempt_id,
             "video_id": video_id,
             "metadata": {
                 "width": metadata.width,
@@ -664,6 +750,7 @@ def transcode_worker(payload: dict):
         error_result = {
             "status": "error",
             "video_id": video_id,
+            "attempt_id": attempt_id,
             "message": str(e),
             "error_type": type(e).__name__,
             "error_code": classify_error(e),

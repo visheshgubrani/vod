@@ -1,8 +1,11 @@
 # Deploying OpenVOD
 
-First-run: **[README](../README.md)** or `./scripts/bootstrap.sh` (Cloudflare +
-Modal login, R2 buckets, deploys). You still paste R2 S3 keys from the
-dashboard — Wrangler cannot mint them.
+First-run: **[README](../README.md)** or `./scripts/bootstrap.sh` — the
+launcher installs Node/pnpm (nvm) when missing, then the interactive wizard
+writes `.dev.vars` for your architecture choices; the opt-in `--deploy`
+phase handles Cloudflare + Modal login, R2 buckets/CORS, deploys and secret
+uploads. You still paste R2 S3 keys from the dashboard — Wrangler cannot
+mint them.
 
 This page is the architecture split after those accounts exist.
 
@@ -37,11 +40,10 @@ bind a production hostname for you.
 ## Path A — Wrangler default
 
 ```bash
-pnpm install
-scripts/setup.sh          # writes server/.dev.vars + delivery/.dev.vars
+./scripts/bootstrap.sh     # wizard: choose the Workers runtime, paste R2/Neon keys
 pnpm db:push              # or drizzle-kit migrate
-cd server && wrangler deploy
-cd ../delivery && wrangler deploy
+cd server && pnpm exec wrangler deploy
+cd ../delivery && pnpm exec wrangler deploy
 cd ../transcoding && modal deploy main.py
 ```
 
@@ -55,9 +57,9 @@ Job sweeper: set `SWEEP_ENABLED=true` and uncomment `triggers.crons` in
 ## Path B — Docker API + web, Workers delivery
 
 ```bash
-scripts/setup.sh          # choose "docker" so DB_DRIVER=pg
+./scripts/bootstrap.sh     # wizard: choose the Compose runtime so DB_DRIVER=pg
 docker compose up -d      # postgres :5433, api :8787, web :3000
-cd delivery && wrangler deploy
+cd delivery && pnpm exec wrangler deploy
 cd transcoding && modal deploy main.py
 ```
 
@@ -88,7 +90,7 @@ optionally probes `/health/config`.
 ## JWT parity
 
 The API mints playback tokens (`iss: openvod`, `aud: playback`). The delivery
-worker verifies them with the **same** `JWT_SECRET`. `scripts/setup.sh`
+worker verifies them with the **same** `JWT_SECRET`. The bootstrap wizard
 mirrors that secret into `delivery/.dev.vars`; `verify-env.sh` warns if they
 diverge.
 
@@ -98,3 +100,54 @@ Create secrets `r2-creds` and optional `groq-creds`, then `modal deploy main.py`
 Set `ALLOWED_CALLBACK_HOSTS` to your API host and `ALLOWED_SOURCE_BUCKETS` to
 the raw bucket name. The API needs `MODAL_WEBHOOK_URL` and
 `TRANSCODE_INGEST_SECRET`.
+
+## Background maintenance (required for correctness, not optional)
+
+One maintenance pass does three things:
+
+1. **Transcode sweeps** — retries or fails videos stuck `processing`/`uploading`.
+2. **Webhook retries** — drains the `event_outbox` and retries due deliveries
+   with backoff. `video.ready`/`video.failed` are written in the same statement
+   as the state change, so they cannot be lost between the two.
+3. **Storage reclamation** — deletes the bytes of deleted videos, once any
+   writer that could still legitimately write has retired.
+
+**If it does not run, nothing errors.** Webhooks are simply never retried, and
+deleted videos keep costing storage forever. `GET /health/config` reports
+`maintenance.enabled` and adds an advisory when it is off.
+
+### Workers
+
+`server/wrangler.jsonc` ships a cron trigger (`*/15 * * * *`) and the handler
+runs maintenance when `SWEEP_ENABLED=true`:
+
+```bash
+pnpm exec wrangler secret put SWEEP_ENABLED   # value: true
+pnpm exec wrangler deploy
+```
+
+Alternatively schedule `POST /api/internal/sweep` yourself with the
+`INTERNAL_SWEEP_SECRET` header — it calls the same runner.
+
+### Docker
+
+`docker-compose.yml` includes a `maintenance` service that calls the endpoint on
+an interval. Set `INTERNAL_SWEEP_SECRET` in `server/.dev.vars`; without it the
+service logs a loud warning and deliberately does nothing rather than pretend.
+
+```bash
+docker compose up -d
+docker compose logs -f maintenance   # confirm it is actually running
+```
+
+### Verifying it ran
+
+```bash
+curl -X POST http://localhost:8787/api/internal/sweep \
+  -H "x-sweep-secret: $INTERNAL_SWEEP_SECRET"
+# -> { ok, stats, deliveries, cleanup, durationMs }
+```
+
+A non-zero `cleanup.jobsReclaimed` means deleted videos had their bytes freed.
+`cleanup.jobsFailed` non-zero means objects could not be deleted after repeated
+attempts and need attention — that is deliberately visible rather than silent.

@@ -19,6 +19,12 @@ export type SweepableVideo = {
   playbackPolicy: 'public' | 'signed'
   generateSubtitle: boolean
   generateChapters: boolean
+  /**
+   * Attempt that currently owns the row. The sweeper must reclaim *this*
+   * attempt; if a newer one has taken ownership since the row was read, the
+   * reclaim is refused (see lib/transcodeClaim.ts).
+   */
+  transcodeAttemptId: string | null
 }
 
 export type SweepLimits = {
@@ -116,10 +122,15 @@ export type SweepStats = {
 export interface SweepAdapters {
   fetchStaleProcessing: (before: Date, limit: number) => Promise<SweepableVideo[]>
   fetchStaleUploading: (before: Date, limit: number) => Promise<SweepableVideo[]>
-  /** Re-dispatch the transcode job for a video. */
+  /**
+   * Reclaim and re-dispatch the transcode job for a video.
+   *
+   * This owns recording the attempt: the reclaim is a compare-and-swap that
+   * bumps `job_attempts` and sets the new owner, so the runner must NOT also
+   * record it. Doing both would double-count attempts and halve the retry
+   * budget. Throw to signal a refused reclaim; the runner then fails the row.
+   */
   dispatchRetry: (video: SweepableVideo) => Promise<void>
-  /** Bump attempts + reset the attempt clock (called only after dispatch accepted). */
-  recordRetry: (videoId: string) => Promise<void>
   markFailed: (videoId: string, failureCode: string, reason?: string) => Promise<void>
   markAbandoned: (videoId: string) => Promise<void>
 }
@@ -150,8 +161,9 @@ export async function runSweep(
     try {
       switch (action.action) {
         case 'retry': {
+          // dispatchRetry reclaims the attempt, which records the attempt bump
+          // itself. Nothing to record here afterwards.
           await adapters.dispatchRetry(action.video)
-          await adapters.recordRetry(action.video.id)
           stats.retried += 1
           break
         }

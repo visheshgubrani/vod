@@ -16,6 +16,7 @@ const PAYLOAD: DispatchPayload = {
   organizationId: 'org1',
   callbackUrl: 'https://api.example.com/api/webhook/transcode-complete',
   heartbeatUrl: 'https://api.example.com/api/webhook/heartbeat',
+  attemptId: 'att-test',
 }
 
 const fetchMock = vi.fn()

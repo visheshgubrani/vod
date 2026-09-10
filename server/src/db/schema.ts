@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm'
+import { isNull, relations, sql } from 'drizzle-orm'
 import {
   pgTable,
   text,
@@ -215,13 +215,34 @@ export const video = pgTable('video', {
   lastHeartbeatAt: timestamp('last_heartbeat_at'), // last heartbeat from the transcoder
   failureCode: text('failure_code'), // typed machine-readable failure reason
 
+  // Attempt ownership. Every dispatch mints a fresh attempt id which must be
+  // echoed by the transcoder's callbacks and heartbeats; a callback naming any
+  // other attempt is rejected. The lease is how a crashed attempt stops
+  // counting against the org concurrency cap and becomes reclaimable.
+  //
+  // Both are timestamptz on purpose: the claim compares them against now() in
+  // the admission subquery, and a naive column would make that comparison
+  // depend on the session timezone.
+  transcodeAttemptId: text('transcode_attempt_id'),
+  transcodeLeaseExpiresAt: timestamp('transcode_lease_expires_at', { withTimezone: true }),
+
+  // Soft deletion. Set by the deletion paths; the cleanup job (and its
+  // reconciliation) is what actually reclaims bytes. A row with deleted_at set
+  // must never be claimed, mutated by a callback, or returned by a library read.
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  deletedBy: text('deleted_by'),
+
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at')
     .defaultNow()
     .$onUpdate(() => new Date()),
 }, (table) => [
-  index('video_organizationId_idx').on(table.organizationId),
+  // Composite covers org-only filters too (leading column), and serves the
+  // per-org in-flight count the transcode claim runs on every dispatch.
+  index('video_org_status_idx').on(table.organizationId, table.status),
   index('video_status_updatedAt_idx').on(table.status, table.updatedAt),
+  // Reconciliation scans for deleted rows whose cleanup is still outstanding.
+  index('video_deletedAt_idx').on(table.deletedAt),
 ])
 
 export const apiKey = pgTable(
@@ -246,6 +267,111 @@ export const apiKey = pgTable(
   (table) => [uniqueIndex('api_key_key_hash_idx').on(table.keyHash)],
 )
 
+/**
+ * Transactional outbox for lifecycle events.
+ *
+ * The event is written by the SAME database operation as the state change it
+ * describes. Without that, a process that dies between "video is ready" and
+ * "emit video.ready" loses the event permanently: the callback retry finds the
+ * row already `ready`, the state guard ignores it, and the tenant never learns
+ * their video is playable.
+ *
+ * `id` is the event id sent to receivers and is stable across every retry of
+ * that event — that stability is what lets a receiver deduplicate, since
+ * delivery is at-least-once.
+ */
+export const eventOutbox = pgTable(
+  'event_outbox',
+  {
+    id: text('id').primaryKey(), // "evt_..."
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    event: text('event').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    /**
+     * pending -> dispatching -> dispatched, or failed.
+     * `dispatching` means a runner holds the lease and is fanning the event out
+     * to subscribed endpoints; a stale `dispatching` row is reclaimed by lease
+     * expiry, so no separate reaper is needed.
+     */
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+    /** Set while a runner holds the row; only the lease holder may finalize it. */
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('event_outbox_status_next_idx').on(table.status, table.nextAttemptAt),
+    index('event_outbox_org_created_idx').on(table.organizationId, table.createdAt),
+  ],
+)
+
+/**
+ * Durable record that a video's bytes still need reclaiming.
+ *
+ * Why this exists rather than a `waitUntil` cleanup call: deleting the row and
+ * deleting the bytes are two different systems, and the row delete is the one
+ * that must not be lost. `waitUntil` only extends execution for ~30s after the
+ * response, so a slow or failing object delete silently leaked bytes with no
+ * record that any were owed. Here the debt is written in the same operation as
+ * the deletion, and reconciled later.
+ *
+ * `video_id` is deliberately **not** a foreign key. Rows reach this table by two
+ * routes: soft deletion (the video row survives, so an FK would work) and the
+ * `AFTER DELETE` trigger on `video` — which fires for cascades from deleting an
+ * organization or a user, i.e. exactly when the video row no longer exists.
+ *
+ * Buckets are not stored: they are resolved from configuration when the job
+ * runs, which keeps the trigger trivial and lets bucket names be renamed.
+ */
+export const storageCleanupJob = pgTable(
+  'storage_cleanup_job',
+  {
+    id: text('id').primaryKey(),
+    videoId: uuid('video_id').notNull(),
+    organizationId: text('organization_id'),
+    /** Raw upload object, when the video had one. */
+    rawKey: text('raw_key'),
+    /** Prefix holding every transcoded artefact: `videos/<id>/`. */
+    prefix: text('prefix').notNull(),
+    /** pending | reclaimed | failed */
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    /** Bytes reclaimed so far, for observability. */
+    objectsDeleted: integer('objects_deleted').notNull().default(0),
+    /**
+     * Earliest time this job may act. Set past the longest-lived outstanding
+     * writer (presigned upload URLs) so we never delete underneath a writer
+     * that is still legitimately allowed to write.
+     */
+    notBefore: timestamp('not_before', { withTimezone: true }).notNull().defaultNow(),
+    /** Run only by the lease holder, so two sweepers cannot both finalize. */
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    reclaimedAt: timestamp('reclaimed_at', { withTimezone: true }),
+    /** Set once a reclaimed job has been re-verified empty. */
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('storage_cleanup_status_notbefore_idx').on(table.status, table.notBefore),
+    // At most one outstanding job per video: an application deletion path and
+    // the AFTER DELETE trigger can both enqueue cleanup, and duplicates double
+    // the work while making failure counts meaningless. Reclaimed jobs are
+    // excluded so a video can be cleaned up again if objects ever reappear.
+    uniqueIndex('storage_cleanup_one_outstanding_idx')
+      .on(table.videoId)
+      .where(sql`${table.status} <> 'reclaimed'`),
+  ],
+)
+
 export const webhookEndpoint = pgTable('webhook_endpoint', {
   id: text('id').primaryKey(), // "whep_..."
   organizationId: text('organization_id')
@@ -259,6 +385,56 @@ export const webhookEndpoint = pgTable('webhook_endpoint', {
   lastTriggeredAt: timestamp('last_triggered_at'),
   createdAt: timestamp('created_at').defaultNow(),
 })
+
+/**
+ * Per-endpoint delivery attempts for one outbox event.
+ *
+ * Split from `event_outbox` because fan-out is one-to-many: an event must be
+ * retried independently per endpoint, and one dead receiver must not hold up
+ * delivery to the others. The outbox row records that the domain event
+ * happened; these rows record whether each subscriber has been told.
+ *
+ * Delivery is **at-least-once**. `event_id` is the stable id receivers
+ * deduplicate on; the same event retried to the same endpoint keeps it, and
+ * `X-Webhook-Id` carries it. Exactly-once is not promised and cannot be: a
+ * response lost after the receiver committed its side effect is
+ * indistinguishable from one lost before.
+ */
+export const webhookDelivery = pgTable(
+  'webhook_delivery',
+  {
+    id: text('id').primaryKey(), // "whd_..."
+    eventId: text('event_id')
+      .notNull()
+      .references(() => eventOutbox.id, { onDelete: 'cascade' }),
+    endpointId: text('endpoint_id')
+      .notNull()
+      .references(() => webhookEndpoint.id, { onDelete: 'cascade' }),
+    /** URL and secret are snapshotted: a later endpoint edit must not silently
+     *  redirect an event that was already recorded, nor leak a rotated secret. */
+    url: text('url').notNull(),
+    secret: text('secret').notNull(),
+    /** pending | delivered | failed */
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    responseStatus: integer('response_status'),
+    lastError: text('last_error'),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+    /** Only the holder of a live lease may finalize this row. */
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('webhook_delivery_status_next_idx').on(table.status, table.nextAttemptAt),
+    index('webhook_delivery_endpoint_created_idx').on(table.endpointId, table.createdAt),
+    uniqueIndex('webhook_delivery_event_endpoint_uidx').on(
+      table.eventId,
+      table.endpointId,
+    ),
+  ],
+)
 
 /**
  * Short-lived upload tokens for B2B customers to enable direct frontend uploads

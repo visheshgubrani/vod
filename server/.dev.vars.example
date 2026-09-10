@@ -47,3 +47,21 @@ DELIVERY_URL=https://media.yourdomain.com
 # Rate limiting (Upstash Redis REST — optional; in-memory fallback used when unset)
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
+
+# ── Background maintenance (transcode sweeps, webhook retries, byte cleanup) ──
+# Without this, webhook retries and storage reclamation do NOT run: deleted
+# videos keep their bytes and failed deliveries are never retried.
+# Workers: pair with the cron trigger in server/wrangler.jsonc.
+# Docker:  the `maintenance` compose service calls the endpoint for you.
+SWEEP_ENABLED=true
+# Shared secret for POST /api/internal/sweep (required by the compose service).
+INTERNAL_SWEEP_SECRET=
+# Rows/jobs handled per maintenance pass (default 50).
+MAINTENANCE_BATCH_SIZE=50
+
+# ── Cost controls (optional) ──
+# Max concurrent transcode attempts per organization. Unset = unlimited.
+# Enforced by an organization-level lock, so it holds under concurrent claims.
+TRANSCODE_ORG_CONCURRENCY_CAP=
+# How long an accepted attempt id suppresses a duplicate dispatch (Modal side).
+ATTEMPT_MARKER_TTL_SECONDS=300

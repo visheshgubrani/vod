@@ -29,11 +29,24 @@ healthApp.get('/config', (c) => {
   }
   const cfg = loadConfig(env)
 
+  // Background processing is opt-in, and leaving it off is not a cosmetic
+  // choice: webhook retries and byte reclamation both stop, so deleted videos
+  // keep costing storage and failed deliveries are never retried. Surfacing it
+  // here makes that visible instead of silent. Booleans only — no secrets.
+  const maintenanceEnabled = env['SWEEP_ENABLED'] === 'true'
+  if (!maintenanceEnabled) {
+    cfg.advisories.push(
+      'SWEEP_ENABLED is not "true": background maintenance is off, so webhook ' +
+        'retries and storage reclamation will not run (see docs/deploy.md).',
+    )
+  }
+
   return c.json({
     service: 'openvod',
     time: new Date().toISOString(),
     ready: cfg.ready,
     checks: cfg.checks,
+    maintenance: { enabled: maintenanceEnabled },
     problems: cfg.problems,
     advisories: cfg.advisories,
   })

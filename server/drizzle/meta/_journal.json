@@ -71,6 +71,41 @@
       "when": 1788521377130,
       "tag": "0009_high_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789034725471,
+      "tag": "0010_loving_the_stranger",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789035313880,
+      "tag": "0011_foamy_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789035541482,
+      "tag": "0012_glossy_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789037831073,
+      "tag": "0013_bouncy_blue_shield",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789037985297,
+      "tag": "0014_tiny_ma_gnuci",
+      "breakpoints": true
     }
   ]
 }

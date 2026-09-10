@@ -16,16 +16,17 @@ import {
     PutObjectCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { eq, and } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import {
     requireUploadToken,
     incrementUploadTokenUsage,
 } from '../middleware/uploadToken'
 import { db } from '../lib/database'
 import { maxUploadBytes } from '../lib/config'
-import { video, uploadToken } from '../db/schema'
+import { uploadToken, video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
 import { headObjectSize, r2 } from '../utils/R2'
-import { triggerTranscoding } from '../utils/queue'
+import { dispatchTranscodeJob, dispatchFailureStatus } from '../utils/dispatchTranscode'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings, UploadTokenVariables } from '../types'
 
@@ -343,7 +344,7 @@ app.post('/parts', async (c) => {
         const videos = await db
             .select()
             .from(video)
-            .where(eq(video.id, fileId))
+            .where(and(notDeleted, eq(video.id, fileId)))
             .limit(1)
 
         if (videos.length === 0) {
@@ -488,7 +489,7 @@ app.post('/complete', async (c) => {
         const videos = await db
             .select()
             .from(video)
-            .where(eq(video.id, fileId))
+            .where(and(notDeleted, eq(video.id, fileId)))
             .limit(1)
         const videoRecord = videos[0]
 
@@ -538,50 +539,39 @@ app.post('/complete', async (c) => {
             )
         }
 
-        // Dispatch the transcode job BEFORE flipping state: a failed dispatch
-        // must never leave the row stuck in 'processing'.
-        try {
-            await triggerTranscoding(
-                key,
-                fileId,
-                videoRecord.playbackPolicy || 'public',
-                videoRecord.generateSubtitle || false,
-                videoRecord.generateChapters || false,
-                videoRecord.organizationId,
-                c.env,
-            )
-        } catch (err) {
-            console.error(`Failed to queue transcoding for ${fileId}:`, err)
-            await db
-                .update(video)
-                .set({ status: 'failed', updatedAt: new Date() })
-                .where(eq(video.id, fileId))
+        // Claim the attempt, then dispatch — the claim owns the
+        // uploading -> processing transition and the attempt id.
+        const dispatchResult = await dispatchTranscodeJob({
+            videoId: fileId,
+            rawKey: key,
+            organizationId: videoRecord.organizationId,
+            playbackPolicy: videoRecord.playbackPolicy || 'public',
+            generateSubtitle: videoRecord.generateSubtitle || false,
+            generateChapters: videoRecord.generateChapters || false,
+            env: c.env,
+        })
+
+        if (!dispatchResult.dispatched) {
+            if (dispatchResult.reason === 'dispatch-failed') {
+                // dispatchTranscodeJob already marked the row failed.
+                console.error(`Failed to queue transcoding for ${fileId}:`, dispatchResult.error)
+                return c.json(
+                    { error: `Upload complete but transcoding failed to start: ${dispatchResult.error?.message ?? 'unknown error'}` },
+                    500,
+                )
+            }
             return c.json(
-                { error: `Upload complete but transcoding failed to start: ${err instanceof Error ? err.message : String(err)}` },
-                500,
+                { error: `Transcode not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
+                dispatchFailureStatus(dispatchResult.reason),
             )
         }
 
-        // Transcode job accepted — transition uploading -> processing atomically.
-        const updated = await db
-            .update(video)
-            .set({
-                status: 'processing',
-                updatedAt: new Date(),
-            })
-            .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
-            .returning()
-
-        if (updated.length > 0) {
-            // Dispatch webhook
-            dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
-                videoId: fileId,
-                title: videoRecord.title,
-                status: 'processing',
-            })
-        } else {
-            console.log(`Video ${fileId} status changed before transition; skipping`)
-        }
+        // Dispatch webhook
+        dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.uploaded', {
+            videoId: fileId,
+            title: videoRecord.title,
+            status: 'processing',
+        })
     }
 
     return c.json({
@@ -624,7 +614,7 @@ app.post('/abort', async (c) => {
         const videos = await db
             .select()
             .from(video)
-            .where(eq(video.id, fileId))
+            .where(and(notDeleted, eq(video.id, fileId)))
             .limit(1)
         const videoRecord = videos[0]
 

@@ -129,7 +129,6 @@ describe('runSweep', () => {
       fetchStaleUploading: vi.fn(async () => [abandonedUpload]),
       dispatchRetry: vi.fn(async () => undefined),
       markFailed: vi.fn(async () => undefined),
-      recordRetry: vi.fn(async () => undefined),
       markAbandoned: vi.fn(async () => undefined),
     }
   }
@@ -139,7 +138,6 @@ describe('runSweep', () => {
     const stats = await runSweep(NOW, LIMITS, adapters)
 
     expect(adapters.dispatchRetry).toHaveBeenCalledWith(staleProcessing)
-    expect(adapters.recordRetry).toHaveBeenCalledWith(staleProcessing.id)
     expect(adapters.markFailed).toHaveBeenCalledWith(
       deadProcessing.id,
       'JOB_TIMEOUT',
@@ -155,7 +153,6 @@ describe('runSweep', () => {
 
     const stats = await runSweep(NOW, LIMITS, adapters)
 
-    expect(adapters.recordRetry).not.toHaveBeenCalled()
     expect(adapters.markFailed).toHaveBeenCalledWith(
       staleProcessing.id,
       'DISPATCH_FAILED',

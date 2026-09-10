@@ -1,10 +1,36 @@
 import { Hono, type Context } from 'hono'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { decideCallbackTransition, type VideoStatus } from '../lib/videoState'
+import {
+  decideAttemptOwnership,
+  DEFAULT_TRANSCODE_LEASE_MS,
+} from '../lib/transcodeClaim'
 import { video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
 import { dispatchWebhook, secretsMatch } from '../utils/webhookDispatcher'
+import { writeLifecycleEvent } from '../lib/lifecycleOutbox'
+import { drainOutbox } from '../lib/webhookDelivery'
 import type { Bindings } from '../types'
+
+/**
+ * Run a task after the response without losing it, tolerating a runtime with no
+ * ExecutionContext (the Node entry). A failure is logged, never propagated:
+ * these tasks are best-effort by design, and the sweeper is the safety net.
+ */
+function runAfterResponse(
+  executionCtx: Pick<ExecutionContext, 'waitUntil'> | undefined,
+  task: Promise<unknown>,
+): void {
+  const guarded = task.catch((err) => {
+    console.error('[WEBHOOK] background task failed:', err)
+  })
+  if (executionCtx) {
+    executionCtx.waitUntil(guarded)
+    return
+  }
+  void guarded
+}
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -52,7 +78,7 @@ app.post('/transcode-complete', async (c) => {
     const rows = await db
       .select()
       .from(video)
-      .where(eq(video.id, videoId))
+      .where(and(notDeleted, eq(video.id, videoId)))
       .limit(1)
     const videoRecord = rows[0]
     if (!videoRecord) {
@@ -72,6 +98,25 @@ app.post('/transcode-complete', async (c) => {
       return c.json({ success: true, status: videoRecord.status, ignored: true })
     }
 
+    // 3) Ownership guard: a status-only check cannot tell attempt A's callback
+    // from attempt B's, and the row really is `processing` either way. An
+    // attempt that has been superseded must not write its outputs.
+    const reportedAttemptId = payload?.attempt_id ?? payload?.attemptId
+    const ownership = decideAttemptOwnership(
+      videoRecord.transcodeAttemptId,
+      reportedAttemptId,
+    )
+    if (!ownership.apply) {
+      console.log(`[WEBHOOK GUARD] ${ownership.reason}`)
+      return c.json({ success: true, status: videoRecord.status, ignored: true })
+    }
+
+    // Re-asserted in the mutation below so a claim that lands between this read
+    // and the write still wins.
+    const ownerPredicate = videoRecord.transcodeAttemptId
+      ? eq(video.transcodeAttemptId, videoRecord.transcodeAttemptId)
+      : isNull(video.transcodeAttemptId)
+
     const transcodedBucketUrl = process.env.DELIVERY_WORKER_URL || ''
 
     if (status === 'error') {
@@ -82,35 +127,36 @@ app.post('/transcode-complete', async (c) => {
         {},
       )
 
-      const updated = await db
-        .update(video)
-        .set({
-          status: 'failed',
-          metadata: JSON.stringify({
+      // Same outbox guarantee as the success path: the terminal state and its
+      // event are one write, so a crash cannot strand a `failed` video whose
+      // tenant is never told.
+      const failed = await writeLifecycleEvent(db, {
+        videoId,
+        assignments: [
+          sql`status = 'failed'`,
+          sql`metadata = ${JSON.stringify({
             ...prevMeta,
             error: message,
             failed_at: new Date().toISOString(),
-          }),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(video.id, videoId),
-            inArray(video.status, ['uploading', 'processing']),
-          ),
-        )
-        .returning()
+          })}`,
+          // Ownership ends: the attempt is finished, successfully or not.
+          sql`transcode_attempt_id = NULL`,
+          sql`transcode_lease_expires_at = NULL`,
+          sql`updated_at = now()`,
+        ],
+        guards: [sql`status IN ('uploading', 'processing')`, ownerPredicate],
+        event: {
+          organizationId: videoRecord.organizationId,
+          event: 'video.failed',
+          payload: { videoId, title: videoRecord.title, error: message },
+        },
+      })
 
-      if (updated.length === 0) {
+      if (!failed.applied) {
         return c.json({ success: true, status: 'failed', ignored: true })
       }
 
-      // Dispatch webhook event for failure
-      dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.failed', {
-        videoId,
-        title: videoRecord.title,
-        error: message,
-      })
+      runAfterResponse(c.executionCtx, drainOutbox({ eventIds: [failed.eventId] }))
 
       return c.json({ success: true, status: 'failed', videoId })
     }
@@ -179,83 +225,103 @@ app.post('/transcode-complete', async (c) => {
         ? Math.round(processing.transcode_time)
         : null
 
-    const updated = await db
-      .update(video)
-      .set({
-        status: 'ready',
-        hlsUrl: master ? joinUrl(transcodedBucketUrl, master) : null,
-        thumbnailUrl: thumb ? joinUrl(transcodedBucketUrl, thumb) : null,
-        duration: duration != null ? Math.floor(duration) : null,
-        resolutions: resolutions ? JSON.stringify(resolutions) : null,
-        // Subtitle fields
-        subtitleStatus: subtitleStatus,
-        subtitleUrl: subtitleVtt
-          ? joinUrl(transcodedBucketUrl, subtitleVtt)
-          : null,
-        // Chapters fields
-        chaptersStatus: chaptersStatus,
-        chapters: chaptersData,
-        // Storage tracking for usage metering
-        transcodedSize: transcodedSize,
-        // Processing metrics
-        transcodedTime: transcodedTime,
-        metadata: JSON.stringify({
-          ...prevMeta,
-          // Video info
-          width: meta?.width,
-          height: meta?.height,
-          fps: meta?.fps,
-          has_audio: meta?.has_audio,
-          is_hdr: meta?.is_hdr,
-          is_vertical: meta?.is_vertical,
-          aspect_ratio: meta?.aspect_ratio,
-          duration_exact: duration,
-          // Processing stats
-          processing_time: processing?.total_time,
-          transcode_time: processing?.transcode_time,
-          processing_speed: processing?.processing_speed,
-          files_uploaded: processing?.files_uploaded,
-          source_size_mb: processing?.source_size_mb,
-          transcoded_size_mb: processing?.transcoded_size_mb,
-          // Outputs
-          dash_manifest: outputs?.dash_manifest,
-          playback_policy: payload?.playback_policy,
-          encrypted: payload?.encrypted,
-          // Subtitle info
-          subtitle_requested: subtitle?.requested,
-          subtitle_generated: subtitle?.generated,
-          // Chapters info
-          chapters_requested: chapters?.requested,
-          chapters_generated: chapters?.generated,
-          transcoded_at: new Date().toISOString(),
-        }),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(video.id, videoId),
-          inArray(video.status, ['uploading', 'processing']),
-        ),
-      )
-      .returning()
+    // The state change and its `video.ready` event are written together, so a
+    // crash here cannot leave the video playable with no event ever emitted.
+    // Previously the update and the dispatch were separate: dying in between
+    // lost `video.ready` permanently, because the transcoder's callback retry
+    // then found the row already `ready` and was ignored by the state guard.
+    const nextMetadata = JSON.stringify({
+      ...prevMeta,
+      // Video info
+      width: meta?.width,
+      height: meta?.height,
+      fps: meta?.fps,
+      has_audio: meta?.has_audio,
+      is_hdr: meta?.is_hdr,
+      is_vertical: meta?.is_vertical,
+      aspect_ratio: meta?.aspect_ratio,
+      duration_exact: duration,
+      // Processing stats
+      processing_time: processing?.total_time,
+      transcode_time: processing?.transcode_time,
+      processing_speed: processing?.processing_speed,
+      files_uploaded: processing?.files_uploaded,
+      source_size_mb: processing?.source_size_mb,
+      transcoded_size_mb: processing?.transcoded_size_mb,
+      // Outputs
+      dash_manifest: outputs?.dash_manifest,
+      playback_policy: payload?.playback_policy,
+      encrypted: payload?.encrypted,
+      // Subtitle info
+      subtitle_requested: subtitle?.requested,
+      subtitle_generated: subtitle?.generated,
+      // Chapters info
+      chapters_requested: chapters?.requested,
+      chapters_generated: chapters?.generated,
+      transcoded_at: new Date().toISOString(),
+    })
 
-    if (updated.length === 0) {
-      // A concurrent callback won the race; do not double-dispatch events.
+    const resolvedHlsUrl = master ? joinUrl(transcodedBucketUrl, master) : null
+    const resolvedThumbUrl = thumb ? joinUrl(transcodedBucketUrl, thumb) : null
+
+    const lifecycle = await writeLifecycleEvent(db, {
+      videoId,
+      assignments: [
+        sql`status = 'ready'`,
+        sql`hls_url = ${resolvedHlsUrl}`,
+        sql`thumbnail_url = ${resolvedThumbUrl}`,
+        sql`duration = ${duration != null ? Math.floor(duration) : null}`,
+        sql`resolutions = ${resolutions ? JSON.stringify(resolutions) : null}`,
+        sql`subtitle_status = ${subtitleStatus}`,
+        sql`subtitle_url = ${
+          subtitleVtt ? joinUrl(transcodedBucketUrl, subtitleVtt) : null
+        }`,
+        sql`chapters_status = ${chaptersStatus}`,
+        sql`chapters = ${chaptersData ? JSON.stringify(chaptersData) : null}::jsonb`,
+        sql`transcoded_size = ${transcodedSize}`,
+        sql`transcoded_time = ${transcodedTime}`,
+        sql`metadata = ${nextMetadata}`,
+        // Ownership ends here: the attempt is complete.
+        sql`transcode_attempt_id = NULL`,
+        sql`transcode_lease_expires_at = NULL`,
+        sql`failure_code = NULL`,
+        sql`updated_at = now()`,
+      ],
+      guards: [
+        sql`status IN ('uploading', 'processing')`,
+        ownerPredicate,
+      ],
+      event: {
+        organizationId: videoRecord.organizationId,
+        event: 'video.ready',
+        payload: {
+          videoId,
+          title: videoRecord.title,
+          status: 'ready',
+          duration,
+          hlsUrl: resolvedHlsUrl,
+          thumbnailUrl: resolvedThumbUrl,
+        },
+      },
+    })
+
+    if (!lifecycle.applied) {
+      // A concurrent callback (or a newer attempt's claim) won the race. No
+      // state changed, so no event was recorded either — nothing to dispatch.
       return c.json({ success: true, status: 'ready', ignored: true })
     }
 
     // Dispatch webhook events
     const transcodedBucketUrlFinal = transcodedBucketUrl
 
-    // video.ready event
-    dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.ready', {
-      videoId,
-      title: videoRecord.title,
-      status: 'ready',
-      duration,
-      hlsUrl: master ? joinUrl(transcodedBucketUrlFinal, master) : null,
-      thumbnailUrl: thumb ? joinUrl(transcodedBucketUrlFinal, thumb) : null,
-    })
+    // `video.ready` was already recorded by the atomic write above and is
+    // claimed by this drain. Everything else below still dispatches directly.
+    // The drain is fire-and-forget: if the process dies before it runs, the
+    // sweeper picks the event up, so the event is late rather than lost.
+    runAfterResponse(
+      c.executionCtx,
+      drainOutbox({ eventIds: [lifecycle.eventId] }),
+    )
 
     // subtitle events
     if (subtitle?.requested) {
@@ -338,20 +404,56 @@ app.post('/heartbeat', async (c) => {
     return c.json({ error: 'Missing video_id' }, 400)
   }
 
+  const rows = await db
+    .select({
+      transcodeAttemptId: video.transcodeAttemptId,
+    })
+    .from(video)
+    .where(and(notDeleted, eq(video.id, videoId), isNull(video.deletedAt)))
+    .limit(1)
+
+  const record = rows[0]
+  if (!record) {
+    // Unknown or deleted video — acknowledge so the transcoder never treats a
+    // heartbeat rejection as fatal.
+    return c.json({ success: true, ignored: true })
+  }
+
+  // A heartbeat must name its attempt. An anonymous beat from a superseded
+  // attempt would otherwise keep a dead job's lease alive and block recovery.
+  const ownership = decideAttemptOwnership(
+    record.transcodeAttemptId,
+    body?.attempt_id ?? body?.attemptId,
+  )
+  if (!ownership.apply) {
+    console.log(`[HEARTBEAT GUARD] ${ownership.reason}`)
+    return c.json({ success: true, ignored: true })
+  }
+
+  // Extending the lease is the point of a beat: without it a long job would
+  // lose its lease mid-encode and become reclaimable — exactly the duplicate
+  // GPU run this mechanism exists to prevent.
   const updated = await db
     .update(video)
-    .set({ lastHeartbeatAt: new Date() })
+    .set({
+      lastHeartbeatAt: new Date(),
+      transcodeLeaseExpiresAt: new Date(Date.now() + DEFAULT_TRANSCODE_LEASE_MS),
+    })
     .where(
       and(
         eq(video.id, videoId),
         inArray(video.status, ['processing', 'uploading']),
+        isNull(video.deletedAt),
+        record.transcodeAttemptId
+          ? eq(video.transcodeAttemptId, record.transcodeAttemptId)
+          : isNull(video.transcodeAttemptId),
       ),
     )
     .returning({ id: video.id })
 
   if (updated.length === 0) {
-    // Terminal or unknown video — nothing to keep alive. Acknowledge so the
-    // transcoder never treats a heartbeat rejection as fatal.
+    // Terminal video — nothing to keep alive. Acknowledge so the transcoder
+    // never treats a heartbeat rejection as fatal.
     return c.json({ success: true, ignored: true })
   }
   return c.json({ success: true })

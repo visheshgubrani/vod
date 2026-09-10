@@ -1,13 +1,16 @@
 import { Hono } from 'hono'
 import { createMiddleware } from 'hono/factory'
-import { runSweep } from '../utils/jobSweeper'
-import { createSweepAdapters, sweepLimitsFromEnv } from '../utils/sweepAdapters'
+import { runMaintenance } from '../utils/maintenance'
 import { secretsMatch } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
 
 /**
  * Internal maintenance endpoints. NOT for tenant use — every route requires
  * INTERNAL_SWEEP_SECRET (bearer or x-sweep-secret header).
+ *
+ * This endpoint and the scheduled trigger both call `runMaintenance`, so an
+ * operator who schedules this route by hand gets exactly the work the cron
+ * would have done — including webhook retries.
  */
 export const internalApp = new Hono<{ Bindings: Bindings }>()
 
@@ -30,16 +33,14 @@ const requireInternalSecret = createMiddleware<{ Bindings: Bindings }>(async (c,
 internalApp.use('/sweep', requireInternalSecret)
 
 internalApp.post('/sweep', async (c) => {
-  const started = Date.now()
-  const stats = await runSweep(
-    new Date(),
-    sweepLimitsFromEnv(c.env),
-    createSweepAdapters(c.env),
-  )
+  const result = await runMaintenance(c.env)
   return c.json({
     ok: true,
-    stats,
-    durationMs: Date.now() - started,
+    // `stats` keeps its original meaning (the transcode sweep) so existing
+    // callers and dashboards are unaffected; the rest is additive.
+    stats: result.videos,
+    deliveries: result.deliveries,
+    durationMs: result.durationMs,
   })
 })
 
