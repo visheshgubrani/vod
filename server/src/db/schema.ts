@@ -526,3 +526,21 @@ export const apiKeyRelations = relations(apiKey, ({ one }) => ({
     references: [organization.id],
   }),
 }))
+
+/**
+ * Single-row heartbeat for the maintenance runner.
+ *
+ * `SWEEP_ENABLED=true` records intent; this records evidence. Without it a
+ * deployment whose cron never fires — a bad pattern, a Worker that fails to
+ * deploy, a compose service with the secret missing — looks perfectly healthy
+ * while webhook retries and byte reclamation silently never happen.
+ *
+ * One row, keyed by a constant, updated at the start and end of every pass.
+ */
+export const maintenanceRun = pgTable('maintenance_run', {
+  id: text('id').primaryKey(),
+  lastStartedAt: timestamp('last_started_at', { withTimezone: true }),
+  lastSucceededAt: timestamp('last_succeeded_at', { withTimezone: true }),
+  lastDurationMs: integer('last_duration_ms'),
+  lastError: text('last_error'),
+})

@@ -17,6 +17,9 @@
 
 import { runSweep, type SweepStats } from './jobSweeper'
 import { createSweepAdapters, sweepLimitsFromEnv } from './sweepAdapters'
+import { eq } from 'drizzle-orm'
+import { db } from '../lib/database'
+import { maintenanceRun } from '../db/schema'
 import { drainOutbox, type DrainResult } from '../lib/webhookDelivery'
 import {
   cleanupDepsFromEnv,
@@ -34,8 +37,38 @@ export type MaintenanceResult = {
   durationMs: number
 }
 
+const HEARTBEAT_ID = 'singleton'
+
+/**
+ * Record that a pass ran. Best-effort: a heartbeat failure must never stop
+ * maintenance, and the heartbeat is only useful if it reflects reality.
+ */
+async function recordHeartbeat(patch: {
+  startedAt?: Date
+  succeededAt?: Date
+  durationMs?: number
+  error?: string | null
+}): Promise<void> {
+  try {
+    const values = {
+      id: HEARTBEAT_ID,
+      ...(patch.startedAt ? { lastStartedAt: patch.startedAt } : {}),
+      ...(patch.succeededAt ? { lastSucceededAt: patch.succeededAt } : {}),
+      ...(patch.durationMs != null ? { lastDurationMs: patch.durationMs } : {}),
+      lastError: patch.error ?? null,
+    }
+    await db
+      .insert(maintenanceRun)
+      .values(values)
+      .onConflictDoUpdate({ target: maintenanceRun.id, set: values })
+  } catch (err) {
+    console.error('[MAINTENANCE] could not record heartbeat:', err)
+  }
+}
+
 export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult> {
   const started = Date.now()
+  await recordHeartbeat({ startedAt: new Date() })
   const limit = readPositiveInt(env, 'MAINTENANCE_BATCH_SIZE', 50)
 
   let videos: SweepStats = { retried: 0, failed: 0, aborted: 0 }
@@ -75,7 +108,10 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
     console.error('[MAINTENANCE] storage cleanup pass failed:', err)
   }
 
-  return { videos, deliveries, cleanup, durationMs: Date.now() - started }
+  const durationMs = Date.now() - started
+  await recordHeartbeat({ succeededAt: new Date(), durationMs })
+
+  return { videos, deliveries, cleanup, durationMs }
 }
 
 function readPositiveInt(env: Bindings | undefined, key: string, fallback: number): number {
@@ -92,6 +128,51 @@ function readPositiveInt(env: Bindings | undefined, key: string, fallback: numbe
  * retries stop too. `GET /health/config` reports whether this is on, so the
  * omission is visible rather than silent.
  */
-export function isMaintenanceEnabled(env?: Bindings): boolean {
+export function isMaintenanceEnabled(env?: Record<string, unknown> | Bindings): boolean {
   return env?.SWEEP_ENABLED === 'true'
+}
+
+/** A pass older than this is treated as "not actually running". */
+export const MAINTENANCE_STALE_MS = 60 * 60_000
+
+export type MaintenanceStatus = {
+  enabled: boolean
+  lastStartedAt: string | null
+  lastSucceededAt: string | null
+  lastError: string | null
+  /** True when enabled but no recent successful pass has been recorded. */
+  stale: boolean
+}
+
+/**
+ * Read the heartbeat. Best-effort: a health probe must not fail because the
+ * database is briefly unreachable — it reports `stale` instead.
+ */
+export async function readMaintenanceStatus(
+  env?: Record<string, unknown> | Bindings,
+): Promise<MaintenanceStatus> {
+  const enabled = isMaintenanceEnabled(env)
+  try {
+    const rows = await db.select().from(maintenanceRun).where(eq(maintenanceRun.id, HEARTBEAT_ID))
+    const row = rows[0]
+    const lastSucceededAt = row?.lastSucceededAt ?? null
+    const fresh =
+      lastSucceededAt != null &&
+      Date.now() - new Date(lastSucceededAt).getTime() < MAINTENANCE_STALE_MS
+    return {
+      enabled,
+      lastStartedAt: row?.lastStartedAt ? new Date(row.lastStartedAt).toISOString() : null,
+      lastSucceededAt: lastSucceededAt ? new Date(lastSucceededAt).toISOString() : null,
+      lastError: row?.lastError ?? null,
+      stale: enabled && !fresh,
+    }
+  } catch {
+    return {
+      enabled,
+      lastStartedAt: null,
+      lastSucceededAt: null,
+      lastError: null,
+      stale: enabled,
+    }
+  }
 }

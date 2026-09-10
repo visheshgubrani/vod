@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { loadConfig, type EnvLike } from '../lib/config'
+import { readMaintenanceStatus } from '../utils/maintenance'
 import type { Bindings } from '../types'
 
 export const healthApp = new Hono<{ Bindings: Bindings }>()
@@ -16,7 +17,7 @@ healthApp.get('/', (c) => c.text('ok'))
  * Consumed by the dashboard "Developer Welcome" health cards and the
  * setup wizard. Never include secret values or connection strings.
  */
-healthApp.get('/config', (c) => {
+healthApp.get('/config', async (c) => {
   const env: EnvLike = {
     ...(typeof process !== 'undefined' ? (process.env as EnvLike) : {}),
   }
@@ -33,11 +34,20 @@ healthApp.get('/config', (c) => {
   // choice: webhook retries and byte reclamation both stop, so deleted videos
   // keep costing storage and failed deliveries are never retried. Surfacing it
   // here makes that visible instead of silent. Booleans only — no secrets.
-  const maintenanceEnabled = env['SWEEP_ENABLED'] === 'true'
-  if (!maintenanceEnabled) {
+  // Configured intent AND observed evidence. A deployment can have the flag on
+  // and still never run a pass, which is exactly the silent failure this
+  // reports: `stale` is true when it is enabled but no recent pass succeeded.
+  const maintenance = await readMaintenanceStatus(env)
+  if (!maintenance.enabled) {
     cfg.advisories.push(
       'SWEEP_ENABLED is not "true": background maintenance is off, so webhook ' +
         'retries and storage reclamation will not run (see docs/deploy.md).',
+    )
+  } else if (maintenance.stale) {
+    cfg.advisories.push(
+      maintenance.lastSucceededAt
+        ? `Background maintenance is enabled but last succeeded at ${maintenance.lastSucceededAt} — check the cron trigger or the compose maintenance service.`
+        : 'Background maintenance is enabled but has never run — check the cron trigger or the compose maintenance service.',
     )
   }
 
@@ -46,7 +56,7 @@ healthApp.get('/config', (c) => {
     time: new Date().toISOString(),
     ready: cfg.ready,
     checks: cfg.checks,
-    maintenance: { enabled: maintenanceEnabled },
+    maintenance,
     problems: cfg.problems,
     advisories: cfg.advisories,
   })
