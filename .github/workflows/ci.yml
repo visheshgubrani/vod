@@ -93,6 +93,57 @@ jobs:
       - name: Build web image
         run: docker build -f web/Dockerfile -t openvod-web .
 
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      # @openvod/uploader and @openvod/player only build at tag time otherwise,
+      # so a broken build stayed invisible until a release was cut.
+      - name: Build published packages
+        run: |
+          pnpm --filter @openvod/uploader build
+          pnpm --filter @openvod/player build
+
+  soft-delete-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Soft deletion is only correct if every library read excludes deleted
+      # rows, and forgetting at one call site is silent — it resurrects a video
+      # the tenant believes they deleted. Tests cover behaviour; this covers the
+      # call site nobody wrote a test for.
+      - name: Every video read must exclude soft-deleted rows
+        run: |
+          fail=0
+          while IFS= read -r line; do
+            file="${line%%:*}"
+            rest="${line#*:}"
+            n="${rest%%:*}"
+            # Either the chain composes `notDeleted`, or the read carries an
+            # explicit, reviewable exemption.
+            window="$(sed -n "$((n>10 ? n-10 : 1)),$((n+6))p" "$file")"
+            if ! printf '%s' "$window" | grep -q 'notDeleted' \
+               && ! printf '%s' "$window" | grep -q 'soft-delete-exempt'; then
+              echo "::error file=$file,line=$n::read of \`video\` does not compose \`notDeleted\`"
+              fail=1
+            fi
+          done < <(grep -rn '^[[:space:]]*\.from(video)' server/src --include='*.ts' || true)
+          if [ "$fail" -ne 0 ]; then
+            echo "Add \`notDeleted\` from server/src/db/predicates.ts, or mark the read"
+            echo "with a \`// soft-delete-exempt: <reason>\` comment and extend this guard."
+            exit 1
+          fi
+          echo "all video reads exclude soft-deleted rows"
+
   branding-gate:
     runs-on: ubuntu-latest
     steps:

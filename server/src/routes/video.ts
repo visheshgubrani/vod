@@ -382,6 +382,8 @@ app.delete('/:id', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
 
+  // soft-delete-exempt: repeat delete must find the already-deleted row to
+  // verify ownership and answer idempotently.
   // Deliberately unfiltered: a repeat delete of an already soft-deleted video
   // must still find the row to verify ownership and answer idempotently, rather
   // than 404 on a video the caller genuinely owns.

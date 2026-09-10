@@ -129,6 +129,14 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
       );
       DELETE FROM event_outbox WHERE organization_id = '${ORG}';
     `)
+    // Verify rather than assume. A silently-incomplete reset used to surface as
+    // a confusing "expected 1, got 3" count mismatch much later in the test.
+    const remaining = normalizeRows(
+      await handle.db.execute(
+        sql`SELECT count(*)::int AS n FROM event_outbox WHERE organization_id = ${ORG}`,
+      ),
+    )
+    expect(Number(remaining[0]?.n)).toBe(0)
   }
 
   const readEvents = async () =>

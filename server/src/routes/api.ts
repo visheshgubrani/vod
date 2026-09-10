@@ -453,6 +453,8 @@ app.delete('/video/:id', async (c) => {
   const organizationId = c.var.organizationId
   const videoId = c.req.param('id')
 
+  // soft-delete-exempt: repeat delete must find the already-deleted row to
+  // verify tenant ownership and answer idempotently.
   // Unfiltered lookup: deleting an already-deleted video is idempotent, and the
   // tenant check below still applies, so it must not 404 on a repeat call.
   const videos = await db
