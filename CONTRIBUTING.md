@@ -37,13 +37,62 @@ pnpm typecheck        # type-check every package
 ## Development setup
 
 1. `pnpm install` at the repo root.
-2. Per-package local configuration lives in `.dev.vars` (server/delivery) or
-   `.env` — copy the `.example`/`.env.example` file in each package first.
-3. Run services in separate terminals:
-   - `pnpm --filter vod-api dev` (wrangler dev, port 8787)
-   - `pnpm --filter web dev` (Next.js, port 3000)
-   - `docker compose up -d postgres` for the local dev database
-   - `pnpm --filter delivery dev` for the delivery worker
+2. Local configuration is one file per service, each with a committed template:
+   `cp server/.dev.vars.example server/.dev.vars`,
+   `cp delivery/.dev.vars.example delivery/.dev.vars` and
+   `cp web/.env.example web/.env` (`./scripts/bootstrap.sh` writes the first two
+   for you). `server/.dev.vars` is read by `wrangler dev`, Compose, the Node
+   runtime (`pnpm start`) and drizzle-kit alike — there is no separate
+   `server/.env` to keep in sync. Real values are gitignored; only the
+   `*.example` templates are committed.
+3. Start the local database, then a runtime:
+   - `pnpm db:up` — the dev Postgres (host port 5433, `vod_dev`); rows live in
+     the named volume `vod_postgres_dev_data` and survive `db:down`/recreate.
+     `pnpm db:down` stops it.
+   - `pnpm db:migrate` once (and after pulling new migrations) — it reads
+     `DATABASE_URL` from `server/.dev.vars`, so it targets that local database.
+   - `pnpm dev` — API (`wrangler dev`, port 8787) and web (Next.js, port 3000)
+     in parallel, with prefixed logs. Workers semantics: pair it with
+     `DB_DRIVER=neon-http` and a Neon URL.
+   - `pnpm dev:node` — the same pair with the API on the **Node** runtime
+     (`tsx watch`), which is the one to use with the local Postgres
+     (`DB_DRIVER=pg`). `API_PORT=…` moves just the API if 8787 is taken.
+   - `pnpm dev:all` — `pnpm dev` plus the delivery worker (:8788) and the
+     `sdk`/`player` watch builds
+   - `pnpm start` — the production artifacts instead of the dev servers:
+     `build:node` + `next build`, then the bundled Node API on `PORT`
+     (default 4080) and `next start`
+
+   **Which database does each runtime use?** Whatever `DATABASE_URL` in
+   `server/.dev.vars` points at — by default the `pnpm db:up` Postgres. Neither
+   command starts a database, and the API will boot without one: `GET /health`
+   stays `200` and `/health/config` still reports `database: true`, because
+   those checks only validate that the URL is set. Only real queries fail, so
+   start the database first.
+
+   **`wrangler dev` cannot use Postgres over TCP (`DB_DRIVER=pg`).** The Workers
+   runtime forbids reusing sockets across requests, so the API serves the first
+   database request and then fails with `Cannot perform I/O on behalf of a
+   different request`. Hence `pnpm dev:node` for local Postgres, and
+   `docker compose up -d api` / `pnpm start` (also Node) as alternatives; both
+   were verified with repeated queries.
+
+   `docs-site` is deliberately not part of either aggregate command — it also
+   defaults to port 3000; run it with
+   `PORT=3002 pnpm --filter openvod-docs dev` (pass the port as an env var, not
+   a `-p` flag: pnpm parses `-p` as its own `--parallel` shorthand).
+
+   To run a single service in its own terminal (useful for isolating logs):
+   `pnpm --filter vod-api dev`, `pnpm --filter web dev`,
+   `pnpm --filter delivery dev`.
+
+   Stop any Compose stack first (`docker compose stop api web`): the Workers'
+   dev ports are pinned in each `wrangler.jsonc` (`dev.port`/`dev.inspector_port`
+   — API :8787, delivery :8788), so `wrangler dev` fails hard while those ports
+   are taken instead of drifting somewhere your env files don't point at. Next
+   is *not* pinned: `next dev` quietly moves to :3001 when :3000 is taken (then
+   `FRONTEND_URL`/`CORS_ORIGINS` no longer match), and `next start` fails with
+   `EADDRINUSE` instead.
 4. Modal transcoding is only exercised against your own Modal account
    (`modal deploy` in `transcoding/`) — see the docs before running it.
 

@@ -187,6 +187,17 @@ export function buildServerEntries(
     ['ACCOUNT_ID', answers.accountId.trim()],
     ['R2_ACCESS_KEY_ID', answers.r2AccessKeyId.trim()],
     ['R2_SECRET_ACCESS_KEY', answers.r2SecretAccessKey.trim()],
+    // Which engine new jobs use. Written explicitly so the choice is visible in
+    // the file rather than implied by a default that may change later. `modal`
+    // keeps an existing installation's behaviour identical.
+    ['TRANSCODE_PROVIDER', answers.transcodeProvider ?? 'modal'],
+    // Blank means "follow the provider". Set to `false` to roll back: it stops
+    // accepting new self-hosted submissions and cancels nothing.
+    ['SELF_HOSTED_ENABLED', answers.selfHostedEnabled ? 'true' : ''],
+    // Whether browser/SDK uploads are accepted. The raw bucket is required by
+    // *uploading*, not by transcoding, so turning this off is what makes a
+    // local-only installation valid without one.
+    ['UPLOADS_ENABLED', answers.uploadsEnabled === false ? 'false' : 'true'],
     ['RAW_BUCKET_NAME', answers.rawBucket.trim()],
     ['TRANSCODED_BUCKET_NAME', answers.transcodedBucket.trim()],
     ['CLOUDFLARE_ANALYTICS_TOKEN', ''],

@@ -17,6 +17,7 @@
 
 import { runSweep, type SweepStats } from './jobSweeper'
 import { createSweepAdapters, sweepLimitsFromEnv } from './sweepAdapters'
+import { reclaimExpiredJobs } from '../lib/localJobQueue'
 import { eq } from 'drizzle-orm'
 import { db } from '../lib/database'
 import { maintenanceRun } from '../db/schema'
@@ -34,6 +35,8 @@ export type MaintenanceResult = {
   videos: SweepStats
   deliveries: DrainResult
   cleanup: CleanupStats
+  /** Self-hosted jobs whose agent stopped beating and were returned to the queue. */
+  localJobsReclaimed: number
   durationMs: number
 }
 
@@ -116,6 +119,19 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
     console.error('[MAINTENANCE] storage cleanup pass failed:', err)
   }
 
+  // Self-hosted jobs whose agent stopped beating. Kept in the shared pass
+  // rather than in the agent protocol so it runs even when every agent is
+  // offline — which is precisely when it is needed: nobody is polling, so
+  // nothing else would ever notice the leases had run out.
+  let localJobsReclaimed = 0
+  try {
+    const reclaimed = await reclaimExpiredJobs(db, { limit })
+    localJobsReclaimed = reclaimed.length
+  } catch (err) {
+    failures.push(`local jobs: ${err instanceof Error ? err.message : String(err)}`)
+    console.error('[MAINTENANCE] local job reclaim failed:', err)
+  }
+
   const durationMs = Date.now() - started
   await recordHeartbeat({
     durationMs,
@@ -127,7 +143,7 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
     error: failures.length > 0 ? failures.join('; ') : null,
   })
 
-  return { videos, deliveries, cleanup, durationMs }
+  return { videos, deliveries, cleanup, localJobsReclaimed, durationMs }
 }
 
 function readPositiveInt(env: Bindings | undefined, key: string, fallback: number): number {

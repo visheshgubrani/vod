@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.12.4",
+  "packageManager": "pnpm@12.3.4",
   "engines": {
     "node": "22.x"
   },
   "scripts": {
+    "dev": "pnpm --parallel --filter vod-api --filter web dev",
+    "dev:node": "pnpm -r --parallel --if-present dev:node",
+    "dev:all": "pnpm --parallel --filter vod-api --filter web --filter ./delivery --filter ./sdk --filter ./player dev",
+    "start": "pnpm start:prepare && pnpm --parallel --filter vod-api --filter web start",
+    "start:prepare": "pnpm --filter vod-api build:node && pnpm --filter web build",
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
     "test:server": "pnpm --filter vod-api test",
@@ -21,13 +26,9 @@
     "typecheck:tsc": "pnpm --filter vod-api exec tsc --noEmit && pnpm --filter ./delivery exec tsc --noEmit",
     "bootstrap": "bash scripts/bootstrap.sh",
     "setup": "bash scripts/bootstrap.sh",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose stop postgres",
     "db:push": "pnpm --filter vod-api db:push",
     "db:migrate": "pnpm --filter vod-api db:migrate"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp"
-    ]
   }
 }

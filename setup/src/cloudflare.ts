@@ -8,10 +8,10 @@ import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WizardError } from './errors'
-import { parseAccountId, parseWorkersUrl } from './parsers'
+import { parseAccountId, parseWorkersUrl, r2BucketAlreadyExists } from './parsers'
 import { patchBucketName } from './cfgpatch'
 import { pkgCapture, pkgInherit, runCapture } from './runners'
-import { logStep, logWarn } from './ui'
+import { logInfo, logStep, logWarn, withSpinner } from './ui'
 
 const SERVER = 'server'
 const DELIVERY = 'delivery'
@@ -64,14 +64,24 @@ async function bucketExistsMessage(output: string): Promise<boolean> {
 }
 
 export async function ensureBucket(root: string, name: string): Promise<void> {
-  const result = await pkgCapture(root, SERVER, 'wrangler', ['r2', 'bucket', 'create', name], {
+  const info = await pkgCapture(root, SERVER, 'wrangler', ['r2', 'bucket', 'info', name], {
     timeoutMs: 120_000,
   })
-  if (result.code === 0) return
-  if (await bucketExistsMessage(result.stdout + result.stderr)) return
-  throw new WizardError(
-    `failed to create R2 bucket "${name}": ${trimTail(result.stderr || result.stdout)}`,
-  )
+  if (r2BucketAlreadyExists(info.code, info.stdout + info.stderr)) {
+    logInfo(`R2 bucket ${name} already exists — skipping create`)
+    return
+  }
+
+  await withSpinner(`Creating R2 bucket ${name}…`, async () => {
+    const result = await pkgCapture(root, SERVER, 'wrangler', ['r2', 'bucket', 'create', name], {
+      timeoutMs: 120_000,
+    })
+    if (result.code === 0) return
+    if (await bucketExistsMessage(result.stdout + result.stderr)) return
+    throw new WizardError(
+      `failed to create R2 bucket "${name}": ${trimTail(result.stderr || result.stdout)}`,
+    )
+  }, `R2 bucket ${name} created`)
 }
 
 /** Apply the S3 CORS policy the raw bucket needs for browser uploads. */
@@ -98,19 +108,21 @@ export async function applyBucketCors(
   writeFileSync(corsPath, JSON.stringify(rule, null, 2), { encoding: 'utf8', mode: 0o600 })
 
   const args = ['r2', 'bucket', 'cors', 'set', bucket, '--file', corsPath]
-  let result = await pkgCapture(root, SERVER, 'wrangler', [...args, '--force'], {
-    timeoutMs: 120_000,
-  })
-  if (result.code !== 0) {
-    result = await pkgCapture(root, SERVER, 'wrangler', args, { timeoutMs: 120_000 })
-  }
-  if (result.code !== 0) {
-    throw new WizardError(
-      `could not apply CORS to "${bucket}" — add the policy manually (docs/deploy.md): ${trimTail(
-        result.stderr || result.stdout,
-      )}`,
-    )
-  }
+  await withSpinner(`Applying S3 CORS to ${bucket}…`, async () => {
+    let result = await pkgCapture(root, SERVER, 'wrangler', [...args, '--force'], {
+      timeoutMs: 120_000,
+    })
+    if (result.code !== 0) {
+      result = await pkgCapture(root, SERVER, 'wrangler', args, { timeoutMs: 120_000 })
+    }
+    if (result.code !== 0) {
+      throw new WizardError(
+        `could not apply CORS to "${bucket}" — add the policy manually (docs/deploy.md): ${trimTail(
+          result.stderr || result.stdout,
+        )}`,
+      )
+    }
+  }, `CORS applied to ${bucket}`)
 }
 
 /** Point delivery/wrangler.jsonc at the user's transcoded bucket. */
@@ -127,23 +139,29 @@ export function patchDeliveryBucket(root: string, bucket: string): boolean {
 }
 
 /**
- * Deploy a worker package, streaming output live. Returns the parsed
- * workers.dev URL (null when none was printed — custom domains print none).
+ * Deploy a worker package. Returns the parsed workers.dev URL (null when
+ * none was printed — custom domains print none).
  */
 export async function deployWorker(
   root: string,
   pkg: 'server' | 'delivery',
 ): Promise<string | null> {
-  logStep(`Deploying ${pkg} worker (pnpm exec wrangler deploy)…`)
-  const result = await pkgCapture(root, pkg, 'wrangler', ['deploy'], { timeoutMs: 0 })
-  if (result.code !== 0) {
-    throw new WizardError(
-      `wrangler deploy (${pkg}) failed — re-run with: cd ${pkg} && pnpm exec wrangler deploy\n${trimTail(
-        result.stderr || result.stdout,
-      )}`,
-    )
-  }
-  return parseWorkersUrl(result.stdout + result.stderr)
+  return withSpinner(
+    `Deploying ${pkg} worker…`,
+    async () => {
+      const result = await pkgCapture(root, pkg, 'wrangler', ['deploy'], { timeoutMs: 0 })
+      if (result.code !== 0) {
+        const outcome = result.timedOut ? 'timed out' : 'failed'
+        throw new WizardError(
+          `wrangler deploy (${pkg}) ${outcome} — re-run with: cd ${pkg} && pnpm exec wrangler deploy\n${trimTail(
+            result.stderr || result.stdout,
+          )}`,
+        )
+      }
+      return parseWorkersUrl(result.stdout + result.stderr)
+    },
+    `Deployed ${pkg} worker`,
+  )
 }
 
 /**
@@ -162,16 +180,22 @@ export async function putWorkerSecrets(
   const file = join(temp.path, `${pkg}-secrets.json`)
   writeFileSync(file, JSON.stringify(wanted), { encoding: 'utf8', mode: 0o600 })
   try {
-    const result = await pkgCapture(root, pkg, 'wrangler', ['secret', 'bulk', file], {
-      timeoutMs: 180_000,
-    })
-    if (result.code !== 0) {
-      throw new WizardError(
-        `could not upload secrets to the ${pkg} worker — re-run with: cd ${pkg} && pnpm exec wrangler secret bulk …\n${trimTail(
-          result.stderr || result.stdout,
-        )}`,
-      )
-    }
+    await withSpinner(
+      `Uploading ${pkg} worker secrets…`,
+      async () => {
+        const result = await pkgCapture(root, pkg, 'wrangler', ['secret', 'bulk', file], {
+          timeoutMs: 180_000,
+        })
+        if (result.code !== 0) {
+          throw new WizardError(
+            `could not upload secrets to the ${pkg} worker — re-run with: cd ${pkg} && pnpm exec wrangler secret bulk …\n${trimTail(
+              result.stderr || result.stdout,
+            )}`,
+          )
+        }
+      },
+      `${pkg} worker secrets uploaded`,
+    )
   } finally {
     try {
       unlinkSync(file)
@@ -192,17 +216,20 @@ export async function putWorkerSecrets(
  * user cascade never queues its reclamation.
  */
 export async function dbMigrate(root: string, databaseUrl: string): Promise<void> {
-  logStep('Applying database migrations (pnpm db:migrate)…')
-  const result = await runCapture(['pnpm', 'db:migrate'], {
-    cwd: root,
-    env: { DATABASE_URL: databaseUrl },
-    timeoutMs: 0,
-    onStderr: (chunk) => process.stderr.write(chunk),
-    onStdout: (chunk) => process.stdout.write(chunk),
-  })
-  if (result.code !== 0) {
-    throw new WizardError(
-      'db:migrate failed — once DATABASE_URL is reachable, re-run: pnpm db:migrate',
-    )
-  }
+  await withSpinner(
+    'Applying database migrations…',
+    async () => {
+      const result = await runCapture(['pnpm', 'db:migrate'], {
+        cwd: root,
+        env: { DATABASE_URL: databaseUrl },
+        timeoutMs: 0,
+      })
+      if (result.code !== 0) {
+        throw new WizardError(
+          'db:migrate failed — once DATABASE_URL is reachable, re-run: pnpm db:migrate',
+        )
+      }
+    },
+    'Database migrations applied',
+  )
 }

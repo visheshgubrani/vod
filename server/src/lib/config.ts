@@ -14,6 +14,8 @@
 
 export type EnvLike = Record<string, string | undefined>
 
+export type TranscodeProvider = 'modal' | 'self-hosted'
+
 export type CapabilityChecks = {
   database: boolean
   storage: boolean
@@ -23,10 +25,19 @@ export type CapabilityChecks = {
   ai: boolean
   /** Delivery worker base URL configured (advisory — does not block ready). */
   delivery: boolean
+  /**
+   * The raw upload bucket is present *and* needed for the configured provider.
+   *
+   * Advisory rather than a blocker: a local-only installation has no raw bucket
+   * and is perfectly healthy, while an installation that relies on browser
+   * uploads cannot function without one. `rawBucketRequired` says which case
+   * this is, so a consumer can render "not needed" instead of "missing".
+   */
+  rawUploads: boolean
 }
 
 export type OpenVodConfig = {
-  /** True when every CORE capability is configured (db/storage/transcoder/auth). */
+  /** True when every capability this deployment's provider actually needs is configured. */
   ready: boolean
   checks: CapabilityChecks
   /** Human-readable, non-secret problems ("DATABASE_URL is not set"). */
@@ -39,6 +50,12 @@ export type OpenVodConfig = {
   ingestSecret: string | null
   rawBucket: string | null
   transcodedBucket: string | null
+  /** Installation default for new jobs. Never re-read for an existing job. */
+  transcodeProvider: TranscodeProvider
+  /** False disables accepting *new* self-hosted submissions; running jobs drain. */
+  selfHostedEnabled: boolean
+  /** True when the configured provider (or uploads being on) needs a raw bucket. */
+  rawBucketRequired: boolean
 }
 
 const isHttpUrl = (value: string): boolean => /^https?:\/\/\S+$/i.test(value)
@@ -73,9 +90,67 @@ export function maxUploadBytes(env?: Record<string, unknown>): number {
   return DEFAULT_MAX_UPLOAD_BYTES
 }
 
+/**
+ * Which provider new jobs use, and whether self-hosted submission is enabled.
+ *
+ * Defaults are chosen so an existing installation is unaffected: unset means
+ * `modal` with self-hosted submission off. Enabling self-hosted is therefore an
+ * explicit act, which is what makes the documented rollback ("disable new local
+ * submissions, drain accepted jobs") a single variable.
+ */
+export function loadProviderSettings(env: EnvLike): {
+  transcodeProvider: TranscodeProvider
+  selfHostedEnabled: boolean
+  problems: string[]
+} {
+  const problems: string[] = []
+  const raw = secretValue(env, 'TRANSCODE_PROVIDER')?.toLowerCase()
+  let transcodeProvider: TranscodeProvider = 'modal'
+
+  if (raw === 'self-hosted' || raw === 'selfhosted' || raw === 'local') {
+    transcodeProvider = 'self-hosted'
+  } else if (raw && raw !== 'modal') {
+    problems.push(
+      `TRANSCODE_PROVIDER must be "modal" or "self-hosted" (got "${raw}")`,
+    )
+  }
+
+  const enabledRaw = secretValue(env, 'SELF_HOSTED_ENABLED')?.toLowerCase()
+  // Default follows the provider: choosing self-hosted is itself the enablement.
+  // An explicit `false` is how an operator rolls back without changing the
+  // default, leaving accepted jobs to drain instead of being cancelled.
+  const selfHostedEnabled =
+    enabledRaw === undefined
+      ? transcodeProvider === 'self-hosted'
+      : enabledRaw === 'true' || enabledRaw === '1'
+
+  return { transcodeProvider, selfHostedEnabled, problems }
+}
+
+/**
+ * Whether a raw bucket is required at all.
+ *
+ * False only when nothing can upload: no browser/SDK uploads *and* a
+ * self-hosted-only provider. That combination is the point of the feature — a
+ * course creator importing an existing library needs no raw bucket, no Modal
+ * account and no QStash.
+ */
+export function requiresRawBucket(input: {
+  transcodeProvider: TranscodeProvider
+  uploadsEnabled: boolean
+  hasRawBucket: boolean
+}): boolean {
+  if (input.hasRawBucket) return true
+  if (input.uploadsEnabled) return true
+  return input.transcodeProvider === 'modal'
+}
+
 export function loadConfig(env: EnvLike): OpenVodConfig {
   const problems: string[] = []
   const advisories: string[] = []
+
+  const provider = loadProviderSettings(env)
+  problems.push(...provider.problems)
 
   // ---- database -----------------------------------------------------------
   const databaseUrl = secretValue(env, 'DATABASE_URL')
@@ -96,20 +171,53 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
   if (!accountId) problems.push('ACCOUNT_ID is not set (Cloudflare account for R2)')
   if (!r2AccessKey) problems.push('R2_ACCESS_KEY_ID is not set')
   if (!r2SecretKey) problems.push('R2_SECRET_ACCESS_KEY is not set')
-  if (!rawBucket) problems.push('RAW_BUCKET_NAME is not set')
-  if (!transcodedBucket) problems.push('TRANSCODED_BUCKET_NAME is not set')
+  if (!transcodedBucket) {
+    problems.push('TRANSCODED_BUCKET_NAME is not set')
+  }
 
-  // ---- transcoder (Modal webhook) -------------------------------------------
+  const uploadsEnabled = parseUploadsEnabled(env)
+  const rawRequired = requiresRawBucket({
+    transcodeProvider: provider.transcodeProvider,
+    uploadsEnabled,
+    hasRawBucket: Boolean(rawBucket),
+  })
+  if (rawRequired && !rawBucket) {
+    problems.push(
+      'RAW_BUCKET_NAME is not set (required because uploads are enabled or the '
+        + 'provider is Modal; a local-only installation may omit it)',
+    )
+  }
+  if (!rawRequired) {
+    advisories.push(
+      'RAW_BUCKET_NAME is not set and is not required: only files on the '
+        + 'owner’s machine can be imported.',
+    )
+  }
+
+  // ---- transcoder -----------------------------------------------------------
+  // Modal is only mandatory when it is the provider. A self-hosted installation
+  // must not be told to configure a Modal endpoint it will never call.
   const modalWebhookUrl = secretValue(env, 'MODAL_WEBHOOK_URL')
   const ingestSecret =
     secretValue(env, 'TRANSCODE_INGEST_SECRET') ?? secretValue(env, 'MODAL_WEBHOOK_SECRET')
-  if (!modalWebhookUrl) {
-    problems.push('MODAL_WEBHOOK_URL is not set')
-  } else if (!isHttpUrl(modalWebhookUrl)) {
-    problems.push('MODAL_WEBHOOK_URL must be an absolute http(s) URL')
-  }
-  if (!ingestSecret) {
-    problems.push('TRANSCODE_INGEST_SECRET (or MODAL_WEBHOOK_SECRET) is not set')
+  const modalRequired = provider.transcodeProvider === 'modal'
+  if (modalRequired) {
+    if (!modalWebhookUrl) {
+      problems.push('MODAL_WEBHOOK_URL is not set')
+    } else if (!isHttpUrl(modalWebhookUrl)) {
+      problems.push('MODAL_WEBHOOK_URL must be an absolute http(s) URL')
+    }
+    if (!ingestSecret) {
+      problems.push('TRANSCODE_INGEST_SECRET (or MODAL_WEBHOOK_SECRET) is not set')
+    }
+  } else if (modalWebhookUrl || ingestSecret) {
+    // Configured but unused: worth saying, because a stale Modal endpoint that
+    // still receives callbacks is a confusing thing to debug later.
+    advisories.push(
+      'MODAL_WEBHOOK_URL is configured but TRANSCODE_PROVIDER is "self-hosted": '
+        + 'new jobs run on the owner’s machines. Modal remains available as an '
+        + 'explicit per-job choice.',
+    )
   }
 
   // ---- auth (sessions + playback signing) -------------------------------------
@@ -157,7 +265,13 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
     checks: {
       database: Boolean(databaseUrl && /^postgres(ql)?:\/\//.test(databaseUrl)),
       storage: storageConfigured && Boolean(rawBucket) && Boolean(transcodedBucket),
-      transcoder: Boolean(modalWebhookUrl && ingestSecret && isHttpUrl(modalWebhookUrl)),
+      transcoder: modalRequired
+        ? Boolean(modalWebhookUrl && ingestSecret && isHttpUrl(modalWebhookUrl))
+        // With a self-hosted provider the "transcoder" is whichever agents are
+        // paired; configuration cannot answer that, and pretending it can would
+        // report a healthy deployment with no working agent. The authenticated
+        // dashboard health is where agent connectivity is reported.
+        : provider.selfHostedEnabled,
       auth: Boolean(
         betterAuthSecret &&
           betterAuthSecret.length >= MIN_SECRET_LENGTH &&
@@ -167,6 +281,7 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
       analytics: Boolean(accountId && analyticsToken),
       ai: Boolean(groqKey),
       delivery: Boolean(deliveryUrl),
+      rawUploads: Boolean(rawBucket),
     },
     problems,
     advisories,
@@ -176,7 +291,17 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
     ingestSecret,
     rawBucket,
     transcodedBucket,
+    transcodeProvider: provider.transcodeProvider,
+    selfHostedEnabled: provider.selfHostedEnabled,
+    rawBucketRequired: rawRequired,
   }
+}
+
+/** Whether browser/SDK uploads are enabled. Defaults to on for compatibility. */
+export function parseUploadsEnabled(env: EnvLike): boolean {
+  const raw = secretValue(env, 'UPLOADS_ENABLED')?.toLowerCase()
+  if (raw === undefined) return true
+  return raw === 'true' || raw === '1'
 }
 
 /** Parse a comma-separated origin list (FRONTEND_URL / CORS_ORIGINS). */

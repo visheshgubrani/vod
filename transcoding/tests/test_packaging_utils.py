@@ -1,6 +1,6 @@
 """Tests for packager segment duration and upload stats."""
-from packaging.shaka import choose_segment_duration
-from utils.storage import UploadStats
+from openvod_transcoder.packaging.shaka import choose_segment_duration
+from openvod_transcoder.transfer.base import TransferStats
 
 
 class TestChooseSegmentDuration:
@@ -26,6 +26,6 @@ class TestChooseSegmentDuration:
 
 class TestUploadStats:
     def test_complete_only_when_all_files_landed(self):
-        assert UploadStats(total=5, uploaded=5).complete is True
-        assert UploadStats(total=5, uploaded=4).complete is False
-        assert UploadStats(total=5, uploaded=5, failed=["a.mp4"]).complete is False
+        assert TransferStats(total=5, uploaded=5).complete is True
+        assert TransferStats(total=5, uploaded=4).complete is False
+        assert TransferStats(total=5, uploaded=5, failed=["a.mp4"]).complete is False

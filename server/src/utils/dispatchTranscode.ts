@@ -53,6 +53,12 @@ export type DispatchFailureReason =
    * job failed.
    */
   | 'dispatch-uncertain'
+  /**
+   * The operator has switched this provider off for *new* work
+   * (`SELF_HOSTED_ENABLED=false`). Accepted jobs keep draining; nothing is
+   * cancelled, and local files are never moved to Modal automatically.
+   */
+  | 'provider-disabled'
 
 export type DispatchTranscodeResult =
   | {
@@ -223,6 +229,7 @@ export function dispatchFailureStatus(
     case 'at-capacity':
       return 429
     case 'dispatch-uncertain':
+    case 'provider-disabled':
       return 503
     case 'dispatch-failed':
       return 502

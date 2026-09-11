@@ -120,6 +120,27 @@
       "when": 1789039597093,
       "tag": "0016_trigger_writer_retirement",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789121980900,
+      "tag": "0017_self_hosted_transcoding",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789124267362,
+      "tag": "0018_completion_receipt_and_runnable_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789124596412,
+      "tag": "0019_attempt_prefix_cleanup",
+      "breakpoints": true
     }
   ]
 }

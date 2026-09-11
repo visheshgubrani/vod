@@ -84,15 +84,15 @@ curl -X POST http://localhost:8787/api/internal/sweep \
 - Modal: `GET /healthz`
 - Dashboard: `/setup` and the cluster-health strip consume `/health/config`
 
-`scripts/verify-env.sh` checks `.dev.vars` without printing secrets and
+`./scripts/bootstrap.sh --check` checks `.dev.vars` without printing secrets and
 optionally probes `/health/config`.
 
 ## JWT parity
 
 The API mints playback tokens (`iss: openvod`, `aud: playback`). The delivery
 worker verifies them with the **same** `JWT_SECRET`. The bootstrap wizard
-mirrors that secret into `delivery/.dev.vars`; `verify-env.sh` warns if they
-diverge.
+mirrors that secret into `delivery/.dev.vars`; `./scripts/bootstrap.sh --check`
+warns if they diverge.
 
 ## Modal
 

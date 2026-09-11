@@ -7,6 +7,14 @@
 	"observability": {
 		"enabled": true,
 	},
+	// Local dev: pin the port so it always matches BETTER_AUTH_URL/BACKEND_URL in
+	// .dev.vars and the dashboard's NEXT_PUBLIC_API_BASE_URL. Wrangler's own
+	// fallback is a race when the delivery worker starts at the same time
+	// (`pnpm dev:all`), so a busy port should fail loudly instead.
+	"dev": {
+		"port": 8787,
+		"inspector_port": 9229,
+	},
 	"analytics_engine_datasets": [
 		{
 			"binding": "PLAYBACK_ANALYTICS",

@@ -57,7 +57,17 @@ export const DEFAULT_CLEANUP_LIMITS: CleanupLimits = {
 export type CleanupDeps = {
   executor: AtomicExecutor
   objectStore: ObjectStore
-  rawBucket: string
+  /**
+   * The raw upload bucket, or null when none is configured.
+   *
+   * A local-only installation has no raw bucket — that is the point of the
+   * feature — and requiring one here made `cleanupDepsFromEnv` return null, so
+   * the *entire* cleanup pass silently skipped. Deleted videos kept their
+   * transcoded bytes forever, which is the failure the cleanup job exists to
+   * prevent. Raw cleanup is now conditional on a job actually *having* a raw
+   * key, which is a property of the row rather than of the deployment.
+   */
+  rawBucket: string | null
   transcodedBucket: string
   now: () => Date
   limits: CleanupLimits
@@ -317,9 +327,10 @@ export async function runObjectCleanup(
         deps.transcodedBucket,
         job.prefix,
       )
-      const rawPresent = job.rawKey
-        ? await deps.objectStore.listKeys(deps.rawBucket, job.rawKey)
-        : []
+      const rawPresent =
+        job.rawKey && deps.rawBucket
+          ? await deps.objectStore.listKeys(deps.rawBucket, job.rawKey)
+          : []
       const seen = remaining.length + rawPresent.length
 
       if (seen === 0) {
@@ -338,9 +349,19 @@ export async function runObjectCleanup(
   for (const job of await claimCleanupJobs(batchSize, deps, 'pending')) {
     try {
       // Unfinished multipart uploads are invisible to listKeys but still billed.
+      // Aborted in both buckets, because an interrupted upload can be in either.
+      if (job.rawKey && deps.rawBucket) {
+        stats.multipartAborted += await deps.objectStore.abortMultipartUploads(
+          deps.rawBucket,
+          job.rawKey,
+        )
+      }
+      // Failed *attempt* prefixes are abandoned multipart state too, and they
+      // live under the transcoded prefix. Without this an attempt that was
+      // superseded mid-upload leaks its parts while the video stays live.
       stats.multipartAborted += await deps.objectStore.abortMultipartUploads(
-        deps.rawBucket,
-        job.rawKey ?? job.prefix,
+        deps.transcodedBucket,
+        job.prefix,
       )
 
       const keys = await deps.objectStore.listKeys(deps.transcodedBucket, job.prefix)
@@ -349,7 +370,7 @@ export async function runObjectCleanup(
       let deleted = 0
       if (targets.length > 0) {
         await deps.objectStore.deleteKeys(deps.transcodedBucket, keys)
-        if (job.rawKey) {
+        if (job.rawKey && deps.rawBucket) {
           deleted += await deps.objectStore.deleteKeys(deps.rawBucket, [job.rawKey])
         }
         deleted += keys.length
@@ -359,7 +380,7 @@ export async function runObjectCleanup(
       // Only a fresh listing counts as evidence.
       const remaining =
         (await deps.objectStore.listKeys(deps.transcodedBucket, job.prefix)).length +
-        (job.rawKey
+        (job.rawKey && deps.rawBucket
           ? (await deps.objectStore.listKeys(deps.rawBucket, job.rawKey)).length
           : 0)
 
@@ -418,7 +439,10 @@ export function cleanupDepsFromEnv(
 
   const rawBucket = read('RAW_BUCKET_NAME')
   const transcodedBucket = read('TRANSCODED_BUCKET_NAME')
-  if (!rawBucket || !transcodedBucket) return null
+  // Only the transcoded bucket is required. Without it there is genuinely
+  // nothing this pass can do; without the raw one there is plenty, and a
+  // local-only installation is a supported deployment rather than a broken one.
+  if (!transcodedBucket) return null
 
   return {
     executor,

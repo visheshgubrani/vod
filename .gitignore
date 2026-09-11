@@ -45,6 +45,11 @@ coverage/
 .npmrc
 .pnpm-cache/
 
+# crash dumps — the kernel writes core.<pid> into the crashing process's cwd,
+# so a `wrangler dev` abort in server/ once left a 3.3 GB core dump there.
+# Matches core.NNNN only, never source files like core.ts / core.py.
+core.[0-9]*
+
 # pnpm store farm occasionally materializes at docs-site/ root (root cause
 # TBD); keep the real project files only.
 docs-site/*

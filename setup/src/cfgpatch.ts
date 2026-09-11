@@ -7,9 +7,11 @@
  * Returns the new text, or null when no bucket_name entry is found.
  */
 export function patchBucketName(wranglerText: string, bucket: string): string | null {
-  const result = wranglerText.replace(
-    /("bucket_name"\s*:\s*")[^"]+(")/,
+  const bucketNamePattern = /("bucket_name"\s*:\s*")[^"]+(")/
+  if (!bucketNamePattern.test(wranglerText)) return null
+
+  return wranglerText.replace(
+    bucketNamePattern,
     (_whole, prefix: string, suffix: string) => `${prefix}${bucket}${suffix}`,
   )
-  return result === wranglerText ? null : result
 }

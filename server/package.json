@@ -3,9 +3,10 @@
   "type": "module",
   "private": true,
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.12.4",
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:node": "PORT=${API_PORT:-8787} tsx watch src/node/server.ts",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
     "db:generate": "drizzle-kit generate",
@@ -14,7 +15,8 @@
     "db:seed": "tsx src/db/seed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:node": "node node_modules/esbuild/lib/main.js src/node/server.ts src/node/migrate.ts --bundle --platform=node --format=cjs --outdir=dist-node --out-extension:.js=.cjs --target=node22 --external:@upstash/qstash --log-level=warning",
+    "build:node": "esbuild src/node/server.ts src/node/migrate.ts --bundle --platform=node --format=cjs --outdir=dist-node --out-extension:.js=.cjs --target=node22 --external:@upstash/qstash --log-level=warning",
+    "start": "pnpm start:node",
     "start:node": "node dist-node/server.cjs"
   },
   "dependencies": {
@@ -26,7 +28,7 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.2",
     "@xmldom/xmldom": "^0.8.11",
-    "better-auth": "^1.4.7",
+    "better-auth": "~1.7.4",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.1",
     "jose": "^5.10.0",

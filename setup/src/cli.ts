@@ -1,3 +1,4 @@
+#!/usr/bin/env tsx
 /**
  * OpenVOD bootstrap wizard entrypoint (run by scripts/bootstrap.sh after the
  * toolchain check; also runnable directly once node + pnpm exist).
@@ -37,13 +38,15 @@ import { WizardError } from './errors'
 import { askQuestions } from './questions'
 import { cfAccountId } from './cloudflare'
 import { runDeployPhase } from './deploy'
-import { lintEnvFiles, renderCheckRows } from './verify'
+import { lintEnvFiles } from './verify'
 import { summaryText } from './display'
 import {
   announceCancel,
   askConfirm,
   askSelect,
   CancelledError,
+  color,
+  formatCheckRow,
   intro,
   isTty,
   logStep,
@@ -51,35 +54,12 @@ import {
   logWarn,
   note,
   outro,
+  printCheckRows,
+  printError,
+  printHelp,
+  printOk,
   withSpinner,
 } from './ui'
-
-const USAGE = `OpenVOD bootstrap — BYOK environment wizard
-
-Usage (run from anywhere inside the repo):
-  ./scripts/bootstrap.sh                        interactive configure (writes server/.dev.vars + delivery/.dev.vars)
-  ./scripts/bootstrap.sh --force                regenerate; pre-existing keys the wizard does not manage are preserved
-  ./scripts/bootstrap.sh --answers <file.json>  headless configure using a JSON answers file (no terminal
-                                                needed; file paths are relative to the repo root)
-  ./scripts/bootstrap.sh --deploy               provision & deploy: Cloudflare login, R2 buckets/CORS, Modal secrets +
-                                                pipeline, API + delivery deploys (uses existing .dev.vars when present)
-  ./scripts/bootstrap.sh --check [api-url]      lint .dev.vars without printing secrets (+ probe api/health/config)
-  ./scripts/bootstrap.sh --help
-
-Prefill flags (interactive mode only): --runtime workers|compose --db neon|local|existing
-  --queue direct|qstash --ratelimit memory|upstash
-
-Headless answers file (same shape the wizard collects interactively):
-  {
-    "runtime": "workers",             // "workers" | "compose"
-    "db": { "kind": "neon", "url": "postgresql://…" },   // compose: "local" | { "kind":"existing", "url": "…" }
-    "queue": { "kind": "direct" },    // or { "kind": "qstash", "token": "…" }
-    "rateLimit": { "kind": "memory" }, // or { "kind": "upstash", "restUrl": "https://…", "token": "…" }
-    "accountId": "…", "r2AccessKeyId": "…", "r2SecretAccessKey": "…",
-    "rawBucket": "openvod-raw", "transcodedBucket": "openvod-transcoded",
-    "frontendUrl": "http://localhost:3000", "groqApiKey": ""   // optional
-  }
-`
 
 interface CliOptions {
   help: boolean
@@ -92,8 +72,8 @@ interface CliOptions {
 }
 
 function usageError(message: string): never {
-  // eslint-disable-next-line no-console
-  console.error(`✋ ${message}\n\n${USAGE}`)
+  printError(message)
+  printHelp()
   process.exit(2)
 }
 
@@ -252,23 +232,23 @@ function loadAnswersFile(path: string): WizardAnswers {
   return merged
 }
 
-function nextStepsText(root: string, answers: WizardAnswers): string {
-  const dashboard = 'pnpm --filter web dev   →  http://localhost:3000/setup'
+function nextStepsText(answers: WizardAnswers): string {
+  const dashboard = `${color.cmd('pnpm --filter web dev')}   →  http://localhost:3000/setup`
   if (answers.runtime === 'workers') {
     return [
       'Run locally:',
-      '  pnpm --filter vod-api dev            # wrangler dev :8787 (reads server/.dev.vars)',
+      `  ${color.cmd('pnpm --filter vod-api dev')}            ${color.muted('# wrangler dev :8787 (reads server/.dev.vars)')}`,
       `  ${dashboard}`,
-      'Verify:  scripts/verify-env.sh http://localhost:8787',
-      'Deploy:  ./scripts/bootstrap.sh --deploy   (Cloudflare + Modal provision & deploy)',
+      `Verify:  ${color.cmd('./scripts/bootstrap.sh --check http://localhost:8787')}`,
+      `Deploy:  ${color.cmd('./scripts/bootstrap.sh --deploy')}   ${color.muted('(Cloudflare + Modal provision & deploy)')}`,
     ].join('\n')
   }
   return [
     'Compose runtime:',
-    '  docker compose up -d                  # Postgres (:5433) + API (:8787) + dashboard (:3000)',
+    `  ${color.cmd('docker compose up -d')}                  ${color.muted('# Postgres (:5433) + API (:8787) + dashboard (:3000)')}`,
     `  ${dashboard}`,
     'Playback still needs the Cloudflare delivery worker:',
-    '  ./scripts/bootstrap.sh --deploy       # or: cd delivery && pnpm exec wrangler deploy',
+    `  ${color.cmd('./scripts/bootstrap.sh --deploy')}       ${color.muted('# or: cd delivery && pnpm exec wrangler deploy')}`,
   ].join('\n')
 }
 
@@ -276,19 +256,18 @@ async function runCheck(root: string, checkUrl: string | undefined): Promise<boo
   const serverEnv = readServerEnv(root)
   const deliveryEnv = readDeliveryEnv(root)
   const { rows, failed } = lintEnvFiles(serverEnv, deliveryEnv)
-  // eslint-disable-next-line no-console
-  for (const line of renderCheckRows(rows)) console.log(line)
+  printCheckRows(rows)
   if (checkUrl !== undefined) {
     const base = checkUrl.replace(/\/+$/, '')
     // eslint-disable-next-line no-console
-    console.log(`→ Probing ${base}/health/config …`)
+    console.log(color.muted(`→ Probing ${base}/health/config …`))
     try {
       const response = await fetch(`${base}/health/config`, {
         signal: AbortSignal.timeout(20_000),
       })
       if (!response.ok) {
         // eslint-disable-next-line no-console
-        console.log(`✗ HTTP ${response.status}`)
+        console.log(color.fail(`✗ HTTP ${response.status}`))
         return false
       }
       const body = (await response.json()) as {
@@ -301,20 +280,20 @@ async function runCheck(root: string, checkUrl: string | undefined): Promise<boo
       console.log(`ready: ${String(body.ready)}`)
       for (const [key, ok] of Object.entries(body.checks ?? {})) {
         // eslint-disable-next-line no-console
-        console.log(`  ${ok ? '✓' : '○'} ${key}`)
+        console.log(`  ${ok ? color.ok('✓') : color.muted('○')} ${key}`)
       }
       for (const problem of body.problems ?? []) {
         // eslint-disable-next-line no-console
-        console.log(`✗ ${problem}`)
+        console.log(color.fail(`✗ ${problem}`))
       }
       for (const advisory of body.advisories ?? []) {
         // eslint-disable-next-line no-console
-        console.log(`○ ${advisory}`)
+        console.log(color.muted(`○ ${advisory}`))
       }
       return Boolean(body.ready)
     } catch {
       // eslint-disable-next-line no-console
-      console.log(`✗ could not reach ${base}/health/config`)
+      console.log(color.fail(`✗ could not reach ${base}/health/config`))
       return false
     }
   }
@@ -335,11 +314,9 @@ function headlessConfigure(root: string, opts: CliOptions): WizardAnswers {
     buildDeliveryEntries(secrets),
     opts.force,
   )
-  // eslint-disable-next-line no-console
-  console.log(`✓ Wrote ${serverVarsPath(root)} and ${deliveryVarsPath(root)} (mode 0600)`)
+  printOk(`Wrote ${serverVarsPath(root)} and ${deliveryVarsPath(root)} (mode 0600)`)
   const report = lintEnvFiles(readServerEnv(root), readDeliveryEnv(root))
-  // eslint-disable-next-line no-console
-  for (const line of renderCheckRows(report.rows)) console.log(line)
+  printCheckRows(report.rows)
   return answers
 }
 
@@ -392,8 +369,7 @@ async function interactiveConfigure(root: string, opts: CliOptions): Promise<Wiz
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2))
   if (opts.help) {
-    // eslint-disable-next-line no-console
-    console.log(USAGE)
+    printHelp()
     return
   }
 
@@ -427,11 +403,11 @@ async function main(): Promise<void> {
     }
     const answers = headlessConfigure(root, opts)
     // eslint-disable-next-line no-console
-    console.log(`\n${nextStepsText(root, answers)}`)
+    console.log(`\n${nextStepsText(answers)}`)
     return
   }
 
-  intro('OpenVOD bootstrap')
+  intro()
 
   const envExists = existsSync(serverVarsPath(root)) || existsSync(deliveryVarsPath(root))
 
@@ -475,13 +451,13 @@ async function main(): Promise<void> {
   const serverEnv = readServerEnv(root)
   if (serverEnv) {
     const report = lintEnvFiles(serverEnv, readDeliveryEnv(root))
-    note(renderCheckRows(report.rows).join('\n'), 'Environment check')
+    note(report.rows.map(formatCheckRow).join('\n'), 'Environment check')
     if (report.failed) logWarn('Some keys are still missing — see rows above, or re-run the wizard')
     else logSuccess('Environment looks configured')
   }
 
-  note(nextStepsText(root, answers), 'Next steps')
-  outro('Done — happy streaming 🎬')
+  note(nextStepsText(answers), 'Next steps')
+  outro('Done — happy streaming')
 }
 
 main().catch((error: unknown) => {
@@ -491,7 +467,6 @@ main().catch((error: unknown) => {
     return
   }
   const message = error instanceof Error ? error.message : String(error)
-  // eslint-disable-next-line no-console
-  console.error(`✋ ${message}`)
+  printError(message)
   process.exitCode = 1
 })

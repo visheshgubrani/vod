@@ -1,7 +1,6 @@
 /**
- * Local env verification — mirrors scripts/verify-env.sh logic (no secrets
- * printed, only presence/length checks) so the wizard's final report and
- * `--check` mode use the same rules as the standalone shell verifier.
+ * Local env verification. No secrets printed — only presence/length checks
+ * so the wizard's final report and `--check` mode share one set of rules.
  */
 
 export interface CheckRow {
@@ -45,10 +44,28 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
   check('ACCOUNT_ID', 'Cloudflare account id')
   check('R2_ACCESS_KEY_ID', 'R2 access key id')
   check('R2_SECRET_ACCESS_KEY', 'R2 secret access key')
-  check('RAW_BUCKET_NAME', 'Raw bucket')
   check('TRANSCODED_BUCKET_NAME', 'Transcoded bucket')
-  check('MODAL_WEBHOOK_URL', 'Modal webhook URL')
-  check('TRANSCODE_INGEST_SECRET', 'Transcode ingest secret')
+
+  // The provider decides what else is required. Telling a local-only
+  // installation that it is broken for lacking a raw bucket and a Modal
+  // endpoint is the fastest way to make a working install look unfinished.
+  const provider = (env['TRANSCODE_PROVIDER'] ?? 'modal').trim().toLowerCase()
+  const selfHosted = provider === 'self-hosted' || provider === 'selfhosted' || provider === 'local'
+  const uploadsEnabled = (env['UPLOADS_ENABLED'] ?? 'true').trim().toLowerCase() !== 'false'
+
+  if (selfHosted && !uploadsEnabled) {
+    advisory('RAW_BUCKET_NAME', 'Raw bucket (not needed: uploads are off)')
+  } else {
+    check('RAW_BUCKET_NAME', 'Raw bucket')
+  }
+
+  if (selfHosted) {
+    advisory('MODAL_WEBHOOK_URL', 'Modal webhook URL (optional: self-hosted provider)')
+    advisory('TRANSCODE_INGEST_SECRET', 'Transcode ingest secret (only used by Modal callbacks)')
+  } else {
+    check('MODAL_WEBHOOK_URL', 'Modal webhook URL')
+    check('TRANSCODE_INGEST_SECRET', 'Transcode ingest secret')
+  }
   check('JWT_SECRET', 'Playback JWT secret (>=32 chars)')
   check('BETTER_AUTH_SECRET', 'Auth secret (>=32 chars)')
   advisory('DELIVERY_URL', 'Delivery worker base URL')

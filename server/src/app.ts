@@ -16,6 +16,8 @@ import keys from './routes/keys'
 import usage from './routes/usage'
 import webhooks from './routes/webhooks'
 import api from './routes/api'
+import transcoder from './routes/transcoder'
+import { dashboardApp, agentSourceApp, importLocalApp } from './routes/localImport'
 import analytics from './routes/analytics'
 import analyticsStats from './routes/analytics-stats'
 import type { Bindings } from './types'
@@ -445,7 +447,15 @@ app.route('/api/keys', keys)
 app.route('/api/usage', usage)
 app.route('/api/webhooks', webhooks)
 app.route('/v1/upload', uploadPublic)
+// Local import sits under /v1 too, but is built separately because it authenticates
+// with an API key while the rest of the public API does not yet.
+app.route('/v1', importLocalApp)
 app.route('/v1', api)
+// The agent protocol polls and posts frequently; it is deliberately outside the
+// session and API-key middleware, carrying its own organization-scoped credential.
+app.route('/api/transcoder/v1', transcoder)
+app.route('/api/transcoder/v1/sources', agentSourceApp)
+app.route('/api/transcoder', dashboardApp)
 app.route('/api/playback', analytics)
 app.route('/api/analytics-stats', analyticsStats)
 

@@ -15,6 +15,8 @@ BACKEND_URL=http://localhost:8787
 ACCOUNT_ID=your-cloudflare-account-id
 R2_ACCESS_KEY_ID=your-r2-access-key
 R2_SECRET_ACCESS_KEY=your-r2-secret-key
+# Required only when uploads are enabled or the provider is Modal. A local-only
+# installation (self-hosted provider, UPLOADS_ENABLED=false) may leave it blank.
 RAW_BUCKET_NAME=raw-bucket-uploads
 TRANSCODED_BUCKET_NAME=transcoded-bucket
 CLOUDFLARE_ANALYTICS_TOKEN=your-analytics-api-token
@@ -28,6 +30,20 @@ GITHUB_CLIENT_SECRET=
 # Transcoding pipeline — direct HTTP dispatch is the default;
 # QStash is only used when QSTASH_TOKEN is set (optional adapter).
 QSTASH_TOKEN=
+# ── Transcoding provider ───────────────────────────────────────────────────
+# Which engine new jobs use: "modal" (default) or "self-hosted".
+# Existing installations are unaffected: unset means Modal, exactly as before.
+# The value is stored on each job when it is created, so changing it never
+# reroutes work that already exists.
+TRANSCODE_PROVIDER=modal
+# Set to "false" to stop accepting NEW self-hosted submissions while accepted
+# jobs drain. This is the documented rollback; it does not cancel anything and
+# never moves a local file to Modal.
+SELF_HOSTED_ENABLED=
+# Whether browser/SDK uploads are accepted. Defaults to true. Turn it off for a
+# local-only installation, which also makes the raw bucket unnecessary.
+UPLOADS_ENABLED=true
+# Only required when TRANSCODE_PROVIDER=modal.
 MODAL_WEBHOOK_URL=
 TRANSCODE_INGEST_SECRET=any-long-random-string-shared-with-your-modal-app
 # MODAL_WEBHOOK_SECRET=legacy-alias-for-ingest-secret

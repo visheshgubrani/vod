@@ -1,0 +1,102 @@
+# Self-hosted transcoding agent.
+#
+# Two layers, deliberately separated:
+#
+#   * the *engine* (this image) — FFmpeg, Shaka Packager, the pipeline and the CLI
+#   * the *host* — GPU drivers, the media mounts, and the scratch volume
+#
+# The engine is identical across CPU, NVIDIA and AMD. That is the point of the
+# hardware-agnostic encoding seam: a machine with no accelerator and a machine
+# with two of them run the same image, and the capability probe decides what to
+# actually use. The GPU variants are *runtime* changes (device passthrough and
+# driver access), not build-time ones, which is what keeps `doctor` honest —
+# whatever it reports is about the machine it is running on right now.
+#
+# Build:
+#   docker build -f transcoding/Dockerfile.agent -t openvod-transcoder .
+#
+# Run (CPU):
+#   docker run --rm -it \
+#     -v /srv/media:/media:ro \
+#     -v openvod-scratch:/var/lib/openvod-transcoder \
+#     -e OPENVOD_API_URL=https://api.example.com \
+#     -e OPENVOD_ROOTS=media:/media \
+#     openvod-transcoder doctor --full
+#
+# Run (NVIDIA): add
+#   --gpus 'all,capabilities=compute,utility,video'
+# The `video` capability is the one that is easy to miss: without it the driver
+# is present but no NVENC session can be created, and an encode probe is the only
+# thing that reveals it.
+#
+# Run (AMD): add
+#   --device /dev/dri/renderD128 --group-add video
+# VAAPI is AMD's supported Linux path; the render device must be passed through
+# and the agent's user must be able to open it.
+
+FROM python:3.12-slim-bookworm
+
+ARG SHAKA_VERSION=v3.2.0
+# Pinned by checksum: a packager that silently changes version changes the bytes
+# every job produces, which is not something to discover from a diff.
+ARG SHAKA_SHA256=05af2e9ef5f12d58b9d615b7d31dc0eb61c32aee632c71965340b43c1556043e
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    OPENVOD_SCRATCH_DIR=/var/lib/openvod-transcoder/scratch \
+    OPENVOD_JOURNAL=/var/lib/openvod-transcoder/journal.sqlite \
+    OPENVOD_ROOTS_FILE=/etc/openvod-transcoder/roots.json
+
+# ffmpeg from Debian is built with libx264 and, on x86-64, with VAAPI; NVENC
+# support comes from the host driver at runtime, not from this package.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ffmpeg \
+      ca-certificates \
+      curl \
+      tini \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/shaka-project/shaka-packager/releases/download/${SHAKA_VERSION}/packager-linux-x64" \
+      -o /usr/local/bin/packager \
+ && echo "${SHAKA_SHA256}  /usr/local/bin/packager" | sha256sum -c - \
+ && chmod +x /usr/local/bin/packager
+
+WORKDIR /app
+COPY transcoding/ /app/
+
+# Runtime deps only: the agent never imports Modal, boto3 or Whisper. Installing
+# them would add hundreds of megabytes to an image whose whole job is FFmpeg.
+# `--no-deps` is deliberate: pyproject declares `requests`, which is installed
+# above, and nothing else. Pulling the optional extras (boto3, faster-whisper)
+# into this image would triple its size for features the agent does not use —
+# it holds no storage credentials and runs enrichment only if asked.
+RUN pip install --no-cache-dir requests \
+ && pip install --no-cache-dir --no-deps -e /app
+
+# The agent runs unprivileged. It only ever *reads* the media mounts, so there is
+# no reason for it to be able to write to them — and a container that cannot
+# write to the owner's library cannot damage it.
+RUN groupadd --gid 10001 openvod \
+ && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin openvod \
+ && mkdir -p /var/lib/openvod-transcoder/scratch /etc/openvod-transcoder \
+ && chown -R openvod:openvod /var/lib/openvod-transcoder
+
+# `video` covers both /dev/dri (AMD/Intel) and the NVIDIA device nodes, so a
+# container that needs either can be started with --group-add video.
+RUN groupadd --gid 44 video || true \
+ && usermod -aG video openvod
+
+USER openvod
+VOLUME ["/var/lib/openvod-transcoder"]
+
+# tini reaps the FFmpeg processes the pipeline spawns. Without it a terminated
+# encode can leave children holding the GPU session, which then makes the *next*
+# job fail with a confusing "no free encoding session".
+ENTRYPOINT ["/usr/bin/tini", "--", "openvod-transcoder"]
+CMD ["run"]
+
+# Diagnostics are the default health check because "the container is up" says
+# nothing about whether it can encode or reach the API.
+HEALTHCHECK --interval=5m --timeout=2m --start-period=1m \
+  CMD openvod-transcoder --json doctor || exit 1

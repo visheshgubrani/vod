@@ -92,3 +92,79 @@ describe('lintEnvFiles + renderCheckRows', () => {
     expect(lines.some((line) => line.includes('○'))).toBe(true)
   })
 })
+
+// ────────────────────────────────────────────────────────────────────────────
+// The raw bucket and Modal are conditional on the provider.
+//
+// Previously every row was required unconditionally, so a working local-only
+// installation reported FAIL for a bucket it must not have and a Modal endpoint
+// it will never call. A verification report that cries wolf is one people learn
+// to ignore.
+// ────────────────────────────────────────────────────────────────────────────
+
+const BASE: Record<string, string> = {
+  DATABASE_URL: 'postgresql://user:pass@host:5432/db',
+  ACCOUNT_ID: 'acct',
+  R2_ACCESS_KEY_ID: 'key',
+  R2_SECRET_ACCESS_KEY: 'secret',
+  TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+  JWT_SECRET: 'j'.repeat(40),
+  BETTER_AUTH_SECRET: 'b'.repeat(40),
+}
+
+const rowFor = (env: Record<string, string>, fragment: string) =>
+  lintServerEnv(env).rows.find((row) => row.text.includes(fragment))
+
+describe('lintServerEnv with a self-hosted provider', () => {
+  it('passes with no raw bucket and no Modal configuration', () => {
+    const result = lintServerEnv({
+      ...BASE,
+      TRANSCODE_PROVIDER: 'self-hosted',
+      UPLOADS_ENABLED: 'false',
+    })
+    expect(result.failed).toBe(false)
+  })
+
+  it('does not report the missing bucket as a failure', () => {
+    const row = rowFor(
+      { ...BASE, TRANSCODE_PROVIDER: 'self-hosted', UPLOADS_ENABLED: 'false' },
+      'RAW_BUCKET_NAME',
+    )
+    expect(row?.ok).toBe(false)
+    expect(row?.advisory).toBe(true)
+    expect(row?.text).toContain('not needed')
+  })
+
+  it('requires the bucket again when uploads are enabled', () => {
+    // Hybrid install: local imports work, but browser uploads need somewhere to
+    // land, and silently accepting them would fail at the first upload.
+    const result = lintServerEnv({
+      ...BASE,
+      TRANSCODE_PROVIDER: 'self-hosted',
+      UPLOADS_ENABLED: 'true',
+    })
+    expect(result.failed).toBe(true)
+    expect(rowFor({ ...BASE, TRANSCODE_PROVIDER: 'self-hosted' }, 'RAW_BUCKET_NAME')?.advisory)
+      .toBeUndefined()
+  })
+
+  it('treats a missing Modal endpoint as advisory, not a failure', () => {
+    const row = rowFor({ ...BASE, TRANSCODE_PROVIDER: 'self-hosted' }, 'MODAL_WEBHOOK_URL')
+    expect(row?.advisory).toBe(true)
+  })
+
+  it('keeps the Modal requirements when the provider is Modal', () => {
+    const result = lintServerEnv({ ...BASE, TRANSCODE_PROVIDER: 'modal' })
+    expect(result.failed).toBe(true)
+    expect(rowFor({ ...BASE, TRANSCODE_PROVIDER: 'modal' }, 'MODAL_WEBHOOK_URL')?.advisory)
+      .toBeUndefined()
+  })
+
+  it('defaults to the Modal requirements when the provider is unset', () => {
+    // An existing installation that has never heard of TRANSCODE_PROVIDER must
+    // see exactly the report it saw before.
+    const result = lintServerEnv(BASE)
+    expect(result.failed).toBe(true)
+    expect(rowFor(BASE, 'RAW_BUCKET_NAME')?.advisory).toBeUndefined()
+  })
+})

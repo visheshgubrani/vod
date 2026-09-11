@@ -1,10 +1,12 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { and, desc, eq, sql } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
-import { member, video } from '../db/schema'
+import { member, transcodeJob, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
+import { normalizeRows } from '../lib/atomicWrite'
+import { buildRequeueStatement } from '../lib/localJobQueue'
 import { deleteVideoWithCleanup } from '../lib/objectCleanup'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
@@ -554,6 +556,36 @@ app.post('/:id/retry', async (c) => {
       400,
     )
   }
+
+  /**
+   * Retry the way the job was created, not the way the installation currently
+   * defaults.
+   *
+   * The provider is stored on the job at creation precisely so a later default
+   * change cannot reroute existing work. Retrying through the Modal path
+   * unconditionally broke that in both directions: a local import was rejected
+   * for having no `rawKey`, and a self-hosted job created from a *browser*
+   * upload was silently re-sent to Modal — the opposite of the owner's choice.
+   */
+  const jobRows = await db
+    .select({
+      jobId: transcodeJob.id,
+      provider: transcodeJob.provider,
+      state: transcodeJob.state,
+      sourceId: transcodeJob.sourceId,
+      agentId: transcodeJob.agentId,
+      options: transcodeJob.options,
+    })
+    .from(transcodeJob)
+    .where(eq(transcodeJob.videoId, videoId))
+    .orderBy(desc(transcodeJob.createdAt))
+    .limit(1)
+  const previousJob = jobRows[0]
+
+  if (previousJob && previousJob.provider === 'self-hosted') {
+    return retrySelfHostedJob(c, videoRecord, previousJob)
+  }
+
   if (!videoRecord.rawKey) {
     return c.json({ error: 'Video has no raw source object to re-transcode' }, 400)
   }
@@ -621,5 +653,65 @@ app.post('/:id/retry', async (c) => {
     attempts: updated[0].jobAttempts,
   })
 })
+
+/**
+ * Retry a self-hosted video **on the machine that owns its source**.
+ *
+ * Reuses the same job row so the source binding, the options the owner chose and
+ * the provider all survive. A fresh job would re-derive its agent from the
+ * source, which is right, but would also lose the frozen options — and a retry
+ * that quietly changes the ladder is not a retry. It also retires the failed
+ * attempt's inventory so its grants stop being renewable.
+ */
+async function retrySelfHostedJob(
+  c: Context<{ Bindings: Bindings }>,
+  videoRecord: typeof video.$inferSelect,
+  job: { jobId: string; state: string; sourceId: string | null },
+) {
+  if (!job.sourceId) {
+    return c.json(
+      {
+        error:
+          'This video’s transcode job has no source; re-select the file to import it again',
+      },
+      409,
+    )
+  }
+
+  if (videoRecord.deletedAt) return c.json({ error: 'Video not found' }, 404)
+
+  const rows = normalizeRows(
+    await db.execute(
+      buildRequeueStatement({
+        jobId: job.jobId,
+        videoId: videoRecord.id,
+        organizationId: videoRecord.organizationId,
+      }),
+    ),
+  )
+  if (rows.length === 0) {
+    return c.json(
+      {
+        error: `Only failed or cancelled jobs can be retried (current: ${job.state})`,
+        reason: 'already-claimed',
+      },
+      409,
+    )
+  }
+
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.processing', {
+    videoId: videoRecord.id,
+    title: videoRecord.title,
+    retried: true,
+    provider: 'self-hosted',
+  })
+
+  return c.json({
+    success: true,
+    status: 'processing',
+    videoId: videoRecord.id,
+    provider: 'self-hosted',
+  })
+}
 
 export default app

@@ -33,9 +33,10 @@ import {
   r2CredsValues,
   runModalSetup,
 } from './modal'
+import { analyticsTokenTemplateUrl } from './parsers'
 import { findOnPath, runInherit } from './runners'
 import { readServerEnv, upsertServerEnv } from './envio'
-import { askConfirm, logInfo, logStep, logSuccess, logWarn } from './ui'
+import { askConfirm, askPassword, logInfo, logStep, logSuccess, logWarn, printCheckRows, withSpinner } from './ui'
 import { lintServerEnv } from './verify'
 
 export interface DeployResult {
@@ -114,47 +115,123 @@ export async function runDeployPhase(
       upsertServerEnv(root, [['ACCOUNT_ID', effectiveAccountId]])
       logInfo('ACCOUNT_ID in server/.dev.vars updated to the logged-in account')
     }
+    upsertServerEnv(root, [['SWEEP_ENABLED', 'true']])
+
+    const currentEnv = readServerEnv(root)
+    if (!currentEnv) throw new WizardError('server/.dev.vars disappeared during deploy setup')
+    if (!currentEnv['CLOUDFLARE_ANALYTICS_TOKEN']?.trim()) {
+      const addAnalytics = await askConfirm(
+        'Set up optional Cloudflare usage analytics now?',
+        false,
+      )
+      if (addAnalytics) {
+        logInfo(
+          `Open this Cloudflare token template, create the token, then paste it here:\n${analyticsTokenTemplateUrl()}`,
+        )
+        const analyticsToken = await askPassword('Cloudflare Account Analytics Read token')
+        if (!analyticsToken) {
+          throw new WizardError(
+            'Cloudflare analytics token was empty — re-run --deploy and paste the token when prompted',
+          )
+        }
+        upsertServerEnv(root, [['CLOUDFLARE_ANALYTICS_TOKEN', analyticsToken]])
+        logSuccess('Cloudflare analytics token saved')
+      }
+    }
 
     // ── 2. Buckets + CORS + delivery config ─────────────────────────────
-    logStep(`Creating R2 buckets (${answers.rawBucket}, ${answers.transcodedBucket})`)
-    await ensureBucket(root, answers.rawBucket)
-    logSuccess(`R2 bucket ${answers.rawBucket} ready`)
-    await ensureBucket(root, answers.transcodedBucket)
-    logSuccess(`R2 bucket ${answers.transcodedBucket} ready`)
+    //
+    // The raw bucket exists to serve *uploads*, not transcoding, so provisioning
+    // it is conditional on uploads being enabled. A local-only installation —
+    // self-hosted provider, uploads off — needs no raw bucket, no CORS policy
+    // and no Modal account, and creating them anyway is not a harmless
+    // no-op: it puts an unused public bucket on the owner's account.
+    const wantsUploads = answers.uploadsEnabled !== false
+    const wantsModal = (answers.transcodeProvider ?? 'modal') === 'modal'
 
-    logStep(`Applying S3 CORS to ${answers.rawBucket} for browser uploads`)
-    await applyBucketCors(root, answers.rawBucket, [answers.frontendUrl], temp)
-    logSuccess('CORS policy applied (GET/PUT/HEAD, ETag exposed)')
+    if (wantsUploads) {
+      logStep(`Creating R2 buckets (${answers.rawBucket}, ${answers.transcodedBucket})`)
+      await ensureBucket(root, answers.rawBucket)
+      logSuccess(`R2 bucket ${answers.rawBucket} ready`)
+      await ensureBucket(root, answers.transcodedBucket)
+      logSuccess(`R2 bucket ${answers.transcodedBucket} ready`)
+
+      logStep(`Applying S3 CORS to ${answers.rawBucket} for browser uploads`)
+      await applyBucketCors(root, answers.rawBucket, [answers.frontendUrl], temp)
+      logSuccess('CORS policy applied (GET/PUT/HEAD, ETag exposed)')
+    } else {
+      logStep('Browser uploads are disabled — provisioning only the transcoded bucket')
+      await ensureBucket(root, answers.transcodedBucket)
+      logSuccess(`R2 bucket ${answers.transcodedBucket} ready`)
+      logInfo(
+        'No raw bucket and no CORS policy were created. Files on your machines ' +
+          'are read directly by the transcoder agent.',
+      )
+    }
 
     logStep('Pointing delivery/wrangler.jsonc at the transcoded bucket')
     const patched = patchDeliveryBucket(root, answers.transcodedBucket)
     logSuccess(patched ? 'delivery/wrangler.jsonc updated' : 'delivery/wrangler.jsonc already correct')
 
     // ── 3. Modal CLI + auth + secrets + deploy ──────────────────────────
+    if (!wantsModal) {
+      logStep('Provider is self-hosted — skipping Modal deployment entirely')
+      logInfo(
+        'Pair a machine to start encoding:\n' +
+          '  docker compose --profile transcoder run --rm transcoder \\\n' +
+          '    pair --api <your API URL> --code <CODE FROM THE DASHBOARD>',
+      )
+      await finishDeployWithoutModal(root, answers, temp)
+      return result
+    }
+
     let modalBin = await findModalBin()
     if (!modalBin) {
       const install = await askConfirm(
         'Modal CLI is not installed. Install it now (uv tool → pipx → python venv)?',
         true,
       )
-      if (install) modalBin = await installModalCli()
+      if (install) {
+        modalBin = await withSpinner(
+          'Installing the Modal CLI…',
+          () => installModalCli(),
+          'Modal CLI installed',
+        )
+      }
       else logWarn('Skipping Modal — deploy the pipeline yourself: see README "Deploy the transcoder"')
     }
 
     if (modalBin) {
-      const authed = await modalAuthed(modalBin)
-      if (!authed) {
+      const status = await modalAuthed(modalBin)
+      let authed = status.authed
+      if (authed) {
+        logSuccess(
+          `Modal CLI authenticated${status.profile ? ` (profile ${status.profile})` : ''}`,
+        )
+      } else {
         const setup = await askConfirm(
           'Modal CLI is not authenticated. Run modal setup now (opens your browser)?',
           true,
         )
         if (setup) {
-          await runModalSetup(modalBin)
+          const setupOk = await runModalSetup(modalBin)
+          if (setupOk) {
+            authed = true
+            logSuccess('Modal CLI authenticated after setup')
+          } else {
+            const retry = await modalAuthed(modalBin)
+            authed = retry.authed
+            if (authed) {
+              logSuccess(
+                `Modal CLI authenticated${retry.profile ? ` (profile ${retry.profile})` : ''}`,
+              )
+            }
+          }
         } else {
           logWarn('Skipping Modal auth — run `modal setup` yourself, then re-run --deploy')
         }
       }
-      if (authed || (await modalAuthed(modalBin))) {
+      if (authed) {
         const ingestSecret = serverEnv['TRANSCODE_INGEST_SECRET'] ?? ''
         logStep('Uploading Modal secrets (r2-creds, groq-creds)')
         await putModalSecret(
@@ -175,7 +252,7 @@ export async function runDeployPhase(
         })
         logSuccess('Modal secrets r2-creds + groq-creds ready')
 
-        const modalUrl = await deployModalPipeline(root, modalBin)
+        const modalUrl = await deployModalPipeline(root)
         if (modalUrl) {
           upsertServerEnv(root, [['MODAL_WEBHOOK_URL', modalUrl]])
           result.modalUrl = modalUrl
@@ -188,7 +265,23 @@ export async function runDeployPhase(
       }
     }
 
-    // ── 4. API runtime ───────────────────────────────────────────────────
+    // ── 4. Delivery worker (always Cloudflare) ───────────────────────────
+    const deliveryUrl = await deployWorker(root, 'delivery')
+    if (deliveryUrl) {
+      upsertServerEnv(root, [['DELIVERY_URL', deliveryUrl]])
+      result.deliveryUrl = deliveryUrl
+      logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
+    } else {
+      logWarn('delivery deploy finished but no workers.dev URL was parsed — set DELIVERY_URL by hand')
+    }
+    const jwt = readServerEnv(root)?.['JWT_SECRET']
+    if (jwt) {
+      logStep('Uploading delivery JWT_SECRET')
+      await putWorkerSecrets(root, 'delivery', [['JWT_SECRET', jwt]], temp)
+      logSuccess('Delivery JWT_SECRET uploaded')
+    }
+
+    // ── 5. API runtime ───────────────────────────────────────────────────
     if (answers.runtime === 'compose') {
       if (!findOnPath('docker')) {
         throw new WizardError(
@@ -199,6 +292,14 @@ export async function runDeployPhase(
       const code = await runInherit(['docker', 'compose', 'up', '-d'], { cwd: root })
       if (code !== 0) {
         throw new WizardError('docker compose up failed — check the compose logs and re-run')
+      }
+      logStep('Recreating the API container with generated deployment URLs')
+      const apiCode = await runInherit(
+        ['docker', 'compose', 'up', '-d', '--force-recreate', '--no-deps', 'api'],
+        { cwd: root },
+      )
+      if (apiCode !== 0) {
+        throw new WizardError('API container recreation failed — check the compose logs and re-run')
       }
       result.apiUrl = 'http://localhost:8787'
       logSuccess('Compose is up — API http://localhost:8787 · dashboard http://localhost:3000')
@@ -221,7 +322,7 @@ export async function runDeployPhase(
 
       const updated = readServerEnv(root)
       if (!updated) throw new WizardError('server/.dev.vars disappeared mid-deploy')
-      const secretEntries = (SERVER_KEY_ORDER as readonly string[]).map((key) => [
+      const secretEntries = ([...SERVER_KEY_ORDER, 'SWEEP_ENABLED'] as readonly string[]).map((key) => [
         key,
         updated[key] ?? '',
       ]) as Array<readonly [string, string]>
@@ -230,27 +331,11 @@ export async function runDeployPhase(
       logSuccess('API secrets uploaded')
     }
 
-    // ── 5. Delivery worker (always Cloudflare) ───────────────────────────
-    const deliveryUrl = await deployWorker(root, 'delivery')
-    if (deliveryUrl) {
-      upsertServerEnv(root, [['DELIVERY_URL', deliveryUrl]])
-      result.deliveryUrl = deliveryUrl
-      logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
-    } else {
-      logWarn('delivery deploy finished but no workers.dev URL was parsed — set DELIVERY_URL by hand')
-    }
-    const jwt = readServerEnv(root)?.['JWT_SECRET']
-    if (jwt) {
-      logStep('Uploading delivery JWT_SECRET')
-      await putWorkerSecrets(root, 'delivery', [['JWT_SECRET', jwt]], temp)
-      logSuccess('Delivery JWT_SECRET uploaded')
-    }
-
     // ── 6. Refresh Modal callback hosts once the API host is known ───────
     const apiHost =
       answers.runtime === 'workers'
         ? hostOf(result.apiUrl)
-        : hostOf(serverEnv['BETTER_AUTH_URL'] ?? null)
+        : hostOf(readServerEnv(root)?.['BETTER_AUTH_URL'] ?? null)
     if (modalBin && apiHost && apiHost !== 'localhost') {
       const env = readServerEnv(root)
       if (env) {
@@ -267,6 +352,7 @@ export async function runDeployPhase(
             ingestSecret: env['TRANSCODE_INGEST_SECRET'] ?? '',
             callbackHosts: ['localhost', apiHost].join(','),
           }),
+          { force: true },
         )
         logSuccess('r2-creds ALLOWED_CALLBACK_HOSTS updated')
       }
@@ -276,11 +362,7 @@ export async function runDeployPhase(
     const finalEnv = readServerEnv(root)
     if (finalEnv) {
       const { rows, failed } = lintServerEnv(finalEnv)
-      for (const row of rows) {
-        if (row.ok) logSuccess(row.text)
-        else if (row.advisory) logInfo(`${row.text} — optional / advisory`)
-        else logWarn(row.text)
-      }
+      printCheckRows(rows)
       if (failed) {
         logWarn('Some BYOK keys are still missing — see the rows above and server/.dev.vars.example')
       }
@@ -290,4 +372,61 @@ export async function runDeployPhase(
   } finally {
     temp.cleanup()
   }
+}
+
+/**
+ * Finish a deploy that has no Modal component.
+ *
+ * Everything except the Modal steps still has to happen — the delivery worker,
+ * the API secrets and the health probe are all provider-independent — so this
+ * shares the tail of the main phase rather than returning early with an
+ * unfinished deployment.
+ */
+async function finishDeployWithoutModal(
+  root: string,
+  answers: WizardAnswers,
+  temp: TempDir,
+): Promise<void> {
+  const result: DeployResult = { apiUrl: null, deliveryUrl: null, modalUrl: null }
+
+  // The delivery worker is Cloudflare in every configuration, including a
+  // local-only one: it is how a player gets signed bytes. Skipping it here would
+  // produce an installation that transcodes perfectly and cannot play anything.
+  logStep('Deploying the delivery worker')
+  try {
+    const deliveryUrl = await deployWorker(root, 'delivery')
+    if (deliveryUrl) {
+      upsertServerEnv(root, [['DELIVERY_URL', deliveryUrl]])
+      result.deliveryUrl = deliveryUrl
+      logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
+    } else {
+      logWarn('delivery deploy finished but no workers.dev URL was parsed — set DELIVERY_URL by hand')
+    }
+    const jwt = readServerEnv(root)?.['JWT_SECRET']
+    if (jwt) {
+      logStep('Uploading delivery JWT_SECRET')
+      await putWorkerSecrets(root, 'delivery', [['JWT_SECRET', jwt]], temp)
+      logSuccess('Delivery JWT_SECRET uploaded')
+    }
+  } catch (error) {
+    logWarn(
+      `Delivery deployment failed: ${error instanceof Error ? error.message : String(error)}. ` +
+        'Playback will not work until it is deployed.',
+    )
+  }
+
+  logStep('Checking configuration')
+  const env = readServerEnv(root)
+  if (env) {
+    const { rows, failed } = lintServerEnv(env)
+    printCheckRows(rows)
+    if (failed) {
+      logWarn('Some keys are still missing — see the rows above and server/.dev.vars.example')
+    }
+  }
+
+  await probeHealth(env?.['BETTER_AUTH_URL'] ?? null)
+  void answers
+  void temp
+  return
 }

@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.12.4",
+  "packageManager": "pnpm@12.3.4",
   "engines": {
     "node": "22.x"
   },
   "scripts": {
     "dev": "next dev",
+    "dev:node": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -19,7 +20,7 @@
     "@uppy/core": "^5.2.0",
     "@uppy/dashboard": "^5.1.0",
     "@vidstack/react": "^1.12.13",
-    "better-auth": "^1.4.10",
+    "better-auth": "~1.7.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
@@ -32,21 +33,6 @@
     "recharts": "^2.15.4",
     "tailwind-merge": "^3.5.0",
     "vaul": "^1.1.2"
-  },
-  "pnpm": {
-    "supportedArchitectures": {
-      "os": [
-        "linux"
-      ],
-      "cpu": [
-        "x64",
-        "arm64"
-      ],
-      "libc": [
-        "glibc",
-        "musl"
-      ]
-    }
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

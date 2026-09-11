@@ -9,7 +9,12 @@ import {
 import { video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { dispatchWebhook, secretsMatch } from '../utils/webhookDispatcher'
-import { writeLifecycleEvent } from '../lib/lifecycleOutbox'
+import {
+  finalizeVideoFailure,
+  finalizeVideoSuccess,
+  joinUrl,
+  safeJsonParse,
+} from '../lib/lifecycleFinalize'
 import { drainOutbox } from '../lib/webhookDelivery'
 import type { Bindings } from '../types'
 
@@ -33,22 +38,6 @@ function runAfterResponse(
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
-
-function joinUrl(base: string, path: string) {
-  const b = (base || '').replace(/\/+$/, '')
-  const p = String(path || '').replace(/^\/+/, '')
-  if (!b) return p // allow relative paths if no base
-  return `${b}/${p}`
-}
-
-function safeJsonParse<T>(s: unknown, fallback: T): T {
-  if (typeof s !== 'string') return fallback
-  try {
-    return JSON.parse(s) as T
-  } catch {
-    return fallback
-  }
-}
 
 app.post('/transcode-complete', async (c) => {
   console.log('[WEBHOOK] Received /api/webhook/transcode-complete callback request')
@@ -119,37 +108,24 @@ app.post('/transcode-complete', async (c) => {
 
     const transcodedBucketUrl = process.env.DELIVERY_WORKER_URL || ''
 
+    const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
+
     if (status === 'error') {
       const message =
         typeof payload?.message === 'string' ? payload.message : 'Unknown error'
-      const prevMeta = safeJsonParse<Record<string, any>>(
-        videoRecord.metadata,
-        {},
-      )
 
       // Same outbox guarantee as the success path: the terminal state and its
       // event are one write, so a crash cannot strand a `failed` video whose
-      // tenant is never told.
-      const failed = await writeLifecycleEvent(db, {
+      // tenant is never told. Shared with the self-hosted path so both
+      // providers produce identical rows and events.
+      const failed = await finalizeVideoFailure(db, {
         videoId,
-        assignments: [
-          sql`status = 'failed'`,
-          sql`metadata = ${JSON.stringify({
-            ...prevMeta,
-            error: message,
-            failed_at: new Date().toISOString(),
-          })}`,
-          // Ownership ends: the attempt is finished, successfully or not.
-          sql`transcode_attempt_id = NULL`,
-          sql`transcode_lease_expires_at = NULL`,
-          sql`updated_at = now()`,
-        ],
-        guards: [sql`status IN ('uploading', 'processing')`, ownerPredicate],
-        event: {
-          organizationId: videoRecord.organizationId,
-          event: 'video.failed',
-          payload: { videoId, title: videoRecord.title, error: message },
-        },
+        organizationId: videoRecord.organizationId,
+        title: videoRecord.title,
+        attemptId: videoRecord.transcodeAttemptId,
+        message,
+        failureCode: typeof payload?.error_code === 'string' ? payload.error_code : null,
+        prevMetadata: prevMeta,
       })
 
       if (!failed.applied) {
@@ -161,148 +137,25 @@ app.post('/transcode-complete', async (c) => {
       return c.json({ success: true, status: 'failed', videoId })
     }
 
-    // success - new payload structure from Modal
+    // success - payload structure from Modal (and, unchanged, from an agent)
     // payload.outputs: { hls_playlist, dash_manifest, poster, subtitles, renditions }
-    // payload.metadata: { width, height, duration, fps, has_audio, is_hdr, is_vertical, aspect_ratio }
-    // payload.processing: { total_time, transcode_time, etc. }
-    // payload.subtitle: { requested, generated, status, url }
-
-    const outputs = payload?.outputs || {}
-    const meta = payload?.metadata || {}
-    const processing = payload?.processing || {}
-    const subtitle = payload?.subtitle || {}
-    const chapters = payload?.chapters || {}
-
-    const master =
-      typeof outputs?.hls_playlist === 'string' ? outputs.hls_playlist : null
-    const thumb = typeof outputs?.poster === 'string' ? outputs.poster : null
-    const subtitleVtt =
-      typeof outputs?.subtitles === 'string' ? outputs.subtitles : null
-    const duration =
-      typeof meta?.duration === 'number' && meta.duration >= 0
-        ? meta.duration
-        : null
-    const resolutions = Array.isArray(outputs?.renditions)
-      ? outputs.renditions.filter((x: any) => typeof x === 'string')
-      : null
-
-    const prevMeta = safeJsonParse<Record<string, any>>(
-      videoRecord.metadata,
-      {},
-    )
-
-    // Determine subtitle status from webhook
-    let subtitleStatus: string | null = null
-    if (subtitle?.requested) {
-      subtitleStatus =
-        subtitle?.status || (subtitle?.generated ? 'completed' : 'failed')
-    }
-
-    // Determine chapters status and data from webhook
-    let chaptersStatus: string | null = null
-    let chaptersData: Array<{
-      startTime: number
-      endTime: number
-      title: string
-    }> | null = null
-    if (chapters?.requested) {
-      chaptersStatus =
-        chapters?.status || (chapters?.generated ? 'completed' : 'failed')
-      if (chapters?.generated && Array.isArray(chapters?.data)) {
-        chaptersData = chapters.data
-      }
-    }
-
-    // Extract transcoded size for usage metering (in bytes)
-    const transcodedSize =
-      typeof processing?.transcoded_size === 'number'
-        ? processing.transcoded_size
-        : null
-
-    // Extract transcoded time for analytics (in seconds)
-    const transcodedTime =
-      typeof processing?.transcode_time === 'number'
-        ? Math.round(processing.transcode_time)
-        : null
-
-    // The state change and its `video.ready` event are written together, so a
-    // crash here cannot leave the video playable with no event ever emitted.
-    // Previously the update and the dispatch were separate: dying in between
-    // lost `video.ready` permanently, because the transcoder's callback retry
-    // then found the row already `ready` and was ignored by the state guard.
-    const nextMetadata = JSON.stringify({
-      ...prevMeta,
-      // Video info
-      width: meta?.width,
-      height: meta?.height,
-      fps: meta?.fps,
-      has_audio: meta?.has_audio,
-      is_hdr: meta?.is_hdr,
-      is_vertical: meta?.is_vertical,
-      aspect_ratio: meta?.aspect_ratio,
-      duration_exact: duration,
-      // Processing stats
-      processing_time: processing?.total_time,
-      transcode_time: processing?.transcode_time,
-      processing_speed: processing?.processing_speed,
-      files_uploaded: processing?.files_uploaded,
-      source_size_mb: processing?.source_size_mb,
-      transcoded_size_mb: processing?.transcoded_size_mb,
-      // Outputs
-      dash_manifest: outputs?.dash_manifest,
-      playback_policy: payload?.playback_policy,
-      encrypted: payload?.encrypted,
-      // Subtitle info
-      subtitle_requested: subtitle?.requested,
-      subtitle_generated: subtitle?.generated,
-      // Chapters info
-      chapters_requested: chapters?.requested,
-      chapters_generated: chapters?.generated,
-      transcoded_at: new Date().toISOString(),
-    })
-
-    const resolvedHlsUrl = master ? joinUrl(transcodedBucketUrl, master) : null
-    const resolvedThumbUrl = thumb ? joinUrl(transcodedBucketUrl, thumb) : null
-
-    const lifecycle = await writeLifecycleEvent(db, {
+    // payload.metadata: { width, height, duration, fps, has_audio, is_hdr, ... }
+    // payload.processing: { total_time, transcode_time, ... }
+    // payload.subtitle / payload.chapters: { requested, generated, status, url }
+    //
+    // `outputPrefix` is null here on purpose: the Modal worker writes to the
+    // legacy `videos/<id>/` layout, so its artifact paths are already complete
+    // keys. A self-hosted agent passes its attempt prefix instead, and the same
+    // code re-bases its relative paths onto it.
+    const lifecycle = await finalizeVideoSuccess(db, {
       videoId,
-      assignments: [
-        sql`status = 'ready'`,
-        sql`hls_url = ${resolvedHlsUrl}`,
-        sql`thumbnail_url = ${resolvedThumbUrl}`,
-        sql`duration = ${duration != null ? Math.floor(duration) : null}`,
-        sql`resolutions = ${resolutions ? JSON.stringify(resolutions) : null}`,
-        sql`subtitle_status = ${subtitleStatus}`,
-        sql`subtitle_url = ${
-          subtitleVtt ? joinUrl(transcodedBucketUrl, subtitleVtt) : null
-        }`,
-        sql`chapters_status = ${chaptersStatus}`,
-        sql`chapters = ${chaptersData ? JSON.stringify(chaptersData) : null}::jsonb`,
-        sql`transcoded_size = ${transcodedSize}`,
-        sql`transcoded_time = ${transcodedTime}`,
-        sql`metadata = ${nextMetadata}`,
-        // Ownership ends here: the attempt is complete.
-        sql`transcode_attempt_id = NULL`,
-        sql`transcode_lease_expires_at = NULL`,
-        sql`failure_code = NULL`,
-        sql`updated_at = now()`,
-      ],
-      guards: [
-        sql`status IN ('uploading', 'processing')`,
-        ownerPredicate,
-      ],
-      event: {
-        organizationId: videoRecord.organizationId,
-        event: 'video.ready',
-        payload: {
-          videoId,
-          title: videoRecord.title,
-          status: 'ready',
-          duration,
-          hlsUrl: resolvedHlsUrl,
-          thumbnailUrl: resolvedThumbUrl,
-        },
-      },
+      organizationId: videoRecord.organizationId,
+      title: videoRecord.title,
+      attemptId: videoRecord.transcodeAttemptId,
+      payload: payload as Record<string, unknown>,
+      outputPrefix: null,
+      deliveryBaseUrl: transcodedBucketUrl,
+      prevMetadata: prevMeta,
     })
 
     if (!lifecycle.applied) {
@@ -310,9 +163,6 @@ app.post('/transcode-complete', async (c) => {
       // state changed, so no event was recorded either — nothing to dispatch.
       return c.json({ success: true, status: 'ready', ignored: true })
     }
-
-    // Dispatch webhook events
-    const transcodedBucketUrlFinal = transcodedBucketUrl
 
     // `video.ready` was already recorded by the atomic write above and is
     // claimed by this drain. Everything else below still dispatches directly.
@@ -323,16 +173,17 @@ app.post('/transcode-complete', async (c) => {
       drainOutbox({ eventIds: [lifecycle.eventId] }),
     )
 
+    const subtitle = (payload?.subtitle ?? {}) as Record<string, unknown>
+    const chapters = (payload?.chapters ?? {}) as Record<string, unknown>
+
     // subtitle events
-    if (subtitle?.requested) {
-      if (subtitleStatus === 'completed') {
+    if (subtitle.requested) {
+      if (lifecycle.subtitleStatus === 'completed') {
         dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'subtitle.generated', {
           videoId,
-          subtitleUrl: subtitleVtt
-            ? joinUrl(transcodedBucketUrlFinal, subtitleVtt)
-            : null,
+          subtitleUrl: lifecycle.subtitleUrl,
         })
-      } else if (subtitleStatus === 'failed') {
+      } else if (lifecycle.subtitleStatus === 'failed') {
         dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'subtitle.failed', {
           videoId,
         })
@@ -340,13 +191,13 @@ app.post('/transcode-complete', async (c) => {
     }
 
     // chapters events
-    if (chapters?.requested) {
-      if (chaptersStatus === 'completed') {
+    if (chapters.requested) {
+      if (lifecycle.chaptersStatus === 'completed') {
         dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'chapters.generated', {
           videoId,
-          chapters: chaptersData,
+          chapters: lifecycle.chapters,
         })
-      } else if (chaptersStatus === 'failed') {
+      } else if (lifecycle.chaptersStatus === 'failed') {
         dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'chapters.failed', {
           videoId,
         })
@@ -357,8 +208,8 @@ app.post('/transcode-complete', async (c) => {
       success: true,
       status: 'ready',
       videoId,
-      hlsUrl: master ? joinUrl(transcodedBucketUrl, master) : null,
-      thumbnailUrl: thumb ? joinUrl(transcodedBucketUrl, thumb) : null,
+      hlsUrl: lifecycle.hlsUrl,
+      thumbnailUrl: lifecycle.thumbnailUrl,
     })
   } catch (error) {
     console.error('Webhook error:', error)

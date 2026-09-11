@@ -40,7 +40,7 @@ uploads or play video until they exist.
 | Cloudflare login | Deploy the delivery worker (always) and the API worker (Workers path) | wrangler is a pinned local devDependency — `pnpm exec wrangler login`, never a global `npx wrangler` |
 | [Postgres](https://neon.tech) **or** Docker | Metadata, auth, video rows | Neon serverless URL, or Compose’s `postgres` |
 | [Modal](https://modal.com) account | GPU transcoding (FFmpeg / Shaka / Whisper) | the `--deploy` phase installs the Modal CLI (uv/pipx/venv) and runs `modal setup` |
-| Node 22 + pnpm 10 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both via nvm when missing |
+| Node 22 + pnpm 12 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both via nvm when missing |
 
 **Delivery is Cloudflare-only.** `docker compose up` runs Postgres + API +
 dashboard. It does **not** serve signed playback. You still deploy
@@ -157,12 +157,17 @@ step 6.
 git clone https://github.com/visheshgubrani/vod.git
 cd vod
 ./scripts/bootstrap.sh      # toolchain check + interactive wizard
-scripts/verify-env.sh
+./scripts/bootstrap.sh --check
 ```
 
 The wizard writes `server/.dev.vars` and `delivery/.dev.vars` (same
-`JWT_SECRET`; secrets are generated locally and files are chmod 600). You can
-also `cp server/.dev.vars.example server/.dev.vars` and edit by hand.
+`JWT_SECRET`; secrets are generated locally and files are chmod 600). By hand:
+`cp server/.dev.vars.example server/.dev.vars` and the same for
+`delivery/.dev.vars`, plus `cp web/.env.example web/.env` for the dashboard.
+
+`server/.dev.vars` is the one local config for the API — `wrangler dev`,
+`docker compose`, the Node runtime (`pnpm start`) and drizzle-kit all read it,
+so there is no second `.env` to keep in sync.
 
 Leave `MODAL_WEBHOOK_URL` / `DELIVERY_URL` blank until the deploys in the
 next steps, then paste them in.
@@ -281,7 +286,7 @@ curl http://localhost:8787/health              # ok
 curl http://localhost:8787/health/config       # ready + checks
 curl https://<delivery-host>/health            # delivery worker
 # Modal: GET <MODAL_WEBHOOK_URL> sibling /healthz if you exposed it
-scripts/verify-env.sh http://localhost:8787
+./scripts/bootstrap.sh --check http://localhost:8787
 ```
 
 `ready` requires database, R2, Modal URL + ingest secret, and auth/JWT.
@@ -299,23 +304,77 @@ delivery/      Cloudflare Worker — media delivery (JWT, manifest rewriting, me
 web/           Next.js dashboard + Developer Welcome (Vercel or Docker standalone)
 sdk/           @openvod/uploader — TypeScript upload SDK (windowed multipart)
 player/        @openvod/player — Vidstack-based React player (token auto-refresh)
-transcoding/   Modal Python GPU pipeline (FFmpeg + Shaka + Whisper)
+transcoding/   openvod_transcoder — shared engine (FFmpeg + Shaka + Whisper),
+               the Modal runner, and the self-hosted agent + CLI
 docs-site/     Fumadocs documentation site
 docs/          Long-form markdown (delivery contract, integrations)
-setup/         openvod-setup — interactive bootstrap wizard (TS sources)
-scripts/       bootstrap.sh launcher (toolchain + wizard exec) + verify-env.sh
+setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
+scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 ```
 
 ## Development & tests
 
 ```bash
 pnpm install
+pnpm db:up                    # dev Postgres (host port 5433), then: pnpm db:migrate
+pnpm dev:node                 # API on the Node runtime (:8787) + web (:3000)
+pnpm dev                      # API on wrangler/Workers (:8787) + web — needs DB_DRIVER=neon-http
+pnpm dev:all                  # ...plus delivery worker and sdk/player watchers
+pnpm start                    # built artifacts: Node API (PORT, :4080) + next start
 pnpm --filter vod-api test
 pnpm --filter ./delivery test
 pnpm --filter ./sdk test
 pnpm --filter ./player test
 (cd transcoding && .venv/bin/python -m pytest)
 ```
+
+Both aggregate commands need Postgres reachable (`pnpm db:up`, host port 5433 —
+rows survive restarts in the named volume) and the per-package env files from
+[step 4](#4-clone-and-write-env-files); run `pnpm db:migrate` once to create the
+schema. `pnpm start` builds first (`pnpm start:prepare`), so re-run it after
+changing `NEXT_PUBLIC_*` values — Next inlines them at build time.
+
+Neither command starts a database, and the API boots without one: `GET /health`
+still answers `ok` and `/health/config` still says `database: true` (those checks
+only verify the URL is configured), while real queries fail. Which database is
+used is simply `DATABASE_URL` in `server/.dev.vars`.
+
+`wrangler dev` (`pnpm dev`) cannot hold a Postgres TCP connection across
+requests — the Workers runtime forbids it, so the first database request
+succeeds and the rest fail with `Cannot perform I/O on behalf of a different
+request`. Use the Node runtime for local Postgres (`docker compose up -d api`, or
+`pnpm start`) and keep `DB_DRIVER=neon-http` with a Neon URL for the Workers
+path.
+
+The Workers' local ports are pinned in `server/wrangler.jsonc` (:8787) and
+`delivery/wrangler.jsonc` (:8788), so if the Compose stack is already up they
+fail with `Address already in use` rather than drifting to a port your env files
+don't know about — stop those containers first (`docker compose stop api web`).
+Next is not pinned: `next dev` quietly moves to :3001 when :3000 is taken (check
+`FRONTEND_URL`/`CORS_ORIGINS` then), and `next start` fails outright with
+`EADDRINUSE`.
+
+## Transcoding providers
+
+Videos can be encoded by **Modal** or by a **self-hosted agent** on your own
+machine. Both run the same processing engine (`transcoding/openvod_transcoder`),
+so the ladder, packaging, validation and video lifecycle are identical — only the
+execution environment differs.
+
+| Source | Provider | Raw bucket needed? |
+| --- | --- | --- |
+| File on your machine | self-hosted agent | no |
+| Browser / SDK upload | self-hosted agent | yes |
+| Browser / SDK upload | Modal | yes |
+
+`TRANSCODE_PROVIDER` selects the installation default (`modal` unless set);
+existing installations are unaffected, and the choice is stored per job so
+changing the default never reroutes work that already exists. A local-only
+installation needs no raw bucket, no Modal account and no QStash.
+
+See [docs/self-hosted-transcoding.md](docs/self-hosted-transcoding.md) for
+setup, hardware selection and troubleshooting, and
+[docs/delivery-contract.md](docs/delivery-contract.md) for the agent protocol.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

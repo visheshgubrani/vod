@@ -20,8 +20,8 @@ describe('patchBucketName', () => {
     expect(updated).toContain('"binding": "TRANSCODED_BUCKET"')
   })
 
-  it('returns null when the value is unchanged', () => {
-    expect(patchBucketName(WRANGLER, 'transcoded-bucket')).toBeNull()
+  it('returns the original text when the value is unchanged', () => {
+    expect(patchBucketName(WRANGLER, 'transcoded-bucket')).toBe(WRANGLER)
   })
 
   it('returns null when no bucket_name exists', () => {

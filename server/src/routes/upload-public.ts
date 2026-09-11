@@ -26,7 +26,8 @@ import { maxUploadBytes } from '../lib/config'
 import { uploadToken, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { headObjectSize, r2 } from '../utils/R2'
-import { dispatchTranscodeJob, dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { dispatchWithProvider } from '../utils/dispatchProvider'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings, UploadTokenVariables } from '../types'
 
@@ -541,13 +542,18 @@ app.post('/complete', async (c) => {
 
         // Claim the attempt, then dispatch — the claim owns the
         // uploading -> processing transition and the attempt id.
-        const dispatchResult = await dispatchTranscodeJob({
+        const dispatchResult = await dispatchWithProvider({
             videoId: fileId,
             rawKey: key,
+            rawBucket: c.env?.RAW_BUCKET_NAME ?? process.env.RAW_BUCKET_NAME ?? null,
             organizationId: videoRecord.organizationId,
             playbackPolicy: videoRecord.playbackPolicy || 'public',
             generateSubtitle: videoRecord.generateSubtitle || false,
             generateChapters: videoRecord.generateChapters || false,
+            // Per-request override; omitted means the installation default.
+            // Per-request override from the SDK; omitted means the installation default.
+            transcodingProvider:
+                typeof body?.transcodingProvider === 'string' ? body.transcodingProvider : undefined,
             env: c.env,
         })
 

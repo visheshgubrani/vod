@@ -4,7 +4,7 @@
  * applied migrations in __drizzle_migrations, and a Postgres advisory lock
  * prevents parallel replicas from racing the same pass.
  */
-import 'dotenv/config'
+import '../lib/load-local-env'
 import path from 'node:path'
 import postgres from 'postgres'
 import { drizzle as drizzlePg } from 'drizzle-orm/postgres-js'

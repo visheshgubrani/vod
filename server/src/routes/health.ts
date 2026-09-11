@@ -1,5 +1,11 @@
 import { Hono } from 'hono'
-import { loadConfig, type EnvLike } from '../lib/config'
+import { loadConfig, parseUploadsEnabled, type EnvLike } from '../lib/config'
+import { db } from '../lib/database'
+import { transcoderAgent } from '../db/schema'
+import {
+  buildPublicCapabilities,
+  type AgentRow,
+} from '../lib/agentCapabilities'
 import { readMaintenanceStatus } from '../utils/maintenance'
 import type { Bindings } from '../types'
 
@@ -59,7 +65,54 @@ healthApp.get('/config', async (c) => {
     maintenance,
     problems: cfg.problems,
     advisories: cfg.advisories,
+    // Split capability reporting, and deliberately coarse.
+    //
+    // An unauthenticated caller learning that an organization runs three agents
+    // with specific hostnames is an information disclosure with no upside, so
+    // this projection is booleans and counts: `uploads` answers "can a browser
+    // upload be processed?", `localImport` answers "can a file on the owner's
+    // machine be imported?", and `providers` says what is wired up. Agent names,
+    // hostnames, paths and credentials are in the authenticated dashboard health
+    // (`/api/transcoder/health`).
+    transcode: await buildTranscodeCapabilities(cfg, parseUploadsEnabled(env)),
   })
 })
+
+async function buildTranscodeCapabilities(
+  cfg: ReturnType<typeof loadConfig>,
+  uploadsEnabled: boolean,
+) {
+  // Agent rows are counted by state, not listed: the query selects only what the
+  // public projection needs, so a field added for the dashboard cannot leak here
+  // by accident.
+  let agents: AgentRow[] = []
+  try {
+    agents = await db
+      .select({
+        id: transcoderAgent.id,
+        name: transcoderAgent.name,
+        enabled: transcoderAgent.enabled,
+        lastSeenAt: transcoderAgent.lastSeenAt,
+        capabilities: transcoderAgent.capabilities,
+      })
+      .from(transcoderAgent)
+  } catch (error) {
+    // A missing table (an installation that has not migrated yet) must not take
+    // down the health endpoint the setup wizard reads.
+    console.error('[HEALTH] agent lookup failed:', error)
+  }
+
+  return buildPublicCapabilities({
+    modalWebhookUrl: cfg.modalWebhookUrl,
+    ingestSecret: cfg.ingestSecret,
+    rawBucket: uploadsEnabled ? cfg.rawBucket : null,
+    transcodedBucket: cfg.transcodedBucket,
+    hasStorageCredentials: cfg.checks.storage,
+    agents,
+    defaultProvider: cfg.transcodeProvider,
+    selfHostedEnabled: cfg.selfHostedEnabled,
+    aiEnabled: cfg.checks.ai,
+  })
+}
 
 export default healthApp

@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { apiOrigin } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
-const CONFIG_URL = `${API_BASE}/health/config`;
-const HEALTH_URL = `${API_BASE}/health`;
+const ORIGIN = apiOrigin(API_BASE);
+const CONFIG_URL = `${ORIGIN}/health/config`;
+const HEALTH_URL = `${ORIGIN}/health`;
 const POLL_INTERVAL_MS = 30_000;
 const FETCH_TIMEOUT_MS = 6_000;
 
@@ -19,7 +21,11 @@ interface CheckDefinition {
 const CHECK_DEFINITIONS: CheckDefinition[] = [
   { key: "database", label: "Database", hint: "Postgres" },
   { key: "storage", label: "Storage", hint: "Cloudflare R2" },
-  { key: "transcoder", label: "Transcoder", hint: "Modal GPU" },
+  { key: "transcoder", label: "Transcoder", hint: "Configured provider" },
+  // The raw bucket is required by *uploading*, not by transcoding. A local-only
+  // installation has none and is healthy, so this is reported as a capability
+  // rather than as a missing requirement.
+  { key: "rawUploads", label: "Raw uploads", hint: "Browser / SDK files" },
   { key: "auth", label: "Auth / JWT", hint: "Sessions and keys" },
   { key: "analytics", label: "Analytics", hint: "Playback + bandwidth" },
   { key: "ai", label: "AI", hint: "Subtitles" },

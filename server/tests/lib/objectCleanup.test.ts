@@ -298,3 +298,43 @@ describe.skipIf(!hasTestDatabase)('runObjectCleanup (real Postgres)', () => {
     }
   })
 })
+
+// ────────────────────────────────────────────────────────────────────────────
+// A local-only installation has no raw bucket.
+//
+// Requiring one made `cleanupDepsFromEnv` return null, so the *entire* cleanup
+// pass silently skipped: deleted videos kept their transcoded bytes forever,
+// which is the one thing this pass exists to prevent. Raw cleanup is a property
+// of the job row (does it have a raw key?), not of the deployment.
+// ────────────────────────────────────────────────────────────────────────────
+import { cleanupDepsFromEnv } from '../../src/lib/objectCleanup'
+
+const store = {
+  listKeys: async () => [],
+  deleteKeys: async () => 0,
+  abortMultipartUploads: async () => 0,
+}
+
+describe('cleanupDepsFromEnv', () => {
+  it('returns dependencies with no raw bucket configured', () => {
+    const deps = cleanupDepsFromEnv(
+      { TRANSCODED_BUCKET_NAME: 'transcoded', DB_DRIVER: 'pg' },
+      store,
+    )
+    expect(deps).not.toBeNull()
+    expect(deps?.rawBucket).toBeNull()
+    expect(deps?.transcodedBucket).toBe('transcoded')
+  })
+
+  it('returns null only when there is nowhere to clean up', () => {
+    expect(cleanupDepsFromEnv({ DB_DRIVER: 'pg' }, store)).toBeNull()
+  })
+
+  it('still reports the raw bucket when one is configured', () => {
+    const deps = cleanupDepsFromEnv(
+      { TRANSCODED_BUCKET_NAME: 'transcoded', RAW_BUCKET_NAME: 'raw' },
+      store,
+    )
+    expect(deps?.rawBucket).toBe('raw')
+  })
+})

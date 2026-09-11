@@ -10,7 +10,7 @@
  *   configured" by design; bandwidth/playback stats need the delivery Worker
  *   + CF account token instead
  */
-import 'dotenv/config'
+import '../lib/load-local-env'
 import { serve } from '@hono/node-server'
 import app from '../app'
 import type { Bindings } from '../types'

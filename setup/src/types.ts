@@ -45,6 +45,12 @@ export interface WizardAnswers {
   r2SecretAccessKey: string
   rawBucket: string
   transcodedBucket: string
+  /** 'modal' (default) or 'self-hosted'. Omitted means Modal. */
+  transcodeProvider?: 'modal' | 'self-hosted'
+  /** Accept new self-hosted submissions. Omitted follows the provider. */
+  selfHostedEnabled?: boolean
+  /** Accept browser/SDK uploads. Omitted means true. */
+  uploadsEnabled?: boolean
   frontendUrl: string
   /** Optional Groq key for AI subtitles/chapters. */
   groqApiKey?: string

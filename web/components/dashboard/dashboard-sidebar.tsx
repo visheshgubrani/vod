@@ -12,6 +12,7 @@ import {
   Key,
   HardDrive,
   Webhook,
+  ServerCog,
 } from "lucide-react";
 import { IoAddCircleOutline } from "react-icons/io5";
 import { CreateOrganizationModal } from "@/components/dashboard/create-organization-modal";
@@ -38,6 +39,7 @@ const navItems = [
   { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/dashboard/api-keys", label: "API Keys", icon: Key },
   { href: "/dashboard/webhooks", label: "Webhooks", icon: Webhook },
+  { href: "/dashboard/transcoders", label: "Transcoders", icon: ServerCog },
   { href: "/dashboard/usage", label: "Usage", icon: HardDrive },
   // { href: "/dashboard/developers", label: "Developers", icon: Code2 },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },

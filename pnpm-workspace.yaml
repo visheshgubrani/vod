@@ -6,3 +6,10 @@ packages:
   - web
   - docs-site
   - setup
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  msw: false
+  unrs-resolver: false
+  workerd: false

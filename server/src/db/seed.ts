@@ -1,7 +1,7 @@
+import '../lib/load-local-env'
 import { neon } from '@neondatabase/serverless'
 import { drizzle } from 'drizzle-orm/neon-http'
 import { user, organization, member } from './schema'
-import 'dotenv/config'
 
 const run = async () => {
   if (!process.env.DATABASE_URL) throw new Error('No DB URL')

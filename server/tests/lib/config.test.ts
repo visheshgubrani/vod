@@ -5,6 +5,8 @@ import {
   readDeliveryBaseUrl,
   maxUploadBytes,
   DEFAULT_MAX_UPLOAD_BYTES,
+  loadProviderSettings,
+  requiresRawBucket,
 } from '../../src/lib/config'
 
 const FULL_ENV = {
@@ -54,6 +56,7 @@ describe('loadConfig', () => {
       analytics: true,
       ai: true,
       delivery: true,
+      rawUploads: true,
     })
     expect(cfg.jwtSecret).toBe(FULL_ENV.JWT_SECRET)
     expect(cfg.deliveryUrl).toBe('https://media.example.com')
@@ -189,5 +192,145 @@ describe('maxUploadBytes', () => {
     expect(maxUploadBytes({ MAX_UPLOAD_SIZE_BYTES: String(2 * 1024 ** 3) })).toBe(
       2 * 1024 ** 3,
     )
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// Provider selection and the conditional raw bucket.
+//
+// The v1 commitment being pinned here: a local-only installation needs no raw
+// bucket, no Modal account and no QStash — while an existing Modal installation
+// that sets nothing new keeps exactly the behaviour it had.
+// ────────────────────────────────────────────────────────────────────────────
+describe('loadProviderSettings', () => {
+  it('defaults to modal with self-hosted submission off', () => {
+    expect(loadProviderSettings({})).toEqual({
+      transcodeProvider: 'modal',
+      selfHostedEnabled: false,
+      problems: [],
+    })
+  })
+
+  it('treats choosing self-hosted as enabling it', () => {
+    const settings = loadProviderSettings({ TRANSCODE_PROVIDER: 'self-hosted' })
+    expect(settings.transcodeProvider).toBe('self-hosted')
+    expect(settings.selfHostedEnabled).toBe(true)
+  })
+
+  it('accepts the local alias', () => {
+    expect(loadProviderSettings({ TRANSCODE_PROVIDER: 'local' }).transcodeProvider).toBe(
+      'self-hosted',
+    )
+  })
+
+  it('lets an operator disable new submissions without changing the default', () => {
+    // This is the documented rollback: accepted jobs drain, nothing is cancelled.
+    const settings = loadProviderSettings({
+      TRANSCODE_PROVIDER: 'self-hosted',
+      SELF_HOSTED_ENABLED: 'false',
+    })
+    expect(settings.transcodeProvider).toBe('self-hosted')
+    expect(settings.selfHostedEnabled).toBe(false)
+  })
+
+  it('rejects an unknown provider instead of silently defaulting', () => {
+    const settings = loadProviderSettings({ TRANSCODE_PROVIDER: 'lambda' })
+    expect(settings.transcodeProvider).toBe('modal')
+    expect(settings.problems[0]).toContain('TRANSCODE_PROVIDER')
+  })
+})
+
+describe('requiresRawBucket', () => {
+  it('is not required for a local-only installation', () => {
+    expect(
+      requiresRawBucket({
+        transcodeProvider: 'self-hosted',
+        uploadsEnabled: false,
+        hasRawBucket: false,
+      }),
+    ).toBe(false)
+  })
+
+  it('is required when uploads are enabled', () => {
+    expect(
+      requiresRawBucket({
+        transcodeProvider: 'self-hosted',
+        uploadsEnabled: true,
+        hasRawBucket: false,
+      }),
+    ).toBe(true)
+  })
+
+  it('is required for the Modal provider', () => {
+    expect(
+      requiresRawBucket({
+        transcodeProvider: 'modal',
+        uploadsEnabled: false,
+        hasRawBucket: false,
+      }),
+    ).toBe(true)
+  })
+
+  it('is satisfied once a bucket exists', () => {
+    expect(
+      requiresRawBucket({
+        transcodeProvider: 'modal',
+        uploadsEnabled: true,
+        hasRawBucket: true,
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('loadConfig with a self-hosted provider', () => {
+  const LOCAL_ONLY = {
+    DATABASE_URL: 'postgresql://user:pass@host:5432/db',
+    BETTER_AUTH_SECRET: 'b'.repeat(40),
+    JWT_SECRET: 'j'.repeat(40),
+    ACCOUNT_ID: 'acct',
+    R2_ACCESS_KEY_ID: 'key',
+    R2_SECRET_ACCESS_KEY: 'secret',
+    TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+    TRANSCODE_PROVIDER: 'self-hosted',
+    UPLOADS_ENABLED: 'false',
+    DELIVERY_URL: 'https://delivery.example.com',
+  }
+
+  it('is ready with no raw bucket and no Modal configuration', () => {
+    const cfg = loadConfig(LOCAL_ONLY)
+    expect(cfg.ready).toBe(true)
+    expect(cfg.checks.rawUploads).toBe(false)
+    expect(cfg.rawBucketRequired).toBe(false)
+    expect(cfg.checks.transcoder).toBe(true)
+  })
+
+  it('says the missing bucket is not needed rather than reporting it missing', () => {
+    const cfg = loadConfig(LOCAL_ONLY)
+    expect(cfg.problems.some((p) => p.includes('RAW_BUCKET_NAME'))).toBe(false)
+    expect(cfg.advisories.some((a) => a.includes('not required'))).toBe(true)
+  })
+
+  it('requires the raw bucket again as soon as uploads are enabled', () => {
+    const cfg = loadConfig({ ...LOCAL_ONLY, UPLOADS_ENABLED: 'true' })
+    expect(cfg.ready).toBe(false)
+    expect(cfg.rawBucketRequired).toBe(true)
+    expect(cfg.problems.some((p) => p.includes('RAW_BUCKET_NAME'))).toBe(true)
+  })
+
+  it('requires Modal configuration again when Modal is the provider', () => {
+    const cfg = loadConfig({ ...LOCAL_ONLY, TRANSCODE_PROVIDER: 'modal' })
+    expect(cfg.ready).toBe(false)
+    expect(cfg.problems.some((p) => p.includes('MODAL_WEBHOOK_URL'))).toBe(true)
+  })
+
+  it('notes a stale Modal endpoint that is configured but unused', () => {
+    const cfg = loadConfig({ ...LOCAL_ONLY, MODAL_WEBHOOK_URL: 'https://modal.example.com' })
+    expect(cfg.ready).toBe(true)
+    expect(cfg.advisories.some((a) => a.includes('MODAL_WEBHOOK_URL is configured'))).toBe(true)
+  })
+
+  it('reports self-hosted transcoding as off when submissions are disabled', () => {
+    const cfg = loadConfig({ ...LOCAL_ONLY, SELF_HOSTED_ENABLED: 'false' })
+    expect(cfg.checks.transcoder).toBe(false)
   })
 })

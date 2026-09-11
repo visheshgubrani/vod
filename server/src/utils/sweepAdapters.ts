@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import { db } from '../lib/database'
-import { video } from '../db/schema'
+import { transcodeJob, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { dispatchTranscodeJob } from './dispatchTranscode'
 import type { SweepableVideo, SweepAdapters, SweepLimits } from './jobSweeper'
@@ -57,13 +57,50 @@ function toSweepable(row: typeof video.$inferSelect): SweepableVideo {
   }
 }
 
+/**
+ * Videos the self-hosted queue owns.
+ *
+ * The sweeper and the local job queue both reclaim stuck work, and they must not
+ * reclaim the *same* work: the sweeper would re-dispatch through the Modal path
+ * (which needs a `rawKey` a local import does not have), while the queue requeues
+ * against the typed source. Excluding them here keeps the two reconcilers
+ * disjoint, which is the only way "the job is stuck" has one owner.
+ *
+ * A job row in a terminal state is *not* excluded: the video is then genuinely
+ * the sweeper's problem, and that is exactly the case where a `processing` video
+ * whose job already failed should be caught.
+ */
+function notOwnedByLocalQueue() {
+  // Built inside the function, not at module scope: this module is imported by
+  // `maintenance.ts`, which `/health/config` imports, and reaching for a
+  // database handle at import time would make health depend on a live database.
+  return notExists(
+    db
+      .select({ one: sql`1` })
+      .from(transcodeJob)
+      .where(
+        and(
+          eq(transcodeJob.videoId, video.id),
+          inArray(transcodeJob.state, ['queued', 'claimed', 'running', 'publishing']),
+        ),
+      ),
+  )
+}
+
 export function createSweepAdapters(env?: Bindings): SweepAdapters {
   return {
     async fetchStaleProcessing(before, limit) {
       const rows = await db
         .select()
         .from(video)
-        .where(and(notDeleted, inArray(video.status, ['processing']), lt(ACTIVITY_EXPR, before)))
+        .where(
+          and(
+            notDeleted,
+            inArray(video.status, ['processing']),
+            lt(ACTIVITY_EXPR, before),
+            notOwnedByLocalQueue(),
+          ),
+        )
         .orderBy(asc(video.updatedAt))
         .limit(limit)
       return rows.map(toSweepable)
@@ -80,12 +117,21 @@ export function createSweepAdapters(env?: Bindings): SweepAdapters {
     },
 
     async dispatchRetry(sweepable) {
+      // A video with no raw object cannot be re-dispatched to Modal, and it is
+      // not this sweeper's to reclaim: local imports are owned by the job queue
+      // (see `notOwnedByLocalQueue`). Reaching here means the job row is gone —
+      // a delete raced the sweep — so the honest outcome is to leave the row for
+      // the next pass rather than fail it with a misleading code.
+      if (!sweepable.rawKey) {
+        throw new Error('processing job has no rawKey to re-dispatch')
+      }
+
       // Reclaim only the attempt this sweep actually observed. If a newer
       // attempt has taken ownership since the rows were read, the claim is
       // refused and nothing is dispatched — see transcodeClaim.ts.
       const result = await dispatchTranscodeJob({
         videoId: sweepable.id,
-        rawKey: sweepable.rawKey!,
+        rawKey: sweepable.rawKey,
         organizationId: sweepable.organizationId,
         playbackPolicy: sweepable.playbackPolicy,
         generateSubtitle: sweepable.generateSubtitle,

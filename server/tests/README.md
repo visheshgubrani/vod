@@ -17,6 +17,11 @@ See the plan / docs for the full table. The critical-path seams:
 | job dispatcher | direct-HTTP adapter retry/backoff; typed throw on final failure |
 | webhook handler | late-callback/state guards |
 | tenant webhook dispatcher | retry policy + signature headers |
+| `src/lib/localJobQueue.ts` | enqueue, automatic/named claims, capacity, failure classification, lease reclaim |
+| `src/lib/artifactInventory.ts` | registration (paged), path authorization, verification (paged, recounted) |
+| `src/lib/lifecycleFinalize.ts` | publication, ownership/verification gates, atomic job finalization |
+| `src/routes/localImport.ts` | import idempotency under concurrency, source scoping |
+| `src/utils/dispatchProvider.ts` | provider resolution and the self-hosted rollback switch |
 
 ## Real-database tests
 
@@ -34,6 +39,19 @@ describe.skipIf(!hasTestDatabase)('...', () => {
 
 - Gate every DB suite with `describe.skipIf(!hasTestDatabase)` so
   `pnpm test` still runs on a machine without Postgres.
+- **Import application modules that touch `lib/database` *inside* the suite.**
+  That handle throws without `DATABASE_URL`, so a top-level import turns "skip
+  cleanly" into "fail collection". `tests/lib/importAndGrants.db.test.ts` shows
+  the pattern: read `testDatabaseUrl(...)` at module scope, import the app modules
+  in `beforeAll`.
+- **A SQL-shape assertion is not a database test.** `tests/helpers/sql.ts` exists
+  for statements that are genuinely structural, but it cannot establish that
+  PostgreSQL *accepts* a query or that its guards fire. Four P1 defects in the
+  self-hosted review passed every substring assertion while being unable to run
+  at all, or running and reading the wrong snapshot — a data-modifying CTE's
+  changes are invisible to the rest of its own statement, and a guarded `UPDATE`
+  that matches nothing is not an error. Anything asserting behaviour belongs in a
+  `*.db.test.ts` suite.
 - **Atomicity, locking and lease guarantees must be proven on a real database.**
   A fake executor can prove which function was called; it cannot prove Postgres
   rolled back. Keep fakes for pure planners only.

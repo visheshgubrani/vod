@@ -1,5 +1,5 @@
 """Tests for heartbeat/callback network behavior (no real network)."""
-from utils import network as netw
+from openvod_transcoder.utils import network as netw
 
 
 class FakeResponse:

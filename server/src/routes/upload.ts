@@ -18,7 +18,8 @@ import { db } from '../lib/database'
 import { maxUploadBytes } from '../lib/config'
 import { video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
-import { dispatchTranscodeJob, dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { dispatchWithProvider } from '../utils/dispatchProvider'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import { headObjectSize, r2 } from '../utils/R2'
 import type { Bindings } from '../types'
@@ -194,7 +195,10 @@ app.post('/url', async (c) => {
 
 app.post('/complete', async (c) => {
   const organizationId = c.var.organizationId
-  const { fileId } = await c.req.json()
+  const { fileId, transcodingProvider } = await c.req.json<{
+    fileId?: string
+    transcodingProvider?: string
+  }>()
   console.log(`[UPLOAD COMPLETE REQ] Received /api/upload/complete for fileId: ${fileId}, orgId: ${organizationId}`)
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
   if (!organizationId) return c.json({ error: 'No active organization' }, 400)
@@ -269,13 +273,15 @@ app.post('/complete', async (c) => {
     // records ownership; dispatching without it is how a lost response or a
     // concurrent retry buys a second GPU run. It also performs the
     // uploading -> processing transition that used to be a separate update.
-    const dispatchResult = await dispatchTranscodeJob({
+    const dispatchResult = await dispatchWithProvider({
       videoId: fileId,
       rawKey: videoRecord.rawKey,
+      rawBucket: c.env?.RAW_BUCKET_NAME ?? process.env.RAW_BUCKET_NAME ?? null,
       organizationId: videoRecord.organizationId,
       playbackPolicy: videoRecord.playbackPolicy || 'public',
       generateSubtitle: videoRecord.generateSubtitle || false,
       generateChapters: videoRecord.generateChapters || false,
+      transcodingProvider,
       env: c.env,
     })
 
@@ -520,7 +526,13 @@ app.post('/multipart/parts', async (c) => {
 // Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
   const organizationId = c.var.organizationId
-  const { key, uploadId, parts, fileId } = await c.req.json()
+  const { key, uploadId, parts, fileId, transcodingProvider } = await c.req.json<{
+    key?: string
+    uploadId?: string
+    parts?: Array<Record<string, unknown>>
+    fileId?: string
+    transcodingProvider?: string
+  }>()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
   if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
@@ -619,13 +631,15 @@ app.post('/multipart/complete', async (c) => {
     }
 
     // Claim the attempt, then dispatch (see the note on the single-PUT path).
-    const dispatchResult = await dispatchTranscodeJob({
+    const dispatchResult = await dispatchWithProvider({
       videoId: fileId,
       rawKey: key,
+      rawBucket: c.env?.RAW_BUCKET_NAME ?? process.env.RAW_BUCKET_NAME ?? null,
       organizationId: videoRecord.organizationId,
       playbackPolicy: videoRecord.playbackPolicy || 'public',
       generateSubtitle: videoRecord.generateSubtitle || false,
       generateChapters: videoRecord.generateChapters || false,
+      transcodingProvider,
       env: c.env,
     })
 

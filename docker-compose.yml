@@ -10,7 +10,11 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: vod_dev
     volumes:
-      - vod_postgres_dev_data:/var/lib/postgresql/data
+      # postgres:18 moved its cluster to $PGDATA=/var/lib/postgresql/18/docker and
+      # declares the volume at /var/lib/postgresql — mounting the named volume at
+      # the pre-18 /var/lib/postgresql/data path leaves it empty and puts the real
+      # data in an anonymous volume that is discarded on every recreate.
+      - vod_postgres_dev_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -85,6 +89,55 @@ services:
             || echo "[maintenance] pass failed; will retry";
         done'
 
+  # The self-hosted transcoding agent.
+  #
+  # Opt-in: `docker compose --profile transcoder up -d`. It is a profile rather
+  # than a default service because a machine running the API is often not the
+  # machine that should be doing the encoding, and because a local-only install
+  # needs this while an all-Cloudflare install does not.
+  #
+  # The media mounts are read-only on purpose. The agent takes its own snapshot
+  # to encode from; it never needs to write to the owner's library, and a
+  # container that cannot write to it cannot damage it.
+  transcoder:
+    profiles: ["transcoder"]
+    build:
+      context: .
+      dockerfile: transcoding/Dockerfile.agent
+    container_name: vod-transcoder
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      OPENVOD_API_URL: ${OPENVOD_API_URL:-http://api:4080}
+      OPENVOD_AGENT_TOKEN: ${OPENVOD_AGENT_TOKEN:-}
+      # NAME:PATH pairs. Every path here must also be mounted below.
+      OPENVOD_ROOTS: ${OPENVOD_ROOTS:-media:/media}
+      OPENVOD_SCRATCH_DIR: /var/lib/openvod-transcoder/scratch
+      # One job and one rendition at a time by default: this machine is likely
+      # someone's workstation, and an operator who wants more says so.
+      OPENVOD_CAPACITY_JOBS: ${OPENVOD_CAPACITY_JOBS:-1}
+      OPENVOD_CAPACITY_RENDITIONS: ${OPENVOD_CAPACITY_RENDITIONS:-1}
+      OPENVOD_ENCODER: ${OPENVOD_ENCODER:-auto}
+    volumes:
+      - transcoder_scratch:/var/lib/openvod-transcoder
+      - ${OPENVOD_MEDIA_DIR:-./media}:/media:ro
+    # NVIDIA hosts: uncomment, and note the `video` capability — without it the
+    # driver is visible but no encode session can be created.
+    #   deploy:
+    #     resources:
+    #       reservations:
+    #         devices:
+    #           - driver: nvidia
+    #             count: all
+    #             capabilities: [gpu, video]
+    # AMD hosts: uncomment the device and group.
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+    # group_add:
+    #   - video
+
   web:
     build:
       context: .
@@ -102,3 +155,4 @@ services:
 
 volumes:
   vod_postgres_dev_data:
+  transcoder_scratch:

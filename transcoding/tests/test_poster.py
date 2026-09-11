@@ -1,5 +1,5 @@
 """Tests for poster seek-time selection."""
-from video.poster import choose_poster_time
+from openvod_transcoder.video.poster import choose_poster_time
 
 
 class TestChoosePosterTime:
