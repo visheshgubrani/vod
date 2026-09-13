@@ -21,6 +21,14 @@ FRONTEND_URL=http://localhost:3000
 # wildcard subdomain patterns (e.g. *.vercel.app for preview deployments).
 # Exact entries are also added to better-auth trusted origins.
 CORS_ORIGINS=
+# The API's own public origin, used to build the transcode callback URL
+# (`${BACKEND_URL}/api/webhook/transcode-complete`). Keep localhost for normal
+# development. To receive real Modal callbacks locally, expose the host-run API
+# with the dev tunnel (`pnpm dev:tunnel` — named tunnel in
+# docker-compose.dev.yml) and point this at its stable public hostname instead,
+# e.g. BACKEND_URL=https://openvod-dev.example.com, then restart `pnpm dev`.
+# localhost stays unreachable from Modal's cloud, so without the tunnel videos
+# strand in `processing` and the DB status never flips to `ready`/`failed`.
 BACKEND_URL=http://localhost:8787
 
 # Cloudflare (R2 storage — the BYOK pair)

@@ -59,7 +59,11 @@ const server = serve(
     // exposes as `c.executionCtx` — Node has no platform one to hand over.
     fetch: handleRequest,
     port,
-    hostname: process.env.HOSTNAME || '0.0.0.0',
+    // Never read `HOSTNAME`: every Unix shell and Docker sets it to the
+    // machine/container name (e.g. `vishyy`), not a bind address, so binding
+    // to it puts the API on an unreachable interface. Default to all
+    // interfaces; `API_HOST` opts into a specific one.
+    hostname: process.env.API_HOST || '0.0.0.0',
   },
   (info) => {
     console.log(

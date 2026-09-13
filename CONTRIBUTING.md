@@ -99,9 +99,37 @@ pnpm typecheck        # type-check every package
    are taken instead of drifting somewhere your env files don't point at. Next
    is *not* pinned: `next dev` quietly moves to :3001 when :3000 is taken (then
    `FRONTEND_URL`/`CORS_ORIGINS` no longer match), and `next start` fails with
-   `EADDRINUSE` instead.
+    `EADDRINUSE` instead.
+
+    Ctrl-C stops the whole stack: `pnpm dev` runs under `scripts/dev.mjs`,
+    which forwards SIGINT/SIGTERM to the full service tree (plain
+    `pnpm --parallel` leaves `tsx watch` / `next dev` orphaned holding
+    8787/3000). If ports still look taken after an old run, free them with
+    `pnpm dev:cleanup` (kills stale dev processes, clears a stale
+    `web/.next/dev/lock`, then reports which of 8787/8788/3000 is still
+    answering) and run `pnpm dev` again.
 4. Modal transcoding is only exercised against your own Modal account
    (`modal deploy` in `transcoding/`) — see the docs before running it.
+
+   Receiving real Modal callbacks locally needs a public URL for the API:
+   Modal POSTs job results to `${BACKEND_URL}/api/webhook/transcode-complete`,
+   and `localhost:8787` is unreachable from Modal's cloud — without this,
+   videos strand in `processing` and the DB status never flips to
+   `ready`/`failed`. Since playback already runs on Cloudflare, the dev stack
+   ships an opt-in named tunnel for exactly this:
+   1. One time, in the Cloudflare Zero Trust dashboard: create a tunnel, add a
+      Public Hostname (e.g. `openvod-dev.example.com`) with Service
+      `http://host.docker.internal:8787`, and copy the tunnel token.
+   2. `export CLOUDFLARE_TUNNEL_TOKEN=...` (never commit it — same rule as any
+      secret) and start it: `pnpm dev:tunnel` (`pnpm dev:tunnel:logs` to watch
+      it; it stops with `pnpm dev:infra:down`). Default `pnpm dev:infra` never
+      starts it.
+   3. Set `BACKEND_URL=https://openvod-dev.example.com` in `server/.dev.vars`
+      and restart `pnpm dev` so new dispatches carry the public callback URL.
+   4. Upload a video and watch the row go `uploading → processing → ready`.
+      Webhook auth (`TRANSCODE_INGEST_SECRET`) still applies over the tunnel.
+      Stop the tunnel when done testing — it exposes the local API to the
+      internet while it runs.
 
 ## Development workflow (TDD)
 

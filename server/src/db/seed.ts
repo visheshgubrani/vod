@@ -59,4 +59,10 @@ const run = async () => {
   console.log(`✅ Seeded! \nUser ID: ${newUserId} \nOrg ID: ${newOrgId}`)
 }
 
-run()
+run().then(
+  () => process.exit(0),
+  (err) => {
+    console.error('❌ Seed failed:', err instanceof Error ? err.message : err)
+    process.exit(1)
+  },
+)
