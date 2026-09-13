@@ -1,0 +1,31 @@
+# Delivery worker local config — copy to delivery/.dev.vars for `wrangler dev`.
+#
+# JWT_SECRET must be IDENTICAL to the API-side value (server/.dev.vars locally,
+# `wrangler secret put JWT_SECRET` in production): playback tokens are minted by
+# the API (issuer `openvod`, audience `playback`) and verified here.
+# `./scripts/bootstrap.sh` generates one value and writes both files.
+JWT_SECRET=
+
+# Policy applied to objects that carry NO playback-policy metadata.
+# "public" preserves historical behavior; "signed" fails closed. Objects
+# transcoded by OpenVOD always carry the metadata, so this only matters for
+# hand-written/legacy objects.
+DEFAULT_POLICY=public
+
+# Comma-separated user-agent keywords exempt from UA binding (native players /
+# casting devices). Default:
+# CAST_UA_KEYWORDS=crkey,chromecast,roku,tizen,webos,appletv
+
+# Verbose per-request debug logging (raw UA + referer) — off by default, never
+# enable it in production.
+DELIVERY_DEBUG=false
+
+# ── Bindings configured in wrangler.jsonc, not here ──────────────────────────
+# TRANSCODED_BUCKET  R2 bucket holding the transcoded HLS/DASH artifacts.
+# USAGE_ANALYTICS    Analytics Engine dataset (default `bandwidth_usage`);
+#                    blobs: org, videoId, fileType — double: bytes.
+# dev.port           Local dev port (8788; the API worker owns 8787) and its
+#                    inspector port, pinned so `pnpm dev:all` can run both.
+#
+# Deploy with `pnpm --filter ./delivery deploy` after pointing TRANSCODED_BUCKET
+# at your bucket; a custom domain route is optional (commented in wrangler.jsonc).

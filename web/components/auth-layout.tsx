@@ -28,14 +28,14 @@ export function AuthLayout({
             <Link href="/" className="flex items-center gap-1.5 justify-center">
               <Image
                 src="/logo.svg"
-                alt="ClipMux logo"
+                alt="OpenVOD logo"
                 width={36}
                 height={36}
                 className="h-8 w-auto"
                 priority
               />
               <span className="text-2xl tracking-wider text-purple-200 font-dashboard-heading">
-                ClipMux
+                OpenVOD
               </span>
             </Link>
           </div>

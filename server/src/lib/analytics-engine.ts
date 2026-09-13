@@ -18,7 +18,7 @@
  * - index1: organizationId
  */
 
-import type { Bindings } from '../types'
+import type { OpenVodConfig } from './config'
 
 export const PLAYBACK_DATASET = 'playback_events'
 
@@ -36,11 +36,19 @@ export function escapeSqlString(value: string): string {
   return value.replace(/'/g, "''")
 }
 
-export function getAnalyticsConfig(env?: Partial<Bindings>) {
-  const accountId = env?.ACCOUNT_ID || (typeof process !== 'undefined' ? process.env?.ACCOUNT_ID : undefined)
-  const apiToken =
-    env?.CLOUDFLARE_ANALYTICS_TOKEN ||
-    (typeof process !== 'undefined' ? process.env?.CLOUDFLARE_ANALYTICS_TOKEN : undefined)
+/**
+ * Credentials for the Analytics Engine SQL API, or null when unconfigured.
+ *
+ * Takes the resolved configuration: the read path is an ordinary HTTPS call that
+ * works on both runtimes, so the only question is whether the token exists. It
+ * used to be called both with and without a `c.env` argument from two routes,
+ * which resolved the same credentials two different ways.
+ */
+export function getAnalyticsConfig(
+  config: Pick<OpenVodConfig, 'accountId' | 'cloudflareAnalyticsToken'>,
+): { accountId: string; apiToken: string } | null {
+  const accountId = config.accountId
+  const apiToken = config.cloudflareAnalyticsToken
   if (!accountId || !apiToken) return null
   return { accountId, apiToken }
 }

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openvod-transcoder"
+version = "1.0.0"
+description = "OpenVOD shared transcoding engine and self-hosted agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# The engine and the agent need HTTP and nothing else. Everything heavy is
+# optional and imported only by the feature that uses it, which is what lets
+# `import openvod_transcoder` succeed on a machine with no Modal, no boto3 and no
+# Whisper — and what keeps the agent image small enough to ship to a workstation.
+dependencies = ["requests>=2.31"]
+
+[project.optional-dependencies]
+# Modal runner. `modal deploy main.py` imports the engine, so these are needed
+# locally to deploy even though the GPU image installs its own runtime extras.
+modal = ["modal>=1.5.0", "boto3", "fastapi"]
+# S3/R2 transfer (the Modal path). The self-hosted agent deliberately does not
+# need this: it uploads against presigned URLs and holds no storage credentials.
+s3 = ["boto3"]
+# Enrichment. Separate because a CPU-only agent may want neither.
+transcription = ["faster-whisper"]
+chapters = ["groq"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+openvod-transcoder = "openvod_transcoder.agent.cli:main"
+
+[tool.setuptools]
+packages = [
+  "openvod_transcoder",
+  "openvod_transcoder.agent",
+  "openvod_transcoder.encoding",
+  "openvod_transcoder.packaging",
+  "openvod_transcoder.transfer",
+  "openvod_transcoder.utils",
+  "openvod_transcoder.video",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

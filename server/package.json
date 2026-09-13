@@ -1,35 +1,48 @@
 {
   "name": "vod-api",
   "type": "module",
-  "packageManager": "pnpm@10.12.4",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "PORT=${API_PORT:-8787} tsx watch src/node/server.ts",
+    "dev:workers": "wrangler dev",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:node": "esbuild src/node/server.ts src/node/migrate.ts --bundle --platform=node --format=cjs --outdir=dist-node --out-extension:.js=.cjs --target=node22 --external:@upstash/qstash --log-level=warning",
+    "start": "pnpm start:node",
+    "start:node": "node dist-node/server.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.958.0",
     "@aws-sdk/s3-request-presigner": "^3.958.0",
+    "@hono/node-server": "^2.1.1",
     "@neondatabase/serverless": "^0.10.4",
     "@upstash/qstash": "^2.8.4",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.2",
     "@xmldom/xmldom": "^0.8.11",
-    "better-auth": "^1.4.7",
+    "better-auth": "~1.7.4",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.1",
-    "jose": "^5.10.0"
+    "jose": "^5.10.0",
+    "postgres": "^3.4.9",
+    "redis": "^5.12.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250214.0",
-    "drizzle-kit": "^0.31.8",
     "dotenv": "^17.2.3",
+    "drizzle-kit": "^0.31.8",
+    "esbuild": "^0.28.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "vitest": "~3.2.7",
     "wrangler": "^4.59.1"
   }
 }

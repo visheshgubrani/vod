@@ -12,6 +12,7 @@ env:
 
 jobs:
   build-and-push:
+    if: github.repository == 'visheshgubrani/vod'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,11 +32,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build and push Server image
+      # Build and push Server image (Dockerfile expects repo-root context)
       - name: Build and Push Server
         uses: docker/build-push-action@v5
         with:
-          context: ./server
+          context: .
+          file: server/Dockerfile
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.SERVER_IMAGE }}:latest
@@ -47,7 +49,8 @@ jobs:
       - name: Build and Push Web
         uses: docker/build-push-action@v5
         with:
-          context: ./web
+          context: .
+          file: web/Dockerfile
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.WEB_IMAGE }}:latest
@@ -60,6 +63,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
+    if: github.repository == 'visheshgubrani/vod'
     needs: build-and-push
     runs-on: ubuntu-latest
 
@@ -88,4 +92,3 @@ jobs:
             
             # Cleanup old images
             docker image prune -f
-

@@ -34,3 +34,5 @@ lerna-debug.log*
 .venv
 secrets.json
 .env
+# Bundled Node runtime output (build:node) — regenerable, never commit.
+dist-node/

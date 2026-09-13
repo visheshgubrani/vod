@@ -120,14 +120,14 @@ export default function OnboardingPage() {
             <Link href="/" className="flex items-center gap-1.5 justify-center">
               <Image
                 src="/logo.svg"
-                alt="ClipMux logo"
+                alt="OpenVOD logo"
                 width={36}
                 height={36}
                 className="h-12 w-auto"
                 priority
               />
               {/* <span className="text-2xl tracking-wider text-purple-200 font-dashboard-heading">
-                ClipMux
+                OpenVOD
               </span> */}
             </Link>
           </div>
@@ -168,7 +168,7 @@ export default function OnboardingPage() {
             <div className="space-y-2">
               <Label htmlFor="slug">URL Slug</Label>
               <div className="flex items-center gap-2 mt-2">
-                <span className="text-sm text-accent font-medium">clipmux.io/</span>
+                <span className="text-sm text-accent font-medium">openvod.dev/</span>
                 <Input
                   id="slug"
                   type="text"

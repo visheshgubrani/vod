@@ -1,0 +1,67 @@
+# OpenVOD — local development infrastructure ONLY.
+#
+# This file exists so `pnpm dev` never touches the deployment stack. It starts
+# the two services the API needs to talk to and nothing else:
+#
+#   postgres  :5433  — the dev database (DATABASE_URL in server/.dev.vars)
+#   redis     :6379  — the dev rate-limit store (REDIS_URL in server/.dev.vars)
+#
+# The API and dashboard run on the host under `pnpm dev` (Node + Next). The
+# application containers — api, web, maintenance, migrate, transcoder — live in
+# docker-compose.yml, which is the *deployment* file for end users (and how we
+# test a deployment). Do not add application services here.
+#
+# Usage (or `pnpm dev:infra`):
+#   docker compose -f docker-compose.dev.yml up -d --wait
+#   docker compose -f docker-compose.dev.yml down        # keep the data
+#   pnpm dev:infra:reset                                 # drop the data too
+#
+# The project name is pinned so this file can never share volumes or networks
+# with the deployment stack in docker-compose.yml.
+
+name: openvod-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: openvod-dev-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432" # Non-default host port so it cannot clash with a host install
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vod_dev
+    volumes:
+      # postgres:18 moved its cluster to $PGDATA=/var/lib/postgresql/18/docker and
+      # declares the volume at /var/lib/postgresql — mounting the named volume at
+      # the pre-18 /var/lib/postgresql/data path leaves it empty and puts the real
+      # data in an anonymous volume that is discarded on every recreate.
+      - openvod_dev_postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    # Rate limiting only. The Node runtime uses it over TCP (REDIS_URL); the
+    # Workers runtime cannot open a TCP socket and uses Upstash REST or the
+    # in-memory limiter instead, so it never talks to this container.
+    image: redis:7-alpine
+    container_name: openvod-dev-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    # Deliberately in-memory: rate-limit windows are ephemeral, so a restart
+    # clearing them is correct behaviour rather than data loss. That also means
+    # no volume — there would be nothing in it.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  openvod_dev_postgres:

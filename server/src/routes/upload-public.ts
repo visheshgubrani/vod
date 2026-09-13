@@ -7,7 +7,8 @@
  * Base path: /v1/upload
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { createMiddleware } from 'hono/factory'
 import {
     CreateMultipartUploadCommand,
     CompleteMultipartUploadCommand,
@@ -16,24 +17,42 @@ import {
     PutObjectCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { eq, and } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import {
     requireUploadToken,
     incrementUploadTokenUsage,
 } from '../middleware/uploadToken'
 import { db } from '../lib/database'
-import { video, uploadToken } from '../db/schema'
-import { r2 } from '../utils/R2'
-import { triggerTranscoding } from '../utils/queue'
+import { uploadToken, video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
+import { headObjectSize, r2 } from '../utils/R2'
+import { dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { dispatchWithProvider } from '../utils/dispatchProvider'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
-import type { UploadTokenVariables } from '../types'
+import type { Bindings, UploadTokenVariables } from '../types'
 
-const app = new Hono<{ Variables: UploadTokenVariables }>()
+const app = new Hono<{ Bindings: Bindings; Variables: UploadTokenVariables }>()
 
-const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
+/**
+ * Bucket names come from the resolved configuration on every use — see the note
+ * in routes/upload.ts. The module-scope constant this replaces was read once at
+ * import time from `process.env`, which on Workers is evaluated before any
+ * binding is available.
+ */
+function rawBucketOrFail(c: Context<{ Bindings: Bindings; Variables: UploadTokenVariables }>): string | Response {
+  const bucket = c.var.runtime.config.rawBucket
+  if (!bucket) {
+    return c.json(
+      { error: 'Uploads are not configured: RAW_BUCKET_NAME is not set on this deployment.' },
+      409,
+    )
+  }
+  return bucket
+}
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
+const MAX_PARTS_PER_REQUEST = 100
 
 const getUploadKey = (
     organizationId: string | null | undefined,
@@ -176,6 +195,27 @@ app.post('/token', requireApiKey, async (c) => {
 })
 
 // All OTHER routes require upload token authentication
+
+/**
+ * Uploads can be turned off for an installation (`UPLOADS_ENABLED=false`), which
+ * is what makes a deployment valid without a raw bucket. Until now the flag was
+ * reported by `/health/config` and enforced nowhere: the dashboard said uploads
+ * were off while the API kept accepting them.
+ *
+ * Deletion (`DELETE /:fileId`) is deliberately not gated — it is not an upload,
+ * and refusing it would strand bytes.
+ */
+const requireUploadsEnabled = createMiddleware(async (c, next) => {
+  if (!c.var.runtime.config.uploadsEnabled) {
+    return c.json(
+      { error: 'Uploads are disabled on this deployment (UPLOADS_ENABLED=false)' },
+      403,
+    )
+  }
+  await next()
+})
+
+app.use('/*', requireUploadsEnabled)
 app.use('/*', requireUploadToken)
 
 /**
@@ -206,6 +246,9 @@ app.use('/*', requireUploadToken)
  *   }
  */
 app.post('/create', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
     const uploadTokenRecord = c.var.uploadTokenRecord
     const uploadTokenId = c.var.uploadTokenId
@@ -241,6 +284,14 @@ app.post('/create', async (c) => {
         )
     }
 
+    const maxBytes = c.var.runtime.config.uploadSizeLimitBytes
+    if (size > maxBytes) {
+        return c.json(
+            { error: `File exceeds the maximum allowed size (${maxBytes} bytes)` },
+            400,
+        )
+    }
+
     let partSize: number
     let partCount: number
     try {
@@ -268,12 +319,20 @@ app.post('/create', async (c) => {
 
     // Create multipart upload in R2
     const command = new CreateMultipartUploadCommand({
-        Bucket: RAW_BUCKET,
+        Bucket: bucket,
         Key: key,
         ContentType: contentType,
     })
 
-    const response = await r2.send(command)
+    let response
+    try {
+        response = await r2.send(command)
+    } catch (err) {
+        // Rollback: never leave an orphan 'uploading' row behind.
+        console.error('Failed to create multipart upload:', err)
+        await db.delete(video).where(eq(video.id, fileId))
+        return c.json({ error: 'Failed to create multipart upload' }, 500)
+    }
     if (!response.UploadId) {
         await db.delete(video).where(eq(video.id, fileId))
         return c.json({ error: 'Failed to create multipart upload' }, 500)
@@ -282,24 +341,9 @@ app.post('/create', async (c) => {
     // Increment token usage
     await incrementUploadTokenUsage(uploadTokenId)
 
-    // Generate presigned URLs for all parts
-    const urls = await Promise.all(
-        Array.from({ length: partCount }, (_, i) => i + 1).map(async (partNumber) => {
-            const partCommand = new UploadPartCommand({
-                Bucket: RAW_BUCKET,
-                Key: key,
-                UploadId: response.UploadId,
-                PartNumber: partNumber,
-            })
-            const url = await getSignedUrl(r2, partCommand, { expiresIn: 3600 })
-            const expectedSize =
-                partNumber === partCount
-                    ? size - (partCount - 1) * partSize
-                    : partSize
-
-            return { part_number: partNumber, url, size: expectedSize }
-        }),
-    )
+    // Presigned URLs are NOT minted up front (10k URLs would exceed payload
+    // limits and expire during slow uploads). Clients fetch them in windows
+    // via POST /v1/upload/parts (capped at 100 part numbers per request).
 
     // Dispatch webhook
     dispatchWebhook(c.executionCtx, organizationId!, 'video.uploading', {
@@ -314,7 +358,6 @@ app.post('/create', async (c) => {
         key,
         part_size: partSize,
         part_count: partCount,
-        urls,
     })
 })
 
@@ -324,6 +367,9 @@ app.post('/create', async (c) => {
  * Get additional presigned URLs for specific parts (useful for retries).
  */
 app.post('/parts', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
 
     const body = await c.req.json()
@@ -341,7 +387,7 @@ app.post('/parts', async (c) => {
         const videos = await db
             .select()
             .from(video)
-            .where(eq(video.id, fileId))
+            .where(and(notDeleted, eq(video.id, fileId)))
             .limit(1)
 
         if (videos.length === 0) {
@@ -381,6 +427,13 @@ app.post('/parts', async (c) => {
 
     uniquePartNumbers.sort((a, b) => a - b)
 
+    if (uniquePartNumbers.length > MAX_PARTS_PER_REQUEST) {
+        return c.json(
+            { error: `Too many part_numbers per request (max ${MAX_PARTS_PER_REQUEST})` },
+            400,
+        )
+    }
+
     for (const partNumber of uniquePartNumbers) {
         if (
             !Number.isInteger(partNumber) ||
@@ -394,7 +447,7 @@ app.post('/parts', async (c) => {
     const urls = await Promise.all(
         uniquePartNumbers.map(async (partNumber) => {
             const command = new UploadPartCommand({
-                Bucket: RAW_BUCKET,
+                Bucket: bucket,
                 Key: key,
                 UploadId: uploadId,
                 PartNumber: partNumber,
@@ -424,6 +477,9 @@ app.post('/parts', async (c) => {
  * Complete the multipart upload and start transcoding.
  */
 app.post('/complete', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
 
     const body = await c.req.json()
@@ -464,7 +520,7 @@ app.post('/complete', async (c) => {
 
     // Complete multipart upload in R2
     const command = new CompleteMultipartUploadCommand({
-        Bucket: RAW_BUCKET,
+        Bucket: bucket,
         Key: key,
         UploadId: uploadId,
         MultipartUpload: {
@@ -479,7 +535,7 @@ app.post('/complete', async (c) => {
         const videos = await db
             .select()
             .from(video)
-            .where(eq(video.id, fileId))
+            .where(and(notDeleted, eq(video.id, fileId)))
             .limit(1)
         const videoRecord = videos[0]
 
@@ -505,37 +561,60 @@ app.post('/complete', async (c) => {
             })
         }
 
-        // Atomic update
-        const updated = await db
-            .update(video)
-            .set({
-                status: 'processing',
-                updatedAt: new Date(),
-            })
-            .where(and(eq(video.id, fileId), eq(video.status, 'uploading')))
-            .returning()
+        // Verify the object actually landed in R2 at the declared size before
+        // spending a transcode dispatch on a missing/truncated file.
+        const verifyKey = videoRecord.rawKey
+        const headSize = verifyKey ? await headObjectSize(bucket, verifyKey) : null
+        if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
+            await db
+                .update(video)
+                .set({
+                    status: 'failed',
+                    failureCode: headSize === null ? 'OBJECT_MISSING' : 'SIZE_MISMATCH',
+                    updatedAt: new Date(),
+                })
+                .where(eq(video.id, fileId))
+            return c.json(
+                {
+                    error:
+                        headSize === null
+                            ? 'File was not uploaded; please upload the file again'
+                            : 'Uploaded file size does not match the declared size; abort and re-upload',
+                },
+                409,
+            )
+        }
 
-        if (updated.length > 0) {
-            try {
-                await triggerTranscoding(
-                    key,
-                    fileId,
-                    videoRecord.playbackPolicy || 'public',
-                    videoRecord.generateSubtitle || false,
-                    videoRecord.generateChapters || false,
-                    videoRecord.organizationId,
-                )
-            } catch (err) {
-                console.error(`Failed to queue transcoding for ${fileId}:`, err)
-                await db
-                    .update(video)
-                    .set({ status: 'failed' })
-                    .where(eq(video.id, fileId))
+        // Claim the attempt, then dispatch — the claim owns the
+        // uploading -> processing transition and the attempt id.
+        const dispatchResult = await dispatchWithProvider({
+            videoId: fileId,
+            rawKey: key,
+            rawBucket: c.var.runtime.config.rawBucket,
+            organizationId: videoRecord.organizationId,
+            playbackPolicy: videoRecord.playbackPolicy || 'public',
+            generateSubtitle: videoRecord.generateSubtitle || false,
+            generateChapters: videoRecord.generateChapters || false,
+            // Per-request override; omitted means the installation default.
+            // Per-request override from the SDK; omitted means the installation default.
+            transcodingProvider:
+                typeof body?.transcodingProvider === 'string' ? body.transcodingProvider : undefined,
+            env: c.var.runtime.env,
+        })
+
+        if (!dispatchResult.dispatched) {
+            if (dispatchResult.reason === 'dispatch-failed') {
+                // dispatchTranscodeJob already marked the row failed.
+                console.error(`Failed to queue transcoding for ${fileId}:`, dispatchResult.error)
                 return c.json(
-                    { error: 'Upload complete but transcoding failed to start' },
+                    { error: `Upload complete but transcoding failed to start: ${dispatchResult.error?.message ?? 'unknown error'}` },
                     500,
                 )
             }
+            return c.json(
+                { error: `Transcode not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
+                dispatchFailureStatus(dispatchResult.reason),
+            )
         }
 
         // Dispatch webhook
@@ -561,6 +640,9 @@ app.post('/complete', async (c) => {
  * Abort a multipart upload and clean up.
  */
 app.post('/abort', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
 
     const body = await c.req.json()
@@ -575,7 +657,7 @@ app.post('/abort', async (c) => {
     // Abort multipart upload in R2
     await r2.send(
         new AbortMultipartUploadCommand({
-            Bucket: RAW_BUCKET,
+            Bucket: bucket,
             Key: key,
             UploadId: uploadId,
         }),
@@ -586,7 +668,7 @@ app.post('/abort', async (c) => {
         const videos = await db
             .select()
             .from(video)
-            .where(eq(video.id, fileId))
+            .where(and(notDeleted, eq(video.id, fileId)))
             .limit(1)
         const videoRecord = videos[0]
 

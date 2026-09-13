@@ -1,8 +1,10 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
 import { db } from '../lib/database'
 import { WAE_MAX_DATA_POINTS_PER_INVOCATION } from '../lib/analytics-engine'
+import type { PlaybackRow } from '../runtime/types'
 import type { Bindings } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -17,20 +19,6 @@ interface AnalyticsEvent {
   duration?: number
   watchedDelta?: number
   errorCode?: string
-}
-
-type PlaybackRow = {
-  event: string
-  videoId: string
-  sessionId: string
-  userId: string
-  country: string
-  device: string
-  browser: string
-  errorCode: string
-  watchedDelta: number
-  currentTime: number
-  duration: number
 }
 
 function parseUserAgent(ua: string): { device: string; browser: string } {
@@ -67,42 +55,13 @@ async function resolveOrganizationId(videoId: string): Promise<string> {
     const rows = await db
       .select({ organizationId: video.organizationId })
       .from(video)
-      .where(eq(video.id, videoId))
+      .where(and(notDeleted, eq(video.id, videoId)))
       .limit(1)
 
     return rows[0]?.organizationId || ''
   } catch {
     return ''
   }
-}
-
-function writePlaybackEvents(
-  analytics: AnalyticsEngineDataset,
-  organizationId: string,
-  rows: PlaybackRow[],
-): number {
-  let written = 0
-  for (const row of rows) {
-    if (written >= WAE_MAX_DATA_POINTS_PER_INVOCATION) {
-      break
-    }
-    analytics.writeDataPoint({
-      blobs: [
-        row.event,
-        row.videoId,
-        row.sessionId,
-        row.country,
-        row.device,
-        row.browser,
-        row.errorCode,
-        row.userId,
-      ],
-      doubles: [row.watchedDelta, row.currentTime, row.duration],
-      indexes: [organizationId || 'unknown'],
-    })
-    written += 1
-  }
-  return written
 }
 
 app.post('/journal', async (c) => {
@@ -139,19 +98,22 @@ app.post('/journal', async (c) => {
       duration: e.duration ?? 0,
     }))
 
-    const analytics = c.env.PLAYBACK_ANALYTICS
-    if (!analytics) {
+    // The sink is a capability, not a binding lookup: Node has no Analytics
+    // Engine binding at all, which is a fact about the runtime rather than a
+    // per-request surprise.
+    if (!c.var.runtime.analytics.canWritePlayback) {
       return c.json({ error: 'Playback analytics not configured' }, 501)
     }
 
-    // Cap before waitUntil so the response reflects what will actually be written
+    // Cap before scheduling so the response reflects what will actually be written
     const toWrite = rows.slice(0, WAE_MAX_DATA_POINTS_PER_INVOCATION)
     const truncated = rows.length > toWrite.length
 
-    c.executionCtx.waitUntil(
+    c.var.runtime.background(
       Promise.resolve().then(() => {
-        writePlaybackEvents(analytics, organizationId, toWrite)
+        c.var.runtime.analytics.writePlayback(organizationId, toWrite)
       }),
+      'playback analytics write',
     )
 
     return c.json({

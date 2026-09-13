@@ -1,35 +1,105 @@
-# Copy to .dev.vars for local `wrangler dev`
-DATABASE_URL=postgresql://user:password@host/db?sslmode=require
+# OpenVOD API — LOCAL DEVELOPMENT config. Copy to server/.dev.vars.
+#
+# Read by `pnpm dev` (the Node runtime), the Workers runtime (`pnpm dev:workers`),
+# migrations, the seed script and the drizzle CLI. Real env vars always win over
+# this file.
+#
+# This file is for developing OpenVOD. A *deployment* is configured by the root
+# `.env` for Docker Compose (see .env.example) or by `wrangler secret put` for
+# the Workers runtime — never by committing this file.
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev
+# 'pg' (postgres.js over TCP) for the Node runtime — the default.
+# `pnpm dev:workers` requires 'neon-http' and a Neon URL: the Workers runtime
+# cannot hold a Postgres TCP connection across requests, so the first query
+# succeeds and the rest fail with "Cannot perform I/O on behalf of a different
+# request". That is a runtime property, not a bug — use `pnpm dev` locally.
+DB_DRIVER=pg
 BETTER_AUTH_SECRET=your-secret-at-least-32-chars
 BETTER_AUTH_URL=http://localhost:8787
 FRONTEND_URL=http://localhost:3000
+# Comma-separated browser origins allowed by CORS. Supports `*.example.com`
+# wildcard subdomain patterns (e.g. *.vercel.app for preview deployments).
+# Exact entries are also added to better-auth trusted origins.
+CORS_ORIGINS=
 BACKEND_URL=http://localhost:8787
 
-# Cloudflare
+# Cloudflare (R2 storage — the BYOK pair)
 ACCOUNT_ID=your-cloudflare-account-id
 R2_ACCESS_KEY_ID=your-r2-access-key
 R2_SECRET_ACCESS_KEY=your-r2-secret-key
+# Required only when uploads are enabled or the provider is Modal. A local-only
+# installation (self-hosted provider, UPLOADS_ENABLED=false) may leave it blank.
 RAW_BUCKET_NAME=raw-bucket-uploads
 TRANSCODED_BUCKET_NAME=transcoded-bucket
 CLOUDFLARE_ANALYTICS_TOKEN=your-analytics-api-token
 
-# OAuth
+# OAuth (optional)
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 
-# Transcoding pipeline
+# Transcoding pipeline — direct HTTP dispatch is the default;
+# QStash is only used when QSTASH_TOKEN is set (optional adapter).
 QSTASH_TOKEN=
+# ── Transcoding provider ───────────────────────────────────────────────────
+# Which engine new jobs use: "modal" (default) or "self-hosted".
+# Existing installations are unaffected: unset means Modal, exactly as before.
+# The value is stored on each job when it is created, so changing it never
+# reroutes work that already exists.
+TRANSCODE_PROVIDER=modal
+# Set to "false" to stop accepting NEW self-hosted submissions while accepted
+# jobs drain. This is the documented rollback; it does not cancel anything and
+# never moves a local file to Modal.
+SELF_HOSTED_ENABLED=
+# Whether browser/SDK uploads are accepted. Defaults to true. Turn it off for a
+# local-only installation, which also makes the raw bucket unnecessary.
+UPLOADS_ENABLED=true
+# Only required when TRANSCODE_PROVIDER=modal.
 MODAL_WEBHOOK_URL=
-MODAL_WEBHOOK_SECRET=
-TRANSCODE_INGEST_SECRET=
+TRANSCODE_INGEST_SECRET=any-long-random-string-shared-with-your-modal-app
+# MODAL_WEBHOOK_SECRET=legacy-alias-for-ingest-secret
 
-# Playback
-JWT_SECRET=your-jwt-secret
-DELIVERY_WORKER_URL=https://media.clipmux.com
-DELIVERY_URL=https://media.clipmux.com
+# Playback / delivery
+JWT_SECRET=your-jwt-secret-at-least-32-chars
+# Absolute base URL of your delivery worker (no scheme-less placeholders)
+DELIVERY_URL=https://media.yourdomain.com
 
-# Rate limiting (Upstash Redis REST)
+# Job sweeper (stuck-video recovery)
+# INTERNAL_SWEEP_SECRET=long-random-string  # required to call /api/internal/sweep
+# SWEEP_ENABLED=true                        # enables scheduled() runs (cron trigger)
+# SWEEP_PROCESSING_STALE_MIN=45
+# SWEEP_UPLOADING_STALE_HOURS=24
+# SWEEP_MAX_ATTEMPTS=3
+
+# Rate limiting (choose one; first match wins)
+#   REDIS_URL                     a plain Redis over TCP — Node runtime only.
+#                                 `pnpm dev:infra` starts one on :6379.
+#   UPSTASH_REDIS_REST_URL/TOKEN  Upstash REST — works on both runtimes,
+#                                 including Workers (which cannot open a socket).
+#   neither                       in-memory sliding window, per instance. Fine
+#                                 for one API instance; configure one of the two
+#                                 above before running replicas.
+REDIS_URL=redis://localhost:6379
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
+
+# ── Background maintenance (transcode sweeps, webhook retries, byte cleanup) ──
+# Without this, webhook retries and storage reclamation do NOT run: deleted
+# videos keep their bytes and failed deliveries are never retried.
+# Workers: pair with the cron trigger in server/wrangler.jsonc.
+# Node:    nothing runs a pass by itself. Hit the endpoint from cron/host:
+#            curl -X POST localhost:8787/api/internal/sweep -H "x-sweep-secret: $INTERNAL_SWEEP_SECRET"
+#          (a Docker deployment gets the `maintenance` compose service instead)
+SWEEP_ENABLED=true
+# Shared secret for POST /api/internal/sweep.
+INTERNAL_SWEEP_SECRET=
+# Rows/jobs handled per maintenance pass (default 50).
+MAINTENANCE_BATCH_SIZE=50
+
+# ── Cost controls (optional) ──
+# Max concurrent transcode attempts per organization. Unset = unlimited.
+# Enforced by an organization-level lock, so it holds under concurrent claims.
+TRANSCODE_ORG_CONCURRENCY_CAP=
+# How long an accepted attempt id suppresses a duplicate dispatch (Modal side).
+ATTEMPT_MARKER_TTL_SECONDS=300

@@ -13,12 +13,17 @@ import {
 import { cn } from "@/lib/utils";
 import { useSession } from "@/lib/auth-client";
 import Image from "next/image";
+import { APP_NAME, GITHUB_URL } from "@/lib/site";
 
-const navLinks = [
-  { href: "#features", label: "Features" },
-  { href: "#pricing", label: "Pricing" },
-  { href: "#api", label: "API" },
-  // { href: "#testimonials", label: "Customers" },
+interface NavLink {
+  href: string;
+  label: string;
+  external?: boolean;
+}
+
+const navLinks: NavLink[] = [
+  { href: "/dashboard", label: "Dashboard" },
+  { href: GITHUB_URL, label: "GitHub", external: true },
 ];
 
 export function Navigation() {
@@ -48,29 +53,37 @@ export function Navigation() {
         <Link href="/" className="flex items-center gap-2 justify-start group">
           <Image
             src="/logo.svg"
-            alt="ClipMux logo"
+            alt="OpenVOD logo"
             width={50}
             height={50}
             className="size-7.5 w-auto shrink-0"
             priority
           />
           <span className="mt-1 text-lg md:text-[1.27rem] font-dashboard-heading font-semibold tracking-wider text-foreground">
-            ClipMux
+            {APP_NAME}
           </span>
         </Link>
 
         {/* Desktop Navigation */}
         <div className="hidden lg:ml-12 md:flex items-center gap-12 xl:gap-14">
-          {navLinks.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              className="text-foreground/75 hover:text-foreground transition-colors relative group font-medium"
-            >
-              {link.label}
+          {navLinks.map((link) => {
+            const linkClassName =
+              "text-foreground/75 hover:text-foreground transition-colors relative group font-medium";
+            const underline = (
               <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-gradient-to-r from-primary to-accent group-hover:w-full transition-all duration-300" />
-            </a>
-          ))}
+            );
+            return link.external ? (
+              <a key={link.href} href={link.href} className={linkClassName}>
+                {link.label}
+                {underline}
+              </a>
+            ) : (
+              <Link key={link.href} href={link.href} className={linkClassName}>
+                {link.label}
+                {underline}
+              </Link>
+            );
+          })}
         </div>
 
         {/* CTA Buttons */}
@@ -133,14 +146,14 @@ export function Navigation() {
                 >
                   <Image
                     src="/logo.svg"
-                    alt="ClipMux logo"
+                    alt="OpenVOD logo"
                     width={34}
                     height={34}
                     className="size-7 w-auto shrink-0"
                     priority
                   />
                   <span className="mt-0.5 text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-foreground">
-                    ClipMux
+                    {APP_NAME}
                   </span>
                 </Link>
 
@@ -155,16 +168,30 @@ export function Navigation() {
               </div>
 
               <div className="flex flex-col items-center gap-4">
-                {navLinks.map((link) => (
-                  <a
-                    key={link.href}
-                    href={link.href}
-                    className="text-foreground/80 hover:text-foreground transition-colors py-2 font-semibold"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                  >
-                    {link.label}
-                  </a>
-                ))}
+                {navLinks.map((link) => {
+                  const linkClassName =
+                    "text-foreground/80 hover:text-foreground transition-colors py-2 font-semibold";
+                  const handleClick = () => setIsMobileMenuOpen(false);
+                  return link.external ? (
+                    <a
+                      key={link.href}
+                      href={link.href}
+                      className={linkClassName}
+                      onClick={handleClick}
+                    >
+                      {link.label}
+                    </a>
+                  ) : (
+                    <Link
+                      key={link.href}
+                      href={link.href}
+                      className={linkClassName}
+                      onClick={handleClick}
+                    >
+                      {link.label}
+                    </Link>
+                  );
+                })}
                 <div className="flex flex-col gap-3 w-full pt-4 border-t border-border">
                   {isLoggedIn ? (
                     <Link

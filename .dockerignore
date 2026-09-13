@@ -1,0 +1,41 @@
+# Docker build context (repo root) exclusions.
+#
+# Every build uses the repo root as its context (server/Dockerfile copies
+# `server/`, web/Dockerfile copies `web/`, transcoding/Dockerfile.agent copies
+# `transcoding/`), so the per-package *.dockerignore files are inert — this file
+# is the only one that applies.
+#
+# Secret files MUST be listed with a `**/` prefix as well as bare: a bare
+# `.dev.vars` matches only a file at the context root, not `server/.dev.vars`.
+.git
+**/node_modules
+node_modules
+.pnpm-store
+.pnpm-cache
+**/dist
+**/dist-node
+**/.next
+**/out
+**/.wrangler
+**/.venv
+**/__pycache__
+**/*.pyc
+*.log
+
+# Environment & secrets — never in an image. `.env` is the deployment config for
+# docker compose and holds every secret the stack uses.
+.env
+.env.*
+**/.env
+**/.env.*
+.dev.vars
+.dev.vars.*
+**/.dev.vars
+**/.dev.vars.*
+secrets.json
+**/secrets.json
+
+# Context-only files the images never need.
+docs
+media
+.dockerignore

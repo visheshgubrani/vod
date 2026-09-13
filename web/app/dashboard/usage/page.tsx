@@ -257,7 +257,7 @@ export default function UsagePage() {
         }
       />
 
-      {/* Billing Cards */}
+      {/* Usage cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Storage Card */}
         <div className="rounded-sm border border-primary/20 bg-card/60 p-4 md:p-6">
@@ -595,7 +595,7 @@ export default function UsagePage() {
         )}
       </div>
 
-      {/* Billing Info */}
+      {/* Usage metering note */}
       <div className="rounded-sm border border-primary/10 bg-card/60 p-4 md:p-6">
         <div className="flex items-start gap-4">
           <div className="rounded-sm bg-accent/15 p-3">
@@ -603,14 +603,16 @@ export default function UsagePage() {
           </div>
           <div>
             <h3 className="font-semibold text-foreground mb-1">
-              Transparent Billing
+              Usage metering
             </h3>
             <p className="text-sm text-muted-foreground">
-              You are billed based on{" "}
+              These numbers measure{" "}
               <span className="text-foreground font-medium">storage</span>{" "}
-              (transcoded HLS segments) and{" "}
+              (transcoded HLS segments on your R2 bucket) and{" "}
               <span className="text-foreground font-medium">bandwidth</span>{" "}
-              (data delivered to viewers).
+              (bytes your delivery worker served). They are operational
+              metrics for your own infrastructure costs — OpenVOD does not
+              bill you.
             </p>
           </div>
         </div>

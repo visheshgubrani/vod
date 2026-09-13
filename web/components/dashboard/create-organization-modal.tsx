@@ -146,7 +146,7 @@ export function CreateOrganizationModal({
           <div className="space-y-2">
             <Label htmlFor="org-slug">URL Slug</Label>
             <div className="flex items-center mt-2 gap-2">
-              <span className="text-sm text-accent font-medium">clipmux.io/</span>
+              <span className="text-sm text-accent font-medium">openvod.dev/</span>
               <Input
                 id="org-slug"
                 type="text"

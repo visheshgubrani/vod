@@ -1,10 +1,17 @@
-import { Hono } from 'hono'
-import { eq, and, desc } from 'drizzle-orm'
+import { Hono, type Context } from 'hono'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
-import { video, member } from '../db/schema'
+import { member, transcodeJob, video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
+import { normalizeRows } from '../lib/atomicWrite'
+import { buildRequeueStatement } from '../lib/localJobQueue'
+import { deleteVideoWithCleanup } from '../lib/objectCleanup'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
+import type { Bindings } from '../types'
+import { dispatchTranscodeJob, dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { requirePlaybackJwtSecret } from '../lib/config'
 import {
   buildPlaybackBindingClaims,
   getUserAgentFromHeaders,
@@ -12,11 +19,11 @@ import {
   type PlaybackBindingClaims,
 } from '../utils/playbackBinding'
 
-const app = new Hono()
+const app = new Hono<{ Bindings: Bindings }>()
 
 // JWT token expiration (default)
 const TOKEN_EXPIRATION = '4h'
-const JWT_ISSUER = 'clipmux'
+const JWT_ISSUER = 'openvod'
 const JWT_AUDIENCE = 'playback'
 const DEFAULT_RESTRICTIONS = {
   allowed_domains: ['*'],
@@ -56,8 +63,10 @@ async function generatePlaybackToken(
   expiresIn: string = TOKEN_EXPIRATION,
   bindingClaims: PlaybackBindingClaims,
   restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS,
+  /** See the note in routes/api.ts: the caller resolves the signing key. */
+  jwtSecret: string = '',
 ): Promise<string> {
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET)
+  const secret = new TextEncoder().encode(jwtSecret)
   const claims = {
     ...bindingClaims,
     ...restrictions,
@@ -96,7 +105,7 @@ app.get('/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -122,7 +131,8 @@ app.get('/:id', async (c) => {
   }
 
   // Build response
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
+  // Never fabricate a placeholder host: relative URLs when unconfigured.
+  const deliveryUrl = c.var.runtime.config.deliveryUrl ?? ''
   
   // Helper to resolve URLs - don't double-prefix if already absolute
   const resolveUrl = (url: string | null) => {
@@ -193,7 +203,7 @@ app.get('/:id/token', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -238,6 +248,7 @@ app.get('/:id/token', async (c) => {
     expiresIn,
     bindingClaims,
     restrictions,
+    requirePlaybackJwtSecret(c.var.runtime.config),
   )
 
   return c.json({
@@ -270,10 +281,11 @@ app.get('/', async (c) => {
       createdAt: video.createdAt,
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
     .orderBy(desc(video.createdAt))
 
-  const deliveryUrl = process.env.DELIVERY_URL || 'https://delivery.example.com'
+  // Never fabricate a placeholder host: relative URLs when unconfigured.
+  const deliveryUrl = c.var.runtime.config.deliveryUrl ?? ''
 
   // Helper to resolve URLs - don't double-prefix if already absolute
   const resolveUrl = (url: string | null) => {
@@ -302,7 +314,7 @@ app.patch('/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -372,7 +384,11 @@ app.delete('/:id', async (c) => {
   const session = c.var.session
   const videoId = c.req.param('id')
 
-  // Get video
+  // soft-delete-exempt: repeat delete must find the already-deleted row to
+  // verify ownership and answer idempotently.
+  // Deliberately unfiltered: a repeat delete of an already soft-deleted video
+  // must still find the row to verify ownership and answer idempotently, rather
+  // than 404 on a video the caller genuinely owns.
   const videos = await db
     .select()
     .from(video)
@@ -381,7 +397,7 @@ app.delete('/:id', async (c) => {
 
   const videoRecord = videos[0]
 
-  if (!videoRecord) {
+  if (!videoRecord || videoRecord.deletedAt) {
     return c.json({ error: 'Video not found' }, 404)
   }
 
@@ -401,18 +417,22 @@ app.delete('/:id', async (c) => {
     return c.json({ error: 'Access denied' }, 403)
   }
 
-  // Delete the video record
-  await db
-    .delete(video)
-    .where(eq(video.id, videoId))
+  // Soft-delete and enqueue byte reclamation in one statement, so the row can
+  // never be marked deleted without the cleanup debt being recorded. Bytes are
+  // reclaimed asynchronously once outstanding writers have retired — a logged
+  // deletion is not the same thing as storage freed.
+  await deleteVideoWithCleanup({
+    executor: db,
+    videoId,
+    organizationId: videoRecord.organizationId,
+    deletedBy: session.userId,
+  })
 
   // Dispatch webhook event
   dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.deleted', {
     videoId,
     title: videoRecord.title,
   })
-
-  // TODO: Delete R2 files
 
   return c.json({
     success: true,
@@ -433,7 +453,7 @@ app.post('/:id/transcribe', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(eq(video.id, videoId))
+    .where(and(notDeleted, eq(video.id, videoId)))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -494,5 +514,204 @@ app.post('/:id/transcribe', async (c) => {
     subtitleStatus: 'pending',
   })
 })
+
+/**
+ * POST /api/video/:id/retry
+ * Re-dispatch transcoding for a failed (or stuck/stale processing) video.
+ * Explicit retry is the only path that moves a video out of 'failed' —
+ * the state machine forbids late callbacks from resurrecting it.
+ */
+app.post('/:id/retry', async (c) => {
+  const session = c.var.session
+  const videoId = c.req.param('id')
+
+  const videos = await db
+    .select()
+    .from(video)
+    .where(and(notDeleted, eq(video.id, videoId)))
+    .limit(1)
+  const videoRecord = videos[0]
+
+  if (!videoRecord) {
+    return c.json({ error: 'Video not found' }, 404)
+  }
+
+  const members = await db
+    .select()
+    .from(member)
+    .where(
+      and(
+        eq(member.userId, session.userId),
+        eq(member.organizationId, videoRecord.organizationId),
+      ),
+    )
+    .limit(1)
+  if (members.length === 0) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  if (videoRecord.status !== 'failed' && videoRecord.status !== 'processing') {
+    return c.json(
+      { error: `Only failed or stuck processing videos can be retried (current: ${videoRecord.status})` },
+      400,
+    )
+  }
+
+  /**
+   * Retry the way the job was created, not the way the installation currently
+   * defaults.
+   *
+   * The provider is stored on the job at creation precisely so a later default
+   * change cannot reroute existing work. Retrying through the Modal path
+   * unconditionally broke that in both directions: a local import was rejected
+   * for having no `rawKey`, and a self-hosted job created from a *browser*
+   * upload was silently re-sent to Modal — the opposite of the owner's choice.
+   */
+  const jobRows = await db
+    .select({
+      jobId: transcodeJob.id,
+      provider: transcodeJob.provider,
+      state: transcodeJob.state,
+      sourceId: transcodeJob.sourceId,
+      agentId: transcodeJob.agentId,
+      options: transcodeJob.options,
+    })
+    .from(transcodeJob)
+    .where(eq(transcodeJob.videoId, videoId))
+    .orderBy(desc(transcodeJob.createdAt))
+    .limit(1)
+  const previousJob = jobRows[0]
+
+  if (previousJob && previousJob.provider === 'self-hosted') {
+    return retrySelfHostedJob(c, videoRecord, previousJob)
+  }
+
+  if (!videoRecord.rawKey) {
+    return c.json({ error: 'Video has no raw source object to re-transcode' }, 400)
+  }
+
+  // Retry goes through the claim, which owns the state transition, the attempt
+  // id and the job_attempts bump. A stuck `processing` row is reclaimed by
+  // naming the attempt we observed; if that attempt's lease is still live the
+  // claim is refused, because dispatching would start a second GPU run for a
+  // job that is still running.
+  const dispatchResult = await dispatchTranscodeJob({
+    videoId,
+    rawKey: videoRecord.rawKey,
+    organizationId: videoRecord.organizationId,
+    playbackPolicy: videoRecord.playbackPolicy || 'public',
+    generateSubtitle: videoRecord.generateSubtitle || false,
+    generateChapters: videoRecord.generateChapters || false,
+    expectedAttemptId:
+      videoRecord.status === 'processing' ? videoRecord.transcodeAttemptId : null,
+    env: c.var.runtime.env,
+  })
+
+  if (!dispatchResult.dispatched) {
+    if (dispatchResult.reason === 'dispatch-failed') {
+      console.error(`[RETRY] dispatch failed for ${videoId}:`, dispatchResult.error)
+      await db
+        .update(video)
+        .set({ failureCode: 'DISPATCH_FAILED', updatedAt: new Date() })
+        .where(eq(video.id, videoId))
+      return c.json(
+        {
+          error: `Retry dispatch failed: ${dispatchResult.error?.message ?? 'unknown error'}`,
+        },
+        502,
+      )
+    }
+
+    const status = dispatchFailureStatus(dispatchResult.reason)
+    return c.json(
+      { error: `Retry not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
+      status,
+    )
+  }
+
+  const updated = await db
+    .update(video)
+    .set({ failureCode: null, updatedAt: new Date() })
+    .where(eq(video.id, videoId))
+    .returning({ id: video.id, jobAttempts: video.jobAttempts })
+
+  if (updated.length === 0) {
+    return c.json({ error: 'Video changed state concurrently; retry again' }, 409)
+  }
+
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.processing', {
+    videoId,
+    title: videoRecord.title,
+    retried: true,
+    attempts: updated[0].jobAttempts,
+  })
+
+  return c.json({
+    success: true,
+    status: 'processing',
+    videoId,
+    attempts: updated[0].jobAttempts,
+  })
+})
+
+/**
+ * Retry a self-hosted video **on the machine that owns its source**.
+ *
+ * Reuses the same job row so the source binding, the options the owner chose and
+ * the provider all survive. A fresh job would re-derive its agent from the
+ * source, which is right, but would also lose the frozen options — and a retry
+ * that quietly changes the ladder is not a retry. It also retires the failed
+ * attempt's inventory so its grants stop being renewable.
+ */
+async function retrySelfHostedJob(
+  c: Context<{ Bindings: Bindings }>,
+  videoRecord: typeof video.$inferSelect,
+  job: { jobId: string; state: string; sourceId: string | null },
+) {
+  if (!job.sourceId) {
+    return c.json(
+      {
+        error:
+          'This video’s transcode job has no source; re-select the file to import it again',
+      },
+      409,
+    )
+  }
+
+  if (videoRecord.deletedAt) return c.json({ error: 'Video not found' }, 404)
+
+  const rows = normalizeRows(
+    await db.execute(
+      buildRequeueStatement({
+        jobId: job.jobId,
+        videoId: videoRecord.id,
+        organizationId: videoRecord.organizationId,
+      }),
+    ),
+  )
+  if (rows.length === 0) {
+    return c.json(
+      {
+        error: `Only failed or cancelled jobs can be retried (current: ${job.state})`,
+        reason: 'already-claimed',
+      },
+      409,
+    )
+  }
+
+  dispatchWebhook(c.executionCtx, videoRecord.organizationId, 'video.processing', {
+    videoId: videoRecord.id,
+    title: videoRecord.title,
+    retried: true,
+    provider: 'self-hosted',
+  })
+
+  return c.json({
+    success: true,
+    status: 'processing',
+    videoId: videoRecord.id,
+    provider: 'self-hosted',
+  })
+}
 
 export default app

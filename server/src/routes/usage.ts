@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
-import { eq, sum, count, desc } from 'drizzle-orm'
+import { and, count, desc, eq, sum } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { db } from '../lib/database'
 import { video, member } from '../db/schema'
+import { notDeleted } from '../db/predicates'
 
 const app = new Hono()
 
@@ -29,7 +30,7 @@ app.get('/', async (c) => {
       videoCount: count(video.id),
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
 
   const stats = result[0]
 
@@ -88,7 +89,7 @@ app.get('/breakdown', async (c) => {
       createdAt: video.createdAt,
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
     .orderBy(desc(video.createdAt))
 
   // Calculate totals
@@ -150,7 +151,7 @@ app.get('/transcoding-analytics', async (c) => {
       videoCount: count(video.id),
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
 
   const stats = result[0]
 
@@ -211,7 +212,7 @@ app.get('/transcoding-breakdown', async (c) => {
       createdAt: video.createdAt,
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
     .orderBy(desc(video.createdAt))
 
   // Calculate totals
@@ -285,7 +286,7 @@ app.get('/bandwidth', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
-  const config = getAnalyticsConfig()
+  const config = getAnalyticsConfig(c.var.runtime.config)
   if (!config) {
     return c.json({
       error: 'Bandwidth analytics not configured',
@@ -368,7 +369,7 @@ app.get('/bandwidth/daily', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
-  const config = getAnalyticsConfig()
+  const config = getAnalyticsConfig(c.var.runtime.config)
   if (!config) {
     return c.json({
       error: 'Bandwidth analytics not configured',

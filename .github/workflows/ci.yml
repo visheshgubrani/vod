@@ -1,0 +1,229 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PNPM_VERSION: 12.3.4
+
+jobs:
+  js-workspace:
+    name: ${{ matrix.command }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        command: [test, typecheck, 'typecheck:tsc']
+    # Integration tests assert atomicity, leases and locking. A fake executor
+    # cannot establish those — they live in Postgres, not in our code. The
+    # suite reads TEST_DATABASE_URL and skips cleanly when it is unset, so
+    # `pnpm test` still works on a machine with no database.
+    #
+    # Redis is here for the same reason: the plain-Redis rate-limit adapter
+    # evaluates a Lua script, and only a real server proves it runs at all.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: openvod_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/openvod_test
+      TEST_REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Run ${{ matrix.command }}
+        run: pnpm ${{ matrix.command }}
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm --filter ./web lint
+      - name: Build (standalone)
+        run: pnpm --filter ./web build
+
+  transcoding-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # The suites import `config`, which imports botocore/boto3, and network
+      # tests import requests. Installing only pytest made this job fail at
+      # collection (4 of 5 files errored) rather than run.
+      - name: Install test dependencies
+        run: python -m pip install pytest botocore boto3 requests
+      - name: Run pytest
+        working-directory: transcoding
+        run: python -m pytest tests
+
+  docker-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Both compose files are configuration, and a typo in either is invisible
+      # until someone deploys: `config` resolves interpolation, service
+      # references and env_file requirements without starting anything.
+      - name: Validate compose files
+        run: |
+          docker compose -f docker-compose.dev.yml config --quiet
+          # The deployment stack requires a root .env (fail-fast by design).
+          cp .env.example .env
+          docker compose config --quiet
+      - name: Build API image
+        run: docker build -f server/Dockerfile -t openvod-api .
+      - name: Build web image
+        run: docker build -f web/Dockerfile -t openvod-web .
+      # The agent image was never built here, so a broken Dockerfile.agent
+      # stayed invisible until someone ran the transcoder profile.
+      - name: Build transcoder agent image
+        run: docker build -f transcoding/Dockerfile.agent -t openvod-transcoder .
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      # @openvod/uploader and @openvod/player only build at tag time otherwise,
+      # so a broken build stayed invisible until a release was cut.
+      - name: Build published packages
+        run: |
+          pnpm --filter @openvod/uploader build
+          pnpm --filter @openvod/player build
+
+  soft-delete-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Soft deletion is only correct if every library read excludes deleted
+      # rows, and forgetting at one call site is silent — it resurrects a video
+      # the tenant believes they deleted. Tests cover behaviour; this covers the
+      # call site nobody wrote a test for.
+      - name: Every video read must exclude soft-deleted rows
+        run: |
+          fail=0
+          while IFS= read -r line; do
+            file="${line%%:*}"
+            rest="${line#*:}"
+            n="${rest%%:*}"
+            # Either the chain composes `notDeleted`, or the read carries an
+            # explicit, reviewable exemption.
+            window="$(sed -n "$((n>10 ? n-10 : 1)),$((n+6))p" "$file")"
+            if ! printf '%s' "$window" | grep -q 'notDeleted' \
+               && ! printf '%s' "$window" | grep -q 'soft-delete-exempt'; then
+              echo "::error file=$file,line=$n::read of \`video\` does not compose \`notDeleted\`"
+              fail=1
+            fi
+          done < <(grep -rn '^[[:space:]]*\.from(video)' server/src --include='*.ts' || true)
+          if [ "$fail" -ne 0 ]; then
+            echo "Add \`notDeleted\` from server/src/db/predicates.ts, or mark the read"
+            echo "with a \`// soft-delete-exempt: <reason>\` comment and extend this guard."
+            exit 1
+          fi
+          echo "all video reads exclude soft-deleted rows"
+
+  runtime-boundary-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The API runs on two runtimes, and the boundary between them used to be
+      # implicit: a middleware copied `c.env` into `process.env` on every request
+      # so that modules written against ambient env would work on Workers. That
+      # bridge is gone. This guard keeps it gone, because the failure mode is
+      # silent — code that reads the wrong environment looks fine until one
+      # runtime misbehaves.
+      - name: Only the composition roots may read the ambient environment
+        run: |
+          fail=0
+          # Allow-list: the two entrypoints (which own process.env), the seed
+          # CLI, and the Node migration runner. Comments are excluded, so
+          # explaining the old behaviour in a doc comment is fine.
+          hits="$(grep -rn 'process\.env' server/src --include='*.ts' \
+            | grep -v '^server/src/node/' \
+            | grep -v '^server/src/db/seed.ts' \
+            | grep -vE ':[0-9]+:[[:space:]]*(\*|//)' || true)"
+          if [ -n "$hits" ]; then
+            echo "::error::process.env read outside a composition root:"
+            printf '%s\n' "$hits"
+            echo "Take it from RuntimeCapabilities (c.var.runtime.env or .config) instead."
+            fail=1
+          fi
+
+          # `c.env` is the Workers binding map. Only the runtime layer may read
+          # it; everything else goes through c.var.runtime.
+          envs="$(grep -rn 'c\.env' server/src --include='*.ts' \
+            | grep -v '^server/src/runtime/' \
+            | grep -vE ':[0-9]+:[[:space:]]*(\*|//)' || true)"
+          if [ -n "$envs" ]; then
+            echo "::error::c.env read outside the runtime layer:"
+            printf '%s\n' "$envs"
+            echo "Add a capability in server/src/runtime/ instead of reading bindings."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "no ambient environment reads outside the composition roots"
+
+  branding-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Forbid residual brand strings in source
+        run: |
+          if grep -rInE 'clipmux|indiemux' \
+            --include='*.ts' --include='*.tsx' --include='*.py' \
+            --include='*.md' --include='*.mdx' --include='*.jsonc' --include='*.css' \
+            --include='*.json' \
+            server delivery web sdk player transcoding docs docs-site \
+            README.md CONTRIBUTING.md AGENTS.md; then
+            echo "Residual brand strings found (see above). Rename pass incomplete."
+            exit 1
+          fi

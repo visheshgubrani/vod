@@ -10,19 +10,22 @@
 	"observability": {
 		"enabled": true,
 	},
+	// Local dev: the API worker owns 8787/9229, and unlike the server port that
+	// inspector collision is fatal. Pin both so `pnpm dev:all` (API + delivery
+	// together) can start the two workers without racing for a port.
+	"dev": {
+		"port": 8788,
+		"inspector_port": 9230,
+	},
 	"r2_buckets": [
 		{
 			"binding": "TRANSCODED_BUCKET",
-			"bucket_name": "transcoded-bucket",
+			"bucket_name": "openvod-transcoded",
 		},
 	],
 	"analytics_engine_datasets": [{ "binding": "USAGE_ANALYTICS", "dataset": "bandwidth_usage" }],
-	"routes": [
-		{
-			"pattern": "media.clipmux.com",
-			"custom_domain": true,
-		},
-	],
+	// Bind a custom domain after first deploy, e.g.:
+	// "routes": [{ "pattern": "media.example.com", "custom_domain": true }],
 
 	/**
 	 * Smart Placement

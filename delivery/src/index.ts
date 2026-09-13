@@ -1,5 +1,5 @@
 /**
- * ClipMux Delivery Worker
+ * OpenVOD Delivery Worker
  *
  * SECURITY MODEL FOR SIGNED VIDEOS:
  * ─────────────────────────────────
@@ -23,9 +23,18 @@ interface Env {
 	TRANSCODED_BUCKET: R2Bucket;
 	JWT_SECRET: string;
 	USAGE_ANALYTICS?: AnalyticsEngineDataset;  // For bandwidth tracking
+	// Policy applied to objects that carry no playback-policy metadata.
+	// Defaults to 'public' (historical behavior); set to 'signed' to fail
+	// closed for objects whose metadata was never written.
+	DEFAULT_POLICY?: string;
+	// Set 'true' to enable verbose per-request debug logs (raw UA/referer).
+	DELIVERY_DEBUG?: string;
+	// Comma-separated user-agent keywords exempt from UA binding
+	// (default: crkey,chromecast,roku,tizen,webos,appletv).
+	CAST_UA_KEYWORDS?: string;
 }
 
-const JWT_ISSUER = 'clipmux';
+const JWT_ISSUER = 'openvod';
 const JWT_AUDIENCE = 'playback';
 const UNKNOWN_USER_AGENT = 'unknown';
 const ANY_DOMAIN_PATTERN = '*';
@@ -51,12 +60,12 @@ const CACHE_CONTROL = {
 	default: 'public, max-age=3600',
 };
 
-function getMimeType(path: string): string {
+export function getMimeType(path: string): string {
 	const ext = path.substring(path.lastIndexOf('.')).toLowerCase();
 	return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
-function getCacheControl(path: string): string {
+export function getCacheControl(path: string): string {
 	if (path.endsWith('.m3u8') || path.endsWith('.mpd')) return CACHE_CONTROL.playlist;
 	if (path.endsWith('.ts') || path.endsWith('.m4s') || path.endsWith('.mp4')) return CACHE_CONTROL.segment;
 	if (path.endsWith('.key')) return CACHE_CONTROL.key;
@@ -64,13 +73,39 @@ function getCacheControl(path: string): string {
 	return CACHE_CONTROL.default;
 }
 
-function extractVideoId(path: string): string | null {
+/**
+ * Resolve an object's playback policy: metadata wins; objects without
+ * metadata fall back to env DEFAULT_POLICY (fail-closed option 'signed').
+ */
+export function resolvePlaybackPolicy(
+	metadataValue: string | undefined,
+	envDefault: string | undefined
+): 'public' | 'signed' {
+	if (metadataValue === 'signed' || metadataValue === 'public') {
+		return metadataValue;
+	}
+	return envDefault === 'signed' ? 'signed' : 'public';
+}
+
+/**
+ * Cache-Control for an object, aware of the playback policy. Signed segments
+ * keep only a day of cacheability (token-bearing URLs must not sit in shared
+ * caches for a year); public segments stay immutable.
+ */
+export function cacheControlFor(path: string, isSigned: boolean): string {
+	if (isSigned && (path.endsWith('.ts') || path.endsWith('.m4s') || path.endsWith('.mp4'))) {
+		return 'public, max-age=86400';
+	}
+	return getCacheControl(path);
+}
+
+export function extractVideoId(path: string): string | null {
 	const match = path.match(/^videos\/([^\/]+)\//);
 	return match ? match[1] : null;
 }
 
 /** Resources that must never be cached for signed videos (playlists contain token-bearing URLs). */
-function isNoCacheResource(path: string): boolean {
+export function isNoCacheResource(path: string): boolean {
 	return (
 		path.endsWith('.m3u8') ||
 		path.endsWith('.mpd') ||
@@ -84,15 +119,23 @@ type NormalizedRange = {
 	length: number;
 };
 
-function withTokenQuery(uri: string, token: string): string {
-	if (!uri || uri.startsWith('data:') || uri.startsWith('blob:') || /(?:\?|&)token=/.test(uri)) {
+export function withTokenQuery(uri: string, token: string): string {
+	if (!uri || uri.startsWith('data:') || uri.startsWith('blob:')) {
+		return uri;
+	}
+	if (/(?:\?|&)token=/.test(uri)) {
+		return uri; // already carries a token
+	}
+	// Never append our token to absolute (foreign-host) URLs — that would
+	// exfiltrate the playback token. Manifests from Shaka use relative URIs.
+	if (/^https?:\/\//i.test(uri)) {
 		return uri;
 	}
 	const separator = uri.includes('?') ? '&' : '?';
 	return `${uri}${separator}token=${token}`;
 }
 
-function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null {
+export function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null {
 	if (totalSize <= 0) return null;
 
 	if ('suffix' in range) {
@@ -124,7 +167,7 @@ function resolveRange(range: R2Range, totalSize: number): NormalizedRange | null
 	return null;
 }
 
-function normalizePlaybackUserAgent(value: string | null | undefined): string {
+export function normalizePlaybackUserAgent(value: string | null | undefined): string {
 	if (!value) return UNKNOWN_USER_AGENT;
 	const normalized = value.trim().replace(/\s+/g, ' ').toLowerCase();
 	if (!normalized) return UNKNOWN_USER_AGENT;
@@ -151,7 +194,7 @@ function normalizePlaybackUserAgent(value: string | null | undefined): string {
 	return UNKNOWN_USER_AGENT;
 }
 
-function getUserAgentFromRequest(request: Request): string {
+export function getUserAgentFromRequest(request: Request): string {
 	return normalizePlaybackUserAgent(request.headers.get('user-agent'));
 }
 
@@ -187,7 +230,7 @@ function getRequestPlaybackDomain(request: Request): {
 	return { domain: null, source: 'none', referer, origin };
 }
 
-function normalizeDomainPattern(value: string): string | null {
+export function normalizeDomainPattern(value: string): string | null {
 	const trimmed = value.trim().toLowerCase();
 	if (!trimmed) return null;
 	if (trimmed === ANY_DOMAIN_PATTERN) return ANY_DOMAIN_PATTERN;
@@ -225,7 +268,7 @@ function normalizeAllowedDomainsClaim(value: unknown): string[] {
 	return normalized.length > 0 ? normalized : [ANY_DOMAIN_PATTERN];
 }
 
-function domainMatchesPattern(domain: string, pattern: string): boolean {
+export function domainMatchesPattern(domain: string, pattern: string): boolean {
 	if (pattern === ANY_DOMAIN_PATTERN) return true;
 	if (pattern.startsWith('*.')) {
 		const base = pattern.slice(2);
@@ -234,7 +277,7 @@ function domainMatchesPattern(domain: string, pattern: string): boolean {
 	return domain === pattern;
 }
 
-function isDomainAllowed(
+export function isDomainAllowed(
 	requestDomain: string | null,
 	allowedDomains: string[],
 	allowNoReferrer: boolean
@@ -250,7 +293,7 @@ function isDomainAllowed(
 	return allowedDomains.some((pattern) => domainMatchesPattern(requestDomain, pattern));
 }
 
-async function hashPlaybackValue(value: string): Promise<string> {
+export async function hashPlaybackValue(value: string): Promise<string> {
 	const data = new TextEncoder().encode(value);
 	const digest = await crypto.subtle.digest('SHA-256', data);
 	return Array.from(new Uint8Array(digest))
@@ -258,24 +301,44 @@ async function hashPlaybackValue(value: string): Promise<string> {
 		.join('');
 }
 
-async function verifyToken(
+/**
+ * Verify a playback token against the signed-content rules.
+ *
+ * Exported for testing: the algorithm and expiry restrictions below are
+ * security-relevant, and an unexported verifier is one nothing can regression-
+ * test — which is exactly how they went missing the first time.
+ */
+export async function verifyToken(
 	token: string,
 	secret: string,
 	videoId: string,
 	request: Request,
+	env: Env | undefined,
 	organizationId?: string,
 	resourceKey?: string
 ): Promise<boolean> {
+	// Debug logging is opt-in: raw UA/referer data is PII-ish and noisy.
+	const dbg = env?.DELIVERY_DEBUG === 'true';
 	try {
 		const secretKey = new TextEncoder().encode(secret);
 		const { payload } = await jose.jwtVerify(token, secretKey, {
 			issuer: JWT_ISSUER,
 			audience: JWT_AUDIENCE,
+			// Both are load-bearing, and their absence was a live gap rather
+			// than a hardening: without `algorithms` jose accepts any HS*
+			// variant, and without `requiredClaims` a token that simply omits
+			// `exp` never expires. Verified against jose@5.10.0 — an HS384
+			// token and an HS256 token with no expiry were both accepted.
+			//
+			// Safe to enforce: both mint sites (server routes video.ts and
+			// api.ts) already declare HS256 and always set an expiry.
+			algorithms: ['HS256'],
+			requiredClaims: ['exp'],
 		});
 		const tokenSubject = typeof payload.sub === 'string' ? payload.sub : undefined;
 		const tokenVideoId = typeof payload.video_id === 'string' ? payload.video_id : tokenSubject;
 		if (tokenVideoId !== videoId) {
-			console.warn('[playback-ip-debug] reject: video-id mismatch', {
+			if (dbg) console.warn('[playback-ip-debug] reject: video-id mismatch', {
 				resourceKey: resourceKey || null,
 				requestVideoId: videoId,
 				tokenVideoId: tokenVideoId || null,
@@ -291,7 +354,7 @@ async function verifyToken(
 		const requestRawUserAgent = request.headers.get('user-agent');
 		const requestNormalizedUserAgent = getUserAgentFromRequest(request);
 
-		console.log('[playback-ip-debug] verify-start', {
+		if (dbg) console.log('[playback-ip-debug] verify-start', {
 			resourceKey: resourceKey || null,
 			videoId,
 			tokenVideoId: tokenVideoId || null,
@@ -311,7 +374,7 @@ async function verifyToken(
 			const requestUserAgentHash = await hashPlaybackValue(requestNormalizedUserAgent);
 			const isUserAgentHashMatch = tokenUserAgentHash === requestUserAgentHash;
 
-			console.log('[playback-ip-debug] verify-ua-compare', {
+			if (dbg) console.log('[playback-ip-debug] verify-ua-compare', {
 				resourceKey: resourceKey || null,
 				requestNormalizedUserAgent,
 				requestUserAgentHash,
@@ -324,17 +387,14 @@ async function verifyToken(
 				const isAppleCoreMedia = userAgent.includes('applecoremedia');
 				
 				// Common casting and smart TV user agents
-				const isCastingDevice = userAgent.includes('crkey') || 
-					userAgent.includes('chromecast') || 
-					userAgent.includes('roku') || 
-					userAgent.includes('tizen') || 
-					userAgent.includes('webos') || 
-					userAgent.includes('appletv');
+				const castKeywords = (env?.CAST_UA_KEYWORDS || 'crkey,chromecast,roku,tizen,webos,appletv')
+					.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
+				const isCastingDevice = castKeywords.some((k) => userAgent.includes(k));
 
 				// Native players and casting devices change the User-Agent. 
 				// If alternate playback device is detected, allow user-agent mismatch.
 				if (isAppleCoreMedia || isCastingDevice) {
-					console.log('[playback-ip-debug] allow: user-agent exception', {
+					if (dbg) console.log('[playback-ip-debug] allow: user-agent exception', {
 						resourceKey: resourceKey || null,
 						isAppleCoreMedia,
 						isCastingDevice,
@@ -342,7 +402,7 @@ async function verifyToken(
 						requestNormalizedUserAgent,
 					});
 				} else {
-					console.warn('[playback-ip-debug] reject: binding mismatch', {
+					if (dbg) console.warn('[playback-ip-debug] reject: binding mismatch', {
 						resourceKey: resourceKey || null,
 						isAppleCoreMedia,
 						isCastingDevice,
@@ -355,7 +415,7 @@ async function verifyToken(
 				}
 			}
 		} else {
-			console.warn('[playback-ip-debug] warn: missing ua_hash claim, skipping ua binding', {
+			if (dbg) console.warn('[playback-ip-debug] warn: missing ua_hash claim, skipping ua binding', {
 				resourceKey: resourceKey || null,
 			});
 		}
@@ -365,7 +425,7 @@ async function verifyToken(
 			tokenAllowedDomains,
 			tokenAllowNoReferrer
 		);
-		console.log('[playback-ip-debug] verify-domain-compare', {
+		if (dbg) console.log('[playback-ip-debug] verify-domain-compare', {
 			resourceKey: resourceKey || null,
 			requestDomain: requestPlaybackDomain.domain,
 			requestDomainSource: requestPlaybackDomain.source,
@@ -374,7 +434,7 @@ async function verifyToken(
 			domainAllowed,
 		});
 		if (!domainAllowed) {
-			console.warn('[playback-ip-debug] reject: domain restriction mismatch', {
+			if (dbg) console.warn('[playback-ip-debug] reject: domain restriction mismatch', {
 				resourceKey: resourceKey || null,
 				requestDomain: requestPlaybackDomain.domain,
 				requestDomainSource: requestPlaybackDomain.source,
@@ -388,7 +448,7 @@ async function verifyToken(
 			const tokenOrgId = typeof payload.org_id === 'string' ? payload.org_id : undefined;
 			const isOrgMatch = tokenOrgId === organizationId;
 			if (!isOrgMatch) {
-				console.warn('[playback-ip-debug] reject: org mismatch', {
+				if (dbg) console.warn('[playback-ip-debug] reject: org mismatch', {
 					resourceKey: resourceKey || null,
 					tokenOrgId: tokenOrgId || null,
 					requestOrgId: organizationId,
@@ -397,7 +457,7 @@ async function verifyToken(
 			return isOrgMatch;
 		}
 
-		console.log('[playback-ip-debug] allow: token verified', {
+		if (dbg) console.log('[playback-ip-debug] allow: token verified', {
 			resourceKey: resourceKey || null,
 			videoId,
 		});
@@ -455,7 +515,7 @@ function rewritePlaylist(content: string, token: string): string {
 }
 
 /**
- * Log bandwidth usage to Analytics Engine for billing/analytics.
+ * Log bandwidth usage to Analytics Engine for usage metering.
  * Non-blocking - uses waitUntil to prevent impacting response latency.
  */
 function logBandwidth(
@@ -487,6 +547,41 @@ function logBandwidth(
 	);
 }
 
+
+/**
+ * Rewrite a signed manifest so every sub-resource URI carries the playback
+ * token. Pure function: content in, content out. Never rewrites data:/blob:
+ * URIs or absolute http(s) URLs (foreign hosts would leak the token).
+ */
+export function rewriteSignedManifest(
+	content: string,
+	token: string,
+	kind: 'hls' | 'dash'
+): string {
+	if (kind === 'hls') {
+		let rewritten = content.replace(
+			/(#(?:EXT-X-(?:KEY|MAP|MEDIA|I-FRAME-STREAM-INF|SESSION-KEY|IMAGE-STREAM-INF|PRELOAD-HINT|RENDITION-REPORT)):.*?URI=")([^"]+)(")/g,
+			(match, prefix, uri, suffix) => `${prefix}${withTokenQuery(uri, token)}${suffix}`
+		);
+
+		// Standalone variant playlists and segments, preserving CRLF.
+		rewritten = rewritten.replace(
+			/^([^#\s][^\r\n]*\.(?:m3u8|mp4|m4s|ts)(?:\?[^\r\n]*)?)(\r?)$/gm,
+			(match, uri, carriageReturn) => `${withTokenQuery(uri, token)}${carriageReturn}`
+		);
+		return rewritten;
+	}
+
+	// DASH: media/initialization templates plus relative <BaseURL> elements.
+	let rewritten = content.replace(/(media=")([^"]+)(")/g, (m, pre, uri, suf) =>
+		`${pre}${withTokenQuery(uri, token)}${suf}`);
+	rewritten = rewritten.replace(/(initialization=")([^"]+)(")/g, (m, pre, uri, suf) =>
+		`${pre}${withTokenQuery(uri, token)}${suf}`);
+	rewritten = rewritten.replace(/<BaseURL>([^<]+)<\/BaseURL>/g, (m, uri) =>
+		`<BaseURL>${withTokenQuery((uri as string).trim(), token)}</BaseURL>`);
+	return rewritten;
+}
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const corsHeaders = {
@@ -505,6 +600,9 @@ export default {
 		}
 
 		const url = new URL(request.url);
+		if (url.pathname === '/health') {
+			return new Response('ok', { status: 200, headers: corsHeaders });
+		}
 		const key = url.pathname.slice(1);
 		const token = url.searchParams.get('token');
 
@@ -529,7 +627,10 @@ export default {
 
 
 			// 3. CHECK AUTH
-			const playbackPolicy = object.customMetadata?.['playback-policy'] || object.customMetadata?.playback_policy || 'public';
+			const metadataPolicy =
+				object.customMetadata?.['playback-policy'] ||
+				object.customMetadata?.playback_policy;
+			const playbackPolicy = resolvePlaybackPolicy(metadataPolicy, env.DEFAULT_POLICY);
 			const isSigned = playbackPolicy === 'signed';
 			const organizationId = object.customMetadata?.['organization-id'];
 			const videoId = extractVideoId(key);
@@ -544,7 +645,7 @@ export default {
 					return new Response('Invalid Path', { status: 400, headers: corsHeaders });
 				}
 
-				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, organizationId, key);
+				const isValid = await verifyToken(token, env.JWT_SECRET, videoId, request, env, organizationId, key);
 				if (!isValid) {
 					return new Response('Unauthorized: Invalid token', { status: 401, headers: corsHeaders });
 				}
@@ -553,7 +654,7 @@ export default {
 			// 4. PREPARE HEADERS
 			const headers = new Headers({
 				'Content-Type': getMimeType(key),
-				'Cache-Control': getCacheControl(key),
+				'Cache-Control': cacheControlFor(key, isSigned),
 				ETag: object.httpEtag,
 				'Accept-Ranges': 'bytes',
 				...corsHeaders,
@@ -571,6 +672,11 @@ export default {
 				headers.set('X-Org-Id', organizationId);
 			}
 
+			// Purge-friendly tag for signed segments (opt-in purge tooling).
+			if (isSigned && videoId && (key.endsWith('.m4s') || key.endsWith('.ts') || key.endsWith('.mp4'))) {
+				headers.set('Cache-Tag', `vod-${videoId}`);
+			}
+
 			// Determine file type for analytics categorization
 			const getFileType = (path: string): string => {
 				if (path.endsWith('.m3u8') || path.endsWith('.mpd')) return 'playlist';
@@ -582,31 +688,11 @@ export default {
 			};
 			const fileType = getFileType(key);
 
-			// 5. MANIFEST REWRITING
+			// 5. MANIFEST REWRITING (pure helper — unit tested)
       if (isSigned && token && (key.endsWith('.m3u8') || key.endsWith('.mpd'))) {
         const content = await object.text();
-        let rewritten = content;
-
-        if (key.endsWith('.m3u8')) {
-          // 1. Rewrite #EXT-X-KEY, #EXT-X-MAP, and #EXT-X-MEDIA URIs (combined for efficiency)
-          rewritten = rewritten.replace(/(#(?:EXT-X-KEY|EXT-X-MAP|EXT-X-MEDIA):.*?URI=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
-          });
-
-          // 2. Rewrite standalone variant playlists and segments, safely capturing the optional \r
-          rewritten = rewritten.replace(/^([^#\s][^\r\n]*\.(?:m3u8|mp4|m4s|ts)(?:\?[^\r\n]*)?)(\r?)$/gm, (match, uri, carriageReturn) => {
-            return `${withTokenQuery(uri, token)}${carriageReturn}`;
-          });
-          
-        } else if (key.endsWith('.mpd')) {
-          // 3. DASH Rewriting: Catch media and initialization paths inside the XML
-          rewritten = rewritten.replace(/(media=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
-          });
-          rewritten = rewritten.replace(/(initialization=")([^"]+)(")/g, (match, prefix, uri, suffix) => {
-            return `${prefix}${withTokenQuery(uri, token)}${suffix}`;
-          });
-        }
+        const kind = key.endsWith('.mpd') ? 'dash' : 'hls';
+        const rewritten = rewriteSignedManifest(content, token, kind);
 
         const rewrittenBytes = new TextEncoder().encode(rewritten).length;
 

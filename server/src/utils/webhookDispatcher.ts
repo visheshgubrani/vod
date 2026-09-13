@@ -28,7 +28,12 @@ export const WEBHOOK_EVENTS = [
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]
 
-function generateSignature(secret: string, timestamp: number, body: string): string {
+/**
+ * HMAC-SHA256 over `<timestamp>.<body>`, matching the `X-Webhook-Signature`
+ * header receivers verify. Exported so the outbox delivery path signs exactly
+ * the same way the direct path does — receivers must not care which one sent.
+ */
+export function generateSignature(secret: string, timestamp: number, body: string): string {
   const payload = `${timestamp}.${body}`
   return createHmac('sha256', secret).update(payload).digest('hex')
 }
@@ -87,7 +92,7 @@ export async function dispatchWebhookEvent(
               'X-Webhook-Timestamp': timestamp.toString(),
               'X-Webhook-Signature': `sha256=${signature}`,
               'X-Webhook-Id': eventId,
-              'User-Agent': 'ClipMux-Webhooks/1.0',
+              'User-Agent': 'OpenVOD-Webhooks/1.0',
             },
             body,
             signal: AbortSignal.timeout(10000),

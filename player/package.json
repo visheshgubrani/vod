@@ -1,7 +1,7 @@
 {
-  "name": "@clipmux/player",
+  "name": "@openvod/player",
   "version": "0.1.2",
-  "description": "ClipMux video player — drop-in React component with built-in analytics",
+  "description": "OpenVOD video player \u2014 drop-in React component with built-in analytics",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -20,7 +20,10 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
     "react": ">=18",
@@ -32,20 +35,32 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "~3.2.7"
   },
   "keywords": [
     "video",
     "player",
     "hls",
-    "clipmux",
+    "openvod",
     "vidstack",
     "react",
     "analytics",
     "streaming"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@vidstack/react": "^1.12.13"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visheshgubrani/vod.git"
+  },
+  "homepage": "https://github.com/visheshgubrani/vod/tree/main/player#readme",
+  "bugs": {
+    "url": "https://github.com/visheshgubrani/vod/issues"
   }
 }

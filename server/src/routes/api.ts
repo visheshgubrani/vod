@@ -8,11 +8,14 @@
  */
 
 import { Hono } from 'hono'
-import { eq, and } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import * as jose from 'jose'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
-import { video, uploadToken } from '../db/schema'
+import { requirePlaybackJwtSecret } from '../lib/config'
+import { uploadToken, video } from '../db/schema'
+import { notDeleted } from '../db/predicates'
+import { deleteVideoWithCleanup } from '../lib/objectCleanup'
 import type { ApiKeyVariables } from '../types'
 import {
   buildPlaybackBindingClaims,
@@ -24,7 +27,7 @@ const app = new Hono<{ Variables: ApiKeyVariables }>()
 
 // JWT token expiration (customizable per request)
 const DEFAULT_EXPIRATION = '4h'
-const JWT_ISSUER = 'clipmux'
+const JWT_ISSUER = 'openvod'
 const JWT_AUDIENCE = 'playback'
 const DEFAULT_ALLOWED_DOMAINS = ['*']
 const DEFAULT_ALLOW_NO_REFERRER = true
@@ -100,8 +103,14 @@ async function generatePlaybackToken(
   expiresIn: string = DEFAULT_EXPIRATION,
   bindingClaims: PlaybackBindingClaims | null,
   restrictions: PlaybackRestrictionsClaims,
+  /**
+   * The signing key, resolved by the caller from the runtime configuration.
+   * Passing it in keeps this helper — which has no request context — from
+   * reaching for an environment of its own.
+   */
+  jwtSecret: string,
 ): Promise<{ token: string; expiresAt: number }> {
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET)
+  const secret = new TextEncoder().encode(jwtSecret)
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
   const claims = {
     ...(bindingClaims ?? {}),
@@ -220,12 +229,9 @@ app.post('/video/:id/playback-token', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
+    .where(and(notDeleted, eq(video.id, videoId),
         eq(video.organizationId, organizationId)
-      )
-    )
+      ))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -283,6 +289,7 @@ app.post('/video/:id/playback-token', async (c) => {
     expiresIn,
     bindingClaims,
     restrictions,
+    requirePlaybackJwtSecret(c.var.runtime.config),
   )
 
   return c.json({
@@ -313,12 +320,9 @@ app.get('/video/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
+    .where(and(notDeleted, eq(video.id, videoId),
         eq(video.organizationId, organizationId)
-      )
-    )
+      ))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -366,7 +370,7 @@ app.get('/videos', async (c) => {
       createdAt: video.createdAt,
     })
     .from(video)
-    .where(eq(video.organizationId, organizationId))
+    .where(and(notDeleted, eq(video.organizationId, organizationId)))
     .limit(limit)
     .orderBy(video.createdAt)
 
@@ -403,12 +407,9 @@ app.patch('/video/:id', async (c) => {
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
+    .where(and(notDeleted, eq(video.id, videoId),
         eq(video.organizationId, organizationId)
-      )
-    )
+      ))
     .limit(1)
 
   const videoRecord = videos[0]
@@ -459,24 +460,28 @@ app.delete('/video/:id', async (c) => {
   const organizationId = c.var.organizationId
   const videoId = c.req.param('id')
 
+  // soft-delete-exempt: repeat delete must find the already-deleted row to
+  // verify tenant ownership and answer idempotently.
+  // Unfiltered lookup: deleting an already-deleted video is idempotent, and the
+  // tenant check below still applies, so it must not 404 on a repeat call.
   const videos = await db
     .select()
     .from(video)
-    .where(
-      and(
-        eq(video.id, videoId),
-        eq(video.organizationId, organizationId)
-      )
-    )
+    .where(and(eq(video.id, videoId), eq(video.organizationId, organizationId)))
     .limit(1)
 
-  if (videos.length === 0) {
+  const videoRecord = videos[0]
+  if (!videoRecord || videoRecord.deletedAt) {
     return c.json({ error: 'Video not found' }, 404)
   }
 
-  await db
-    .delete(video)
-    .where(eq(video.id, videoId))
+  // Soft-delete + enqueue reclamation atomically (see objectCleanup.ts).
+  await deleteVideoWithCleanup({
+    executor: db,
+    videoId,
+    organizationId,
+    deletedBy: null,
+  })
 
   return c.json({
     deleted: true,

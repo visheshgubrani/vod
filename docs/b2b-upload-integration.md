@@ -1,11 +1,11 @@
 # B2B Video Upload Integration Guide
 
-Integrate video uploads into your application using the Clipmux platform and SDK.
+Integrate video uploads into your application using a self-hosted OpenVOD API and the `@openvod/uploader` SDK.
 
 ## Architecture
 
 ```
-Your Backend                    Clipmux API                 R2 Storage
+Your Backend                    OpenVOD API                 Object Storage (R2)
      │                               │                          │
      ├── /v1/upload/token ──────────▶│                          │
      │   (API Key auth)              │                          │
@@ -14,12 +14,14 @@ Your Backend                    Clipmux API                 R2 Storage
      ▼                               │                          │
 Your Frontend                        │                          │
      │                               │                          │
-     └── @clipmux/uploader SDK ─────▶│─────── presigned ───────▶│
+     └── @openvod/uploader SDK ─────▶│─────── presigned ───────▶│
          (handles everything)        │                          │
                                      │                          │
                                      │◀──── video.ready ────────┤
                                      │       webhook            │
 ```
+
+Replace `https://api.yourvod.com` with your API origin (`BACKEND_URL`).
 
 ---
 
@@ -28,17 +30,17 @@ Your Frontend                        │                          │
 ### 1. Install SDK
 
 ```bash
-npm install @clipmux/uploader
+npm install @openvod/uploader
 ```
 
 ### 2. Backend: Generate Upload Token
 
 ```typescript
 // POST /api/upload-token
-const response = await fetch('https://api.clipmux.com/v1/upload/token', {
+const response = await fetch('https://api.yourvod.com/v1/upload/token', {
   method: 'POST',
   headers: {
-    'Authorization': `Bearer ${process.env.CLIPMUX_API_KEY}`,
+    'Authorization': `Bearer ${process.env.OPENVOD_API_KEY}`,
     'Content-Type': 'application/json',
   },
   body: JSON.stringify({ expires_in: '1h', max_files: 1 }),
@@ -51,14 +53,12 @@ return { uploadToken: upload_token, expiresAt: expires_at }
 ### 3. Frontend: Upload with SDK
 
 ```typescript
-import { ClipmuxUploader } from '@clipmux/uploader'
+import { OpenVodUploader } from '@openvod/uploader'
 
-// Get token from your backend
 const { uploadToken } = await fetch('/api/upload-token').then(r => r.json())
 
-// Upload file
-const uploader = new ClipmuxUploader({
-  baseUrl: 'https://api.clipmux.com',
+const uploader = new OpenVodUploader({
+  baseUrl: 'https://api.yourvod.com',
   uploadToken,
 })
 
@@ -67,14 +67,14 @@ const result = await uploader.upload(file, {
   onProgress: (p) => console.log(`${p.percentage}%`),
 })
 
-console.log('Video ID:', result.fileId)  // Save this!
+console.log('Video ID:', result.fileId)
 ```
 
 ### 4. Backend: Handle Webhooks
 
 ```typescript
-// POST /webhooks/clipmux
-app.post('/webhooks/clipmux', (req, res) => {
+// POST /webhooks/openvod
+app.post('/webhooks/openvod', (req, res) => {
   const { event, data } = req.body
 
   if (event === 'video.ready') {
@@ -93,14 +93,14 @@ app.post('/webhooks/clipmux', (req, res) => {
 
 ## SDK Reference
 
-### ClipmuxUploader
+### OpenVodUploader
 
 ```typescript
-const uploader = new ClipmuxUploader({
-  baseUrl: 'https://api.clipmux.com',
+const uploader = new OpenVodUploader({
+  baseUrl: 'https://api.yourvod.com',
   uploadToken: 'ut_xxx',
-  chunkSize: 5 * 1024 * 1024,  // Optional: 5MB default
-  concurrency: 3,              // Optional: parallel uploads
+  concurrency: 3,
+  windowSize: 32,
 })
 ```
 
@@ -109,15 +109,15 @@ const uploader = new ClipmuxUploader({
 ```typescript
 const result = await uploader.upload(file, {
   title: 'My Video',
-  playbackPolicy: 'public',  // or 'signed'
+  playbackPolicy: 'public',
   signal: abortController.signal,
   onProgress: (progress) => {
     console.log(`${progress.percentage}%`)
-    console.log(`${progress.uploadedBytes}/${progress.totalBytes}`)
+    console.log(`${progress.bytesUploaded}/${progress.bytesTotal}`)
   },
 })
 
-// result: { fileId, status: 'processing', key }
+// result: { fileId, status: 'processing', title }
 ```
 
 ### Cancellation
@@ -125,10 +125,8 @@ const result = await uploader.upload(file, {
 ```typescript
 const controller = new AbortController()
 
-// Start upload
 uploader.upload(file, { signal: controller.signal })
 
-// Cancel anytime
 controller.abort()
 ```
 
@@ -138,7 +136,7 @@ controller.abort()
 
 | Event | When | Payload |
 |-------|------|---------|
-| `video.ready` | ✅ Ready for playback | `videoId`, `hlsUrl`, `thumbnailUrl`, `duration` |
+| `video.ready` | Ready for playback | `videoId`, `hlsUrl`, `thumbnailUrl`, `duration` |
 | `video.failed` | Transcoding failed | `videoId`, `error` |
 | `video.processing` | Transcoding started | `videoId` |
 
@@ -162,16 +160,15 @@ if (signature !== `sha256=${expected}`) {
 
 ## Video Playback
 
-After `video.ready`, get a signed playback URL:
+After `video.ready`, get a signed playback URL from **your** API:
 
 ```typescript
-// Backend: GET /api/video/:id/playback
 const response = await fetch(
-  `https://api.clipmux.com/v1/video/${videoId}/playback-token`,
+  `https://api.yourvod.com/v1/video/${videoId}/playback-token`,
   {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${CLIPMUX_API_KEY}`,
+      'Authorization': `Bearer ${process.env.OPENVOD_API_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -182,7 +179,7 @@ const response = await fetch(
 )
 
 const { playback_url } = await response.json()
-// playback_url: https://media.clipmux.com/videos/.../playlist.m3u8?token=...
+// playback_url: https://media.yourvod.com/videos/.../playlist.m3u8?token=...
 ```
 
 Always forward the end-user IP and User-Agent from your app request when minting playback tokens, so token binding works correctly.
@@ -198,6 +195,8 @@ hls.loadSource(playbackUrl)
 hls.attachMedia(video)
 ```
 
+Or use `@openvod/player` with `src={playback_url}` and `token`.
+
 ---
 
 ## API Endpoints Summary
@@ -209,7 +208,7 @@ hls.attachMedia(video)
 | `GET /v1/video/:id` | API Key | Get video details |
 | `DELETE /v1/video/:id` | API Key | Delete video |
 
-> **Note**: The SDK handles all upload operations (`/create`, `/parts`, `/complete`) automatically.
+> The SDK handles all upload operations (`/create`, `/parts`, `/complete`) automatically.
 
 ---
 
