@@ -27,10 +27,13 @@ import {
 import {
   deployModalPipeline,
   findModalBin,
+  forceOverwriteModalSecret,
   installModalCli,
   modalAuthed,
   putModalSecret,
+  rawBucketFromServerEnv,
   r2CredsValues,
+  requireTranscodeIngestSecret,
   runModalSetup,
 } from './modal'
 import { analyticsTokenTemplateUrl } from './parsers'
@@ -253,20 +256,23 @@ export async function runDeployPhase(
         }
       }
       if (authed) {
-        const ingestSecret = serverEnv['TRANSCODE_INGEST_SECRET'] ?? ''
+        const current = readServerEnv(root)
+        if (!current) throw new WizardError('server/.dev.vars disappeared during Modal setup')
+        const ingestSecret = requireTranscodeIngestSecret(current)
         logStep('Uploading Modal secrets (r2-creds, groq-creds)')
         await putModalSecret(
           modalBin,
           'r2-creds',
           r2CredsValues({
             accountId: effectiveAccountId,
-            accessKeyId: serverEnv['R2_ACCESS_KEY_ID'] ?? answers.r2AccessKeyId,
-            secretAccessKey: serverEnv['R2_SECRET_ACCESS_KEY'] ?? answers.r2SecretAccessKey,
+            accessKeyId: current['R2_ACCESS_KEY_ID'] ?? answers.r2AccessKeyId,
+            secretAccessKey: current['R2_SECRET_ACCESS_KEY'] ?? answers.r2SecretAccessKey,
             transcodedBucket: answers.transcodedBucket,
-            rawBucket: answers.rawBucket,
+            rawBucket: rawBucketFromServerEnv(current, answers.rawBucket),
             ingestSecret,
             callbackHosts: 'localhost',
           }),
+          { force: forceOverwriteModalSecret('r2-creds') },
         )
         await putModalSecret(modalBin, 'groq-creds', {
           GROQ_API_KEY: answers.groqApiKey?.trim() || 'unused',
@@ -380,11 +386,11 @@ export async function runDeployPhase(
             accessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
             secretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',
             transcodedBucket: answers.transcodedBucket,
-            rawBucket: answers.rawBucket,
-            ingestSecret: env['TRANSCODE_INGEST_SECRET'] ?? '',
+            rawBucket: rawBucketFromServerEnv(env, answers.rawBucket),
+            ingestSecret: requireTranscodeIngestSecret(env),
             callbackHosts: ['localhost', apiHost].join(','),
           }),
-          { force: true },
+          { force: forceOverwriteModalSecret('r2-creds') },
         )
         logSuccess('r2-creds ALLOWED_CALLBACK_HOSTS updated')
       }

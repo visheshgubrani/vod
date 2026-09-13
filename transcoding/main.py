@@ -40,9 +40,9 @@ from openvod_transcoder import (
     run_pipeline,
 )
 from openvod_transcoder.config import (
-    ALLOWED_SOURCE_BUCKETS,
-    ALLOWED_URL_HOSTS,
     R2_PREFIX,
+    allowed_source_buckets,
+    allowed_url_hosts,
     config_warnings,
 )
 from openvod_transcoder.errors import ERROR_INSUFFICIENT_DISK, TranscodeError
@@ -55,10 +55,24 @@ from openvod_transcoder.utils import send_callback, send_heartbeat
 # MODAL APP CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-for _warning in config_warnings():
-    print(f"[CONFIG] {_warning}", flush=True)
-
 app = modal.App("vod-production-pipeline")
+
+_config_warned = False
+
+
+def _emit_config_warnings_once() -> None:
+    """Log allowlist gaps inside the container, where r2-creds is injected.
+
+    Do not call this at module import: `modal deploy` imports this file on the
+    laptop, which has no Modal secret env, and the warnings are a false alarm.
+    """
+    global _config_warned
+    if _config_warned:
+        return
+    _config_warned = True
+    for warning in config_warnings():
+        print(f"[CONFIG] {warning}", flush=True)
+
 
 # Durable duplicate suppression for transcode attempts.
 #
@@ -204,6 +218,7 @@ def transcode_video(request: Request, payload: dict):
         attempt claim is the primary guard; this is defence in depth.
     """
     require_ingest_auth(request)
+    _emit_config_warnings_once()
 
     try:
         video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
@@ -224,13 +239,15 @@ def transcode_video(request: Request, payload: dict):
     # Defense in depth on the ingest boundary: the API is the only intended
     # caller, but a leaked ingest secret must not turn into "read any bucket
     # under the R2 credentials" or "fetch any URL".
-    if has_r2 and ALLOWED_SOURCE_BUCKETS and (payload.get("bucket") or "").lower() not in ALLOWED_SOURCE_BUCKETS:
+    source_buckets = allowed_source_buckets()
+    url_hosts = allowed_url_hosts()
+    if has_r2 and source_buckets and (payload.get("bucket") or "").lower() not in source_buckets:
         return {
             "status": "error",
             "message": f"Bucket '{payload.get('bucket')}' is not in ALLOWED_SOURCE_BUCKETS",
         }
 
-    if has_url and not ALLOWED_URL_HOSTS:
+    if has_url and not url_hosts:
         return {
             "status": "error",
             "message": "input_url is disabled: set ALLOWED_URL_HOSTS to allow URL sources",
@@ -303,6 +320,7 @@ def transcode_video(request: Request, payload: dict):
 )
 def transcode_worker(payload: dict):
     """GPU worker - executes the shared pipeline and reports the outcome."""
+    _emit_config_warnings_once()
     try:
         video_id = normalize_video_id(payload.get("video_id") or payload.get("fileId"))
     except ValueError as e:

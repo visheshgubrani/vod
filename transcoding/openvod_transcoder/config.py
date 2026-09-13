@@ -9,6 +9,7 @@ fresh machine none of the optional extras need to be installed for the package
 to import and plan work.
 """
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Set
 
@@ -61,51 +62,63 @@ LADDER_MIN_HEIGHT_GAP = 0.15
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECURITY CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# Read from the *current* environment at call time. Snapshotting at import
+# makes `modal deploy` warn on the laptop (no r2-creds in that process) and
+# can freeze an empty allowlist into a running container.
 
-ALLOWED_URL_HOSTS: Set[str] = {
-    h.strip().lower() 
-    for h in os.getenv("ALLOWED_URL_HOSTS", "").split(",") 
-    if h.strip()
-}
+def _csv_set(value: str) -> Set[str]:
+    return {
+        host.strip().lower()
+        for host in value.split(",")
+        if host.strip()
+    }
 
-# Callback destinations (the API's /api/webhook/transcode-complete URL).
-# NO DEFAULT HOSTS: when unset, callbacks are restricted to localhost and the
-# pipeline logs loudly. Set this to your API host, e.g.
-#   ALLOWED_CALLBACK_HOSTS=api.yourdomain.com
-# (comma-separated, lower-cased).
-# Source R2 buckets the ingest endpoint accepts (payload {bucket,key}).
-# When unset, any bucket under the R2 credentials is accepted — set it to
-# your raw upload bucket for defense in depth.
-#   ALLOWED_SOURCE_BUCKETS=raw-bucket-uploads
-ALLOWED_SOURCE_BUCKETS: Set[str] = {
-    h.strip().lower()
-    for h in os.getenv("ALLOWED_SOURCE_BUCKETS", "").split(",")
-    if h.strip()
-}
 
-ALLOWED_CALLBACK_HOSTS: Set[str] = {
-    h.strip().lower()
-    for h in os.getenv("ALLOWED_CALLBACK_HOSTS", "").split(",")
-    if h.strip()
-}
+def _env_csv(name: str, env: Mapping[str, str] | None = None) -> Set[str]:
+    mapping = os.environ if env is None else env
+    raw = mapping.get(name, "") or ""
+    return _csv_set(raw)
 
-def config_warnings() -> list[str]:
+
+def allowed_url_hosts(env: Mapping[str, str] | None = None) -> Set[str]:
+    return _env_csv("ALLOWED_URL_HOSTS", env)
+
+
+def allowed_source_buckets(env: Mapping[str, str] | None = None) -> Set[str]:
+    """Source R2 buckets the ingest endpoint accepts (payload {bucket,key}).
+
+    When empty, any bucket under the R2 credentials is accepted — set it to
+    the raw upload bucket for defense in depth.
     """
-    Non-fatal misconfigurations worth saying out loud, once, at startup.
+    return _env_csv("ALLOWED_SOURCE_BUCKETS", env)
+
+
+def allowed_callback_hosts(env: Mapping[str, str] | None = None) -> Set[str]:
+    """Callback destinations (the API's /api/webhook/transcode-complete URL).
+
+    When empty, callbacks are restricted to localhost. Set this to your API
+    host, e.g. ALLOWED_CALLBACK_HOSTS=api.yourdomain.com (comma-separated).
+    """
+    return _env_csv("ALLOWED_CALLBACK_HOSTS", env)
+
+
+def config_warnings(env: Mapping[str, str] | None = None) -> list[str]:
+    """
+    Non-fatal misconfigurations worth saying out loud, once, at container start.
 
     Returned rather than printed: importing a configuration module must not write
-    to stdout. The Modal runner calls this explicitly (it is the deployment where
-    both settings matter); the self-hosted agent does not, because neither
-    callback allowlist is used on that path.
+    to stdout. Call this from the Modal function body (where r2-creds is
+    injected), not at module import during `modal deploy` on the laptop.
     """
     warnings: list[str] = []
-    if not ALLOWED_SOURCE_BUCKETS:
+    if not allowed_source_buckets(env):
         warnings.append(
             "ALLOWED_SOURCE_BUCKETS is not set: ingest payloads may reference any "
             "bucket under the R2 credentials. Set it to your raw upload bucket "
             "(e.g. ALLOWED_SOURCE_BUCKETS=raw-bucket-uploads)."
         )
-    if not ALLOWED_CALLBACK_HOSTS:
+    if not allowed_callback_hosts(env):
         warnings.append(
             "ALLOWED_CALLBACK_HOSTS is not set: transcode-complete callbacks will "
             "only be delivered to localhost. Set it to your API host (e.g. "

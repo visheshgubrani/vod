@@ -20,7 +20,7 @@
 	"r2_buckets": [
 		{
 			"binding": "TRANSCODED_BUCKET",
-			"bucket_name": "transcoded-bucket",
+			"bucket_name": "openvod-transcoded",
 		},
 	],
 	"analytics_engine_datasets": [{ "binding": "USAGE_ANALYTICS", "dataset": "bandwidth_usage" }],

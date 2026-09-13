@@ -183,7 +183,28 @@ async function listModalSecretNames(bin: string): Promise<string[]> {
   return parseModalSecretNames(table.stdout + table.stderr)
 }
 
-function secretCreateArgs(
+export type ModalSecretWritePlan = 'create' | 'skip' | 'overwrite'
+
+/**
+ * r2-creds always matches server/.dev.vars (ingest secret cannot drift).
+ * groq-creds stays skip-if-exists so a re-run with an empty Groq key cannot
+ * overwrite a real key with "unused".
+ */
+export function forceOverwriteModalSecret(name: string): boolean {
+  return name === 'r2-creds'
+}
+
+/** Decide create / skip / overwrite from the current secret list and force flag. */
+export function modalSecretWritePlan(
+  existingNames: readonly string[],
+  name: string,
+  force: boolean,
+): ModalSecretWritePlan {
+  if (existingNames.includes(name)) return force ? 'overwrite' : 'skip'
+  return 'create'
+}
+
+export function secretCreateArgs(
   name: string,
   values: Record<string, string>,
   force: boolean,
@@ -203,17 +224,17 @@ export async function putModalSecret(
   options: { force?: boolean } = {},
 ): Promise<void> {
   const force = options.force === true
-  if (!force) {
-    const existing = await listModalSecretNames(bin)
-    if (existing.includes(name)) {
-      logInfo(`Modal secret ${name} already exists — leaving in place`)
-      return
-    }
+  const existing = force ? [] : await listModalSecretNames(bin)
+  const plan = modalSecretWritePlan(existing, name, force)
+  if (plan === 'skip') {
+    logInfo(`Modal secret ${name} already exists — leaving in place`)
+    return
   }
+  const overwrite = plan === 'overwrite' || force
   await withSpinner(
     `Creating Modal secret ${name}…`,
     async () => {
-      const result = await runCapture([bin, ...secretCreateArgs(name, values, force)], {
+      const result = await runCapture([bin, ...secretCreateArgs(name, values, overwrite)], {
         timeoutMs: 120_000,
       })
       if (result.code !== 0) {
@@ -258,6 +279,30 @@ export async function deployModalPipeline(root: string): Promise<string | null> 
     )
   }
   return parseModalUrl(combined)
+}
+
+/**
+ * The ingest secret Modal and the API must share. Empty would upload a
+ * secret that 401s every dispatch — fail here instead.
+ */
+export function requireTranscodeIngestSecret(
+  env: Record<string, string | undefined>,
+): string {
+  const value = (env['TRANSCODE_INGEST_SECRET'] ?? '').trim()
+  if (!value) {
+    throw new WizardError(
+      'TRANSCODE_INGEST_SECRET is missing from server/.dev.vars — run ./scripts/bootstrap.sh first',
+    )
+  }
+  return value
+}
+
+/** Prefer server/.dev.vars RAW_BUCKET_NAME over a stale wizard answer. */
+export function rawBucketFromServerEnv(
+  env: Record<string, string | undefined>,
+  answersRawBucket: string,
+): string {
+  return (env['RAW_BUCKET_NAME'] ?? answersRawBucket).trim()
 }
 
 /** Modal r2-creds payload shared by the API and the Modal GPU function. */

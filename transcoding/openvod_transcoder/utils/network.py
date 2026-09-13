@@ -10,7 +10,7 @@ from urllib.parse import urlparse, urljoin
 
 import requests
 
-from openvod_transcoder.config import ALLOWED_URL_HOSTS, ALLOWED_CALLBACK_HOSTS
+from openvod_transcoder.config import allowed_callback_hosts, allowed_url_hosts
 
 
 LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -167,7 +167,8 @@ def is_public_host(url: str) -> bool:
     if not host:
         return False
     
-    if ALLOWED_URL_HOSTS and host not in ALLOWED_URL_HOSTS:
+    url_hosts = allowed_url_hosts()
+    if url_hosts and host not in url_hosts:
         print(f"[SECURITY] Host not in allowlist: {host}")
         return False
     
@@ -186,8 +187,9 @@ def is_allowed_callback_url(url: str) -> bool:
 
     is_local = host in LOCALHOST_HOSTS
 
-    if ALLOWED_CALLBACK_HOSTS:
-        if host not in ALLOWED_CALLBACK_HOSTS:
+    callback_hosts = allowed_callback_hosts()
+    if callback_hosts:
+        if host not in callback_hosts:
             print(f"[SECURITY] Callback host not in allowlist: {host}")
             return False
     elif not is_local:
