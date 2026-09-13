@@ -1,52 +1,112 @@
+# OpenVOD — DEPLOYMENT stack (end users, and how we test a deployment).
+#
+#   cp .env.example .env    # then edit it: secrets, domains, bucket names
+#   docker compose run --rm migrate
+#   docker compose up -d
+#
+# This file is NOT the development loop. Local development runs the API and the
+# dashboard on the host (`pnpm dev`) against the containers in
+# docker-compose.dev.yml — Postgres + Redis only. Nothing here should be
+# required to develop OpenVOD, and nothing here reads server/.dev.vars.
+#
+# Configuration comes from `.env` at the repo root, which Compose reads twice:
+#   * for `${...}` interpolation in this file (Compose only reads the shell env
+#     and `.env` for interpolation — an `env_file:` value cannot interpolate)
+#   * as the container environment for `api` and `maintenance`
+# So one file configures both the stack's wiring and the API's env.
+#
+# Delivery is deliberately absent: signed playback is always the Cloudflare
+# Worker in delivery/ plus R2. There is no Node delivery, so there is no service
+# for it here. See docs/deployment-shapes.md.
+
+name: openvod
+
 services:
   postgres:
     image: postgres:18-alpine
-    container_name: vod-postgres-dev
+    container_name: openvod-postgres
     restart: unless-stopped
-    ports:
-      - "5433:5432" # Host mapping for `wrangler dev` / local tooling
+    # Deliberately not published on the host: only the api container needs it,
+    # and an unpublished port cannot collide with the dev Postgres on 5433 or
+    # expose the database to the network.
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: vod_dev
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-openvod}
     volumes:
       # postgres:18 moved its cluster to $PGDATA=/var/lib/postgresql/18/docker and
-      # declares the volume at /var/lib/postgresql — mounting the named volume at
-      # the pre-18 /var/lib/postgresql/data path leaves it empty and puts the real
-      # data in an anonymous volume that is discarded on every recreate.
-      - vod_postgres_dev_data:/var/lib/postgresql
+      # declares the volume at /var/lib/postgresql — mounting the pre-18
+      # /var/lib/postgresql/data path leaves it empty and puts the real data in an
+      # anonymous volume that is discarded on every recreate.
+      - openvod_postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  api:
+  redis:
+    # Rate limiting. `memory` also works, but only per instance: with more than
+    # one API replica the limits are per replica unless they share a store.
+    # Point REDIS_URL elsewhere to use an external Redis.
+    image: redis:7-alpine
+    container_name: openvod-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot migration. The api container also migrates on boot (zero-touch), but
+  # that runs once per replica and races if you scale out — run this instead when
+  # you deploy. Idempotent, so running it always is safe.
+  migrate:
+    profiles: ["tools"]
+    image: ${OPENVOD_API_IMAGE:-openvod-api:local}
     build:
       context: .
       dockerfile: server/Dockerfile
-    container_name: vod-api
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-openvod}}
+      DB_DRIVER: ${DB_DRIVER:-pg}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["node_modules/.bin/tsx", "src/node/migrate.ts"]
+
+  api:
+    image: ${OPENVOD_API_IMAGE:-openvod-api:local}
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: openvod-api
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "8787:4080"
+      # localhost by default: put a reverse proxy (or a tunnel) in front for
+      # public traffic rather than exposing the API directly. Override with
+      # OPENVOD_API_PORT, and note this port is also what `pnpm dev` uses —
+      # run the dev stack or this one, not both.
+      - "127.0.0.1:${OPENVOD_API_PORT:-8787}:4080"
     env_file:
-      - path: ./server/.dev.vars
-        required: false
+      - .env
     environment:
-      # Container networking: the API talks to compose Postgres directly.
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/vod_dev}
-      DB_DRIVER: pg
-      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:8787}
-      BACKEND_URL: ${BACKEND_URL:-http://localhost:8787}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-0123456789abcdef}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-better-auth-secret-change-me-0123456}
+      # Container networking: service DNS, and an external DATABASE_URL/REDIS_URL
+      # from .env still wins because the default is itself an interpolation.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-openvod}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DB_DRIVER: ${DB_DRIVER:-pg}
       NODE_ENV: production
 
-  # Background maintenance for the Docker runtime.
+  # Background maintenance for every non-Workers runtime.
   #
   # The Workers deployment gets this from the cron trigger in
   # server/wrangler.jsonc; a container has no equivalent, and without something
@@ -55,56 +115,74 @@ services:
   # something.
   #
   # It calls the same `runMaintenance` path the cron does, so both runtimes do
-  # identical work. Requires INTERNAL_SWEEP_SECRET (set it in server/.dev.vars).
+  # identical work. Requires INTERNAL_SWEEP_SECRET in .env.
   maintenance:
     image: alpine:3.20
-    container_name: vod-maintenance
+    container_name: openvod-maintenance
     restart: unless-stopped
     depends_on:
       api:
         condition: service_started
     env_file:
-      - path: ./server/.dev.vars
-        required: false
+      - .env
     environment:
       # Deliberately NOT setting INTERNAL_SWEEP_SECRET here. Compose gives
       # `environment` precedence over `env_file`, so an entry like
       # ${INTERNAL_SWEEP_SECRET:-} would substitute an empty string whenever the
-      # secret lives only in server/.dev.vars (the documented location) — and
-      # blank the value env_file had just provided, putting this service into
-      # its "refusing to start" branch.
+      # secret is absent from `.env`, blanking the value env_file had just
+      # provided and putting this service into its "refusing to start" branch.
       MAINTENANCE_INTERVAL_SECONDS: ${MAINTENANCE_INTERVAL_SECONDS:-900}
     command: >
       sh -c '
         if [ -z "$$INTERNAL_SWEEP_SECRET" ]; then
-          echo "[maintenance] INTERNAL_SWEEP_SECRET is not set; refusing to start."
-          echo "[maintenance] Webhook retries and storage reclamation will NOT run."
+          echo "[maintenance] INTERNAL_SWEEP_SECRET is not set; refusing to start.";
+          echo "[maintenance] Webhook retries and storage reclamation will NOT run.";
           sleep infinity;
         fi;
         echo "[maintenance] running every $${MAINTENANCE_INTERVAL_SECONDS}s";
         while true; do
-          sleep "$$MAINTENANCE_INTERVAL_SECONDS";
+          sleep "$${MAINTENANCE_INTERVAL_SECONDS}";
           wget -q -O- --header="x-sweep-secret: $$INTERNAL_SWEEP_SECRET" \
             --post-data="" http://api:4080/api/internal/sweep \
             || echo "[maintenance] pass failed; will retry";
         done'
 
-  # The self-hosted transcoding agent.
+  web:
+    image: ${OPENVOD_WEB_IMAGE:-openvod-web:local}
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        # Baked into the client bundle at build time. Point these at the public
+        # origins users will actually reach — rebuilding is the only way to
+        # change them (Next.js inlines NEXT_PUBLIC_*).
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8787/api}
+        NEXT_PUBLIC_AUTH_BASE_URL: ${NEXT_PUBLIC_AUTH_BASE_URL:-http://localhost:8787/api/auth}
+        NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-http://localhost:3000}
+    container_name: openvod-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:${OPENVOD_WEB_PORT:-3000}:3000"
+
+  # The self-hosted transcoding agent (`TRANSCODE_PROVIDER=self-hosted`).
   #
   # Opt-in: `docker compose --profile transcoder up -d`. It is a profile rather
   # than a default service because a machine running the API is often not the
-  # machine that should be doing the encoding, and because a local-only install
-  # needs this while an all-Cloudflare install does not.
+  # machine that should be doing the encoding, and because an all-Cloudflare
+  # install does not need it at all.
   #
   # The media mounts are read-only on purpose. The agent takes its own snapshot
   # to encode from; it never needs to write to the owner's library, and a
   # container that cannot write to it cannot damage it.
   transcoder:
     profiles: ["transcoder"]
+    image: ${OPENVOD_AGENT_IMAGE:-openvod-transcoder:local}
     build:
       context: .
       dockerfile: transcoding/Dockerfile.agent
-    container_name: vod-transcoder
+    container_name: openvod-transcoder
     restart: unless-stopped
     depends_on:
       api:
@@ -121,7 +199,7 @@ services:
       OPENVOD_CAPACITY_RENDITIONS: ${OPENVOD_CAPACITY_RENDITIONS:-1}
       OPENVOD_ENCODER: ${OPENVOD_ENCODER:-auto}
     volumes:
-      - transcoder_scratch:/var/lib/openvod-transcoder
+      - openvod_transcoder_scratch:/var/lib/openvod-transcoder
       - ${OPENVOD_MEDIA_DIR:-./media}:/media:ro
     # NVIDIA hosts: uncomment, and note the `video` capability — without it the
     # driver is visible but no encode session can be created.
@@ -138,21 +216,6 @@ services:
     # group_add:
     #   - video
 
-  web:
-    build:
-      context: .
-      dockerfile: web/Dockerfile
-      args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8787/api
-        NEXT_PUBLIC_AUTH_BASE_URL: http://localhost:8787/api/auth
-        NEXT_PUBLIC_FRONTEND_URL: http://localhost:3000
-    container_name: vod-web
-    restart: unless-stopped
-    depends_on:
-      - api
-    ports:
-      - "3000:3000"
-
 volumes:
-  vod_postgres_dev_data:
-  transcoder_scratch:
+  openvod_postgres:
+  openvod_transcoder_scratch:

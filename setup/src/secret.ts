@@ -17,5 +17,6 @@ export function newSecretSet(): SecretSet {
     jwtSecret: randomHex(),
     internalSweepSecret: randomHex(),
     transcodeIngestSecret: randomHex(),
+    postgresPassword: randomHex(24),
   }
 }

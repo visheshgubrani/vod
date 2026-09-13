@@ -9,8 +9,11 @@
   },
   "scripts": {
     "dev": "pnpm --parallel --filter vod-api --filter web dev",
-    "dev:node": "pnpm -r --parallel --if-present dev:node",
+    "dev:workers": "pnpm -r --parallel --if-present dev:workers",
     "dev:all": "pnpm --parallel --filter vod-api --filter web --filter ./delivery --filter ./sdk --filter ./player dev",
+    "dev:infra": "docker compose -f docker-compose.dev.yml up -d --wait",
+    "dev:infra:down": "docker compose -f docker-compose.dev.yml down",
+    "dev:infra:reset": "docker compose -f docker-compose.dev.yml down -v",
     "start": "pnpm start:prepare && pnpm --parallel --filter vod-api --filter web start",
     "start:prepare": "pnpm --filter vod-api build:node && pnpm --filter web build",
     "build": "pnpm -r --if-present build",
@@ -26,9 +29,15 @@
     "typecheck:tsc": "pnpm --filter vod-api exec tsc --noEmit && pnpm --filter ./delivery exec tsc --noEmit",
     "bootstrap": "bash scripts/bootstrap.sh",
     "setup": "bash scripts/bootstrap.sh",
-    "db:up": "docker compose up -d postgres",
-    "db:down": "docker compose stop postgres",
+    "db:up": "docker compose -f docker-compose.dev.yml up -d --wait postgres",
+    "db:down": "docker compose -f docker-compose.dev.yml stop postgres",
     "db:push": "pnpm --filter vod-api db:push",
-    "db:migrate": "pnpm --filter vod-api db:migrate"
+    "db:migrate": "pnpm --filter vod-api db:migrate",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:build": "docker compose build",
+    "docker:migrate": "docker compose run --rm migrate",
+    "docker:logs": "docker compose logs -f",
+    "docker:reset": "docker compose down -v"
   }
 }

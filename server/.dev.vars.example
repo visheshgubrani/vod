@@ -1,7 +1,19 @@
-# Copy to .dev.vars for local `wrangler dev`
-DATABASE_URL=postgresql://user:password@host/db?sslmode=require
-# Driver: unset/neon-http for Neon over HTTP (Workers); 'pg' for compose/self-hosted Postgres (Docker mode)
-DB_DRIVER=
+# OpenVOD API — LOCAL DEVELOPMENT config. Copy to server/.dev.vars.
+#
+# Read by `pnpm dev` (the Node runtime), the Workers runtime (`pnpm dev:workers`),
+# migrations, the seed script and the drizzle CLI. Real env vars always win over
+# this file.
+#
+# This file is for developing OpenVOD. A *deployment* is configured by the root
+# `.env` for Docker Compose (see .env.example) or by `wrangler secret put` for
+# the Workers runtime — never by committing this file.
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev
+# 'pg' (postgres.js over TCP) for the Node runtime — the default.
+# `pnpm dev:workers` requires 'neon-http' and a Neon URL: the Workers runtime
+# cannot hold a Postgres TCP connection across requests, so the first query
+# succeeds and the rest fail with "Cannot perform I/O on behalf of a different
+# request". That is a runtime property, not a bug — use `pnpm dev` locally.
+DB_DRIVER=pg
 BETTER_AUTH_SECRET=your-secret-at-least-32-chars
 BETTER_AUTH_URL=http://localhost:8787
 FRONTEND_URL=http://localhost:3000
@@ -60,7 +72,15 @@ DELIVERY_URL=https://media.yourdomain.com
 # SWEEP_UPLOADING_STALE_HOURS=24
 # SWEEP_MAX_ATTEMPTS=3
 
-# Rate limiting (Upstash Redis REST — optional; in-memory fallback used when unset)
+# Rate limiting (choose one; first match wins)
+#   REDIS_URL                     a plain Redis over TCP — Node runtime only.
+#                                 `pnpm dev:infra` starts one on :6379.
+#   UPSTASH_REDIS_REST_URL/TOKEN  Upstash REST — works on both runtimes,
+#                                 including Workers (which cannot open a socket).
+#   neither                       in-memory sliding window, per instance. Fine
+#                                 for one API instance; configure one of the two
+#                                 above before running replicas.
+REDIS_URL=redis://localhost:6379
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 
@@ -68,9 +88,11 @@ UPSTASH_REDIS_REST_TOKEN=
 # Without this, webhook retries and storage reclamation do NOT run: deleted
 # videos keep their bytes and failed deliveries are never retried.
 # Workers: pair with the cron trigger in server/wrangler.jsonc.
-# Docker:  the `maintenance` compose service calls the endpoint for you.
+# Node:    nothing runs a pass by itself. Hit the endpoint from cron/host:
+#            curl -X POST localhost:8787/api/internal/sweep -H "x-sweep-secret: $INTERNAL_SWEEP_SECRET"
+#          (a Docker deployment gets the `maintenance` compose service instead)
 SWEEP_ENABLED=true
-# Shared secret for POST /api/internal/sweep (required by the compose service).
+# Shared secret for POST /api/internal/sweep.
 INTERNAL_SWEEP_SECRET=
 # Rows/jobs handled per maintenance pass (default 50).
 MAINTENANCE_BATCH_SIZE=50

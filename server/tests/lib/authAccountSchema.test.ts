@@ -50,7 +50,7 @@ process.env.DB_DRIVER = 'pg'
 // (src/lib/auth.ts has no dotenv load), so it is supplied here explicitly.
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET ?? 'test-secret-32-chars-minimum-1234567890'
 
-type AuthApi = typeof import('../../src/lib/auth').auth.api
+type AuthApi = ReturnType<typeof import('../../src/lib/auth').createAuth>['api']
 
 /** The `account` columns this schema declares — the shape sign-in depends on. */
 const ACCOUNT_COLUMNS = `
@@ -79,10 +79,14 @@ describe.skipIf(!hasTestDatabase)('auth account table (real schema, real better-
 
   beforeAll(async () => {
     handle = await createTestDb({ database: SUITE_DATABASE })
-    // Imported after DATABASE_URL is pointed at the suite database. A fake
-    // adapter cannot establish this: the failure was between better-auth's
-    // resolved table definition and the real migrated columns.
-    api = (await import('../../src/lib/auth')).auth.api
+    // Built after DATABASE_URL is pointed at the suite database, from the same
+    // factory the composition root uses. A fake adapter cannot establish this:
+    // the failure was between better-auth's resolved table definition and the
+    // real migrated columns.
+    const { createAuth } = await import('../../src/lib/auth')
+    const { loadConfig } = await import('../../src/lib/config')
+    const { db } = await import('../../src/lib/database')
+    api = createAuth(db, loadConfig(process.env as Record<string, string | undefined>)).api
   })
 
   afterAll(async () => {

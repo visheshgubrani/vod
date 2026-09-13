@@ -462,7 +462,7 @@ app.post('/claim', requireAgent, async (c) => {
       attemptId,
       leaseMs,
       agentCapacity: agent.capacityJobs,
-      organizationCapacity: organizationCapFromEnv(c.env as Record<string, unknown>),
+      organizationCapacity: c.var.runtime.config.orgConcurrencyCap,
     })
     if (!claimed) {
       return c.json({ claim: null, reason: 'not-eligible' })
@@ -474,7 +474,7 @@ app.post('/claim', requireAgent, async (c) => {
     agentId: agent.id,
     organizationId: agent.organizationId,
     capacity: agent.capacityJobs,
-    organizationCapacity: organizationCapFromEnv(c.env as Record<string, unknown>),
+    organizationCapacity: c.var.runtime.config.orgConcurrencyCap,
     leaseMs,
   })
   if (!claimed) {
@@ -707,7 +707,7 @@ app.post('/sources/:id/grant', requireAgent, async (c) => {
   }
 
   const url = await getSignedUrl(
-    getR2(c.env),
+    getR2(),
     new GetObjectCommand({ Bucket: bucket, Key: key }),
     { expiresIn: SOURCE_GRANT_TTL_SECONDS },
   )
@@ -799,10 +799,10 @@ app.post('/inventories/:id/grants', requireAgent, async (c) => {
   })
   const remaining = await readRemainingCount(db, { inventoryId })
 
-  const bucket = transcodedBucketName(c.env)
+  const bucket = c.var.runtime.config.transcodedBucket
   if (!bucket) return c.json({ error: 'Transcoded bucket is not configured' }, 503)
 
-  const client = getR2(c.env)
+  const client = getR2()
   const grants = await Promise.all(
     pending.map(async (artifact) => {
       const key = artifactKey(inventory.prefix, artifact.path)
@@ -894,14 +894,14 @@ app.post('/inventories/:id/verify', requireAgent, async (c) => {
     Math.max(1, Number(body.limit) || VERIFY_BATCH_SIZE),
   )
 
-  const bucket = transcodedBucketName(c.env)
+  const bucket = c.var.runtime.config.transcodedBucket
   if (!bucket) return c.json({ error: 'Transcoded bucket is not configured' }, 503)
 
   // Bounded per call. The agent loops until nothing is left: one request for a
   // 9,000-object inventory would exceed the Worker's subrequest and CPU budgets
   // and time out, leaving an inventory that is neither verified nor failed.
   const candidates = await readVerificationCandidates(db, { inventoryId, limit })
-  const client = getR2(c.env)
+  const client = getR2()
   const observed = new Map<string, number | null>()
 
   for (const batch of chunk(candidates, 25)) {
@@ -1077,7 +1077,7 @@ app.post('/jobs/:id/complete', requireAgent, async (c) => {
 
   const preview = parseCompletionPayload(payload, {
     outputPrefix: inventory.prefix,
-    deliveryBaseUrl: deliveryBaseUrl(c.env),
+    deliveryBaseUrl: c.var.runtime.config.deliveryUrl ?? '',
     prevMetadata: safeJson(videoRecord.metadata),
   })
 
@@ -1093,7 +1093,7 @@ app.post('/jobs/:id/complete', requireAgent, async (c) => {
       jobId,
       payload,
       outputPrefix: inventory.prefix,
-      deliveryBaseUrl: deliveryBaseUrl(c.env),
+      deliveryBaseUrl: c.var.runtime.config.deliveryUrl ?? '',
       prevMetadata: safeJson(videoRecord.metadata),
       requireVerifiedInventory: true,
       publishedPrefix: inventory.prefix,
@@ -1474,24 +1474,6 @@ async function jobVideoId(jobId: string): Promise<string | null> {
     .where(eq(transcodeJob.id, jobId))
     .limit(1)
   return rows[0]?.videoId ?? null
-}
-
-function deliveryBaseUrl(env: Bindings | undefined): string {
-  return (
-    env?.DELIVERY_WORKER_URL ||
-    env?.DELIVERY_URL ||
-    process.env.DELIVERY_WORKER_URL ||
-    process.env.DELIVERY_URL ||
-    ''
-  )
-}
-
-function transcodedBucketName(env: Bindings | undefined): string | null {
-  return (
-    env?.TRANSCODED_BUCKET_NAME ||
-    process.env.TRANSCODED_BUCKET_NAME ||
-    null
-  )
 }
 
 function safeJson(value: unknown): Record<string, unknown> {

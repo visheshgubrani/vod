@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SecretSet, WizardAnswers } from '../src/types'
 import {
+  buildDeployEnvEntries,
   buildDeliveryEntries,
   buildServerEntries,
   databaseUrlFor,
@@ -14,6 +15,7 @@ const SECRETS: SecretSet = {
   jwtSecret: 'b'.repeat(64),
   internalSweepSecret: 'c'.repeat(64),
   transcodeIngestSecret: 'd'.repeat(64),
+  postgresPassword: 'e'.repeat(48),
 }
 
 export function workersAnswers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
@@ -49,24 +51,53 @@ describe('validateAnswers', () => {
     expect(validateAnswers(answers).some((p) => p.includes('postgres'))).toBe(true)
   })
 
-  it('accepts compose + local and compose + existing', () => {
+  it('accepts node + local and node + existing', () => {
+    // 'compose' was renamed to 'node': the runtime is a separate decision from
+    // the Docker deployment shape.
     const local = workersAnswers({
-      runtime: 'compose',
+      runtime: 'node',
       db: { kind: 'local' },
       queue: { kind: 'direct' },
     })
     expect(validateAnswers(local)).toEqual([])
 
     const existing = workersAnswers({
-      runtime: 'compose',
+      runtime: 'node',
       db: { kind: 'existing', url: 'postgresql://db.example.com:5432/vod' },
     })
     expect(validateAnswers(existing)).toEqual([])
   })
 
-  it('rejects compose + neon (pg driver cannot use neon-http)', () => {
-    const answers = workersAnswers({ runtime: 'compose', db: { kind: 'neon' } })
-    expect(validateAnswers(answers).some((p) => p.includes('compose'))).toBe(true)
+  it('rejects node + neon (pg driver cannot use neon-http)', () => {
+    const answers = workersAnswers({ runtime: 'node', db: { kind: 'neon' } })
+    expect(validateAnswers(answers).some((p) => p.includes('node'))).toBe(true)
+  })
+
+  it('accepts a plain Redis on node and refuses it on workers', () => {
+    const onNode = workersAnswers({
+      runtime: 'node',
+      db: { kind: 'local' },
+      rateLimit: { kind: 'redis', url: 'redis://localhost:6379' },
+    })
+    expect(validateAnswers(onNode)).toEqual([])
+
+    // A TCP socket is impossible on Workers, so this is a refusal rather than a
+    // silent downgrade to per-isolate limits.
+    const onWorkers = workersAnswers({
+      rateLimit: { kind: 'redis', url: 'redis://localhost:6379' },
+    })
+    expect(validateAnswers(onWorkers).some((p) => p.includes('not available on the Workers'))).toBe(
+      true,
+    )
+  })
+
+  it('requires a redis:// URL for the redis store', () => {
+    const answers = workersAnswers({
+      runtime: 'node',
+      db: { kind: 'local' },
+      rateLimit: { kind: 'redis', url: 'localhost:6379' },
+    })
+    expect(validateAnswers(answers).some((p) => p.includes('rateLimit.url'))).toBe(true)
   })
 
   it('requires a token for qstash and url+token for upstash', () => {
@@ -118,15 +149,62 @@ describe('mapping to env entries', () => {
     expect(entries.get('ACCOUNT_ID')).toBe('a1b2c3d4e5f60718293a4b5c6d7e8f90')
   })
 
-  it('maps compose + local to pg + the host-side compose URL', () => {
+  it('maps node + local to pg + the dev Postgres URL', () => {
     const entries = new Map(
       buildServerEntries(
-        workersAnswers({ runtime: 'compose', db: { kind: 'local' } }),
+        workersAnswers({ runtime: 'node', db: { kind: 'local' } }),
         SECRETS,
       ),
     )
     expect(entries.get('DB_DRIVER')).toBe('pg')
     expect(entries.get('DATABASE_URL')).toBe('postgresql://postgres:postgres@localhost:5433/vod_dev')
+  })
+
+  it('writes a deployment .env that leaves the bundled services in charge', () => {
+    const entries = new Map(
+      buildDeployEnvEntries(
+        workersAnswers({ runtime: 'node', db: { kind: 'local' } }),
+        SECRETS,
+      ),
+    )
+
+    // Blank means "use the bundled service": the compose file composes
+    // DATABASE_URL from POSTGRES_* and REDIS_URL from the redis service.
+    expect(entries.get('DATABASE_URL')).toBe('')
+    expect(entries.get('REDIS_URL')).toBe('')
+    expect(entries.get('DB_DRIVER')).toBe('pg')
+    expect(entries.get('POSTGRES_PASSWORD')).toBe(SECRETS.postgresPassword)
+    expect(entries.get('JWT_SECRET')).toBe(SECRETS.jwtSecret)
+    expect(entries.get('SWEEP_ENABLED')).toBe('true')
+    expect(entries.get('TRANSCODE_PROVIDER')).toBe('modal')
+  })
+
+  it('points a deployment .env at an external Postgres when one was chosen', () => {
+    const entries = new Map(
+      buildDeployEnvEntries(
+        workersAnswers({
+          runtime: 'node',
+          db: { kind: 'existing', url: 'postgresql://db.example.com:5432/openvod' },
+        }),
+        SECRETS,
+      ),
+    )
+    expect(entries.get('DATABASE_URL')).toBe('postgresql://db.example.com:5432/openvod')
+  })
+
+  it('carries a plain-Redis choice into the deployment .env, and blanks Upstash', () => {
+    const entries = new Map(
+      buildDeployEnvEntries(
+        workersAnswers({
+          runtime: 'node',
+          db: { kind: 'local' },
+          rateLimit: { kind: 'redis', url: 'redis://cache.internal:6379' },
+        }),
+        SECRETS,
+      ),
+    )
+    expect(entries.get('REDIS_URL')).toBe('redis://cache.internal:6379')
+    expect(entries.get('UPSTASH_REDIS_REST_URL')).toBe('')
   })
 
   it('maps qstash and upstash choices into their keys', () => {
@@ -192,11 +270,11 @@ describe('deriveAnswersFromEnv', () => {
 describe('helpers', () => {
   it('derives driver and URL per runtime', () => {
     expect(dbDriverFor('workers')).toBe('neon-http')
-    expect(dbDriverFor('compose')).toBe('pg')
-    expect(databaseUrlFor('compose', { kind: 'local' })).toBe(
+    expect(dbDriverFor('node')).toBe('pg')
+    expect(databaseUrlFor('node', { kind: 'local' })).toBe(
       'postgresql://postgres:postgres@localhost:5433/vod_dev',
     )
-    expect(databaseUrlFor('compose', { kind: 'existing', url: ' postgresql://x/y ' })).toBe(
+    expect(databaseUrlFor('node', { kind: 'existing', url: ' postgresql://x/y ' })).toBe(
       'postgresql://x/y',
     )
   })

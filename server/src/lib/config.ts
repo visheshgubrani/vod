@@ -14,6 +14,42 @@
 
 export type EnvLike = Record<string, string | undefined>
 
+/**
+ * Which of the two supported runtimes is executing.
+ *
+ * This is NOT an env var: it is determined by which composition root loaded
+ * (`src/node/server.ts` under @hono/node-server, or `src/index.ts` under
+ * Cloudflare Workers). It is passed in explicitly so that every runtime-dependent
+ * decision is visible at the call site instead of being inferred from whichever
+ * globals happen to exist.
+ */
+export type RuntimeName = 'node' | 'workers'
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+/**
+ * Postgres transport.
+ * - `postgres-js` — TCP. Works on Node only: the Workers runtime forbids reusing
+ *   a socket across requests, so the first query succeeds and the rest fail with
+ *   "Cannot perform I/O on behalf of a different request".
+ * - `neon-http` — one HTTPS request per query. The only transport Workers can use.
+ */
+export type DbTransport = 'postgres-js' | 'neon-http'
+
+/**
+ * Choose the Postgres transport from DB_DRIVER.
+ * - `pg` / `postgres-js` → TCP
+ * - `neon` / `neon-http`, or unset → Neon HTTP (the Workers heritage default)
+ *
+ * Lives here, not in `lib/database`, so that configuration resolution does not
+ * have to import a database driver to answer a question about a string.
+ */
+export function dbTransportFromEnv(driver?: string | null): DbTransport {
+  const value = (driver || '').trim().toLowerCase()
+  if (value === 'pg' || value === 'postgres-js') return 'postgres-js'
+  return 'neon-http'
+}
+
 export type TranscodeProvider = 'modal' | 'self-hosted'
 
 export type CapabilityChecks = {
@@ -56,6 +92,19 @@ export type OpenVodConfig = {
   selfHostedEnabled: boolean
   /** True when the configured provider (or uploads being on) needs a raw bucket. */
   rawBucketRequired: boolean
+  /** False rejects uploads at the route, not just in the health report. */
+  uploadsEnabled: boolean
+  betterAuthSecret: string | null
+  betterAuthUrl: string | null
+  corsPatterns: string[]
+  oauth: {
+    google: { clientId: string; clientSecret: string }
+    github: { clientId: string; clientSecret: string }
+  }
+  accountId: string | null
+  cloudflareAnalyticsToken: string | null
+  orgConcurrencyCap: number | null
+  uploadSizeLimitBytes: number
 }
 
 const isHttpUrl = (value: string): boolean => /^https?:\/\/\S+$/i.test(value)
@@ -77,17 +126,43 @@ export const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 ** 3 // 25 GiB
 /**
  * Global upload size cap from MAX_UPLOAD_SIZE_BYTES (bytes). Invalid/negative
  * values fall back to the default rather than disabling the cap.
+ *
+ * `env` is required: the ambient-environment fallback this used to carry could
+ * only ever work through the removed `c.env` → `process.env` bridge, and silently
+ * read the wrong deployment's value when it did.
  */
-export function maxUploadBytes(env?: Record<string, unknown>): number {
-  const binding = env ? (env['MAX_UPLOAD_SIZE_BYTES'] as unknown) : undefined
-  const raw =
-    (typeof binding === 'string' ? binding : undefined) ??
-    (typeof process !== 'undefined' ? process.env?.MAX_UPLOAD_SIZE_BYTES : undefined)
+export function maxUploadBytes(env: EnvLike): number {
+  const raw = env['MAX_UPLOAD_SIZE_BYTES']
   const parsed = Number(raw)
   if (raw && Number.isFinite(parsed) && parsed > 0) {
     return Math.floor(parsed)
   }
   return DEFAULT_MAX_UPLOAD_BYTES
+}
+
+/**
+ * Per-organization concurrent transcode attempt cap. Unset or invalid means
+ * "no cap": this is a cost control an operator opts into, not a limit we invent.
+ */
+export function orgConcurrencyCap(env: EnvLike): number | null {
+  const raw = env['TRANSCODE_ORG_CONCURRENCY_CAP']
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null
+}
+
+/**
+ * Log verbosity, resolved once at composition time.
+ *
+ * On Workers `process.env.NODE_ENV` is replaced at build time rather than read at
+ * runtime, so a module-scope logger froze its level for the isolate's life; here
+ * the value is an input like any other.
+ */
+export function parseLogLevel(env: EnvLike, isProduction: boolean): LogLevel {
+  const raw = env['LOG_LEVEL']?.trim().toLowerCase()
+  if (raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error') {
+    return raw
+  }
+  return isProduction ? 'info' : 'debug'
 }
 
 /**
@@ -294,6 +369,30 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
     transcodeProvider: provider.transcodeProvider,
     selfHostedEnabled: provider.selfHostedEnabled,
     rawBucketRequired: rawRequired,
+    uploadsEnabled,
+    betterAuthSecret,
+    betterAuthUrl: secretValue(env, 'BETTER_AUTH_URL'),
+    // Trusted origins (better-auth) and the CORS allowlist are one set: a
+    // deployment that accepts a browser origin for CORS but not for auth — or
+    // the reverse — is a misconfiguration nobody asks for.
+    corsPatterns: [
+      ...parseOriginList(env['FRONTEND_URL']),
+      ...parseOriginList(env['CORS_ORIGINS']),
+    ],
+    oauth: {
+      google: {
+        clientId: env['GOOGLE_CLIENT_ID']?.trim() ?? '',
+        clientSecret: env['GOOGLE_CLIENT_SECRET']?.trim() ?? '',
+      },
+      github: {
+        clientId: env['GITHUB_CLIENT_ID']?.trim() ?? '',
+        clientSecret: env['GITHUB_CLIENT_SECRET']?.trim() ?? '',
+      },
+    },
+    accountId,
+    cloudflareAnalyticsToken: analyticsToken,
+    orgConcurrencyCap: orgConcurrencyCap(env),
+    uploadSizeLimitBytes: maxUploadBytes(env),
   }
 }
 
@@ -316,29 +415,15 @@ export function parseOriginList(value: string | undefined): string[] {
 /**
  * Fail-closed accessor for the playback JWT secret.
  * Throws when unset/short — callers must never sign with `"undefined"`.
+ *
+ * Takes the *resolved* config, so it cannot disagree with the validation
+ * `loadConfig` already performed, and cannot reach a second environment.
  */
-export function requirePlaybackJwtSecret(env?: EnvLike): string {
-  const merged: EnvLike = {
-    ...(typeof process !== 'undefined' ? (process.env as EnvLike) : {}),
-    ...(env ?? {}),
-  }
-  const secret = loadConfig(merged).jwtSecret
-  if (!secret) {
+export function requirePlaybackJwtSecret(config: OpenVodConfig): string {
+  if (!config.jwtSecret) {
     throw new Error('JWT_SECRET is not configured (must be at least 32 characters)')
   }
-  return secret
-}
-
-/**
- * Delivery base URL or null. Never a placeholder: unconfigured returns null
- * so callers emit relative URLs instead of fake absolute ones.
- */
-export function readDeliveryBaseUrl(env?: EnvLike): string | null {
-  const merged: EnvLike = {
-    ...(typeof process !== 'undefined' ? (process.env as EnvLike) : {}),
-    ...(env ?? {}),
-  }
-  return loadConfig(merged).deliveryUrl
+  return config.jwtSecret
 }
 
 /**

@@ -103,8 +103,14 @@ async function generatePlaybackToken(
   expiresIn: string = DEFAULT_EXPIRATION,
   bindingClaims: PlaybackBindingClaims | null,
   restrictions: PlaybackRestrictionsClaims,
+  /**
+   * The signing key, resolved by the caller from the runtime configuration.
+   * Passing it in keeps this helper — which has no request context — from
+   * reaching for an environment of its own.
+   */
+  jwtSecret: string,
 ): Promise<{ token: string; expiresAt: number }> {
-  const secret = new TextEncoder().encode(requirePlaybackJwtSecret())
+  const secret = new TextEncoder().encode(jwtSecret)
   const exp = Math.floor(Date.now() / 1000) + parseExpiration(expiresIn)
   const claims = {
     ...(bindingClaims ?? {}),
@@ -283,6 +289,7 @@ app.post('/video/:id/playback-token', async (c) => {
     expiresIn,
     bindingClaims,
     restrictions,
+    requirePlaybackJwtSecret(c.var.runtime.config),
   )
 
   return c.json({

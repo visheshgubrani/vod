@@ -25,6 +25,7 @@
 
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '../lib/database'
+import { orgConcurrencyCap as readOrgConcurrencyCap, type EnvLike } from '../lib/config'
 import { video } from '../db/schema'
 import {
   claimTranscodeAttempt,
@@ -80,7 +81,7 @@ export type DispatchTranscodeOptions = {
   playbackPolicy?: 'public' | 'signed'
   generateSubtitle?: boolean
   generateChapters?: boolean
-  env?: Parameters<typeof triggerTranscoding>[0]['env']
+  env?: EnvLike
   /**
    * Reuse an existing attempt id when retrying a dispatch whose outcome is
    * unknown. Minting a fresh id on an uncertain retry is what turns a lost
@@ -165,7 +166,7 @@ export async function dispatchTranscodeJob(
   const organizationCap =
     options.organizationCap !== undefined
       ? options.organizationCap
-      : organizationCapFromEnv(env as Record<string, unknown> | undefined)
+      : readOrgConcurrencyCap(env ?? {})
 
   const claim = await claimTranscodeAttempt(executor ?? db, {
     videoId,

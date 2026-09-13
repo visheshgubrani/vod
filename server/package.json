@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@12.3.4",
   "scripts": {
-    "dev": "wrangler dev",
-    "dev:node": "PORT=${API_PORT:-8787} tsx watch src/node/server.ts",
+    "dev": "PORT=${API_PORT:-8787} tsx watch src/node/server.ts",
+    "dev:workers": "wrangler dev",
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types",
     "db:generate": "drizzle-kit generate",
@@ -32,7 +32,8 @@
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.1",
     "jose": "^5.10.0",
-    "postgres": "^3.4.9"
+    "postgres": "^3.4.9",
+    "redis": "^5.12.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250214.0",

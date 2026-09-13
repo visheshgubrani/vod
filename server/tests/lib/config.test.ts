@@ -1,8 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   loadConfig,
   requirePlaybackJwtSecret,
-  readDeliveryBaseUrl,
   maxUploadBytes,
   DEFAULT_MAX_UPLOAD_BYTES,
   loadProviderSettings,
@@ -119,42 +118,39 @@ describe('loadConfig', () => {
 })
 
 describe('requirePlaybackJwtSecret', () => {
-  const previous = { ...process.env }
-
-  afterEach(() => {
-    process.env = { ...previous }
-  })
-
   it('throws when JWT_SECRET is missing instead of signing with "undefined"', () => {
-    delete process.env.JWT_SECRET
-    expect(() => requirePlaybackJwtSecret()).toThrow(/JWT_SECRET/)
+    expect(() => requirePlaybackJwtSecret(loadConfig({}))).toThrow(/JWT_SECRET/)
   })
 
   it('throws on short JWT_SECRET values', () => {
-    process.env.JWT_SECRET = 'short'
-    expect(() => requirePlaybackJwtSecret()).toThrow(/JWT_SECRET/)
+    expect(() =>
+      requirePlaybackJwtSecret(loadConfig({ ...FULL_ENV, JWT_SECRET: 'short' })),
+    ).toThrow(/JWT_SECRET/)
   })
 
   it('returns the configured secret', () => {
-    process.env.JWT_SECRET = FULL_ENV.JWT_SECRET
-    expect(requirePlaybackJwtSecret()).toBe(FULL_ENV.JWT_SECRET)
+    expect(requirePlaybackJwtSecret(loadConfig(FULL_ENV))).toBe(FULL_ENV.JWT_SECRET)
   })
 
-  it('prefers an explicit env argument over process.env', () => {
-    process.env.JWT_SECRET = FULL_ENV.JWT_SECRET
-    expect(requirePlaybackJwtSecret({ JWT_SECRET: 'explicit-env-secret-12345678901234567890' })).toBe(
-      'explicit-env-secret-12345678901234567890',
-    )
+  it('reads only the config it is given, never the ambient environment', () => {
+    // The accessor used to merge `{...process.env, ...env}`, so a handler could
+    // sign with whatever happened to be in the process environment. There is
+    // deliberately no ambient path left to test — this asserts its absence.
+    const previous = process.env.JWT_SECRET
+    process.env.JWT_SECRET = 'ambient-secret-that-must-be-ignored-000000'
+    try {
+      expect(() => requirePlaybackJwtSecret(loadConfig({}))).toThrow(/JWT_SECRET/)
+      expect(requirePlaybackJwtSecret(loadConfig(FULL_ENV))).toBe(FULL_ENV.JWT_SECRET)
+    } finally {
+      if (previous === undefined) delete process.env.JWT_SECRET
+      else process.env.JWT_SECRET = previous
+    }
   })
 })
 
-describe('readDeliveryBaseUrl', () => {
+describe('delivery base URL', () => {
   it('returns null when unconfigured (no placeholder)', () => {
-    const previous = process.env.DELIVERY_URL
-    delete process.env.DELIVERY_URL
-    delete process.env.DELIVERY_WORKER_URL
-    expect(readDeliveryBaseUrl()).toBeNull()
-    process.env.DELIVERY_URL = previous
+    expect(loadConfig({}).deliveryUrl).toBeNull()
   })
 
   it('prefers DELIVERY_URL over the legacy DELIVERY_WORKER_URL', () => {

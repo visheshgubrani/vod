@@ -1,16 +1,14 @@
 import { createMiddleware } from 'hono/factory'
-import { auth } from '../lib/auth'
 
 export const requireAuth = createMiddleware(async (c, next) => {
-  const sessionData = await auth.api.getSession({
+  const sessionData = await c.var.runtime.auth.api.getSession({
     headers: c.req.raw.headers,
   })
 
   if (!sessionData) {
-    return c.json({ error: 'Anauthorized' }, 401)
+    return c.json({ error: 'Unauthorized' }, 401)
   }
 
-  // Injext into context
   c.set('user', sessionData.user)
   c.set('session', sessionData.session)
   await next()

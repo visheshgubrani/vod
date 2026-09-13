@@ -1,13 +1,20 @@
 import '../lib/load-local-env'
-import { neon } from '@neondatabase/serverless'
-import { drizzle } from 'drizzle-orm/neon-http'
+import { createDb, dbDriverFromEnv } from '../lib/database'
 import { user, organization, member } from './schema'
 
+/**
+ * Seed the first tenant.
+ *
+ * Goes through `createDb`/`dbDriverFromEnv` like every other database entrypoint,
+ * so it honours `DB_DRIVER`. It used to construct a Neon client directly and
+ * ignore the driver entirely — which meant `pnpm db:seed` could not seed the
+ * Docker/Node Postgres that `.dev.vars.example` and `server/Dockerfile` both
+ * describe, while migrations against the same database worked fine.
+ */
 const run = async () => {
   if (!process.env.DATABASE_URL) throw new Error('No DB URL')
 
-  const sql = neon(process.env.DATABASE_URL)
-  const db = drizzle(sql)
+  const db = createDb(process.env.DATABASE_URL, dbDriverFromEnv(process.env.DB_DRIVER))
 
   console.log('🌱 Seeding First Tenant...')
 

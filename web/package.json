@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "dev:node": "next dev",
+    "dev:workers": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

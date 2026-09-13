@@ -37,26 +37,38 @@ pnpm typecheck        # type-check every package
 ## Development setup
 
 1. `pnpm install` at the repo root.
+
 2. Local configuration is one file per service, each with a committed template:
    `cp server/.dev.vars.example server/.dev.vars`,
    `cp delivery/.dev.vars.example delivery/.dev.vars` and
    `cp web/.env.example web/.env` (`./scripts/bootstrap.sh` writes the first two
-   for you). `server/.dev.vars` is read by `wrangler dev`, Compose, the Node
-   runtime (`pnpm start`) and drizzle-kit alike — there is no separate
-   `server/.env` to keep in sync. Real values are gitignored; only the
-   `*.example` templates are committed.
-3. Start the local database, then a runtime:
-   - `pnpm db:up` — the dev Postgres (host port 5433, `vod_dev`); rows live in
-     the named volume `vod_postgres_dev_data` and survive `db:down`/recreate.
-     `pnpm db:down` stops it.
+   for you). `server/.dev.vars` is **development-only**: `pnpm dev`,
+   `pnpm dev:workers`, migrations, the seed script and the drizzle CLI load it
+   through `server/src/lib/load-local-env.ts`, and real env vars always win. A
+   *deployment* is configured by `.env` at the repo root (template:
+   `.env.example`) — never by `server/.dev.vars`. Real values are gitignored;
+   only the `*.example` templates are committed.
+
+3. Start the local infrastructure, then a runtime:
+   - `pnpm dev:infra` — dev Postgres (host port **5433**, database `vod_dev`)
+     and Redis (host port **6379**) from `docker-compose.dev.yml` (project
+     `openvod-dev`), waiting for both health checks. `pnpm dev:infra:down`
+     stops them and keeps the data; `pnpm dev:infra:reset` also drops the
+     Postgres volume (`openvod_dev_postgres`). `pnpm db:up` / `pnpm db:down`
+     are kept as Postgres-only compatibility aliases. If you ran the previous
+     stack, a stale container named `vod-postgres-dev` may still hold port
+     5433: `docker rm -f vod-postgres-dev`.
    - `pnpm db:migrate` once (and after pulling new migrations) — it reads
      `DATABASE_URL` from `server/.dev.vars`, so it targets that local database.
-   - `pnpm dev` — API (`wrangler dev`, port 8787) and web (Next.js, port 3000)
-     in parallel, with prefixed logs. Workers semantics: pair it with
-     `DB_DRIVER=neon-http` and a Neon URL.
-   - `pnpm dev:node` — the same pair with the API on the **Node** runtime
-     (`tsx watch`), which is the one to use with the local Postgres
-     (`DB_DRIVER=pg`). `API_PORT=…` moves just the API if 8787 is taken.
+   - `pnpm dev` — API on the **Node** runtime (`tsx watch`, port 8787) and web
+     (Next.js, port 3000) in parallel, with prefixed logs. This is the default
+     because it works with the dev Postgres out of the box. `API_PORT=…` moves
+     just the API if 8787 is taken.
+   - `pnpm dev:workers` — the same pair with the API under `wrangler dev`, for
+     Workers semantics. It needs `DB_DRIVER=neon-http` and a Neon URL **by
+     design**: the Workers runtime cannot hold a Postgres TCP connection across
+     requests, so a `pg` connection serves the first query and then fails with
+     `Cannot perform I/O on behalf of a different request`.
    - `pnpm dev:all` — `pnpm dev` plus the delivery worker (:8788) and the
      `sdk`/`player` watch builds
    - `pnpm start` — the production artifacts instead of the dev servers:
@@ -64,18 +76,11 @@ pnpm typecheck        # type-check every package
      (default 4080) and `next start`
 
    **Which database does each runtime use?** Whatever `DATABASE_URL` in
-   `server/.dev.vars` points at — by default the `pnpm db:up` Postgres. Neither
-   command starts a database, and the API will boot without one: `GET /health`
-   stays `200` and `/health/config` still reports `database: true`, because
-   those checks only validate that the URL is set. Only real queries fail, so
-   start the database first.
-
-   **`wrangler dev` cannot use Postgres over TCP (`DB_DRIVER=pg`).** The Workers
-   runtime forbids reusing sockets across requests, so the API serves the first
-   database request and then fails with `Cannot perform I/O on behalf of a
-   different request`. Hence `pnpm dev:node` for local Postgres, and
-   `docker compose up -d api` / `pnpm start` (also Node) as alternatives; both
-   were verified with repeated queries.
+   `server/.dev.vars` points at — by default the `pnpm dev:infra` Postgres.
+   Neither command starts a database, and the API will boot without one:
+   `GET /health` stays `200` and `/health/config` still reports
+   `database: true`, because those checks only validate that the URL is set.
+   Only real queries fail, so start the database first.
 
    `docs-site` is deliberately not part of either aggregate command — it also
    defaults to port 3000; run it with
@@ -86,7 +91,9 @@ pnpm typecheck        # type-check every package
    `pnpm --filter vod-api dev`, `pnpm --filter web dev`,
    `pnpm --filter delivery dev`.
 
-   Stop any Compose stack first (`docker compose stop api web`): the Workers'
+   `pnpm dev` and the deployment stack both want ports 8787/3000 — run one or
+   the other, not both. The dev compose file has no `api`/`web` services, so
+   there is nothing to stop first; the port guard exists because the Workers'
    dev ports are pinned in each `wrangler.jsonc` (`dev.port`/`dev.inspector_port`
    — API :8787, delivery :8788), so `wrangler dev` fails hard while those ports
    are taken instead of drifting somewhere your env files don't point at. Next
@@ -118,7 +125,20 @@ pnpm --filter player test        # vitest
 ```
 
 Integration tests that need Postgres read `TEST_DATABASE_URL` and skip cleanly
-when it is unset. CI provides a Postgres service.
+when it is unset. CI provides a Postgres service. The Redis rate-limit
+adapter's live integration test reads `TEST_REDIS_URL` the same way (CI
+provides a `redis:7-alpine` service); unset, it skips and the adapter's unit
+tests still run. CI also validates both compose files with
+`docker compose config`.
+
+## Deploying
+
+Development and deployment are deliberately separate stacks:
+`docker-compose.dev.yml` starts Postgres + Redis only, while the end-user
+deployment is `docker-compose.yml` configured by `.env` at the repo root (copy
+`.env.example`). See [docs/deploy.md](docs/deploy.md) for the Compose flow and
+[docs/deployment-shapes.md](docs/deployment-shapes.md) for the architecture
+axes.
 
 ## Commit conventions
 

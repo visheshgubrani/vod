@@ -50,17 +50,24 @@ const SERVER_KEY_LABELS: Record<string, string> = {
   DELIVERY_URL: 'Delivery worker URL',
   INTERNAL_SWEEP_SECRET: 'Sweeper secret (generated)',
   GROQ_API_KEY: 'Groq API key',
+  REDIS_URL: 'Redis URL (shared rate-limit store)',
   UPSTASH_REDIS_REST_URL: 'Upstash Redis REST URL',
   UPSTASH_REDIS_REST_TOKEN: 'Upstash Redis token',
+}
+
+const RATE_LIMIT_LABELS: Record<WizardAnswers['rateLimit']['kind'], string> = {
+  memory: 'in-memory (per instance)',
+  redis: 'Redis (shared, your own server)',
+  upstash: 'Upstash Redis (shared, hosted)',
 }
 
 /** One-line summary of the decisions for the final confirmation. */
 export function summaryText(answers: WizardAnswers): string {
   const lines = [
-    `API runtime: ${answers.runtime === 'workers' ? 'Cloudflare Workers (neon-http)' : 'Node via Docker Compose (pg)'}`,
-    `Postgres: ${answers.db.kind === 'neon' ? 'Neon URL' : answers.db.kind === 'local' ? 'Compose local Postgres' : 'existing Postgres URL'}`,
+    `API runtime: ${answers.runtime === 'workers' ? 'Cloudflare Workers (neon-http)' : 'Node (pg)'}`,
+    `Postgres: ${answers.db.kind === 'neon' ? 'Neon URL' : answers.db.kind === 'local' ? 'local dev Postgres (pnpm dev:infra)' : 'existing Postgres URL'}`,
     `Queue: ${answers.queue.kind === 'direct' ? 'direct HTTP → Modal' : 'QStash'}`,
-    `Rate limiting: ${answers.rateLimit.kind === 'memory' ? 'in-memory' : 'Upstash Redis'}`,
+    `Rate limiting: ${RATE_LIMIT_LABELS[answers.rateLimit.kind]}`,
     `Buckets: ${answers.rawBucket} / ${answers.transcodedBucket} (Cloudflare R2 — always required)`,
     `Delivery worker: Cloudflare (always required for playback)`,
     `Dashboard origin: ${answers.frontendUrl}`,

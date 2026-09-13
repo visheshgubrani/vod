@@ -15,9 +15,7 @@ import type { Bindings } from '../types'
 export const internalApp = new Hono<{ Bindings: Bindings }>()
 
 const requireInternalSecret = createMiddleware<{ Bindings: Bindings }>(async (c, next) => {
-  const expected =
-    c.env?.INTERNAL_SWEEP_SECRET ||
-    (typeof process !== 'undefined' ? process.env?.INTERNAL_SWEEP_SECRET : undefined)
+  const expected = c.var.runtime.env['INTERNAL_SWEEP_SECRET']
   if (!expected) {
     return c.json({ error: 'Internal maintenance not configured' }, 503)
   }
@@ -33,7 +31,7 @@ const requireInternalSecret = createMiddleware<{ Bindings: Bindings }>(async (c,
 internalApp.use('/sweep', requireInternalSecret)
 
 internalApp.post('/sweep', async (c) => {
-  const result = await runMaintenance(c.env)
+  const result = await runMaintenance(c.var.runtime.env)
   return c.json({
     ok: true,
     // `stats` keeps its original meaning (the transcode sweep) so existing

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { loadConfig, parseUploadsEnabled, type EnvLike } from '../lib/config'
+import type { OpenVodConfig } from '../lib/config'
 import { db } from '../lib/database'
 import { transcoderAgent } from '../db/schema'
 import {
@@ -24,17 +24,12 @@ healthApp.get('/', (c) => c.text('ok'))
  * setup wizard. Never include secret values or connection strings.
  */
 healthApp.get('/config', async (c) => {
-  const env: EnvLike = {
-    ...(typeof process !== 'undefined' ? (process.env as EnvLike) : {}),
-  }
-  // c.env may carry non-string bindings (Analytics Engine); copy only strings.
-  if (c.env) {
-    for (const key of Object.keys(c.env)) {
-      const value = (c.env as Record<string, unknown>)[key]
-      if (typeof value === 'string') env[key] = value
-    }
-  }
-  const cfg = loadConfig(env)
+  // Configuration and the resolved deployment shape come from the composition
+  // root. This route used to rebuild the "process.env + string c.env" merge
+  // itself — a second copy of the bindings bridge, and the only production
+  // caller of loadConfig.
+  const cfg = c.var.runtime.config
+  const env = c.var.runtime.env
 
   // Background processing is opt-in, and leaving it off is not a cosmetic
   // choice: webhook retries and byte reclamation both stop, so deleted videos
@@ -44,13 +39,17 @@ healthApp.get('/config', async (c) => {
   // and still never run a pass, which is exactly the silent failure this
   // reports: `stale` is true when it is enabled but no recent pass succeeded.
   const maintenance = await readMaintenanceStatus(env)
+  // A local copy: `cfg` is the runtime's shared configuration object, and pushing
+  // into it would accumulate this advisory on every request for the lifetime of
+  // the process (or isolate).
+  const advisories = [...cfg.advisories]
   if (!maintenance.enabled) {
-    cfg.advisories.push(
+    advisories.push(
       'SWEEP_ENABLED is not "true": background maintenance is off, so webhook ' +
         'retries and storage reclamation will not run (see docs/deploy.md).',
     )
   } else if (maintenance.stale) {
-    cfg.advisories.push(
+    advisories.push(
       maintenance.lastSucceededAt
         ? `Background maintenance is enabled but last succeeded at ${maintenance.lastSucceededAt} — check the cron trigger or the compose maintenance service.`
         : 'Background maintenance is enabled but has never run — check the cron trigger or the compose maintenance service.',
@@ -62,9 +61,15 @@ healthApp.get('/config', async (c) => {
     time: new Date().toISOString(),
     ready: cfg.ready,
     checks: cfg.checks,
+    // What this deployment actually resolved to — runtime, transports, providers,
+    // stores. Flat and secret-free, so an operator can see which choices are in
+    // force instead of inferring them from defaults. See docs/deployment-shapes.md.
+    deployment: c.var.runtime.shape,
     maintenance,
-    problems: cfg.problems,
-    advisories: cfg.advisories,
+    // Every problem, fatal or not, as strings — the shape the dashboard already
+    // reads.
+    problems: c.var.runtime.problems.map((problem) => problem.message),
+    advisories,
     // Split capability reporting, and deliberately coarse.
     //
     // An unauthenticated caller learning that an organization runs three agents
@@ -74,12 +79,12 @@ healthApp.get('/config', async (c) => {
     // machine be imported?", and `providers` says what is wired up. Agent names,
     // hostnames, paths and credentials are in the authenticated dashboard health
     // (`/api/transcoder/health`).
-    transcode: await buildTranscodeCapabilities(cfg, parseUploadsEnabled(env)),
+    transcode: await buildTranscodeCapabilities(cfg, cfg.uploadsEnabled),
   })
 })
 
 async function buildTranscodeCapabilities(
-  cfg: ReturnType<typeof loadConfig>,
+  cfg: OpenVodConfig,
   uploadsEnabled: boolean,
 ) {
   // Agent rows are counted by state, not listed: the query selects only what the

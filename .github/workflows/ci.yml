@@ -20,6 +20,9 @@ jobs:
     # cannot establish those — they live in Postgres, not in our code. The
     # suite reads TEST_DATABASE_URL and skips cleanly when it is unset, so
     # `pnpm test` still works on a machine with no database.
+    #
+    # Redis is here for the same reason: the plain-Redis rate-limit adapter
+    # evaluates a Lua script, and only a real server proves it runs at all.
     services:
       postgres:
         image: postgres:18-alpine
@@ -34,8 +37,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/openvod_test
+      TEST_REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -88,10 +101,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Both compose files are configuration, and a typo in either is invisible
+      # until someone deploys: `config` resolves interpolation, service
+      # references and env_file requirements without starting anything.
+      - name: Validate compose files
+        run: |
+          docker compose -f docker-compose.dev.yml config --quiet
+          # The deployment stack requires a root .env (fail-fast by design).
+          cp .env.example .env
+          docker compose config --quiet
       - name: Build API image
         run: docker build -f server/Dockerfile -t openvod-api .
       - name: Build web image
         run: docker build -f web/Dockerfile -t openvod-web .
+      # The agent image was never built here, so a broken Dockerfile.agent
+      # stayed invisible until someone ran the transcoder profile.
+      - name: Build transcoder agent image
+        run: docker build -f transcoding/Dockerfile.agent -t openvod-transcoder .
 
   packages:
     runs-on: ubuntu-latest
@@ -143,6 +169,48 @@ jobs:
             exit 1
           fi
           echo "all video reads exclude soft-deleted rows"
+
+  runtime-boundary-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The API runs on two runtimes, and the boundary between them used to be
+      # implicit: a middleware copied `c.env` into `process.env` on every request
+      # so that modules written against ambient env would work on Workers. That
+      # bridge is gone. This guard keeps it gone, because the failure mode is
+      # silent — code that reads the wrong environment looks fine until one
+      # runtime misbehaves.
+      - name: Only the composition roots may read the ambient environment
+        run: |
+          fail=0
+          # Allow-list: the two entrypoints (which own process.env), the seed
+          # CLI, and the Node migration runner. Comments are excluded, so
+          # explaining the old behaviour in a doc comment is fine.
+          hits="$(grep -rn 'process\.env' server/src --include='*.ts' \
+            | grep -v '^server/src/node/' \
+            | grep -v '^server/src/db/seed.ts' \
+            | grep -vE ':[0-9]+:[[:space:]]*(\*|//)' || true)"
+          if [ -n "$hits" ]; then
+            echo "::error::process.env read outside a composition root:"
+            printf '%s\n' "$hits"
+            echo "Take it from RuntimeCapabilities (c.var.runtime.env or .config) instead."
+            fail=1
+          fi
+
+          # `c.env` is the Workers binding map. Only the runtime layer may read
+          # it; everything else goes through c.var.runtime.
+          envs="$(grep -rn 'c\.env' server/src --include='*.ts' \
+            | grep -v '^server/src/runtime/' \
+            | grep -vE ':[0-9]+:[[:space:]]*(\*|//)' || true)"
+          if [ -n "$envs" ]; then
+            echo "::error::c.env read outside the runtime layer:"
+            printf '%s\n' "$envs"
+            echo "Add a capability in server/src/runtime/ instead of reading bindings."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "no ambient environment reads outside the composition roots"
 
   branding-gate:
     runs-on: ubuntu-latest

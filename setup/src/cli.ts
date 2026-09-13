@@ -16,9 +16,18 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { DbKind, Prefill, QueueKind, RateLimitKind, RuntimeKind, WizardAnswers } from './types'
+import type {
+  DbKind,
+  Prefill,
+  QueueKind,
+  RateLimitKind,
+  RuntimeKind,
+  SecretSet,
+  WizardAnswers,
+} from './types'
 import { DEFAULT_ANSWERS } from './types'
 import {
+  buildDeployEnvEntries,
   buildDeliveryEntries,
   buildServerEntries,
   deriveAnswersFromEnv,
@@ -26,7 +35,9 @@ import {
   warningsFor,
 } from './mapping'
 import {
+  deployEnvPath,
   deliveryVarsPath,
+  ensureDeployEnv,
   readDeliveryEnv,
   readServerEnv,
   serverVarsPath,
@@ -125,10 +136,12 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--runtime': {
         const value = next(i, arg)
-        if (value !== 'workers' && value !== 'compose') {
-          usageError(`--runtime must be workers|compose, got ${value}`)
+        // 'compose' was the old name for the Node runtime; still accepted so an
+        // existing script or answers file does not break.
+        if (value !== 'workers' && value !== 'node' && value !== 'compose') {
+          usageError(`--runtime must be workers|node, got ${value}`)
         }
-        options.prefill.runtime = value as RuntimeKind
+        options.prefill.runtime = (value === 'compose' ? 'node' : value) as RuntimeKind
         i += 1
         break
       }
@@ -207,15 +220,16 @@ function loadAnswersFile(path: string): WizardAnswers {
   if (queueKind !== 'direct' && queueKind !== 'qstash') {
     throw new WizardError('answers queue.kind must be "direct" or "qstash"')
   }
-  if (rateKind !== 'memory' && rateKind !== 'upstash') {
-    throw new WizardError('answers rateLimit.kind must be "memory" or "upstash"')
+  if (rateKind !== 'memory' && rateKind !== 'redis' && rateKind !== 'upstash') {
+    throw new WizardError('answers rateLimit.kind must be "memory", "redis" or "upstash"')
   }
   const merged: WizardAnswers = {
-    runtime: answers.runtime === 'compose' ? 'compose' : 'workers',
+    runtime: answers.runtime === 'workers' ? 'workers' : 'node',
     db: { kind: dbKind, ...(answers.db?.url ? { url: answers.db.url } : {}) },
     queue: { kind: queueKind, ...(answers.queue?.token ? { token: answers.queue.token } : {}) },
     rateLimit: {
       kind: rateKind,
+      ...(answers.rateLimit?.url ? { url: answers.rateLimit.url } : {}),
       ...(answers.rateLimit?.restUrl ? { restUrl: answers.rateLimit.restUrl } : {}),
       ...(answers.rateLimit?.token ? { token: answers.rateLimit.token } : {}),
     },
@@ -233,22 +247,31 @@ function loadAnswersFile(path: string): WizardAnswers {
 }
 
 function nextStepsText(answers: WizardAnswers): string {
-  const dashboard = `${color.cmd('pnpm --filter web dev')}   →  http://localhost:3000/setup`
+  const dashboard = `${color.cmd('pnpm dev')}   →  http://localhost:3000/setup`
+  const delivery = 'Playback still needs the Cloudflare delivery worker:'
   if (answers.runtime === 'workers') {
     return [
-      'Run locally:',
-      `  ${color.cmd('pnpm --filter vod-api dev')}            ${color.muted('# wrangler dev :8787 (reads server/.dev.vars)')}`,
-      `  ${dashboard}`,
+      'Develop:',
+      `  ${color.cmd('pnpm dev:workers')}                     ${color.muted('# wrangler dev :8787 + dashboard :3000')}`,
+      `  ${color.muted('The Workers runtime needs DB_DRIVER=neon-http with a Neon URL.')}`,
       `Verify:  ${color.cmd('./scripts/bootstrap.sh --check http://localhost:8787')}`,
-      `Deploy:  ${color.cmd('./scripts/bootstrap.sh --deploy')}   ${color.muted('(Cloudflare + Modal provision & deploy)')}`,
+      '',
+      'Deploy:',
+      `  ${color.cmd('./scripts/bootstrap.sh --deploy')}      ${color.muted('(Cloudflare + Modal provision & deploy)')}`,
+      `  ${delivery}`,
     ].join('\n')
   }
   return [
-    'Compose runtime:',
-    `  ${color.cmd('docker compose up -d')}                  ${color.muted('# Postgres (:5433) + API (:8787) + dashboard (:3000)')}`,
+    'Develop (this machine):',
+    `  ${color.cmd('pnpm dev:infra')}                       ${color.muted('# Postgres :5433 + Redis :6379')}`,
+    `  ${color.cmd('pnpm db:migrate')}`,
     `  ${dashboard}`,
-    'Playback still needs the Cloudflare delivery worker:',
-    `  ${color.cmd('./scripts/bootstrap.sh --deploy')}       ${color.muted('# or: cd delivery && pnpm exec wrangler deploy')}`,
+    '',
+    'Deploy (Docker, end users):',
+    `  ${color.cmd('cp .env.example .env')}                 ${color.muted('# deployment config (not server/.dev.vars)')}`,
+    `  ${color.cmd('pnpm docker:migrate && pnpm docker:up')}`,
+    `  ${delivery}`,
+    `  ${color.cmd('./scripts/bootstrap.sh --deploy')}      ${color.muted('# or: cd delivery && pnpm exec wrangler deploy')}`,
   ].join('\n')
 }
 
@@ -315,9 +338,30 @@ function headlessConfigure(root: string, opts: CliOptions): WizardAnswers {
     opts.force,
   )
   printOk(`Wrote ${serverVarsPath(root)} and ${deliveryVarsPath(root)} (mode 0600)`)
+  noteDeployEnv(root, answers, secrets)
   const report = lintEnvFiles(readServerEnv(root), readDeliveryEnv(root))
   printCheckRows(report.rows)
   return answers
+}
+
+/**
+ * Offer the deployment config too, for a Docker deployment.
+ *
+ * Written only when absent: an operator's `.env` holds real domains and image
+ * tags, and quietly replacing those with localhost defaults would be worse than
+ * saying nothing. A Workers deployment does not use it at all.
+ */
+function noteDeployEnv(root: string, answers: WizardAnswers, secrets: SecretSet): void {
+  if (answers.runtime !== 'node') return
+  const wrote = ensureDeployEnv(root, buildDeployEnvEntries(answers, secrets))
+  if (wrote) {
+    printOk(
+      `Wrote ${deployEnvPath(root)} — the DOCKER deployment config (edit the public ` +
+        'URLs before exposing it)',
+    )
+  } else {
+    printOk(`${deployEnvPath(root)} already exists — left untouched`)
+  }
 }
 
 async function interactiveConfigure(root: string, opts: CliOptions): Promise<WizardAnswers> {
@@ -363,6 +407,7 @@ async function interactiveConfigure(root: string, opts: CliOptions): Promise<Wiz
     opts.force,
   )
   logSuccess(`Wrote ${serverVarsPath(root)} and ${deliveryVarsPath(root)} (mode 0600, secrets never logged)`)
+  noteDeployEnv(root, answers, secrets)
   return answers
 }
 

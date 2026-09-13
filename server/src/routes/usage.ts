@@ -286,7 +286,7 @@ app.get('/bandwidth', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
-  const config = getAnalyticsConfig()
+  const config = getAnalyticsConfig(c.var.runtime.config)
   if (!config) {
     return c.json({
       error: 'Bandwidth analytics not configured',
@@ -369,7 +369,7 @@ app.get('/bandwidth/daily', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
-  const config = getAnalyticsConfig()
+  const config = getAnalyticsConfig(c.var.runtime.config)
   if (!config) {
     return c.json({
       error: 'Bandwidth analytics not configured',

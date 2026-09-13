@@ -11,10 +11,7 @@ import { deleteVideoWithCleanup } from '../lib/objectCleanup'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
 import { dispatchTranscodeJob, dispatchFailureStatus } from '../utils/dispatchTranscode'
-import {
-  readDeliveryBaseUrl,
-  requirePlaybackJwtSecret,
-} from '../lib/config'
+import { requirePlaybackJwtSecret } from '../lib/config'
 import {
   buildPlaybackBindingClaims,
   getUserAgentFromHeaders,
@@ -66,8 +63,10 @@ async function generatePlaybackToken(
   expiresIn: string = TOKEN_EXPIRATION,
   bindingClaims: PlaybackBindingClaims,
   restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS,
+  /** See the note in routes/api.ts: the caller resolves the signing key. */
+  jwtSecret: string = '',
 ): Promise<string> {
-  const secret = new TextEncoder().encode(requirePlaybackJwtSecret())
+  const secret = new TextEncoder().encode(jwtSecret)
   const claims = {
     ...bindingClaims,
     ...restrictions,
@@ -133,7 +132,7 @@ app.get('/:id', async (c) => {
 
   // Build response
   // Never fabricate a placeholder host: relative URLs when unconfigured.
-  const deliveryUrl = readDeliveryBaseUrl() ?? ''
+  const deliveryUrl = c.var.runtime.config.deliveryUrl ?? ''
   
   // Helper to resolve URLs - don't double-prefix if already absolute
   const resolveUrl = (url: string | null) => {
@@ -249,6 +248,7 @@ app.get('/:id/token', async (c) => {
     expiresIn,
     bindingClaims,
     restrictions,
+    requirePlaybackJwtSecret(c.var.runtime.config),
   )
 
   return c.json({
@@ -285,7 +285,7 @@ app.get('/', async (c) => {
     .orderBy(desc(video.createdAt))
 
   // Never fabricate a placeholder host: relative URLs when unconfigured.
-  const deliveryUrl = readDeliveryBaseUrl() ?? ''
+  const deliveryUrl = c.var.runtime.config.deliveryUrl ?? ''
 
   // Helper to resolve URLs - don't double-prefix if already absolute
   const resolveUrl = (url: string | null) => {
@@ -604,7 +604,7 @@ app.post('/:id/retry', async (c) => {
     generateChapters: videoRecord.generateChapters || false,
     expectedAttemptId:
       videoRecord.status === 'processing' ? videoRecord.transcodeAttemptId : null,
-    env: c.env,
+    env: c.var.runtime.env,
   })
 
   if (!dispatchResult.dispatched) {

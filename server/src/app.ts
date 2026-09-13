@@ -1,11 +1,25 @@
-import { Ratelimit, type Duration } from '@upstash/ratelimit'
-import { Redis } from '@upstash/redis'
+/**
+ * The Hono application, built by a composition root.
+ *
+ * This module used to be a module-scope `new Hono()` that discovered its
+ * runtime implicitly: it read `process.env` at import time for the rate-limit
+ * knobs and `NODE_ENV`, and — because that cannot work on Workers, where
+ * bindings arrive per invocation — it installed a middleware that copied every
+ * string binding into `process.env` on every request. That bridge mutated
+ * isolate-global state, ran *after* the module-scope reads it was written to
+ * satisfy, and was duplicated in the health route.
+ *
+ * Now the app is a function of `RuntimeCapabilities`. There is no ambient
+ * environment to reach for: configuration, clients, the rate limiter, the
+ * analytics sink and background work all arrive on `c.var.runtime`, and the
+ * Workers-only parts are values the runtime either has or does not.
+ */
+
 import { type Context, Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { auth } from './lib/auth'
-import { logger } from './lib/logger'
-import { matchOrigin, parseOriginList } from './lib/config'
-import { InMemorySlidingWindow } from './lib/rateLimit/memory'
+import { matchOrigin } from './lib/config'
+import { resolveRateLimitScope } from './lib/rateLimit'
+import type { RuntimeCapabilities } from './runtime/types'
 import health from './routes/health'
 import internal from './routes/internal'
 import upload from './routes/upload'
@@ -22,154 +36,15 @@ import analytics from './routes/analytics'
 import analyticsStats from './routes/analytics-stats'
 import type { Bindings } from './types'
 
-const app = new Hono<{ Bindings: Bindings }>()
-
-const isProduction = process.env.NODE_ENV === 'production'
-const hasUpstashRedis =
-  Boolean(process.env.UPSTASH_REDIS_REST_URL) &&
-  Boolean(process.env.UPSTASH_REDIS_REST_TOKEN)
-
-const parsePositiveInt = (value: string | undefined, fallback: number): number => {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return fallback
-  }
-  return parsed
-}
-
-const DURATION_PATTERN = /^\d+\s?(ms|s|m|h|d)$/
-const parseDuration = (value: string | undefined, fallback: Duration): Duration => {
-  const normalized = value?.trim()
-  if (!normalized || !DURATION_PATTERN.test(normalized)) {
-    return fallback
-  }
-  return normalized as Duration
-}
-
-const RATE_LIMIT_PREFIX = process.env.RATE_LIMIT_PREFIX || 'vod-app:ratelimit'
-const RATE_LIMIT_ANALYTICS = process.env.RATE_LIMIT_ANALYTICS === 'true'
-
-const authLimiterRequests = parsePositiveInt(process.env.RATE_LIMIT_AUTH_MAX, 30)
-const authLimiterWindow = parseDuration(process.env.RATE_LIMIT_AUTH_WINDOW, '1 m')
-const apiLimiterRequests = parsePositiveInt(process.env.RATE_LIMIT_API_MAX, 120)
-const apiLimiterWindow = parseDuration(process.env.RATE_LIMIT_API_WINDOW, '1 m')
-const analyticsLimiterRequests = parsePositiveInt(
-  process.env.RATE_LIMIT_ANALYTICS_MAX,
-  600,
-)
-const analyticsLimiterWindow = parseDuration(
-  process.env.RATE_LIMIT_ANALYTICS_WINDOW,
-  '1 m',
-)
-
-let cachedRedis: Redis | null = null
-let cachedRedisKey: string | null = null
-
-const getRedis = (env?: Bindings): Redis | null => {
-  const url = env?.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_REDIS_REST_URL
-  const token = env?.UPSTASH_REDIS_REST_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
-
-  if (!url || !token) return null
-  const key = `${url}:${token}`
-  if (cachedRedis && cachedRedisKey === key) return cachedRedis
-
-  cachedRedis = new Redis({ url, token })
-  cachedRedisKey = key
-  return cachedRedis
-}
-
 /**
- * Unified limiter surface so the Redis-backed Upstash adapter and the
- * zero-dependency in-memory fallback share one call site.
+ * Origins that are always allowed while developing (matches legacy behavior).
+ * Kept in one place so CORS and better-auth's trusted origins cannot drift.
  */
-type RateLimitDecision = {
-  success: boolean
-  limit: number
-  remaining: number
-  /** Epoch ms when the window resets. */
-  reset: number
-  pending: Promise<unknown>
-}
-
-type RateLimiterLike = {
-  limit: (identifier: string) => Promise<RateLimitDecision>
-}
-
-const DURATION_UNIT_MS: Record<string, number> = {
-  ms: 1,
-  s: 1_000,
-  m: 60_000,
-  h: 3_600_000,
-  d: 86_400_000,
-}
-
-const parseDurationToMs = (value: Duration | undefined, fallbackMs: number): number => {
-  if (!value) return fallbackMs
-  const normalized = String(value).trim()
-  const match = normalized.match(/^(\d+)\s*(ms|s|m|h|d)$/)
-  if (!match) return fallbackMs
-  return Number(match[1]) * (DURATION_UNIT_MS[match[2]] ?? 1)
-}
-
-const limiterCache = new Map<string, RateLimiterLike>()
-
-const createRateLimiter = (
-  scope: string,
-  requests: number,
-  window: Duration,
-  env?: Bindings,
-): RateLimiterLike => {
-  const redis = getRedis(env)
-
-  const prefix = env?.RATE_LIMIT_PREFIX || RATE_LIMIT_PREFIX
-  const cacheKey = `${prefix}:${scope}:${requests}:${window}:${redis ? 'redis' : 'memory'}`
-  if (limiterCache.has(cacheKey)) {
-    return limiterCache.get(cacheKey)!
-  }
-
-  let limiter: RateLimiterLike
-  if (redis) {
-    const upstashLimiter = new Ratelimit({
-      redis,
-      limiter: Ratelimit.slidingWindow(requests, window),
-      prefix: `${prefix}:${scope}`,
-      analytics: RATE_LIMIT_ANALYTICS,
-      ephemeralCache: new Map<string, number>(),
-    })
-    limiter = { limit: (id) => upstashLimiter.limit(id) as unknown as Promise<RateLimitDecision> }
-  } else {
-    // In-memory fallback: bounded sliding window per isolate. Multi-instance
-    // deployments must configure Upstash Redis instead (documented).
-    const memoryLimiter = new InMemorySlidingWindow({
-      max: requests,
-      windowMs: parseDurationToMs(window, 60_000),
-    })
-    limiter = {
-      limit: async (id) => {
-        const result = memoryLimiter.limit(id)
-        return { ...result, pending: Promise.resolve() }
-      },
-    }
-  }
-
-  limiterCache.set(cacheKey, limiter)
-  return limiter
-}
-
-const resolveRateLimiter = (path: string, env?: Bindings): RateLimiterLike | null => {
-  if (path === '/api/auth' || path.startsWith('/api/auth/')) {
-    return createRateLimiter('auth', authLimiterRequests, authLimiterWindow, env)
-  }
-  if (path === '/api/playback' || path.startsWith('/api/playback/')) {
-    return createRateLimiter(
-      'analytics',
-      analyticsLimiterRequests,
-      analyticsLimiterWindow,
-      env,
-    )
-  }
-  return createRateLimiter('api', apiLimiterRequests, apiLimiterWindow, env)
-}
+export const LOCAL_DEV_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+]
 
 const getClientIp = (c: Context<{ Bindings: Bindings }>): string => {
   const forwardedFor = c.req.header('x-forwarded-for')
@@ -186,277 +61,231 @@ const getClientIp = (c: Context<{ Bindings: Bindings }>): string => {
   )
 }
 
-const applySecurityHeaders = (c: Context<{ Bindings: Bindings }>) => {
-  c.header('X-Content-Type-Options', 'nosniff')
-  c.header('X-Frame-Options', 'SAMEORIGIN')
-  c.header('Referrer-Policy', 'no-referrer')
-  c.header('X-DNS-Prefetch-Control', 'off')
-  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
-  c.header('Cross-Origin-Resource-Policy', 'cross-origin')
-  if (isProduction) {
-    c.header(
-      'Strict-Transport-Security',
-      'max-age=15552000; includeSubDomains',
-    )
-  }
-}
+export function createApp(runtime: RuntimeCapabilities): Hono<{ Bindings: Bindings }> {
+  const app = new Hono<{ Bindings: Bindings }>()
+  const { config, env } = runtime
+  const isProduction = env['NODE_ENV'] === 'production'
 
-app.use('*', async (c, next) => {
-  if (c.env) {
-    for (const key of Object.keys(c.env)) {
-      const val = (c.env as Record<string, unknown>)[key]
-      if (typeof val === 'string') {
-        process.env[key] = val
-      }
+  const applySecurityHeaders = (c: Context<{ Bindings: Bindings }>) => {
+    c.header('X-Content-Type-Options', 'nosniff')
+    c.header('X-Frame-Options', 'SAMEORIGIN')
+    c.header('Referrer-Policy', 'no-referrer')
+    c.header('X-DNS-Prefetch-Control', 'off')
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    c.header('Cross-Origin-Resource-Policy', 'cross-origin')
+    if (isProduction) {
+      c.header('Strict-Transport-Security', 'max-age=15552000; includeSubDomains')
     }
   }
-  await next()
-})
 
-app.use('*', async (c, next) => {
-  const requestId = c.req.header('x-request-id') || crypto.randomUUID()
-  const requestLogger = logger.child({
-    requestId,
-    method: c.req.method,
-    path: c.req.path,
-    ip: getClientIp(c),
+  // ── Runtime, first ────────────────────────────────────────────────────────
+  // Everything below reads c.var.runtime. On Workers the per-request object
+  // additionally carries a background runner bound to this invocation's
+  // ExecutionContext, which does not exist until a request arrives.
+  app.use('*', async (c, next) => {
+    c.set('runtime', runtime.forRequest ? runtime.forRequest(c.executionCtx) : runtime)
+    await next()
   })
 
-  c.set('requestId', requestId)
-  c.set('logger', requestLogger)
-  c.header('x-request-id', requestId)
-
-  const start = performance.now()
-  console.log(`[REQ START] ${c.req.method} ${c.req.path}`)
-  await next()
-  const durationMs = Number((performance.now() - start).toFixed(2))
-  console.log(`[REQ END] ${c.req.method} ${c.req.path} -> ${c.res.status} (${durationMs}ms)`)
-
-  if (c.res.status >= 500) {
-    requestLogger.error(
-      { status: c.res.status, durationMs },
-      'request completed with server error',
-    )
-    return
-  }
-
-  if (c.res.status >= 400) {
-    requestLogger.warn(
-      { status: c.res.status, durationMs },
-      'request completed with client error',
-    )
-    return
-  }
-
-  requestLogger.info(
-    { status: c.res.status, durationMs },
-    'request completed',
-  )
-})
-
-app.onError((error, c) => {
-  const requestLogger = c.var.logger ?? logger
-  requestLogger.error(
-    {
-      err: error instanceof Error ? error.message : String(error),
+  app.use('*', async (c, next) => {
+    const requestId = c.req.header('x-request-id') || crypto.randomUUID()
+    const requestLogger = runtime.logger.child({
+      requestId,
       method: c.req.method,
       path: c.req.path,
-      requestId: c.var.requestId,
-    },
-    'unhandled request error',
-  )
-  return c.json({ error: 'Internal server error' }, 500)
-})
+      ip: getClientIp(c),
+    })
 
-app.use('*', async (c, next) => {
-  applySecurityHeaders(c)
-  await next()
-})
+    c.set('requestId', requestId)
+    c.set('logger', requestLogger)
+    c.header('x-request-id', requestId)
 
-// Origins that are always allowed while developing (matches legacy behavior).
-const LOCAL_DEV_ORIGINS = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://127.0.0.1:3000',
-]
-
-/**
- * Resolve the CORS origin allowlist for a request from deployment env vars.
- * - FRONTEND_URL: comma-separated exact origins (legacy, also feeds better-auth)
- * - CORS_ORIGINS: comma-separated patterns; supports `*.example.com` wildcards
- * Patterns are matched host-level; no hardcoded brand domains.
- */
-const resolveCorsPatterns = (envFrontend?: string, envCors?: string): string[] => {
-  const frontendUrl =
-    envFrontend || (typeof process !== 'undefined' ? process.env?.FRONTEND_URL : undefined)
-  const corsOrigins =
-    envCors || (typeof process !== 'undefined' ? process.env?.CORS_ORIGINS : undefined)
-  return [...parseOriginList(frontendUrl), ...parseOriginList(corsOrigins)]
-}
-
-// Permissive CORS for B2B public API routes (/v1/*)
-app.use(
-  '/v1/*',
-  cors({
-    origin: '*',
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
-    allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
-    exposeHeaders: ['Content-Length'],
-    maxAge: 600,
-  }),
-)
-
-// Permissive CORS for playback telemetry (/api/playback/*)
-app.use(
-  '/api/playback/*',
-  cors({
-    origin: '*',
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
-    allowMethods: ['POST', 'GET', 'OPTIONS'],
-    exposeHeaders: ['Content-Length'],
-    maxAge: 600,
-  }),
-)
-
-// Permissive CORS for public health probes (no credentials involved)
-app.use(
-  '/health',
-  cors({
-    origin: '*',
-    allowMethods: ['GET', 'HEAD', 'OPTIONS'],
-    maxAge: 600,
-  }),
-)
-app.use(
-  '/health/*',
-  cors({
-    origin: '*',
-    allowMethods: ['GET', 'HEAD', 'OPTIONS'],
-    maxAge: 600,
-  }),
-)
-
-app.use('/api/*', async (c, next) => {
-  if (c.req.path.startsWith('/api/playback')) {
-    return next()
-  }
-
-  const corsMiddleware = cors({
-    origin: (origin) => {
-      const patterns = resolveCorsPatterns(c.env?.FRONTEND_URL, c.env?.CORS_ORIGINS)
-      if (matchOrigin(origin, [...patterns, ...LOCAL_DEV_ORIGINS])) {
-        return origin
-      }
-      // Unknown origin: send no CORS header. Do not fabricate a fallback origin.
-      return null
-    },
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
-    allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
-    exposeHeaders: ['Content-Length'],
-    maxAge: 600,
-    credentials: true,
-  })
-
-  return corsMiddleware(c, next)
-})
-
-app.use('*', async (c, next) => {
-  if (c.req.method === 'OPTIONS' || c.req.path === '/health') {
+    const start = performance.now()
+    console.log(`[REQ START] ${c.req.method} ${c.req.path}`)
     await next()
-    return
-  }
+    const durationMs = Number((performance.now() - start).toFixed(2))
+    console.log(`[REQ END] ${c.req.method} ${c.req.path} -> ${c.res.status} (${durationMs}ms)`)
 
-  if (c.req.path.startsWith('/api/webhook')) {
-    await next()
-    return
-  }
-
-  const rateLimiter = resolveRateLimiter(c.req.path, c.env)
-  if (!rateLimiter) {
-    // Window/limit misconfiguration — fail open on health probes only.
-    if (c.req.path === '/health' || c.req.path.startsWith('/health/')) {
-      await next()
+    if (c.res.status >= 500) {
+      requestLogger.error({ status: c.res.status, durationMs }, 'request completed with server error')
       return
     }
-    return c.json({ error: 'Rate limiter misconfigured' }, 500)
-  }
 
-  const rateLimitResult = await rateLimiter.limit(getClientIp(c))
-  const resetSeconds = Math.max(
-    0,
-    Math.ceil((rateLimitResult.reset - Date.now()) / 1000),
-  )
+    if (c.res.status >= 400) {
+      requestLogger.warn({ status: c.res.status, durationMs }, 'request completed with client error')
+      return
+    }
 
-  c.header('X-RateLimit-Limit', String(rateLimitResult.limit))
-  c.header('X-RateLimit-Remaining', String(Math.max(rateLimitResult.remaining, 0)))
-  c.header('X-RateLimit-Reset', String(Math.ceil(rateLimitResult.reset / 1000)))
-  c.header('RateLimit-Limit', String(rateLimitResult.limit))
-  c.header(
-    'RateLimit-Remaining',
-    String(Math.max(rateLimitResult.remaining, 0)),
-  )
-  c.header('RateLimit-Reset', String(resetSeconds))
+    requestLogger.info({ status: c.res.status, durationMs }, 'request completed')
+  })
 
-  c.executionCtx.waitUntil(
-    rateLimitResult.pending.catch((error) => {
-      const requestLogger = c.var.logger ?? logger
-      requestLogger.warn(
-        { err: error instanceof Error ? error.message : String(error), requestId: c.var.requestId },
-        'rate limit analytics sync failed',
-      )
+  app.onError((error, c) => {
+    const requestLogger = c.var.logger ?? runtime.logger
+    requestLogger.error(
+      {
+        err: error instanceof Error ? error.message : String(error),
+        method: c.req.method,
+        path: c.req.path,
+        requestId: c.var.requestId,
+      },
+      'unhandled request error',
+    )
+    return c.json({ error: 'Internal server error' }, 500)
+  })
+
+  app.use('*', async (c, next) => {
+    applySecurityHeaders(c)
+    await next()
+  })
+
+  // Permissive CORS for B2B public API routes (/v1/*)
+  app.use(
+    '/v1/*',
+    cors({
+      origin: '*',
+      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
+      allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
+      exposeHeaders: ['Content-Length'],
+      maxAge: 600,
     }),
   )
 
-  if (!rateLimitResult.success) {
-    c.header('Retry-After', String(Math.max(1, resetSeconds)))
-    const requestLogger = c.var.logger ?? logger
-    requestLogger.warn(
-      {
-        requestId: c.var.requestId,
-        path: c.req.path,
-        method: c.req.method,
-        ip: getClientIp(c),
-        limit: rateLimitResult.limit,
-        reset: rateLimitResult.reset,
+  // Permissive CORS for playback telemetry (/api/playback/*)
+  app.use(
+    '/api/playback/*',
+    cors({
+      origin: '*',
+      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
+      allowMethods: ['POST', 'GET', 'OPTIONS'],
+      exposeHeaders: ['Content-Length'],
+      maxAge: 600,
+    }),
+  )
+
+  // Permissive CORS for public health probes (no credentials involved)
+  app.use(
+    '/health',
+    cors({
+      origin: '*',
+      allowMethods: ['GET', 'HEAD', 'OPTIONS'],
+      maxAge: 600,
+    }),
+  )
+  app.use(
+    '/health/*',
+    cors({
+      origin: '*',
+      allowMethods: ['GET', 'HEAD', 'OPTIONS'],
+      maxAge: 600,
+    }),
+  )
+
+  app.use('/api/*', async (c, next) => {
+    if (c.req.path.startsWith('/api/playback')) {
+      return next()
+    }
+
+    const corsMiddleware = cors({
+      origin: (origin) => {
+        // FRONTEND_URL + CORS_ORIGINS, resolved once by the composition root.
+        const patterns = config.corsPatterns
+        if (matchOrigin(origin, [...patterns, ...LOCAL_DEV_ORIGINS])) {
+          return origin
+        }
+        // Unknown origin: send no CORS header. Do not fabricate a fallback origin.
+        return null
       },
-      'request blocked by rate limiter',
+      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-request-id'],
+      allowMethods: ['POST', 'GET', 'PATCH', 'DELETE', 'OPTIONS'],
+      exposeHeaders: ['Content-Length'],
+      maxAge: 600,
+      credentials: true,
+    })
+
+    return corsMiddleware(c, next)
+  })
+
+  app.use('*', async (c, next) => {
+    if (c.req.method === 'OPTIONS' || c.req.path === '/health') {
+      await next()
+      return
+    }
+
+    if (c.req.path.startsWith('/api/webhook')) {
+      await next()
+      return
+    }
+
+    const scope = resolveRateLimitScope(c.req.path)
+    const rateLimitResult = await runtime.rateLimiter(scope).limit(getClientIp(c))
+    const resetSeconds = Math.max(
+      0,
+      Math.ceil((rateLimitResult.reset - Date.now()) / 1000),
     )
 
-    return c.json(
-      {
-        error: 'Rate limit exceeded',
-        retryAfter: Math.max(1, resetSeconds),
-      },
-      429,
+    c.header('X-RateLimit-Limit', String(rateLimitResult.limit))
+    c.header('X-RateLimit-Remaining', String(Math.max(rateLimitResult.remaining, 0)))
+    c.header('X-RateLimit-Reset', String(Math.ceil(rateLimitResult.reset / 1000)))
+    c.header('RateLimit-Limit', String(rateLimitResult.limit))
+    c.header('RateLimit-Remaining', String(Math.max(rateLimitResult.remaining, 0)))
+    c.header('RateLimit-Reset', String(resetSeconds))
+
+    runtime.background(
+      rateLimitResult.pending,
+      'rate limit analytics sync',
     )
-  }
 
-  await next()
-})
+    if (!rateLimitResult.success) {
+      c.header('Retry-After', String(Math.max(1, resetSeconds)))
+      const requestLogger = c.var.logger ?? runtime.logger
+      requestLogger.warn(
+        {
+          requestId: c.var.requestId,
+          path: c.req.path,
+          method: c.req.method,
+          ip: getClientIp(c),
+          limit: rateLimitResult.limit,
+          reset: rateLimitResult.reset,
+        },
+        'request blocked by rate limiter',
+      )
 
-app.on(['POST', 'GET'], '/api/auth/*', (c) => {
-  return auth.handler(c.req.raw)
-})
+      return c.json(
+        {
+          error: 'Rate limit exceeded',
+          retryAfter: Math.max(1, resetSeconds),
+        },
+        429,
+      )
+    }
 
-app.route('/health', health)
-app.route('/api/internal', internal)
-app.route('/api/upload', upload)
-app.route('/api/webhook', webhook)
-app.route('/api/video', video)
-app.route('/api/keys', keys)
-app.route('/api/usage', usage)
-app.route('/api/webhooks', webhooks)
-app.route('/v1/upload', uploadPublic)
-// Local import sits under /v1 too, but is built separately because it authenticates
-// with an API key while the rest of the public API does not yet.
-app.route('/v1', importLocalApp)
-app.route('/v1', api)
-// The agent protocol polls and posts frequently; it is deliberately outside the
-// session and API-key middleware, carrying its own organization-scoped credential.
-app.route('/api/transcoder/v1', transcoder)
-app.route('/api/transcoder/v1/sources', agentSourceApp)
-app.route('/api/transcoder', dashboardApp)
-app.route('/api/playback', analytics)
-app.route('/api/analytics-stats', analyticsStats)
+    await next()
+  })
 
-export default app
+  app.on(['POST', 'GET'], '/api/auth/*', (c) => {
+    return runtime.auth.handler(c.req.raw)
+  })
+
+  app.route('/health', health)
+  app.route('/api/internal', internal)
+  app.route('/api/upload', upload)
+  app.route('/api/webhook', webhook)
+  app.route('/api/video', video)
+  app.route('/api/keys', keys)
+  app.route('/api/usage', usage)
+  app.route('/api/webhooks', webhooks)
+  app.route('/v1/upload', uploadPublic)
+  // Local import sits under /v1 too, but is built separately because it authenticates
+  // with an API key while the rest of the public API does not yet.
+  app.route('/v1', importLocalApp)
+  app.route('/v1', api)
+  // The agent protocol polls and posts frequently; it is deliberately outside the
+  // session and API-key middleware, carrying its own organization-scoped credential.
+  app.route('/api/transcoder/v1', transcoder)
+  app.route('/api/transcoder/v1/sources', agentSourceApp)
+  app.route('/api/transcoder', dashboardApp)
+  app.route('/api/playback', analytics)
+  app.route('/api/analytics-stats', analyticsStats)
+
+  return app
+}

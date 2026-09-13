@@ -43,6 +43,8 @@ import { fileURLToPath } from 'node:url'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
+import { installDb, resetInstalledDb, type Db } from '../../src/lib/database'
+import * as schema from '../../src/db/schema'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MIGRATIONS_DIR = join(HERE, '..', '..', 'drizzle')
@@ -180,7 +182,23 @@ export async function createTestDb(
 
   const url = testDatabaseUrl(options.database)
   const client = postgres(url, clientOptions(url, options.max ?? 1))
-  const db = drizzle(client)
+  // With the app's schema module, so the handle is shaped exactly like the one a
+  // composition root installs. better-auth's drizzle adapter resolves its tables
+  // through `db._.schema`, and an unschema'd handle makes it report every table
+  // as missing.
+  const db = drizzle(client, { schema })
+
+  // The suite's database becomes the installed handle, exactly as a composition
+  // root would do it in a deployment. Application modules reach `db` through a
+  // proxy over the installed instance, so without this every suite that imports
+  // app code would fail with "database is not installed" — the deliberate
+  // replacement for the ambient `process.env` fallback that used to make this
+  // work by accident.
+  //
+  // The cast is the one place the two driver types meet: `Db` is the neon-http
+  // handle type the app is written against, while tests run postgres-js against
+  // a local container (the neon driver is a Workers-only HTTP transport).
+  installDb(db as unknown as Db)
 
   // The same migrator `db:migrate` runs, so a migration that works in tests
   // cannot fail in a deployment (or vice versa), and `__drizzle_migrations`
@@ -195,6 +213,7 @@ export async function createTestDb(
     // `createTestDb` drop; a `connectTestDb` handle would otherwise destroy the
     // suite database out from under the suite that owns it.
     close: async () => {
+      resetInstalledDb()
       await client.end({ timeout: 5 })
       await dropDatabase(name)
     },

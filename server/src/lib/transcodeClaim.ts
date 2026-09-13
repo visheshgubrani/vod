@@ -335,15 +335,12 @@ async function claimUnderOrganizationLock(
   return normalizeRows(results[1])
 }
 
-/** Read the per-organization concurrency cap from the environment. */
-export function organizationCapFromEnv(env?: Record<string, unknown>): number | null {
-  const raw =
-    (env?.['TRANSCODE_ORG_CONCURRENCY_CAP'] as unknown) ??
-    (typeof process !== 'undefined'
-      ? process.env?.TRANSCODE_ORG_CONCURRENCY_CAP
-      : undefined)
-  const parsed = Number(raw)
-  // Unset or invalid means "no cap", which is the documented default: this is a
-  // cost-control lever an operator opts into, not a limit we invent for them.
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null
-}
+/**
+ * Read the per-organization concurrency cap.
+ *
+ * The implementation lives in `lib/config` with the rest of the environment
+ * parsing; this alias keeps the existing call sites meaningful. It used to read
+ * `process.env` itself, which is what made the cap resolve differently on the two
+ * runtimes.
+ */
+export { orgConcurrencyCap as organizationCapFromEnv } from './config'

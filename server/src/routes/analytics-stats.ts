@@ -86,7 +86,7 @@ async function getValidatedOwnedVideoId(
 }
 
 function getConfigOrError(c: Context) {
-  const config = getAnalyticsConfig(c.env)
+  const config = getAnalyticsConfig(c.var.runtime.config)
   if (!config) {
     return {
       config: null,

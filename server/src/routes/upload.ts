@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { createMiddleware } from 'hono/factory'
 import {
   AbortMultipartUploadCommand,
@@ -15,7 +15,6 @@ import { and, eq } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
-import { maxUploadBytes } from '../lib/config'
 import { video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { dispatchFailureStatus } from '../utils/dispatchTranscode'
@@ -25,9 +24,45 @@ import { headObjectSize, r2 } from '../utils/R2'
 import type { Bindings } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
-const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
-const TRANSCODED_BUCKET =
-  process.env.TRANSCODED_BUCKET_NAME || 'transcoded-bucket'
+
+/**
+ * Bucket names come from the resolved configuration on every use.
+ *
+ * They used to be module-scope constants read once from `process.env`, with
+ * hardcoded defaults ('raw-bucket-uploads' / 'transcoded-bucket'), while the same
+ * handler recorded the bucket for a job by reading `c.env` — three resolutions of
+ * one value in one file. A presigned URL could therefore point at one bucket
+ * while the transcode job named another, and an unconfigured deployment silently
+ * targeted a bucket that does not exist instead of saying so.
+ */
+function rawBucketOrFail(c: Context<{ Bindings: Bindings }>): string | Response {
+  const bucket = c.var.runtime.config.rawBucket
+  if (!bucket) {
+    return c.json(
+      {
+        error:
+          'Uploads are not configured: RAW_BUCKET_NAME is not set on this deployment.',
+      },
+      409,
+    )
+  }
+  return bucket
+}
+
+function transcodedBucketOrFail(c: Context<{ Bindings: Bindings }>): string | Response {
+  const bucket = c.var.runtime.config.transcodedBucket
+  if (!bucket) {
+    return c.json(
+      {
+        error:
+          'Object storage is not configured: TRANSCODED_BUCKET_NAME is not set on this deployment.',
+      },
+      409,
+    )
+  }
+  return bucket
+}
+
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
@@ -99,6 +134,30 @@ const requireUploadAuth = createMiddleware(async (c, next) => {
   })
 })
 
+
+/**
+ * Uploads can be turned off for an installation (`UPLOADS_ENABLED=false`), which
+ * is what makes a deployment valid without a raw bucket. Until now the flag was
+ * reported by `/health/config` and enforced nowhere: the dashboard said uploads
+ * were off while the API kept accepting them.
+ *
+ * Deletion (`DELETE /:fileId`) is deliberately not gated — it is not an upload,
+ * and refusing it would strand bytes.
+ */
+const requireUploadsEnabled = createMiddleware(async (c, next) => {
+  if (!c.var.runtime.config.uploadsEnabled) {
+    return c.json(
+      { error: 'Uploads are disabled on this deployment (UPLOADS_ENABLED=false)' },
+      403,
+    )
+  }
+  await next()
+})
+
+app.use('/url', requireUploadsEnabled)
+app.use('/complete', requireUploadsEnabled)
+app.use('/multipart/*', requireUploadsEnabled)
+
 app.use('/*', requireUploadAuth)
 
 // Single file upload (for smaller files)
@@ -124,7 +183,7 @@ app.post('/url', async (c) => {
   if (!Number.isInteger(parsedSize)) {
     return c.json({ error: 'Size must be an integer' }, 400)
   }
-  const maxBytesUrl = maxUploadBytes(c.env)
+  const maxBytesUrl = c.var.runtime.config.uploadSizeLimitBytes
   if (parsedSize > maxBytesUrl) {
     return c.json(
       { error: `File exceeds the maximum allowed size (${maxBytesUrl} bytes)` },
@@ -146,7 +205,8 @@ app.post('/url', async (c) => {
 
   // GENERATE UNIQUE FILE PATH
   const { fileId, key } = getUploadKey(organizationId, filename)
-  const rawBucket = c.env?.RAW_BUCKET_NAME || process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
+  const rawBucket = rawBucketOrFail(c)
+  if (typeof rawBucket !== 'string') return rawBucket
 
   console.log(`[UPLOAD CREATED] Inserted video into DB with ID: ${fileId}, key: ${key}, bucket: ${rawBucket}`)
 
@@ -194,6 +254,11 @@ app.post('/url', async (c) => {
 })
 
 app.post('/complete', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+  const transcodedBucket = transcodedBucketOrFail(c)
+  if (typeof transcodedBucket !== 'string') return transcodedBucket
+
   const organizationId = c.var.organizationId
   const { fileId, transcodingProvider } = await c.req.json<{
     fileId?: string
@@ -233,7 +298,7 @@ app.post('/complete', async (c) => {
     // Verify the object actually landed in R2 at the declared size before
     // spending a transcode dispatch on a missing/truncated file.
     const verifyKey = videoRecord.rawKey
-    const headSize = verifyKey ? await headObjectSize(RAW_BUCKET, verifyKey) : null
+    const headSize = verifyKey ? await headObjectSize(bucket, verifyKey) : null
     if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
       await db
         .update(video)
@@ -276,13 +341,13 @@ app.post('/complete', async (c) => {
     const dispatchResult = await dispatchWithProvider({
       videoId: fileId,
       rawKey: videoRecord.rawKey,
-      rawBucket: c.env?.RAW_BUCKET_NAME ?? process.env.RAW_BUCKET_NAME ?? null,
+      rawBucket: c.var.runtime.config.rawBucket,
       organizationId: videoRecord.organizationId,
       playbackPolicy: videoRecord.playbackPolicy || 'public',
       generateSubtitle: videoRecord.generateSubtitle || false,
       generateChapters: videoRecord.generateChapters || false,
       transcodingProvider,
-      env: c.env,
+      env: c.var.runtime.env,
     })
 
     if (!dispatchResult.dispatched) {
@@ -318,6 +383,9 @@ app.post('/complete', async (c) => {
 
 // Multipart upload - create
 app.post('/multipart/create', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
   const organizationId = c.var.organizationId
   const userId = c.var.userId
 
@@ -346,7 +414,7 @@ app.post('/multipart/create', async (c) => {
     return c.json({ error: message }, 400)
   }
 
-  const maxBytesMp = maxUploadBytes(c.env)
+  const maxBytesMp = c.var.runtime.config.uploadSizeLimitBytes
   if (parsedSize > maxBytesMp) {
     return c.json(
       { error: `File exceeds the maximum allowed size (${maxBytesMp} bytes)` },
@@ -385,7 +453,7 @@ app.post('/multipart/create', async (c) => {
   })
 
   const command = new CreateMultipartUploadCommand({
-    Bucket: RAW_BUCKET,
+    Bucket: bucket,
     Key: key,
     ContentType: contentType,
   })
@@ -422,6 +490,9 @@ app.post('/multipart/create', async (c) => {
 
 // Multipart upload - get signed URLs for parts
 app.post('/multipart/parts', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
   const organizationId = c.var.organizationId
   const { key, uploadId, partNumbers, size, partSize, fileId } =
     await c.req.json()
@@ -499,7 +570,7 @@ app.post('/multipart/parts', async (c) => {
   const urls = await Promise.all(
     uniquePartNumbers.map(async (partNumber) => {
       const command = new UploadPartCommand({
-        Bucket: RAW_BUCKET,
+        Bucket: bucket,
         Key: key,
         UploadId: uploadId,
         PartNumber: partNumber,
@@ -525,6 +596,9 @@ app.post('/multipart/parts', async (c) => {
 
 // Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
   const organizationId = c.var.organizationId
   const { key, uploadId, parts, fileId, transcodingProvider } = await c.req.json<{
     key?: string
@@ -563,7 +637,7 @@ app.post('/multipart/complete', async (c) => {
   normalizedParts.sort((a, b) => a.PartNumber - b.PartNumber)
 
   const command = new CompleteMultipartUploadCommand({
-    Bucket: RAW_BUCKET,
+    Bucket: bucket,
     Key: key,
     UploadId: uploadId,
     MultipartUpload: {
@@ -609,7 +683,7 @@ app.post('/multipart/complete', async (c) => {
     // Verify the object actually landed in R2 at the declared size before
     // spending a transcode dispatch on a missing/truncated file.
     const verifyKey = videoRecord.rawKey
-    const headSize = verifyKey ? await headObjectSize(RAW_BUCKET, verifyKey) : null
+    const headSize = verifyKey ? await headObjectSize(bucket, verifyKey) : null
     if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
       await db
         .update(video)
@@ -634,13 +708,13 @@ app.post('/multipart/complete', async (c) => {
     const dispatchResult = await dispatchWithProvider({
       videoId: fileId,
       rawKey: key,
-      rawBucket: c.env?.RAW_BUCKET_NAME ?? process.env.RAW_BUCKET_NAME ?? null,
+      rawBucket: c.var.runtime.config.rawBucket,
       organizationId: videoRecord.organizationId,
       playbackPolicy: videoRecord.playbackPolicy || 'public',
       generateSubtitle: videoRecord.generateSubtitle || false,
       generateChapters: videoRecord.generateChapters || false,
       transcodingProvider,
-      env: c.env,
+      env: c.var.runtime.env,
     })
 
     if (!dispatchResult.dispatched) {
@@ -680,6 +754,9 @@ app.post('/multipart/complete', async (c) => {
 
 // Multipart upload - abort
 app.post('/multipart/abort', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
   const organizationId = c.var.organizationId
   const { key, uploadId, fileId } = await c.req.json()
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
@@ -687,7 +764,7 @@ app.post('/multipart/abort', async (c) => {
 
   await r2.send(
     new AbortMultipartUploadCommand({
-      Bucket: RAW_BUCKET,
+      Bucket: bucket,
       Key: key,
       UploadId: uploadId,
     }),
@@ -717,6 +794,12 @@ app.post('/multipart/abort', async (c) => {
 
 // Cancel/delete any upload (for single-file uploads or general cleanup)
 app.delete('/:fileId', async (c) => {
+  const transcodedBucket = transcodedBucketOrFail(c)
+  if (typeof transcodedBucket !== 'string') return transcodedBucket
+
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
   const organizationId = c.var.organizationId
   const fileId = c.req.param('fileId')
 
@@ -755,7 +838,7 @@ app.delete('/:fileId', async (c) => {
     try {
       await r2.send(
         new DeleteObjectCommand({
-          Bucket: RAW_BUCKET,
+          Bucket: bucket,
           Key: videoRecord.rawKey,
         }),
       )
@@ -774,7 +857,7 @@ app.delete('/:fileId', async (c) => {
     // List all objects with the video ID prefix
     const listResponse = await r2.send(
       new ListObjectsV2Command({
-        Bucket: TRANSCODED_BUCKET,
+        Bucket: transcodedBucket,
         Prefix: `${fileId}/`,
       }),
     )
@@ -787,7 +870,7 @@ app.delete('/:fileId', async (c) => {
 
       await r2.send(
         new DeleteObjectsCommand({
-          Bucket: TRANSCODED_BUCKET,
+          Bucket: transcodedBucket,
           Delete: {
             Objects: objectsToDelete,
             Quiet: true,
@@ -803,7 +886,7 @@ app.delete('/:fileId', async (c) => {
     // Also delete the folder marker object (0-byte object with trailing /)
     await r2.send(
       new DeleteObjectCommand({
-        Bucket: TRANSCODED_BUCKET,
+        Bucket: transcodedBucket,
         Key: `${fileId}/`,
       }),
     )

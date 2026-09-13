@@ -29,7 +29,7 @@ import {
   type CleanupStats,
 } from '../lib/objectCleanup'
 import { s3ObjectStore } from './objectStore'
-import type { Bindings } from '../types'
+import type { EnvLike } from '../lib/config'
 
 export type MaintenanceResult = {
   videos: SweepStats
@@ -69,7 +69,7 @@ async function recordHeartbeat(patch: {
   }
 }
 
-export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult> {
+export async function runMaintenance(env: EnvLike = {}): Promise<MaintenanceResult> {
   const started = Date.now()
   await recordHeartbeat({ startedAt: new Date() })
   const limit = readPositiveInt(env, 'MAINTENANCE_BATCH_SIZE', 50)
@@ -146,8 +146,12 @@ export async function runMaintenance(env?: Bindings): Promise<MaintenanceResult>
   return { videos, deliveries, cleanup, localJobsReclaimed, durationMs }
 }
 
-function readPositiveInt(env: Bindings | undefined, key: string, fallback: number): number {
-  const raw = env?.[key as keyof Bindings] as string | undefined
+function readPositiveInt(
+  env: EnvLike,
+  key: string,
+  fallback: number,
+): number {
+  const raw = env[key]
   const parsed = Number(raw)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
@@ -160,7 +164,7 @@ function readPositiveInt(env: Bindings | undefined, key: string, fallback: numbe
  * retries stop too. `GET /health/config` reports whether this is on, so the
  * omission is visible rather than silent.
  */
-export function isMaintenanceEnabled(env?: Record<string, unknown> | Bindings): boolean {
+export function isMaintenanceEnabled(env: EnvLike | undefined): boolean {
   return env?.SWEEP_ENABLED === 'true'
 }
 
@@ -181,7 +185,7 @@ export type MaintenanceStatus = {
  * database is briefly unreachable — it reports `stale` instead.
  */
 export async function readMaintenanceStatus(
-  env?: Record<string, unknown> | Bindings,
+  env?: EnvLike,
 ): Promise<MaintenanceStatus> {
   const enabled = isMaintenanceEnabled(env)
   try {

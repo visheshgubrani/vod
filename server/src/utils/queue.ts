@@ -1,4 +1,4 @@
-import type { Bindings } from '../types'
+import type { EnvLike } from '../lib/config'
 
 /**
  * Transcoding job dispatcher (deep module).
@@ -122,10 +122,15 @@ export function pickDispatcher(env: DispatchEnv): 'qstash' | 'direct' {
   return 'direct'
 }
 
-function resolveEnv(env?: Bindings): DispatchEnv {
-  const processEnv = typeof process !== 'undefined' ? process.env : {}
-  const merged: DispatchEnv = { ...(processEnv as DispatchEnv), ...(env as DispatchEnv) }
-  return merged
+/**
+ * The dispatch environment.
+ *
+ * Takes the resolved string map and nothing else. It used to merge `process.env`
+ * *under* the argument, which meant a stale ambient `QSTASH_TOKEN` could select
+ * the QStash adapter even when the deployment's own environment omitted it.
+ */
+function resolveEnv(env: EnvLike = {}): DispatchEnv {
+  return { ...(env as DispatchEnv) }
 }
 
 function buildCallbackUrl(backendUrl: string | undefined): string {
@@ -247,7 +252,7 @@ export type TranscodeDispatchRequest = {
   playbackPolicy?: 'public' | 'signed'
   generateSubtitle?: boolean
   generateChapters?: boolean
-  env?: Bindings
+  env?: EnvLike
 }
 
 /**

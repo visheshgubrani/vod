@@ -7,7 +7,8 @@
  * Base path: /v1/upload
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { createMiddleware } from 'hono/factory'
 import {
     CreateMultipartUploadCommand,
     CompleteMultipartUploadCommand,
@@ -22,7 +23,6 @@ import {
     incrementUploadTokenUsage,
 } from '../middleware/uploadToken'
 import { db } from '../lib/database'
-import { maxUploadBytes } from '../lib/config'
 import { uploadToken, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { headObjectSize, r2 } from '../utils/R2'
@@ -33,7 +33,22 @@ import type { Bindings, UploadTokenVariables } from '../types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: UploadTokenVariables }>()
 
-const RAW_BUCKET = process.env.RAW_BUCKET_NAME || 'raw-bucket-uploads'
+/**
+ * Bucket names come from the resolved configuration on every use — see the note
+ * in routes/upload.ts. The module-scope constant this replaces was read once at
+ * import time from `process.env`, which on Workers is evaluated before any
+ * binding is available.
+ */
+function rawBucketOrFail(c: Context<{ Bindings: Bindings; Variables: UploadTokenVariables }>): string | Response {
+  const bucket = c.var.runtime.config.rawBucket
+  if (!bucket) {
+    return c.json(
+      { error: 'Uploads are not configured: RAW_BUCKET_NAME is not set on this deployment.' },
+      409,
+    )
+  }
+  return bucket
+}
 const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
@@ -180,6 +195,27 @@ app.post('/token', requireApiKey, async (c) => {
 })
 
 // All OTHER routes require upload token authentication
+
+/**
+ * Uploads can be turned off for an installation (`UPLOADS_ENABLED=false`), which
+ * is what makes a deployment valid without a raw bucket. Until now the flag was
+ * reported by `/health/config` and enforced nowhere: the dashboard said uploads
+ * were off while the API kept accepting them.
+ *
+ * Deletion (`DELETE /:fileId`) is deliberately not gated — it is not an upload,
+ * and refusing it would strand bytes.
+ */
+const requireUploadsEnabled = createMiddleware(async (c, next) => {
+  if (!c.var.runtime.config.uploadsEnabled) {
+    return c.json(
+      { error: 'Uploads are disabled on this deployment (UPLOADS_ENABLED=false)' },
+      403,
+    )
+  }
+  await next()
+})
+
+app.use('/*', requireUploadsEnabled)
 app.use('/*', requireUploadToken)
 
 /**
@@ -210,6 +246,9 @@ app.use('/*', requireUploadToken)
  *   }
  */
 app.post('/create', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
     const uploadTokenRecord = c.var.uploadTokenRecord
     const uploadTokenId = c.var.uploadTokenId
@@ -245,7 +284,7 @@ app.post('/create', async (c) => {
         )
     }
 
-    const maxBytes = maxUploadBytes(c.env)
+    const maxBytes = c.var.runtime.config.uploadSizeLimitBytes
     if (size > maxBytes) {
         return c.json(
             { error: `File exceeds the maximum allowed size (${maxBytes} bytes)` },
@@ -280,7 +319,7 @@ app.post('/create', async (c) => {
 
     // Create multipart upload in R2
     const command = new CreateMultipartUploadCommand({
-        Bucket: RAW_BUCKET,
+        Bucket: bucket,
         Key: key,
         ContentType: contentType,
     })
@@ -328,6 +367,9 @@ app.post('/create', async (c) => {
  * Get additional presigned URLs for specific parts (useful for retries).
  */
 app.post('/parts', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
 
     const body = await c.req.json()
@@ -405,7 +447,7 @@ app.post('/parts', async (c) => {
     const urls = await Promise.all(
         uniquePartNumbers.map(async (partNumber) => {
             const command = new UploadPartCommand({
-                Bucket: RAW_BUCKET,
+                Bucket: bucket,
                 Key: key,
                 UploadId: uploadId,
                 PartNumber: partNumber,
@@ -435,6 +477,9 @@ app.post('/parts', async (c) => {
  * Complete the multipart upload and start transcoding.
  */
 app.post('/complete', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
 
     const body = await c.req.json()
@@ -475,7 +520,7 @@ app.post('/complete', async (c) => {
 
     // Complete multipart upload in R2
     const command = new CompleteMultipartUploadCommand({
-        Bucket: RAW_BUCKET,
+        Bucket: bucket,
         Key: key,
         UploadId: uploadId,
         MultipartUpload: {
@@ -519,7 +564,7 @@ app.post('/complete', async (c) => {
         // Verify the object actually landed in R2 at the declared size before
         // spending a transcode dispatch on a missing/truncated file.
         const verifyKey = videoRecord.rawKey
-        const headSize = verifyKey ? await headObjectSize(RAW_BUCKET, verifyKey) : null
+        const headSize = verifyKey ? await headObjectSize(bucket, verifyKey) : null
         if (headSize === null || (videoRecord.size !== null && headSize !== videoRecord.size)) {
             await db
                 .update(video)
@@ -545,7 +590,7 @@ app.post('/complete', async (c) => {
         const dispatchResult = await dispatchWithProvider({
             videoId: fileId,
             rawKey: key,
-            rawBucket: c.env?.RAW_BUCKET_NAME ?? process.env.RAW_BUCKET_NAME ?? null,
+            rawBucket: c.var.runtime.config.rawBucket,
             organizationId: videoRecord.organizationId,
             playbackPolicy: videoRecord.playbackPolicy || 'public',
             generateSubtitle: videoRecord.generateSubtitle || false,
@@ -554,7 +599,7 @@ app.post('/complete', async (c) => {
             // Per-request override from the SDK; omitted means the installation default.
             transcodingProvider:
                 typeof body?.transcodingProvider === 'string' ? body.transcodingProvider : undefined,
-            env: c.env,
+            env: c.var.runtime.env,
         })
 
         if (!dispatchResult.dispatched) {
@@ -595,6 +640,9 @@ app.post('/complete', async (c) => {
  * Abort a multipart upload and clean up.
  */
 app.post('/abort', async (c) => {
+  const bucket = rawBucketOrFail(c)
+  if (typeof bucket !== 'string') return bucket
+
     const organizationId = c.var.organizationId
 
     const body = await c.req.json()
@@ -609,7 +657,7 @@ app.post('/abort', async (c) => {
     // Abort multipart upload in R2
     await r2.send(
         new AbortMultipartUploadCommand({
-            Bucket: RAW_BUCKET,
+            Bucket: bucket,
             Key: key,
             UploadId: uploadId,
         }),

@@ -6,10 +6,17 @@
  * TUI would have collected.
  */
 
-export type RuntimeKind = 'workers' | 'compose'
+/**
+ * `node` used to be called `compose`, which conflated the API runtime with the
+ * Docker deployment shape. They are separate decisions: the Node runtime runs
+ * under Docker, under `pnpm dev`, or behind any process manager. `compose` is
+ * still accepted from older `--answers` files (see parsers.ts).
+ */
+export type RuntimeKind = 'workers' | 'node'
 export type DbKind = 'neon' | 'local' | 'existing'
 export type QueueKind = 'direct' | 'qstash'
-export type RateLimitKind = 'memory' | 'upstash'
+/** `redis` is a plain Redis over TCP: Node runtime only, no hosted vendor. */
+export type RateLimitKind = 'memory' | 'redis' | 'upstash'
 
 export interface DbAnswers {
   kind: DbKind
@@ -25,6 +32,8 @@ export interface QueueAnswers {
 
 export interface RateLimitAnswers {
   kind: RateLimitKind
+  /** Required for kind 'redis' — e.g. redis://localhost:6379. */
+  url?: string
   /** Required for kind 'upstash'. */
   restUrl?: string
   token?: string
@@ -35,7 +44,7 @@ export interface RateLimitAnswers {
  * delivery/.dev.vars. Credentials are never echoed once collected.
  */
 export interface WizardAnswers {
-  /** API runtime: Cloudflare Worker (default) or Node via Docker Compose. */
+  /** API runtime: Cloudflare Worker (default) or Node (Docker/VPS/local). */
   runtime: RuntimeKind
   db: DbAnswers
   queue: QueueAnswers
@@ -71,6 +80,8 @@ export interface SecretSet {
   jwtSecret: string
   internalSweepSecret: string
   transcodeIngestSecret: string
+  /** Password for the bundled Postgres of a Docker deployment (.env only). */
+  postgresPassword: string
 }
 
 /** Choices the CLI flags may prefill (interactive mode only). */

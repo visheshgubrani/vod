@@ -17,15 +17,25 @@ import { askConfirm, askPassword, askSelect, askText, note } from './ui'
 
 const POSTGRES_URL_RE = /^postgres(ql)?:\/\/\S+/
 const HTTP_URL_RE = /^https?:\/\/\S+/
+const REDIS_URL_RE = /^rediss?:\/\/\S+/
 
-function requireUrl(message: string, kind: 'postgres' | 'http'): Promise<string> {
+const URL_HINTS = {
+  postgres: 'must be a postgres:// or postgresql:// URL',
+  http: 'must be an absolute http(s) URL',
+  redis: 'must be a redis:// or rediss:// URL',
+} as const
+
+function requireUrl(message: string, kind: keyof typeof URL_HINTS): Promise<string> {
   return askText(message, {
     validate: (value) => {
-      const ok = kind === 'postgres' ? POSTGRES_URL_RE.test(value) : HTTP_URL_RE.test(value)
+      const ok =
+        kind === 'postgres'
+          ? POSTGRES_URL_RE.test(value)
+          : kind === 'redis'
+            ? REDIS_URL_RE.test(value)
+            : HTTP_URL_RE.test(value)
       if (!ok) {
-        return kind === 'postgres'
-          ? 'must be a postgres:// or postgresql:// URL'
-          : 'must be an absolute http(s) URL'
+        return URL_HINTS[kind]
       }
       if (value.includes('your-') || value.includes('change-me')) {
         return 'that looks like a placeholder — paste a real value'
@@ -55,9 +65,9 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
           hint: 'DB_DRIVER=neon-http — deploy with wrangler; Postgres must be Neon',
         },
         {
-          value: 'compose',
-          label: 'Node via Docker Compose (self-hosted)',
-          hint: 'DB_DRIVER=pg — docker compose runs Postgres + API + dashboard',
+          value: 'node',
+          label: 'Node (self-hosted: Docker, VPS, or `pnpm dev`)',
+          hint: 'DB_DRIVER=pg — any Postgres; Redis rate limiting available',
         },
       ],
       'workers',
@@ -68,7 +78,7 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
   // (workers ⇒ neon only; compose ⇒ local/existing); otherwise fall back.
   const prefillDbValid =
     prefill.dbKind !== undefined &&
-    (prefill.dbKind === 'neon' ? runtime === 'workers' : runtime === 'compose')
+    (prefill.dbKind === 'neon' ? runtime === 'workers' : runtime === 'node')
   const dbKind: DbKind =
     (prefillDbValid ? prefill.dbKind : undefined) ??
     (runtime === 'workers'
@@ -134,14 +144,28 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
           label: 'In-memory (recommended for one instance)',
           hint: 'no extra service; fine until you run many API replicas',
         },
+        ...(runtime === 'node'
+          ? [
+              {
+                value: 'redis' as const,
+                label: 'Redis (your own server, shared across replicas)',
+                hint: 'REDIS_URL — e.g. redis://localhost:6379; no hosted account',
+              },
+            ]
+          : []),
         {
           value: 'upstash',
-          label: 'Upstash Redis (shared across replicas)',
+          label: 'Upstash Redis (hosted, works on Workers too)',
           hint: 'requires REST URL + token from console.upstash.com',
         },
       ],
       'memory',
     ))
+  let redisUrl: string | undefined
+  if (rateLimitKind === 'redis') {
+    redisUrl = await requireUrl('Paste your Redis URL:', 'redis')
+  }
+
   let upstashUrl: string | undefined
   let upstashToken: string | undefined
   if (rateLimitKind === 'upstash') {
@@ -201,6 +225,7 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
     queue: { kind: queueKind, ...(queueToken !== undefined ? { token: queueToken } : {}) },
     rateLimit: {
       kind: rateLimitKind,
+      ...(redisUrl !== undefined ? { url: redisUrl } : {}),
       ...(upstashUrl !== undefined ? { restUrl: upstashUrl } : {}),
       ...(upstashToken !== undefined ? { token: upstashToken } : {}),
     },

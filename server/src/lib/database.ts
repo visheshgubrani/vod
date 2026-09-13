@@ -3,22 +3,19 @@ import { drizzle as drizzleNeon } from 'drizzle-orm/neon-http'
 import postgres from 'postgres'
 import { drizzle as drizzlePg } from 'drizzle-orm/postgres-js'
 import * as schema from '../db/schema'
-import type { Bindings } from '../types'
+import { dbTransportFromEnv, type DbTransport } from './config'
 
-export type DbDriver = 'neon-http' | 'postgres-js'
+export type DbDriver = DbTransport
+export type Db = ReturnType<typeof drizzleNeon>
 
 /**
- * Choose the Postgres driver:
- * - DB_DRIVER=pg | postgres-js  -> postgres.js over TCP (Docker/Node/VPS)
- * - DB_DRIVER=neon | neon-http  -> Neon HTTP driver (Cloudflare Workers)
- * - unset                        -> neon-http (Workers heritage; set DB_DRIVER
- *                                   explicitly for other runtimes)
+ * Choose the Postgres transport from `DB_DRIVER`.
+ *
+ * Re-exported from `lib/config` (where the mapping lives) so the pure
+ * configuration layer can answer the question without importing a driver, while
+ * `node/migrate.ts` and the tests keep the name they already use.
  */
-export function dbDriverFromEnv(driver?: string | null): DbDriver {
-  const value = (driver || '').trim().toLowerCase()
-  if (value === 'pg' || value === 'postgres-js') return 'postgres-js'
-  return 'neon-http'
-}
+export const dbDriverFromEnv = dbTransportFromEnv
 
 function postgresOptions(url: string): postgres.Options<{}> {
   const options: postgres.Options<{}> = {
@@ -33,40 +30,89 @@ function postgresOptions(url: string): postgres.Options<{}> {
   return options
 }
 
-let cachedDb: ReturnType<typeof drizzleNeon> | null = null
-let cachedKey: string | null = null
-
-export function getDb(databaseUrl?: string, env?: Bindings) {
-  const url =
-    databaseUrl ||
-    env?.DATABASE_URL ||
-    (typeof process !== 'undefined' ? process.env?.DATABASE_URL : undefined)
-  if (!url) {
-    throw new Error('DATABASE_URL is not configured')
-  }
-
-  const driver = dbDriverFromEnv(
-    env?.DB_DRIVER ?? (typeof process !== 'undefined' ? process.env?.DB_DRIVER : undefined),
-  )
-  const key = `${driver}:${url}`
-  if (cachedDb && cachedKey === key) {
-    return cachedDb
-  }
-
+/**
+ * Build a client for an explicit URL and transport.
+ *
+ * A factory rather than a cached singleton: the returned instance belongs to the
+ * caller, so a composition root installs exactly one and a test can build one
+ * against a scratch database without racing a module-level cache.
+ */
+export function createDb(databaseUrl: string, driver: DbTransport): Db {
   if (driver === 'postgres-js') {
-    const client = postgres(url, postgresOptions(url))
-    cachedDb = drizzlePg(client, { schema }) as unknown as ReturnType<typeof drizzleNeon>
-  } else {
-    const sql = neon(url)
-    cachedDb = drizzleNeon(sql, { schema })
+    const client = postgres(databaseUrl, postgresOptions(databaseUrl))
+    return drizzlePg(client, { schema }) as unknown as Db
   }
-  cachedKey = key
-  return cachedDb
+  return drizzleNeon(neon(databaseUrl), { schema })
 }
 
-export const db = new Proxy({} as ReturnType<typeof drizzleNeon>, {
+let installed: Db | null = null
+
+/**
+ * Install the client this process (Node) or isolate (Workers) will use.
+ *
+ * The composition roots are the only callers. There is deliberately no lazy
+ * ambient-environment fallback: that is what let `db` resolve credentials from
+ * `process.env` and appear to work on Workers only because a middleware had
+ * copied bindings into it, per request, after module evaluation.
+ */
+export function installDb(instance: Db): void {
+  installed = instance
+}
+
+/** Uninstall. Tests only — a second `installDb` in production is a bug. */
+export function resetInstalledDb(): void {
+  installed = null
+}
+
+/** Whether a client (real or placeholder) has been installed. */
+export function hasInstalledDb(): boolean {
+  return installed !== null
+}
+
+/**
+ * The handle for a deployment with no `DATABASE_URL`.
+ *
+ * The API is documented to boot without a database: `/health` answers, and
+ * `/health/config` reports `database: false` so a half-configured installation
+ * can say what is missing rather than crash-looping. That only works if
+ * something is installed, because better-auth's drizzle adapter dereferences
+ * `db._.schema` while *constructing* the adapter — so this returns a handle that
+ * satisfies construction and throws a precise error on the first real query.
+ */
+export function unconfiguredDb(): Db {
+  return new Proxy({} as Db, {
+    get(_target, prop) {
+      if (prop === '_') {
+        return { schema: undefined, fullSchema: undefined }
+      }
+      throw new Error(
+        `DATABASE_URL is not configured, so db.${String(prop)} cannot run. Set ` +
+          'DATABASE_URL (see server/.dev.vars.example) or use `pnpm dev:infra`.',
+      )
+    },
+  })
+}
+
+export function getInstalledDb(): Db {
+  if (!installed) {
+    throw new Error(
+      'Database is not installed: the runtime composition root must call ' +
+        'installDb() before the first query.',
+    )
+  }
+  return installed
+}
+
+/**
+ * The app-wide handle.
+ *
+ * Still a proxy so ~30 existing call sites (`db.select(...)`) keep working, but
+ * it now resolves to the one installed client instead of consulting the
+ * environment on every property access.
+ */
+export const db = new Proxy({} as Db, {
   get(_target, prop) {
-    const instance = getDb()
+    const instance = getInstalledDb()
     return (instance as unknown as Record<string, unknown>)[prop as string]
   },
 })

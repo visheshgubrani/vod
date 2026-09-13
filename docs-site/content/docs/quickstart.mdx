@@ -11,15 +11,28 @@ You need **before clone**:
 
 - Cloudflare account → two R2 buckets (raw + transcoded) + R2 API token
 - Wrangler login (delivery worker is always Cloudflare)
-- Postgres (Neon) **or** Docker Compose’s Postgres
+- Postgres (Neon) **or** the Compose stack's own Postgres
 - Modal account (`pip install modal && modal setup`)
 
 Then `./scripts/bootstrap.sh`: it installs Node/pnpm (nvm) when missing,
 installs workspace deps, and runs an interactive wizard — pick the API
-runtime (Cloudflare Workers vs Docker Compose), Postgres, queue and rate
-limiting, then paste the R2 S3 token (and a Neon URI unless you pick
+runtime (Cloudflare Workers vs Node), Postgres driver, queue and rate
+limiting, then paste the R2 S3 token (and a Neon URI unless you deploy with
 Compose). Provisioning (Cloudflare/Modal logins, R2 buckets, worker + Modal
 deploys) is the opt-in `--deploy` phase.
+
+The wizard writes `server/.dev.vars` + `delivery/.dev.vars`, which are
+**development** files. A Compose deployment is configured by `.env` at the
+repo root — `cp .env.example .env`. Never commit either file.
+
+## Deployment shapes
+
+Only some things vary per installation. Delivery (the Cloudflare Worker +
+R2) and object storage (R2) are **fixed**; the API runtime, Postgres
+transport, transcoder provider, dispatch transport and rate-limit store are
+chosen by which entrypoint and which env vars you use. The full table, the
+fatal combinations, and the `deployment` object on `/health/config` are in
+[`docs/deployment-shapes.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deployment-shapes.md).
 
 ## Path A — Cloudflare Workers + Vercel
 
@@ -27,25 +40,49 @@ deploys) is the opt-in `--deploy` phase.
    `DB_DRIVER=neon-http`).
 2. `pnpm db:migrate` (committed migrations — not `db:push`, which
    cannot create the hand-written cleanup trigger).
-3. `wrangler deploy` in `server/` and `delivery/`. Set `DELIVERY_URL`.
+3. `pnpm exec wrangler deploy` in `server/` and `delivery/` (the pinned local
+   devDependency — never a global `npx wrangler`). Set `DELIVERY_URL`.
 4. Modal secrets `r2-creds` / `groq-creds`, then `modal deploy main.py`.
    Set `ALLOWED_CALLBACK_HOSTS` and `ALLOWED_SOURCE_BUCKETS`.
 5. Import `web/` into Vercel (`NEXT_PUBLIC_*`) or run the Docker web image.
 
-## Path B — Docker Compose (API + web + Postgres)
+`DB_DRIVER=pg` and `REDIS_URL` cannot work on Workers — the server refuses to
+start and says so. Use `neon-http` with a Neon URL, and Upstash REST or the
+in-memory limiter for rate limiting.
+
+## Path B — Docker Compose (API + dashboard + Postgres + Redis)
 
 ```bash
-docker compose up -d
+cp .env.example .env      # deployment configuration — never commit it
+pnpm docker:migrate       # one-shot migrate service
+pnpm docker:up            # docker compose up -d
 ```
 
-Postgres + API + web boot together; the API migrates before listen.
-Dashboard: `http://localhost:3000`. API: `http://localhost:8787`.
+API: `http://localhost:8787` · dashboard: `http://localhost:3000` (both bound
+to `127.0.0.1`). Postgres and Redis are internal to the stack and are not
+published on host ports. The `api` container migrates on boot too, but the
+one-shot service is the right call when you run more than one replica.
 
-**Playback still needs the Cloudflare delivery worker** in front of R2.
-Compose does not include it.
+**Playback still needs the Cloudflare delivery worker** in front of R2. The
+Compose stack does not include it.
+
+## Develop OpenVOD locally
+
+```bash
+pnpm install
+cp server/.dev.vars.example server/.dev.vars   # DATABASE_URL for migrations
+pnpm dev:infra            # Postgres :5433 + Redis :6379
+pnpm db:migrate
+pnpm dev                  # API :8787 on Node + dashboard :3000
+```
+
+`pnpm dev:workers` runs the API under `wrangler dev` instead (Neon URL
+required by design). See
+[CONTRIBUTING.md](https://github.com/visheshgubrani/vod/blob/main/CONTRIBUTING.md).
 
 ## Verify
 
 - `curl <api>/health` → `ok`
-- `curl <api>/health/config` → JSON capability checks
-- Open `<frontend>/setup` for the BYOK status page.
+- `curl <api>/health/config` → JSON capability checks plus the resolved
+  `deployment` shape
+- Open `<frontend>/setup` for the BYOK status page

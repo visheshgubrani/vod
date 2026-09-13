@@ -16,14 +16,29 @@ accounts you control.
 - **Open**: Apache-2.0. Optional integrations (QStash, Upstash Redis, Workers
   Analytics Engine) have a fallback or a documented no-op.
 
-**Fastest path:** `./scripts/bootstrap.sh` — installs Node + pnpm when missing
-(via nvm), installs workspace deps, and runs an interactive wizard that
-writes `server/.dev.vars` + `delivery/.dev.vars` for the architecture you
-pick (API runtime, Postgres, queue, rate limiting). Re-run with `--deploy`
-when you are ready: Cloudflare + Modal logins, R2 buckets/CORS, worker + GPU
-pipeline deploys and secret uploads. You still paste an **R2 S3 API token**
-(Wrangler cannot mint those) and a **Postgres URI** unless you choose the
-Compose runtime.
+## Run it or develop it
+
+| I want to… | Start here |
+| --- | --- |
+| **Run OpenVOD** on my own accounts | [Setup](#setup) below, then [docs/deploy.md](docs/deploy.md) |
+| **See what differs per install** (API runtime, Postgres transport, transcoder, rate-limit store) | [docs/deployment-shapes.md](docs/deployment-shapes.md) |
+| **Develop OpenVOD** — change the code | [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+**Fastest path to a deployment:** `./scripts/bootstrap.sh` — installs Node +
+pnpm when missing (via nvm), installs workspace deps, and runs an interactive
+wizard that writes `server/.dev.vars` + `delivery/.dev.vars` (local
+development config) for the architecture you pick (API runtime, Postgres,
+queue, rate limiting). Re-run with `--deploy` when you are ready: Cloudflare +
+Modal logins, R2 buckets/CORS, worker + GPU pipeline deploys and secret
+uploads. You still paste an **R2 S3 API token** (Wrangler cannot mint those)
+and a **Postgres URI** unless you deploy with Compose, which runs its own
+Postgres.
+
+**Fastest path for a contributor:** `pnpm install && pnpm dev:infra &&
+pnpm db:migrate && pnpm dev` — Postgres + Redis in Docker, then the API on the
+Node runtime (`:8787`) and the dashboard (`:3000`) on the host. Copy
+`server/.dev.vars.example` to `server/.dev.vars` first: `pnpm db:migrate` reads
+`DATABASE_URL` from it (default: the `dev:infra` Postgres).
 
 ---
 
@@ -34,24 +49,30 @@ uploads or play video until they exist.
 
 | You need | Why | Where |
 | --- | --- | --- |
-| [Cloudflare](https://dash.cloudflare.com/sign-up) account | R2 buckets, Workers (API default + **delivery**), optional Neon-adjacent analytics | Free tier is enough to start |
+| [Cloudflare](https://dash.cloudflare.com/sign-up) account | R2 buckets, the **delivery** Worker (always), and the API Worker on the Workers path | Free tier is enough to start |
 | Two **R2** buckets | Raw uploads vs transcoded HLS/DASH | R2 → Create bucket |
 | An **R2 API token** (S3 credentials) | API, Modal, and uploads talk to R2 over the S3 API | R2 → Manage R2 API Tokens |
 | Cloudflare login | Deploy the delivery worker (always) and the API worker (Workers path) | wrangler is a pinned local devDependency — `pnpm exec wrangler login`, never a global `npx wrangler` |
-| [Postgres](https://neon.tech) **or** Docker | Metadata, auth, video rows | Neon serverless URL, or Compose’s `postgres` |
+| [Postgres](https://neon.tech) **or** Docker | Metadata, auth, video rows | Neon serverless URL, or the `postgres` service inside the Compose stack |
 | [Modal](https://modal.com) account | GPU transcoding (FFmpeg / Shaka / Whisper) | the `--deploy` phase installs the Modal CLI (uv/pipx/venv) and runs `modal setup` |
 | Node 22 + pnpm 12 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both via nvm when missing |
 
-**Delivery is Cloudflare-only.** `docker compose up` runs Postgres + API +
-dashboard. It does **not** serve signed playback. You still deploy
-`delivery/` with Wrangler in front of the transcoded bucket.
+**Delivery and storage are fixed, not choices.** Signed playback is always the
+Cloudflare Worker in `delivery/` in front of your R2 transcoded bucket — there
+is no Node delivery, and the Compose stack deliberately has no service for it.
+The API runtime, Postgres transport, transcoder provider, dispatch transport
+and rate-limit store *are* choosable per deployment: see
+[docs/deployment-shapes.md](docs/deployment-shapes.md).
 
 ---
 
 ## Keys you will collect
 
-Put these in `server/.dev.vars` (the bootstrap wizard writes the file and
-mirrors `JWT_SECRET` into `delivery/.dev.vars`). Never commit `.dev.vars`.
+Put these in `server/.dev.vars` for local development, or in `.env` at the repo
+root for a Docker Compose deployment (`cp .env.example .env`). The bootstrap
+wizard writes the `.dev.vars` pair and mirrors `JWT_SECRET` into
+`delivery/.dev.vars`. Never commit `.env` or `.dev.vars` — only the `*.example`
+templates are tracked.
 
 ### Required
 
@@ -61,11 +82,11 @@ mirrors `JWT_SECRET` into `delivery/.dev.vars`). Never commit `.dev.vars`.
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | S3 access key pair for R2 | R2 → **Manage R2 API Tokens** → Create API token. Permission: **Object Read & Write** on **both** buckets (or the whole account). Copy the secret once. |
 | `RAW_BUCKET_NAME` | Bucket browsers upload into | The name you chose for the raw bucket (e.g. `openvod-raw`) |
 | `TRANSCODED_BUCKET_NAME` | Bucket Modal writes HLS/DASH into | The name you chose for the transcoded bucket (e.g. `openvod-transcoded`) |
-| `DATABASE_URL` | Postgres connection string | Neon: project → Connection details → URI. Docker: Compose sets this for you. |
-| `DB_DRIVER` | `neon-http` (Workers) or `pg` (Docker/Node) | set by the wizard from your runtime choice (Workers default = `neon-http`) |
+| `DATABASE_URL` | Postgres connection string | Neon: project → Connection details → URI. Compose deployment: leave it blank to use the bundled Postgres, which is not published on a host port. |
+| `DB_DRIVER` | `neon-http` (Workers) or `pg` (Node/Docker) | set by the wizard from your runtime choice; Compose defaults to `pg` |
 | `MODAL_WEBHOOK_URL` | HTTPS ingest URL of your deployed Modal app | After `modal deploy`, Modal prints something like `https://<workspace>--vod-production-pipeline-transcode-video.modal.run` |
 | `TRANSCODE_INGEST_SECRET` | Shared secret, API ↔ Modal | Generate once (`openssl rand -hex 32`). Same value in API env **and** the Modal `r2-creds` secret. |
-| `JWT_SECRET` | HS256 key for playback tokens (≥32 chars) | generated by the wizard. **Must** match `delivery/.dev.vars`. |
+| `JWT_SECRET` | HS256 key for playback tokens (≥32 chars) | generated by the wizard. **Must** match the delivery worker's value (`delivery/.dev.vars` locally, the worker secret in a Cloudflare deploy). |
 | `BETTER_AUTH_SECRET` | Session signing (≥32 chars) | generated by the wizard |
 | `DELIVERY_URL` | Public origin of the delivery worker | After `wrangler deploy` in `delivery/` — `https://<worker>.<subdomain>.workers.dev` or your custom media domain |
 | `BETTER_AUTH_URL` / `BACKEND_URL` / `FRONTEND_URL` | Public API and dashboard origins | Local: `http://localhost:8787` and `http://localhost:3000`. Production: your deployed hosts. |
@@ -77,18 +98,21 @@ mirrors `JWT_SECRET` into `delivery/.dev.vars`). Never commit `.dev.vars`.
 | `GROQ_API_KEY` | AI subtitles / chapters | [Groq console](https://console.groq.com). Also put it in Modal secret `groq-creds`. The Modal GPU function **requires** that secret to exist; use a dummy value if you skip AI. |
 | `CLOUDFLARE_ANALYTICS_TOKEN` | Read Analytics Engine (usage dashboard) | Cloudflare API token with Analytics Engine read. Usage UI degrades without it. |
 | `GOOGLE_*` / `GITHUB_*` | OAuth login | Leave empty for email/password only. |
-| `QSTASH_TOKEN` / Upstash Redis | Optional queue / multi-replica rate limit | Unset = direct HTTP dispatch + in-memory rate limit. |
+| `QSTASH_TOKEN` / `REDIS_URL` / Upstash Redis | Optional durable queue / shared rate limit | Unset = direct HTTP dispatch + in-memory rate limit. `REDIS_URL` (plain TCP) is Node-only; Workers use Upstash REST. |
 
 ---
 
 ## Setup
 
-One command from the repo root: it checks/installs Node + pnpm (nvm) when
-missing, installs workspace deps, then runs an interactive wizard that asks
-how you want to run the API — **Cloudflare Workers** (default,
-`DB_DRIVER=neon-http`) or **Node via Docker Compose** (`pg`) — and which
-optional services to enable: **QStash** queueing (default: direct HTTP to
-Modal) and **Upstash Redis** rate limiting (default: in-memory).
+The wizard configures **local development** files (`server/.dev.vars`,
+`delivery/.dev.vars`); deploying is a separate step, and the Compose stack is
+configured by `.env` at the repo root. The same command configures either path:
+it checks/installs Node + pnpm (nvm) when missing, installs workspace deps, then
+runs an interactive wizard that asks how you want to run the API —
+**Cloudflare Workers** (default, `DB_DRIVER=neon-http`) or **Node via Docker
+Compose** (`pg`) — and which optional services to enable: **QStash** queueing
+(default: direct HTTP to Modal) and a **rate-limit store** (default: in-memory;
+Upstash on Workers, `REDIS_URL` on Node).
 
 ```bash
 ./scripts/bootstrap.sh                     # interactive configure (writes .dev.vars)
@@ -139,7 +163,8 @@ Create the R2 API token (table above). You now have `ACCOUNT_ID`,
 
 - **Workers path:** create a [Neon](https://neon.tech) project (or any
   Postgres that accepts `postgresql://…`). Copy `DATABASE_URL`.
-- **Docker path:** skip this — Compose runs Postgres on port `5433`.
+- **Compose deployment:** skip this — the stack runs its own Postgres, and
+  `DATABASE_URL` may be left blank in `.env`.
 
 ### 3. Modal account
 
@@ -165,9 +190,18 @@ The wizard writes `server/.dev.vars` and `delivery/.dev.vars` (same
 `cp server/.dev.vars.example server/.dev.vars` and the same for
 `delivery/.dev.vars`, plus `cp web/.env.example web/.env` for the dashboard.
 
-`server/.dev.vars` is the one local config for the API — `wrangler dev`,
-`docker compose`, the Node runtime (`pnpm start`) and drizzle-kit all read it,
-so there is no second `.env` to keep in sync.
+Those are **local development** files — `pnpm dev`, `pnpm dev:workers`,
+migrations and tests read `server/.dev.vars`. A Docker Compose **deployment**
+is configured by `.env` at the repo root instead:
+
+```bash
+cp .env.example .env      # deployment config: secrets, public URLs, R2 buckets
+```
+
+`.env.example` documents every key. Leave `DATABASE_URL`/`REDIS_URL` blank to
+use the stack's own Postgres and Redis; set them to point at your own servers.
+The two files are not kept in sync because they configure different things —
+see [docs/deployment-shapes.md](docs/deployment-shapes.md).
 
 Leave `MODAL_WEBHOOK_URL` / `DELIVERY_URL` blank until the deploys in the
 next steps, then paste them in.
@@ -193,8 +227,10 @@ pnpm exec wrangler deploy
 ```
 
 Copy the `*.workers.dev` URL (or attach a custom domain — examples are
-commented in the wrangler file). Set `DELIVERY_URL` in `server/.dev.vars` to
-that origin with **no trailing slash**.
+commented in the wrangler file). Set `DELIVERY_URL` to that origin with **no
+trailing slash** — in `server/.dev.vars` for local development, or in the root
+`.env` for a Compose deployment. It is the single delivery base URL: playback
+URLs and the transcode completion callback both read it.
 
 ### 6. Deploy the API (pick one)
 
@@ -209,24 +245,32 @@ pnpm exec wrangler deploy    # uses .dev.vars locally; for production:
 Set `DB_DRIVER=neon-http`. After deploy, set `BACKEND_URL` /
 `BETTER_AUTH_URL` to the Worker URL.
 
-**Path B — Docker (API + web + Postgres)**
+**Path B — Docker Compose (API + dashboard + Postgres + Redis)**
 
 ```bash
-# wizard: choose the Compose runtime so DB_DRIVER=pg
-docker compose up -d
+cp .env.example .env         # deployment config — never commit it
+pnpm docker:migrate          # one-shot migrate service (profile "tools")
+pnpm docker:up               # or: docker compose up -d
 ```
 
-API: `http://localhost:8787` · dashboard: `http://localhost:3000` ·
-Postgres: `localhost:5433`. Rebuild the web image if you change
-`NEXT_PUBLIC_*` (they are baked at build time).
+API: `http://localhost:8787` · dashboard: `http://localhost:3000` (both bound
+to `127.0.0.1`; put a reverse proxy in front for public traffic). Postgres and
+Redis are internal to the stack and are **not** published on host ports.
+Rebuild the web image if you change `NEXT_PUBLIC_*` (they are baked at build
+time):
+
+```bash
+pnpm docker:build && pnpm docker:up
+```
 
 Still deploy **delivery** (step 5). Compose does not include it.
 
-Apply the schema (Workers path; Docker migrates on boot):
+Apply the schema:
 
-```bash
-pnpm db:migrate
-```
+- **development:** `pnpm db:migrate` (reads `server/.dev.vars`)
+- **deployment:** `pnpm docker:migrate` (the one-shot `migrate` service). The
+  `api` container also migrates on boot for zero-touch installs, but that races
+  when you run several replicas — prefer the one-shot service.
 
 Use `db:migrate`, not `db:push`. `push` derives the schema from the TypeScript
 definitions, so it cannot create the hand-written objects in the migrations — in
@@ -269,7 +313,8 @@ Local:
 pnpm --filter web dev
 ```
 
-Set in `web` / Vercel / Compose build args:
+Set in `web/.env` locally, in the root `.env` for Compose (they are passed as
+build args), or in Vercel:
 
 - `NEXT_PUBLIC_API_BASE_URL` — e.g. `http://localhost:8787/api`
 - `NEXT_PUBLIC_AUTH_BASE_URL` — e.g. `http://localhost:8787/api/auth`
@@ -290,11 +335,15 @@ curl https://<delivery-host>/health            # delivery worker
 ```
 
 `ready` requires database, R2, Modal URL + ingest secret, and auth/JWT.
-`delivery` is advisory but you will not get playback without it.
+`delivery` is advisory but you will not get playback without it. The response
+also carries a `deployment` object reporting the resolved shape (runtime,
+transports, providers, stores) — see
+[docs/deployment-shapes.md](docs/deployment-shapes.md).
 
 Longer notes (JWT parity, sweeper cron vs `POST /api/internal/sweep`,
-Workers vs Docker matrix): [docs/deploy.md](docs/deploy.md). Playback
-contract: [docs/delivery-contract.md](docs/delivery-contract.md).
+Compose deployment flow): [docs/deploy.md](docs/deploy.md). Architecture axes:
+[docs/deployment-shapes.md](docs/deployment-shapes.md). Playback contract:
+[docs/delivery-contract.md](docs/delivery-contract.md).
 
 ## Repository layout
 
@@ -307,7 +356,7 @@ player/        @openvod/player — Vidstack-based React player (token auto-refre
 transcoding/   openvod_transcoder — shared engine (FFmpeg + Shaka + Whisper),
                the Modal runner, and the self-hosted agent + CLI
 docs-site/     Fumadocs documentation site
-docs/          Long-form markdown (delivery contract, integrations)
+docs/          Long-form markdown (deployment shapes, delivery contract, integrations)
 setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
 scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 ```
@@ -316,11 +365,16 @@ scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 
 ```bash
 pnpm install
-pnpm db:up                    # dev Postgres (host port 5433), then: pnpm db:migrate
-pnpm dev:node                 # API on the Node runtime (:8787) + web (:3000)
-pnpm dev                      # API on wrangler/Workers (:8787) + web — needs DB_DRIVER=neon-http
-pnpm dev:all                  # ...plus delivery worker and sdk/player watchers
-pnpm start                    # built artifacts: Node API (PORT, :4080) + next start
+pnpm dev:infra                # dev Postgres (:5433) + Redis (:6379), waits for health
+pnpm db:migrate               # apply migrations to the dev database
+pnpm dev                      # API on Node (:8787) + web (:3000)
+pnpm dev:workers              # same pair, API under wrangler dev (:8787) — needs DB_DRIVER=neon-http
+pnpm dev:all                  # dev + delivery worker (:8788) + sdk/player watch builds
+pnpm dev:infra:down           # stop dev infra, keep data
+pnpm dev:infra:reset          # stop dev infra and drop the dev database volume
+pnpm db:up / pnpm db:down     # dev Postgres only (compatibility aliases)
+pnpm start                    # built artifacts: bundled Node API (PORT, :4080) + next start
+pnpm test                     # server/delivery/sdk/player/setup suites
 pnpm --filter vod-api test
 pnpm --filter ./delivery test
 pnpm --filter ./sdk test
@@ -328,31 +382,44 @@ pnpm --filter ./player test
 (cd transcoding && .venv/bin/python -m pytest)
 ```
 
-Both aggregate commands need Postgres reachable (`pnpm db:up`, host port 5433 —
-rows survive restarts in the named volume) and the per-package env files from
-[step 4](#4-clone-and-write-env-files); run `pnpm db:migrate` once to create the
-schema. `pnpm start` builds first (`pnpm start:prepare`), so re-run it after
-changing `NEXT_PUBLIC_*` values — Next inlines them at build time.
-
+`pnpm dev` runs the API on the **Node** runtime (`tsx watch`) and is the
+default because it works with the dev Postgres out of the box. `pnpm dev:workers`
+runs the same API under `wrangler dev`; it needs `DB_DRIVER=neon-http` with a
+Neon URL **by design** — the Workers runtime forbids reusing a TCP socket
+across requests, so a `pg` connection cannot survive past the first query.
 Neither command starts a database, and the API boots without one: `GET /health`
-still answers `ok` and `/health/config` still says `database: true` (those checks
-only verify the URL is configured), while real queries fail. Which database is
-used is simply `DATABASE_URL` in `server/.dev.vars`.
+still answers `ok` and `/health/config` still reports `database: true` (those
+checks only verify the URL is configured) while real queries fail. Which
+database is used is `DATABASE_URL` in `server/.dev.vars`.
 
-`wrangler dev` (`pnpm dev`) cannot hold a Postgres TCP connection across
-requests — the Workers runtime forbids it, so the first database request
-succeeds and the rest fail with `Cannot perform I/O on behalf of a different
-request`. Use the Node runtime for local Postgres (`docker compose up -d api`, or
-`pnpm start`) and keep `DB_DRIVER=neon-http` with a Neon URL for the Workers
-path.
+`pnpm dev:infra` starts Postgres and Redis from `docker-compose.dev.yml`
+(project `openvod-dev`) and waits for both health checks; that file has no API
+or web service, because application code runs on the host. Rows live in the
+named volume `openvod_dev_postgres` and survive `dev:infra:down`; only
+`dev:infra:reset` drops them. If you ran the previous stack, a stale container
+named `vod-postgres-dev` may still hold port 5433 — `docker rm -f vod-postgres-dev`.
+The old dev database volume is not used by the new dev compose file.
 
-The Workers' local ports are pinned in `server/wrangler.jsonc` (:8787) and
-`delivery/wrangler.jsonc` (:8788), so if the Compose stack is already up they
-fail with `Address already in use` rather than drifting to a port your env files
-don't know about — stop those containers first (`docker compose stop api web`).
-Next is not pinned: `next dev` quietly moves to :3001 when :3000 is taken (check
+`pnpm dev` and `docker compose up -d` both want ports 8787/3000 — run the dev
+setup or the deployment stack, not both. (The dev compose file has no `api`/
+`web` services, so there is nothing to stop first.) The Workers' local ports
+are pinned in `server/wrangler.jsonc` (:8787) and `delivery/wrangler.jsonc`
+(:8788), so a busy port fails loudly instead of drifting. Next is not pinned:
+`next dev` quietly moves to :3001 when :3000 is taken (check
 `FRONTEND_URL`/`CORS_ORIGINS` then), and `next start` fails outright with
 `EADDRINUSE`.
+
+`pnpm start` builds first (`pnpm start:prepare`), so re-run it after changing
+`NEXT_PUBLIC_*` values — Next inlines them at build time. The dev servers need
+the per-package env files from [step 4](#4-clone-and-write-env-files);
+`docs-site` is not part of any aggregate command (it also defaults to :3000):
+run it with `PORT=3002 pnpm --filter openvod-docs dev`.
+
+CI runs the full suite against a Postgres service; the Redis rate-limit
+adapter's integration test runs when `TEST_REDIS_URL` is set and skips cleanly
+otherwise, and both compose files are validated with `docker compose config`.
+The full contributor workflow (single-service commands, TDD, PR checks) is in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Transcoding providers
 
@@ -370,7 +437,11 @@ execution environment differs.
 `TRANSCODE_PROVIDER` selects the installation default (`modal` unless set);
 existing installations are unaffected, and the choice is stored per job so
 changing the default never reroutes work that already exists. A local-only
-installation needs no raw bucket, no Modal account and no QStash.
+installation needs no raw bucket, no Modal account and no QStash —
+`UPLOADS_ENABLED=false` makes upload routes return 403, which is what makes a
+deployment valid without a raw bucket. Provider selection is one of the
+choosable deployment axes; see
+[docs/deployment-shapes.md](docs/deployment-shapes.md).
 
 See [docs/self-hosted-transcoding.md](docs/self-hosted-transcoding.md) for
 setup, hardware selection and troubleshooting, and

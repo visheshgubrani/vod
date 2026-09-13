@@ -8,6 +8,7 @@ import {
   testDatabaseUrl,
   type TestDbHandle,
 } from '../helpers/db'
+import { createTestRuntime, withRuntime } from '../helpers/runtime'
 
 /**
  * Webhook composition — the acceptance matrix.
@@ -35,6 +36,19 @@ const SUITE_DATABASE = 'openvod_t_composition'
 process.env.DATABASE_URL = testDatabaseUrl(SUITE_DATABASE)
 process.env.DB_DRIVER = 'pg'
 process.env.MODAL_WEBHOOK_SECRET = INGEST_SECRET
+
+/**
+ * The callback route reads its ingest secret and delivery base URL from the
+ * runtime, so the suite supplies one. This is also the regression guard for two
+ * defects the runtime seam fixed: the verifier used to prefer the legacy
+ * MODAL_WEBHOOK_SECRET alias while dispatch signed with TRANSCODE_INGEST_SECRET,
+ * and the completion URL used to read only DELIVERY_WORKER_URL from
+ * process.env, ignoring the documented DELIVERY_URL entirely.
+ */
+const RUNTIME_ENV = {
+  TRANSCODE_INGEST_SECRET: INGEST_SECRET,
+  DELIVERY_URL: 'https://media.example.com',
+}
 
 /** Receiver stub that records every request it is asked to make. */
 function makeReceiver(status = 200) {
@@ -105,7 +119,10 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
     handle = await createTestDb({ database: 'openvod_t_composition' })
     await handle.exec(DDL)
     const mod = await import('../../src/routes/webhook')
-    route = mod.default as unknown as typeof route
+    route = withRuntime(
+      mod.default,
+      createTestRuntime(RUNTIME_ENV),
+    ) as unknown as typeof route
   })
 
   afterAll(async () => {

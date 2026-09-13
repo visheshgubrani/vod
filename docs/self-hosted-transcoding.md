@@ -27,8 +27,15 @@ of video is files already on your machine, skip it.
 
 ## 1. Configure the API
 
+Which file depends on how you run the API — they are not interchangeable:
+
+| Deployment | File | Template |
+| --- | --- | --- |
+| Docker Compose (end users) | `.env` at the repo root | `.env.example` |
+| Running the API yourself (`pnpm dev`, `pnpm start`, a process manager) | `server/.dev.vars` | `server/.dev.vars.example` |
+
 ```bash
-# server/.dev.vars
+# Whichever of the two files above applies to you
 TRANSCODE_PROVIDER=self-hosted
 UPLOADS_ENABLED=false          # omit RAW_BUCKET_NAME entirely
 ACCOUNT_ID=...                 # R2 credentials are still needed to deliver
@@ -40,7 +47,10 @@ DELIVERY_URL=https://delivery.example.com
 
 `POSTGRES`, auth secrets and the delivery URL are unchanged from the standard
 setup. `GET /health/config` reports `transcode.localImport: true` once an agent
-has paired and been seen.
+has paired and been seen, and its `deployment` object reports
+`transcodeProvider: "self-hosted"` — that is the quickest way to confirm the
+setting actually took effect. See
+[deployment-shapes.md](./deployment-shapes.md) for the other choosable axes.
 
 Deploy the **API before the agent**. The agent protocol is additive, so an old
 API ignores it; the reverse is not true.

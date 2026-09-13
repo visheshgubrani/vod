@@ -1,29 +1,74 @@
 ---
 title: Deployment
-description: Wrangler default vs Docker API/web. Delivery stays on Cloudflare Workers.
+description: Docker Compose deployment, the Workers path, and the axes a deployment can choose.
 ---
 
-OpenVOD is hybrid: the **API and dashboard** run on Cloudflare Workers (default)
-or Docker/Node. The **delivery worker is Cloudflare-only**. Compose does not
-serve signed HLS/DASH.
+OpenVOD has one codebase and two stacks. Local development runs Postgres +
+Redis from `docker-compose.dev.yml` and the API/dashboard on the host
+(`pnpm dev`). The **deployment** stack is `docker-compose.yml`, configured by
+`.env` at the repo root, and signed playback is always the **Cloudflare
+delivery worker** in front of R2.
 
-The canonical walkthrough is [`docs/deploy.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deploy.md)
-in the repository. Key facts:
+The canonical walkthrough is
+[`docs/deploy.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deploy.md)
+in the repository; the architecture axes are
+[`docs/deployment-shapes.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deployment-shapes.md).
 
-- **API**: Cloudflare Workers (`DB_DRIVER=neon-http`) or Node container
-  (`DB_DRIVER=pg`, `@hono/node-server`) — same Hono app.
+## Compose deployment
+
+```bash
+cp .env.example .env      # secrets, public URLs, R2 buckets — never commit it
+pnpm docker:migrate       # one-shot migrate service (profile "tools")
+pnpm docker:up            # docker compose up -d
+```
+
+- API `http://localhost:8787`, dashboard `http://localhost:3000` — bound to
+  `127.0.0.1`; use a reverse proxy for public traffic.
+- Postgres and Redis are internal to the stack (no host port). Set
+  `DATABASE_URL`/`REDIS_URL` in `.env` to point at your own servers.
+- `NEXT_PUBLIC_*` are baked at web image build time; rebuild after changing
+  them.
+- `pnpm dev` and `docker compose up -d` both want ports 8787/3000 — run one or
+  the other, not both.
+
+## What varies, and what does not
+
+| Axis | Options | Selected by |
+| --- | --- | --- |
+| API runtime | Node \| Cloudflare Workers | `pnpm dev` / Docker = Node; `pnpm dev:workers` / `wrangler deploy` = Workers |
+| Postgres transport | `postgres-js` (`DB_DRIVER=pg`) \| `neon-http` | `DB_DRIVER` |
+| Transcode provider | `modal` \| `self-hosted` | `TRANSCODE_PROVIDER` |
+| Dispatch transport | `direct-http` \| `qstash` | `QSTASH_TOKEN` presence |
+| Rate-limit store | `memory` \| `redis` (TCP, Node only) \| `upstash` (REST) | `REDIS_URL` → Upstash REST → in-memory |
+| Analytics write | `workers-analytics-engine` \| `none` | `PLAYBACK_ANALYTICS` binding (Workers only) |
+| Analytics read | `cloudflare-sql` \| `none` | `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` |
+
+**Fixed:** delivery is the Cloudflare Worker + R2 (there is no Node delivery,
+so the Compose stack has no service for it); object storage is Cloudflare R2.
+
+Fatal at boot, with an explanatory message: `DB_DRIVER=pg` on Workers,
+`REDIS_URL` on Workers, and an unrecognised `TRANSCODE_PROVIDER`.
+
+## Other deployment facts
+
+- **Migrations**: `pnpm docker:migrate` in a deployment, `pnpm db:migrate` in
+  development. The API container also migrates on boot, but that races with
+  multiple replicas. `db:push` is not a substitute — it cannot create the
+  hand-written cleanup trigger.
+- **Profiles**: `migrate` (profile `tools`, via `pnpm docker:migrate`) and
+  `transcoder` (profile `transcoder`, the self-hosted agent —
+  `docker compose --profile transcoder up -d`).
+- **Transcoding**: Modal GPU (`modal deploy main.py` in `transcoding/`) or a
+  self-hosted agent. Both run the same engine; the choice is stored per job.
 - **Delivery**: Cloudflare Worker (R2 binding, JWT verification, manifest
-  rewriting, bandwidth metering). Set `DEFAULT_POLICY=signed` to fail closed
-  on objects missing policy metadata. Add your custom domain after
-  `wrangler deploy` (configs ship with commented examples, not live hostnames).
+  rewriting, bandwidth metering). `DEFAULT_POLICY=signed` sets the fallback
+  playback policy (delivery `.dev.vars` / worker env). Add your custom domain
+  after `wrangler deploy` (the config ships commented examples, not live
+  hostnames).
 - **Storage**: Cloudflare R2. Generic S3/MinIO is not implemented yet.
-- **Transcoding**: Modal GPU only.
-- **Web dashboard**: Next.js standalone (Vercel or Docker). `NEXT_PUBLIC_*`
-  is baked at image build time.
-- **Zero-touch boot**: the API container runs `src/node/migrate.ts` before
-  serving; migrations are advisory-locked and idempotent across restarts.
 - **Health**: `GET /health` (liveness), `GET /health/config` (BYOK capability
-  flags including an advisory `delivery` check, no secrets), delivery
-  `GET /health`, Modal `GET /healthz`.
+  flags including an advisory `delivery` check and the resolved `deployment`
+  object, no secrets), delivery `GET /health`, Modal `GET /healthz`.
 - **Recovery**: heartbeat-aware job sweeper; Workers cron (`SWEEP_ENABLED` +
-  `triggers.crons`) or `POST /api/internal/sweep` with `INTERNAL_SWEEP_SECRET`.
+  `triggers.crons`) or the Compose `maintenance` service calling
+  `POST /api/internal/sweep` with `INTERNAL_SWEEP_SECRET`.

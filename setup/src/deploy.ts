@@ -35,7 +35,8 @@ import {
 } from './modal'
 import { analyticsTokenTemplateUrl } from './parsers'
 import { findOnPath, runInherit } from './runners'
-import { readServerEnv, upsertServerEnv } from './envio'
+import { readServerEnv, upsertDeployEnv, upsertServerEnv } from './envio'
+import type { EntryList } from './mapping'
 import { askConfirm, askPassword, logInfo, logStep, logSuccess, logWarn, printCheckRows, withSpinner } from './ui'
 import { lintServerEnv } from './verify'
 
@@ -81,11 +82,31 @@ async function probeHealth(baseUrl: string | null): Promise<void> {
  * shared secrets (JWT, ingest secret) and upserts URLs as deploys succeed, so
  * the files always reflect reality.
  */
+/**
+ * Write deploy-phase values into every config file this runtime reads.
+ *
+ * `server/.dev.vars` is always updated (it is the local record of what was
+ * deployed). A Compose deployment reads the root `.env` instead, so a Node
+ * deployment mirrors into it as well — see `upsertDeployEnv`.
+ */
+function makeEnvWriter(
+  root: string,
+  runtime: WizardAnswers['runtime'],
+): (updates: EntryList) => void {
+  return (updates) => {
+    upsertServerEnv(root, updates)
+    if (runtime === 'node') {
+      upsertDeployEnv(root, updates)
+    }
+  }
+}
+
 export async function runDeployPhase(
   root: string,
   answers: WizardAnswers,
 ): Promise<DeployResult> {
   const serverEnv = readServerEnv(root)
+  const writeEnv = makeEnvWriter(root, answers.runtime)
   if (!serverEnv) {
     throw new WizardError(
       'server/.dev.vars is missing — configure the environment first (./scripts/bootstrap.sh)',
@@ -112,10 +133,10 @@ export async function runDeployPhase(
       )
     }
     if (effectiveAccountId !== serverEnv['ACCOUNT_ID']) {
-      upsertServerEnv(root, [['ACCOUNT_ID', effectiveAccountId]])
+      writeEnv([['ACCOUNT_ID', effectiveAccountId]])
       logInfo('ACCOUNT_ID in server/.dev.vars updated to the logged-in account')
     }
-    upsertServerEnv(root, [['SWEEP_ENABLED', 'true']])
+    writeEnv([['SWEEP_ENABLED', 'true']])
 
     const currentEnv = readServerEnv(root)
     if (!currentEnv) throw new WizardError('server/.dev.vars disappeared during deploy setup')
@@ -134,7 +155,7 @@ export async function runDeployPhase(
             'Cloudflare analytics token was empty — re-run --deploy and paste the token when prompted',
           )
         }
-        upsertServerEnv(root, [['CLOUDFLARE_ANALYTICS_TOKEN', analyticsToken]])
+        writeEnv([['CLOUDFLARE_ANALYTICS_TOKEN', analyticsToken]])
         logSuccess('Cloudflare analytics token saved')
       }
     }
@@ -254,7 +275,7 @@ export async function runDeployPhase(
 
         const modalUrl = await deployModalPipeline(root)
         if (modalUrl) {
-          upsertServerEnv(root, [['MODAL_WEBHOOK_URL', modalUrl]])
+          writeEnv([['MODAL_WEBHOOK_URL', modalUrl]])
           result.modalUrl = modalUrl
           logSuccess(`MODAL_WEBHOOK_URL=${modalUrl}`)
         } else {
@@ -268,7 +289,7 @@ export async function runDeployPhase(
     // ── 4. Delivery worker (always Cloudflare) ───────────────────────────
     const deliveryUrl = await deployWorker(root, 'delivery')
     if (deliveryUrl) {
-      upsertServerEnv(root, [['DELIVERY_URL', deliveryUrl]])
+      writeEnv([['DELIVERY_URL', deliveryUrl]])
       result.deliveryUrl = deliveryUrl
       logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
     } else {
@@ -282,13 +303,24 @@ export async function runDeployPhase(
     }
 
     // ── 5. API runtime ───────────────────────────────────────────────────
-    if (answers.runtime === 'compose') {
+    if (answers.runtime === 'node') {
       if (!findOnPath('docker')) {
         throw new WizardError(
-          'docker was not found — the compose runtime needs Docker. Install it and re-run with --deploy.',
+          'docker was not found — the Node runtime deploys with Docker Compose. Install Docker and re-run with --deploy.',
         )
       }
-      logStep('docker compose up -d (Postgres + API + dashboard)')
+      // The deployment stack is configured by the root `.env`, not by
+      // server/.dev.vars — the two files answer different questions.
+      logStep('docker compose run --rm migrate (apply migrations)')
+      const migrate = await runInherit(['docker', 'compose', 'run', '--rm', 'migrate'], {
+        cwd: root,
+      })
+      if (migrate !== 0) {
+        throw new WizardError(
+          'docker compose run --rm migrate failed — check the compose logs and re-run',
+        )
+      }
+      logStep('docker compose up -d (Postgres + Redis + API + dashboard)')
       const code = await runInherit(['docker', 'compose', 'up', '-d'], { cwd: root })
       if (code !== 0) {
         throw new WizardError('docker compose up failed — check the compose logs and re-run')
@@ -310,7 +342,7 @@ export async function runDeployPhase(
 
       const apiUrl = await deployWorker(root, 'server')
       if (apiUrl) {
-        upsertServerEnv(root, [
+        writeEnv([
           ['BETTER_AUTH_URL', apiUrl],
           ['BACKEND_URL', apiUrl],
         ])
@@ -388,6 +420,7 @@ async function finishDeployWithoutModal(
   temp: TempDir,
 ): Promise<void> {
   const result: DeployResult = { apiUrl: null, deliveryUrl: null, modalUrl: null }
+  const writeEnv = makeEnvWriter(root, answers.runtime)
 
   // The delivery worker is Cloudflare in every configuration, including a
   // local-only one: it is how a player gets signed bytes. Skipping it here would
@@ -396,7 +429,7 @@ async function finishDeployWithoutModal(
   try {
     const deliveryUrl = await deployWorker(root, 'delivery')
     if (deliveryUrl) {
-      upsertServerEnv(root, [['DELIVERY_URL', deliveryUrl]])
+      writeEnv([['DELIVERY_URL', deliveryUrl]])
       result.deliveryUrl = deliveryUrl
       logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
     } else {

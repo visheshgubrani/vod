@@ -33,7 +33,7 @@ import {
   dispatchTranscodeJob,
   type DispatchTranscodeResult,
 } from './dispatchTranscode'
-import type { Bindings } from '../types'
+import type { EnvLike } from '../lib/config'
 
 export type ProviderDispatchInput = {
   videoId: string
@@ -46,7 +46,7 @@ export type ProviderDispatchInput = {
   /** Per-request override; omitted means the installation default. */
   transcodingProvider?: string | null
   processingOptions?: Record<string, unknown>
-  env?: Bindings
+  env?: EnvLike
 }
 
 export type ProviderDispatchResult = DispatchTranscodeResult & {
@@ -64,10 +64,9 @@ export type ProviderDispatchResult = DispatchTranscodeResult & {
  */
 export function resolveProvider(
   requested: string | null | undefined,
-  env?: Bindings,
+  env?: EnvLike,
 ): { ok: true; provider: TranscodeProvider } | { ok: false; reason: string } {
-  const fallback = loadProviderSettings((env ?? process.env) as Record<string, string | undefined>)
-    .transcodeProvider
+  const fallback = loadProviderSettings(env ?? {}).transcodeProvider
 
   if (requested === undefined || requested === null || requested === '') {
     return { ok: true, provider: fallback }
@@ -89,11 +88,10 @@ export function resolveProvider(
  */
 export function selfHostedSubmissionAllowed(
   provider: TranscodeProvider,
-  env?: Bindings,
+  env?: EnvLike,
 ): boolean {
   if (provider !== 'self-hosted') return true
-  return loadProviderSettings((env ?? process.env) as Record<string, string | undefined>)
-    .selfHostedEnabled
+  return loadProviderSettings(env ?? {}).selfHostedEnabled
 }
 
 export async function dispatchWithProvider(

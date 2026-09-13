@@ -426,14 +426,11 @@ export function cleanupDepsFromEnv(
   objectStore: ObjectStore,
   executor: AtomicExecutor = db,
 ): CleanupDeps | null {
+  // Only the env map passed in. The `process.env` fallback this used to carry
+  // was reachable only through the removed bindings bridge, and when it fired it
+  // read a different deployment's bucket names.
   const read = (key: string) => {
-    const fromEnv = env?.[key]
-    const value =
-      typeof fromEnv === 'string'
-        ? fromEnv
-        : typeof process !== 'undefined'
-          ? process.env?.[key]
-          : undefined
+    const value = env?.[key]
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
   }
 

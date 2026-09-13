@@ -61,6 +61,7 @@ import {
 } from '../lib/atomicWrite'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
+import type { EnvLike } from '../lib/config'
 import type { AgentVariables } from '../middleware/agentAuth'
 import type { ApiKeyVariables } from '../types'
 
@@ -123,7 +124,7 @@ dashboardApp.post('/pairings', async (c) => {
     pairingId,
     code,
     expiresAt: expiresAt.toISOString(),
-    command: `openvod-transcoder pair --api ${apiBaseUrl(c)} --code ${code}`,
+    command: `openvod-transcoder pair --api ${apiBaseUrl(c.req.url, c.var.runtime.env['BACKEND_URL'])} --code ${code}`,
   })
 })
 
@@ -401,7 +402,7 @@ dashboardApp.post('/imports', async (c) => {
         typeof item?.idempotencyKey === 'string' ? item.idempotencyKey : null,
       generateSubtitle: item?.generateSubtitle === true,
       generateChapters: item?.generateChapters === true,
-      env: c.env,
+      env: c.var.runtime.env,
     })
     imports.push(result)
   }
@@ -629,7 +630,7 @@ importLocalApp.post('/video/import-local', requireApiKey, async (c) => {
     idempotencyKey: typeof body?.idempotencyKey === 'string' ? body.idempotencyKey : null,
     generateSubtitle: body?.generateSubtitle === true,
     generateChapters: body?.generateChapters === true,
-    env: c.env,
+    env: c.var.runtime.env,
   })
 
   if ('error' in result) {
@@ -661,7 +662,7 @@ export type LocalImportInput = {
   idempotencyKey: string | null
   generateSubtitle: boolean
   generateChapters: boolean
-  env?: Bindings
+  env?: EnvLike
 }
 
 export type LocalImportResult =
@@ -980,11 +981,11 @@ async function loadAgent(organizationId: string, agentId: string) {
   return rows[0] ?? null
 }
 
-function apiBaseUrl(c: { env?: Bindings; req: { url: string } }): string {
-  const configured = c.env?.BACKEND_URL
+function apiBaseUrl(requestUrl: string, configuredBackendUrl: string | undefined): string {
+  const configured = configuredBackendUrl
   if (configured) return configured.replace(/\/+$/, '')
   try {
-    return new URL(c.req.url).origin
+    return new URL(requestUrl).origin
   } catch {
     return 'http://localhost:8787'
   }

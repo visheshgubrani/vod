@@ -14,11 +14,20 @@ import type {
 } from './types'
 
 /**
- * Compose-mode Postgres URL for HOST-side tooling (wrangler dev, node). The
- * api container ignores this value — docker-compose.yml `environment` forces
- * the container-internal `postgres:5432` URL and overrides env_file.
+ * The dev Postgres URL for host-side tooling.
+ *
+ * This is what `pnpm dev:infra` (docker-compose.dev.yml) publishes on the host,
+ * and what `pnpm dev`, migrations and tests all connect to. It is NOT a
+ * deployment value: the deployment stack configures its own database through the
+ * root `.env`.
  */
-export const COMPOSE_LOCAL_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5433/vod_dev'
+export const DEV_LOCAL_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5433/vod_dev'
+
+/** @deprecated Kept for older answer files and callers; use DEV_LOCAL_DATABASE_URL. */
+export const COMPOSE_LOCAL_DATABASE_URL = DEV_LOCAL_DATABASE_URL
+
+/** The dev Redis `pnpm dev:infra` publishes, for the `redis` rate-limit choice. */
+export const DEV_LOCAL_REDIS_URL = 'redis://localhost:6379'
 
 /** Canonical key order for server/.dev.vars (mirrors .dev.vars.example). */
 export const SERVER_KEY_ORDER = [
@@ -42,8 +51,58 @@ export const SERVER_KEY_ORDER = [
   'DELIVERY_URL',
   'INTERNAL_SWEEP_SECRET',
   'GROQ_API_KEY',
+  'REDIS_URL',
   'UPSTASH_REDIS_REST_URL',
   'UPSTASH_REDIS_REST_TOKEN',
+] as const
+
+/**
+ * Canonical keys for the deployment `.env` (repo root) — what docker-compose.yml
+ * interpolates and what the api/maintenance containers consume.
+ *
+ * Separate from server/.dev.vars on purpose: that file is *development* config,
+ * and having the deployment stack read it made the two indistinguishable (the
+ * deployment silently inherited a dev database URL and dev secrets).
+ */
+export const DEPLOY_KEY_ORDER = [
+  'POSTGRES_USER',
+  'POSTGRES_PASSWORD',
+  'POSTGRES_DB',
+  'DATABASE_URL',
+  'DB_DRIVER',
+  'REDIS_URL',
+  'OPENVOD_API_PORT',
+  'OPENVOD_WEB_PORT',
+  'NEXT_PUBLIC_API_BASE_URL',
+  'NEXT_PUBLIC_AUTH_BASE_URL',
+  'NEXT_PUBLIC_FRONTEND_URL',
+  'BETTER_AUTH_URL',
+  'BACKEND_URL',
+  'FRONTEND_URL',
+  'CORS_ORIGINS',
+  'BETTER_AUTH_SECRET',
+  'JWT_SECRET',
+  'TRANSCODE_INGEST_SECRET',
+  'INTERNAL_SWEEP_SECRET',
+  'SWEEP_ENABLED',
+  'MAINTENANCE_INTERVAL_SECONDS',
+  'ACCOUNT_ID',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'RAW_BUCKET_NAME',
+  'TRANSCODED_BUCKET_NAME',
+  'CLOUDFLARE_ANALYTICS_TOKEN',
+  'DELIVERY_URL',
+  'TRANSCODE_PROVIDER',
+  'SELF_HOSTED_ENABLED',
+  'UPLOADS_ENABLED',
+  'MODAL_WEBHOOK_URL',
+  'QSTASH_TOKEN',
+  'UPSTASH_REDIS_REST_URL',
+  'UPSTASH_REDIS_REST_TOKEN',
+  'GROQ_API_KEY',
+  'TRANSCODE_ORG_CONCURRENCY_CAP',
+  'MAX_UPLOAD_SIZE_BYTES',
 ] as const
 
 /** Canonical keys for delivery/.dev.vars. */
@@ -51,6 +110,7 @@ export const DELIVERY_KEY_ORDER = ['JWT_SECRET', 'DEFAULT_POLICY', 'DELIVERY_DEB
 
 const SERVER_KEY_SET = new Set<string>(SERVER_KEY_ORDER)
 const DELIVERY_KEY_SET = new Set<string>(DELIVERY_KEY_ORDER)
+const DEPLOY_KEY_SET = new Set<string>(DEPLOY_KEY_ORDER)
 
 export type EnvEntry = readonly [key: string, value: string]
 export type EntryList = readonly EnvEntry[]
@@ -63,7 +123,16 @@ export function deliveryKeySet(): ReadonlySet<string> {
   return DELIVERY_KEY_SET
 }
 
-/** DB driver derived from the runtime choice. */
+export function deployKeySet(): ReadonlySet<string> {
+  return DEPLOY_KEY_SET
+}
+
+/**
+ * DB driver derived from the runtime choice.
+ *
+ * Not a free choice: `pg` cannot work on Workers, which the server now refuses to
+ * start with rather than failing on the second request.
+ */
 export function dbDriverFor(runtime: WizardAnswers['runtime']): 'neon-http' | 'pg' {
   return runtime === 'workers' ? 'neon-http' : 'pg'
 }
@@ -88,6 +157,16 @@ export function upstashRedis(rateLimit: RateLimitAnswers): { url: string; token:
 }
 
 /**
+ * The plain-Redis URL, or '' when another store was chosen.
+ *
+ * `REDIS_URL` takes precedence over Upstash in the API, so the two helpers are
+ * mutually exclusive by construction: choosing one writes a blank for the other.
+ */
+export function plainRedisUrl(rateLimit: RateLimitAnswers): string {
+  return rateLimit.kind === 'redis' ? (rateLimit.url ?? '').trim() : ''
+}
+
+/**
  * Hard validation problems that block env generation. Empty when the answers
  * are usable. (Pattern quirks — e.g. a non-32-hex account id — surface as
  * confirm-time warnings via warningsFor().)
@@ -95,8 +174,8 @@ export function upstashRedis(rateLimit: RateLimitAnswers): { url: string; token:
 export function validateAnswers(answers: WizardAnswers): string[] {
   const problems: string[] = []
 
-  if (answers.runtime !== 'workers' && answers.runtime !== 'compose') {
-    problems.push(`runtime must be "workers" or "compose", got "${String(answers.runtime)}"`)
+  if (answers.runtime !== 'workers' && answers.runtime !== 'node') {
+    problems.push(`runtime must be "workers" or "node", got "${String(answers.runtime)}"`)
   }
 
   const db = answers.db
@@ -106,8 +185,8 @@ export function validateAnswers(answers: WizardAnswers): string[] {
     if (answers.runtime === 'workers' && db.kind !== 'neon') {
       problems.push('runtime "workers" requires db.kind "neon" (the neon-http driver)')
     }
-    if (answers.runtime === 'compose' && db.kind !== 'local' && db.kind !== 'existing') {
-      problems.push('runtime "compose" requires db.kind "local" or "existing"')
+    if (answers.runtime === 'node' && db.kind !== 'local' && db.kind !== 'existing') {
+      problems.push('runtime "node" requires db.kind "local" or "existing"')
     }
     if (db.kind !== 'local' && !db.url?.trim()) {
       problems.push(`db.kind "${String(db.kind)}" requires a db.url`)
@@ -122,11 +201,18 @@ export function validateAnswers(answers: WizardAnswers): string[] {
     problems.push('queue.kind "qstash" requires a queue.token')
   }
 
-  if (
-    !answers.rateLimit ||
-    (answers.rateLimit.kind !== 'memory' && answers.rateLimit.kind !== 'upstash')
-  ) {
-    problems.push('rateLimit.kind must be "memory" or "upstash"')
+  const rateLimitKinds: Array<RateLimitAnswers['kind']> = ['memory', 'redis', 'upstash']
+  if (!answers.rateLimit || !rateLimitKinds.includes(answers.rateLimit.kind)) {
+    problems.push('rateLimit.kind must be "memory", "redis" or "upstash"')
+  } else if (answers.rateLimit.kind === 'redis') {
+    if (!/^rediss?:\/\/\S+/.test(answers.rateLimit.url ?? '')) {
+      problems.push('rateLimit "redis" requires a redis:// or rediss:// rateLimit.url')
+    }
+    if (answers.runtime === 'workers') {
+      // A TCP socket is impossible on Workers. Refusing here is the point: the
+      // alternative is a deployment whose limits are silently per-isolate.
+      problems.push('rateLimit "redis" is not available on the Workers runtime — use "upstash"')
+    }
   } else if (answers.rateLimit.kind === 'upstash') {
     if (!/^https?:\/\/\S+/.test(answers.rateLimit.restUrl ?? '')) {
       problems.push('rateLimit "upstash" requires an https rateLimit.restUrl')
@@ -174,6 +260,7 @@ export function buildServerEntries(
 ): EntryList {
   const queueToken = qstashToken(answers.queue)
   const redis = upstashRedis(answers.rateLimit)
+  const plainRedis = plainRedisUrl(answers.rateLimit)
   const dbUrl = databaseUrlFor(answers.runtime, answers.db)
 
   const entries: EnvEntry[] = [
@@ -208,10 +295,76 @@ export function buildServerEntries(
     ['DELIVERY_URL', ''],
     ['INTERNAL_SWEEP_SECRET', secrets.internalSweepSecret],
     ['GROQ_API_KEY', answers.groqApiKey?.trim() ?? ''],
+    ['REDIS_URL', plainRedis],
     ['UPSTASH_REDIS_REST_URL', redis.url],
     ['UPSTASH_REDIS_REST_TOKEN', redis.token],
   ]
   return entries
+}
+
+/**
+ * Build the deployment `.env` for docker-compose.yml.
+ *
+ * The bundled Postgres and Redis are used by default: `DATABASE_URL` and
+ * `REDIS_URL` are left blank so the compose file composes them from the
+ * POSTGRES_* values and the redis service. An operator pointing at their own
+ * Postgres or Redis fills those two lines in.
+ *
+ * Public URLs default to localhost, which is what works until a reverse proxy is
+ * in front. They are baked into the dashboard bundle at build time, so changing
+ * them means rebuilding `web` — see .env.example.
+ */
+export function buildDeployEnvEntries(
+  answers: WizardAnswers,
+  secrets: SecretSet,
+): EntryList {
+  const redis = upstashRedis(answers.rateLimit)
+  const externalDbUrl =
+    answers.db.kind === 'existing' ? (answers.db.url ?? '').trim() : ''
+  const frontend = answers.frontendUrl.trim()
+  const apiBase = 'http://localhost:8787'
+
+  return [
+    ['POSTGRES_USER', 'postgres'],
+    ['POSTGRES_PASSWORD', secrets.postgresPassword],
+    ['POSTGRES_DB', 'openvod'],
+    ['DATABASE_URL', externalDbUrl],
+    ['DB_DRIVER', 'pg'],
+    // Blank means the bundled Redis; set it to use your own.
+    ['REDIS_URL', answers.rateLimit.kind === 'redis' ? (answers.rateLimit.url ?? '').trim() : ''],
+    ['OPENVOD_API_PORT', '8787'],
+    ['OPENVOD_WEB_PORT', '3000'],
+    ['NEXT_PUBLIC_API_BASE_URL', `${apiBase}/api`],
+    ['NEXT_PUBLIC_AUTH_BASE_URL', `${apiBase}/api/auth`],
+    ['NEXT_PUBLIC_FRONTEND_URL', frontend],
+    ['BETTER_AUTH_URL', apiBase],
+    ['BACKEND_URL', apiBase],
+    ['FRONTEND_URL', frontend],
+    ['CORS_ORIGINS', frontend],
+    ['BETTER_AUTH_SECRET', secrets.betterAuthSecret],
+    ['JWT_SECRET', secrets.jwtSecret],
+    ['TRANSCODE_INGEST_SECRET', secrets.transcodeIngestSecret],
+    ['INTERNAL_SWEEP_SECRET', secrets.internalSweepSecret],
+    ['SWEEP_ENABLED', 'true'],
+    ['MAINTENANCE_INTERVAL_SECONDS', '900'],
+    ['ACCOUNT_ID', answers.accountId.trim()],
+    ['R2_ACCESS_KEY_ID', answers.r2AccessKeyId.trim()],
+    ['R2_SECRET_ACCESS_KEY', answers.r2SecretAccessKey.trim()],
+    ['RAW_BUCKET_NAME', answers.rawBucket.trim()],
+    ['TRANSCODED_BUCKET_NAME', answers.transcodedBucket.trim()],
+    ['CLOUDFLARE_ANALYTICS_TOKEN', ''],
+    ['DELIVERY_URL', ''],
+    ['TRANSCODE_PROVIDER', answers.transcodeProvider ?? 'modal'],
+    ['SELF_HOSTED_ENABLED', answers.selfHostedEnabled ? 'true' : ''],
+    ['UPLOADS_ENABLED', answers.uploadsEnabled === false ? 'false' : 'true'],
+    ['MODAL_WEBHOOK_URL', ''],
+    ['QSTASH_TOKEN', qstashToken(answers.queue)],
+    ['UPSTASH_REDIS_REST_URL', redis.url],
+    ['UPSTASH_REDIS_REST_TOKEN', redis.token],
+    ['GROQ_API_KEY', answers.groqApiKey?.trim() ?? ''],
+    ['TRANSCODE_ORG_CONCURRENCY_CAP', ''],
+    ['MAX_UPLOAD_SIZE_BYTES', ''],
+  ]
 }
 
 /** Build delivery/.dev.vars (JWT_SECRET mirrored from the API). */
@@ -231,12 +384,12 @@ export function buildDeliveryEntries(secrets: SecretSet): EntryList {
  */
 export function deriveAnswersFromEnv(env: Record<string, string>): WizardAnswers {
   const driver = env['DB_DRIVER']
-  const runtime: WizardAnswers['runtime'] = driver === 'pg' ? 'compose' : 'workers'
+  const runtime: WizardAnswers['runtime'] = driver === 'pg' ? 'node' : 'workers'
   const dbUrl = (env['DATABASE_URL'] ?? '').trim()
 
   const db: DbAnswers =
-    runtime === 'compose'
-      ? dbUrl === '' || dbUrl === COMPOSE_LOCAL_DATABASE_URL
+    runtime === 'node'
+      ? dbUrl === '' || dbUrl === DEV_LOCAL_DATABASE_URL
         ? { kind: 'local' }
         : { kind: 'existing', url: dbUrl }
       : { kind: 'neon', url: dbUrl }
@@ -245,14 +398,15 @@ export function deriveAnswersFromEnv(env: Record<string, string>): WizardAnswers
     ? { kind: 'qstash', token: env['QSTASH_TOKEN'] }
     : { kind: 'direct' }
 
-  const rateLimit: RateLimitAnswers =
-    (env['UPSTASH_REDIS_REST_URL'] ?? '').trim() && (env['UPSTASH_REDIS_REST_TOKEN'] ?? '').trim()
-      ? {
-          kind: 'upstash',
-          restUrl: env['UPSTASH_REDIS_REST_URL'],
-          token: env['UPSTASH_REDIS_REST_TOKEN'],
-        }
-      : { kind: 'memory' }
+  // Same precedence the API uses, so re-reading a file reports what it will do.
+  const rateLimit: RateLimitAnswers = (() => {
+    const redisUrl = (env['REDIS_URL'] ?? '').trim()
+    if (redisUrl) return { kind: 'redis', url: redisUrl }
+    const restUrl = (env['UPSTASH_REDIS_REST_URL'] ?? '').trim()
+    const token = (env['UPSTASH_REDIS_REST_TOKEN'] ?? '').trim()
+    if (restUrl && token) return { kind: 'upstash', restUrl, token }
+    return { kind: 'memory' }
+  })()
 
   return {
     runtime,

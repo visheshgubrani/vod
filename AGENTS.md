@@ -15,7 +15,7 @@ transcoding/   openvod_transcoder — shared processing engine (FFmpeg + Shaka +
                Whisper), the Modal runner (main.py), and the self-hosted agent
                (`openvod_transcoder.agent`: CLI, daemon, journal) + pytest
 docs-site/     Fumadocs documentation site (package: openvod-docs)
-docs/          Long-form markdown (delivery contract, security model)
+docs/          Long-form markdown (deployment shapes, delivery contract, security model)
 scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
 ```
@@ -24,46 +24,63 @@ setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk
 
 ```bash
 pnpm install                  # root ONLY — never inside a package
-pnpm dev                      # API (wrangler dev :8787) + web (Next :3000), parallel
-pnpm dev:node                 # same pair, API on the Node runtime — works with local Postgres
+pnpm dev                      # API (Node, tsx watch :8787) + web (Next :3000), parallel
+pnpm dev:workers              # same pair, API under wrangler dev (:8787)
 pnpm dev:all                  # adds delivery worker + sdk/player watch builds
+pnpm dev:infra                # dev Postgres :5433 + Redis :6379 (docker-compose.dev.yml, waits for health)
+pnpm dev:infra:down           # stop dev infra, keep data
+pnpm dev:infra:reset          # stop dev infra and drop the dev Postgres volume
 pnpm start                    # build:node + next build, then run both artifacts
-pnpm db:up                    # dev Postgres only (compose, host port 5433)
-pnpm db:down                  # stop it (rows persist in the named volume)
-# wrangler dev cannot reuse a pg socket across requests (Workers I/O rule): the
-# first DB request succeeds, the rest 500. DB_DRIVER=pg belongs to the Node
-# runtime; use DB_DRIVER=neon-http with a Neon URL for the Workers path.
+pnpm db:up / pnpm db:down     # dev Postgres only (compatibility aliases for dev:infra)
+pnpm db:migrate               # drizzle-kit migrate, reads server/.dev.vars
+pnpm db:seed                  # first tenant
+pnpm docker:up / :down / :build / :migrate / :logs / :reset   # deployment stack (docker-compose.yml, root .env)
+# DB_DRIVER=pg is impossible on Workers — the server refuses to start with an
+# explanatory message. `pnpm dev:workers` needs neon-http + a Neon URL by design;
+# `pnpm dev` (Node) is the default and works with the dev Postgres.
 # worker ports are pinned in wrangler.jsonc (:8787 API, :8788 delivery) — a busy
 # port fails loudly; Next dev silently moves to :3001 when :3000 is taken
-pnpm test                     # server/delivery/sdk/player suites
+pnpm test                     # server/delivery/sdk/player/setup suites
 pnpm build                    # builds packages that define build
 pnpm lint                     # web (eslint) + others that define it
 pnpm test:setup                # openvod-setup wizard unit tests
 pnpm typecheck                # sdk/player typecheck scripts
 pnpm typecheck:tsc            # server + delivery tsc --noEmit
 (cd transcoding && .venv/bin/python -m pytest)   # python logic tests
-TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres \
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev \
   pnpm --filter vod-api test                     # ...including the real-DB suites
+TEST_REDIS_URL=redis://localhost:6379 pnpm --filter vod-api test   # ...and the live Redis adapter
 pnpm --filter ./server test   # one package (filters match paths or names)
 pnpm --filter vod-api exec tsc --noEmit
 ```
 
-Per-package: `web` (Next 16 standalone: `output: "standalone"`), `sdk`/`player`
-(tsup + vitest), `delivery` (wrangler + vitest pool-workers),
-`server` (wrangler dev :8787; drizzle `db:migrate` (authoritative — `db:push` cannot create the hand-written trigger)/`db:seed`;
+Per-package: `web` (Next 16 standalone: `output: "standalone"`; `dev:workers`
+is just `next dev`), `sdk`/`player` (tsup + vitest), `delivery` (wrangler +
+vitest pool-workers), `server` (`dev` = Node `tsx watch src/node/server.ts`,
+`dev:workers` = `wrangler dev` :8787; drizzle `db:migrate` (authoritative —
+`db:push` cannot create the hand-written trigger)/`db:seed`;
 the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
 `build:node` + `start:node` remain available for a bundled Node runtime).
 
 ## Stack notes (verified)
 
-- **Runtime:** API runs on Cloudflare Workers (default) or Node
-  (`@hono/node-server` in `src/node/server.ts`); `DB_DRIVER` selects the
-  driver: `neon-http` (Workers) vs `pg`/postgres-js (Docker/VPS).
+- **Runtime:** the same Hono app runs on Node (`@hono/node-server` in
+  `src/node/server.ts` — `pnpm dev`, `pnpm start`, Docker) or Cloudflare Workers
+  (`pnpm dev:workers`, `wrangler deploy`). `DB_DRIVER` picks the Postgres
+  transport: `pg`/postgres-js (Node only — the server refuses to start on
+  Workers) vs `neon-http` (both). Composition roots live in
+  `server/src/runtime/`: `deployment.ts` decides every choosable axis once and
+  purely, `node.ts`/`workers.ts` wire the resulting capabilities, and an
+  entrypoint hands one of them to `createApp`. Put runtime-only behavior behind
+  a port there — never a runtime branch inside a route. Docs:
+  `docs/deployment-shapes.md`.
 - **Queue:** direct HTTP dispatch to the Modal endpoint is the default
   (`utils/queue.ts`, typed `DispatchError` on final failure, never retries
   4xx); QStash is an optional adapter (used only when `QSTASH_TOKEN` set).
-- **Rate limiting:** Upstash Redis when configured; otherwise an in-memory
-  sliding window (`lib/rateLimit/memory.ts`) — always on, never fail-open.
+- **Rate limiting:** `REDIS_URL` (plain TCP, Node only; fatal on Workers) →
+  Upstash Redis REST (`UPSTASH_REDIS_REST_URL/TOKEN`, works on both runtimes) →
+  in-memory sliding window (`lib/rateLimit/memory.ts`) — always on, never
+  fail-open.
 - **Video state machine** (`lib/videoState.ts`): pure transition rules;
   late/duplicate transcode callbacks are guarded (never resurrect `failed`,
   never downgrade `ready`). Complete handlers dispatch the job BEFORE
@@ -75,8 +92,10 @@ the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
   (`SWEEP_ENABLED`), retry endpoint `POST /api/video/:id/retry`, heartbeats
   `POST /api/webhook/heartbeat`.
 - **Health:** `GET /health` (ok), `GET /health/config` (public capability
-  flags — never secrets; consumed by landing + /setup), delivery
-  `GET /health`, Modal `GET /healthz`.
+  flags — never secrets; consumed by landing + /setup; also carries an additive
+  `deployment` object with the resolved shape — runtime, transports, providers,
+  stores, `deliveryRuntime`/`deliveryUrl` — see `docs/deployment-shapes.md`),
+  delivery `GET /health`, Modal `GET /healthz`.
 - **Delivery worker** verifies HS256 JWTs (iss `openvod`, aud `playback`,
   shared `JWT_SECRET`) per request for signed content, rewrites every
   URI-bearing HLS/DASH tag (never foreign-host URLs), serves 206 ranges,
@@ -134,23 +153,36 @@ expected values from literals/worked examples (never re-derived from code).
 - **Env changes**: update the committed templates (`server/.dev.vars.example`,
   `delivery/.dev.vars.example`, `web/.env.example`, root `.env.example`) and
   `server/src/lib/config.ts` validation; keep `/health/config` secret-free.
-  `server/.dev.vars` is the single local config — `wrangler dev`, Compose, the
-  Node runtime and drizzle-kit all load it through
+  `server/.dev.vars` is now the **development-only** config (`pnpm dev`,
+  `pnpm dev:workers`, migrations, tests), loaded through
   `server/src/lib/load-local-env.ts` (`.dev.vars` then `.env`, real env vars
-  always win), so never add a second server-side local env file.
+  always win) — never add a second server-side local env file. A Docker Compose
+  **deployment** is configured by the root `.env` (template `.env.example`),
+  which Compose reads for both interpolation and the `api`/`maintenance`
+  container environment; do not document or wire `.dev.vars` as deployment
+  config.
+- **Runtime axes**: choosable vs fixed behavior is decided in
+  `server/src/runtime/deployment.ts`, wired in `node.ts`/`workers.ts`. Adding a
+  runtime-specific capability means adding a port there — not branching on the
+  runtime in a route. Fatal combinations (`DB_DRIVER=pg` or `REDIS_URL` on
+  Workers, an unknown `TRANSCODE_PROVIDER`) refuse to boot by design.
 
-## Environment variables (key set — see .dev.vars.example for the full list)
+## Environment variables (key set — see `server/.dev.vars.example` for development; root `.env.example` for deployment)
 
 `DATABASE_URL`, `DB_DRIVER`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
 `FRONTEND_URL`, `CORS_ORIGINS` (wildcard `*.` patterns supported),
 `BACKEND_URL`, `ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
 `RAW_BUCKET_NAME`, `TRANSCODED_BUCKET_NAME`, `CLOUDFLARE_ANALYTICS_TOKEN`,
-`MODAL_WEBHOOK_URL`, `TRANSCODE_INGEST_SECRET`, `QSTASH_TOKEN` (optional),
+`MODAL_WEBHOOK_URL`, `TRANSCODE_INGEST_SECRET` (wins over the legacy alias
+`MODAL_WEBHOOK_SECRET` in both directions), `QSTASH_TOKEN` (optional),
 `TRANSCODE_PROVIDER` (`modal` default | `self-hosted`), `SELF_HOSTED_ENABLED`,
-`UPLOADS_ENABLED`, `TRANSCODE_ORG_CONCURRENCY_CAP`,
-`JWT_SECRET`, `DELIVERY_URL`, `INTERNAL_SWEEP_SECRET`, `SWEEP_*`,
-`MAX_UPLOAD_SIZE_BYTES`, `UPSTASH_REDIS_REST_URL/TOKEN` (optional),
-`RATE_LIMIT_*`. Web: `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_BASE_URL`,
+`UPLOADS_ENABLED` (enforced — upload routes 403 when false),
+`TRANSCODE_ORG_CONCURRENCY_CAP`,
+`JWT_SECRET`, `DELIVERY_URL` (single delivery base URL everywhere),
+`INTERNAL_SWEEP_SECRET`, `SWEEP_*`, `MAX_UPLOAD_SIZE_BYTES`,
+`REDIS_URL` (plain TCP, Node runtime only — fatal on Workers; takes precedence
+over Upstash), `UPSTASH_REDIS_REST_URL/TOKEN` (optional), `RATE_LIMIT_*`.
+Web: `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_BASE_URL`,
 `NEXT_PUBLIC_FRONTEND_URL`.
 
 ## Dependencies

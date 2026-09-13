@@ -106,7 +106,11 @@ app.post('/transcode-complete', async (c) => {
       ? eq(video.transcodeAttemptId, videoRecord.transcodeAttemptId)
       : isNull(video.transcodeAttemptId)
 
-    const transcodedBucketUrl = process.env.DELIVERY_WORKER_URL || ''
+    // The delivery base URL, from the same single source every other route uses.
+    // This used to read only DELIVERY_WORKER_URL from process.env and never the
+    // documented DELIVERY_URL, so an installation that set DELIVERY_URL got a
+    // relative playback URL here while /api/video returned an absolute one.
+    const transcodedBucketUrl = c.var.runtime.config.deliveryUrl ?? ''
 
     const prevMeta = safeJsonParse<Record<string, any>>(videoRecord.metadata, {})
 
@@ -220,11 +224,12 @@ app.post('/transcode-complete', async (c) => {
   }
 })
 function authenticateWebhook(c: Context<{ Bindings: Bindings }>): Response | null {
-  const expected =
-    c.env?.MODAL_WEBHOOK_SECRET ||
-    (typeof process !== 'undefined' ? process.env?.MODAL_WEBHOOK_SECRET : undefined) ||
-    c.env?.TRANSCODE_INGEST_SECRET ||
-    (typeof process !== 'undefined' ? process.env?.TRANSCODE_INGEST_SECRET : undefined)
+  // One precedence, shared with the outbound dispatch in utils/queue.ts:
+  // TRANSCODE_INGEST_SECRET wins, MODAL_WEBHOOK_SECRET is the documented alias.
+  // Previously this verifier preferred the alias while dispatch signed with the
+  // primary name, so a deployment that set both to different values rejected
+  // every callback with a 401.
+  const expected = c.var.runtime.config.ingestSecret
   if (!expected) {
     return c.json({ error: 'Webhook secret not configured on server' }, 503)
   }

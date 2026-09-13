@@ -4,7 +4,7 @@ import { transcodeJob, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { dispatchTranscodeJob } from './dispatchTranscode'
 import type { SweepableVideo, SweepAdapters, SweepLimits } from './jobSweeper'
-import type { Bindings } from '../types'
+import type { EnvLike } from '../lib/config'
 
 /**
  * Production sweep adapters — thin SQL/dispatch glue over the pure
@@ -18,9 +18,9 @@ export const DEFAULT_SWEEP_LIMITS: SweepLimits = {
   maxJobAttempts: 3,
 }
 
-export function sweepLimitsFromEnv(env?: Bindings): SweepLimits {
+export function sweepLimitsFromEnv(env: EnvLike = {}): SweepLimits {
   const readPositiveInt = (key: string, fallback: number): number => {
-    const raw = env?.[key as keyof Bindings] as string | undefined
+    const raw = env[key]
     const parsed = Number(raw)
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
   }
@@ -87,7 +87,7 @@ function notOwnedByLocalQueue() {
   )
 }
 
-export function createSweepAdapters(env?: Bindings): SweepAdapters {
+export function createSweepAdapters(env: EnvLike = {}): SweepAdapters {
   return {
     async fetchStaleProcessing(before, limit) {
       const rows = await db
