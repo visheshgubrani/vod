@@ -1,24 +1,30 @@
 {
   "name": "@openvod/uploader",
-  "version": "0.1.1",
-  "description": "OpenVOD video uploader SDK with multipart upload support",
+  "version": "0.2.0",
+  "description": "OpenVOD uploader SDK — windowed multipart uploads, resumable sessions, typed errors",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "README.md"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
-    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -34,7 +40,9 @@
     "video",
     "upload",
     "multipart",
+    "resumable",
     "openvod",
+    "vod",
     "streaming"
   ],
   "license": "Apache-2.0",

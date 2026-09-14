@@ -9,13 +9,24 @@ VOD platform).
 server/        Hono API — control plane (Cloudflare Worker or Node/Docker)
 delivery/      Cloudflare Worker — media delivery (JWT, manifest rewriting, metering)
 web/           Next.js dashboard + Developer Welcome (/setup BYOK page)
-sdk/           @openvod/uploader — TS upload SDK (windowed multipart)
+sdk/           @openvod/uploader — browser upload SDK (windowed multipart,
+               resumable sessions, typed errors)
 player/        @openvod/player — Vidstack React player (token auto-refresh)
+server-sdk/    @openvod/server — server SDK (upload/playback tokens, webhook
+               signature verification); webhook verify uses WebCrypto
+examples/      nextjs-integration — the documented upload → play → webhook flow,
+               compiled in CI so the docs cannot drift
 transcoding/   openvod_transcoder — shared processing engine (FFmpeg + Shaka +
                Whisper), the Modal runner (main.py), and the self-hosted agent
                (`openvod_transcoder.agent`: CLI, daemon, journal) + pytest
-docs-site/     Fumadocs documentation site (package: openvod-docs)
-docs/          Long-form markdown (deployment shapes, delivery contract, security model)
+docs-site/     Fumadocs documentation site (package: openvod-docs) — the
+               developer-facing docs: quickstart, framework integrations,
+               API reference, error catalogue, configuration
+docs/          Maintainer-facing markdown: cross-service contracts
+               (delivery-contract.md), architecture rationale
+               (deployment-shapes.md), operator guides (deploy.md,
+               self-hosted-transcoding.md), build recipe
+               (transcoding-toolchain.md) and known-gaps.md
 scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
 ```
@@ -40,11 +51,11 @@ pnpm docker:up / :down / :build / :migrate / :logs / :reset   # deployment stack
 # `pnpm dev` (Node) is the default and works with the dev Postgres.
 # worker ports are pinned in wrangler.jsonc (:8787 API, :8788 delivery) — a busy
 # port fails loudly; Next dev silently moves to :3001 when :3000 is taken
-pnpm test                     # server/delivery/sdk/player/setup suites
+pnpm test                     # server/delivery/sdk/player/server-sdk/setup suites
 pnpm build                    # builds packages that define build
 pnpm lint                     # web (eslint) + others that define it
 pnpm test:setup                # openvod-setup wizard unit tests
-pnpm typecheck                # sdk/player typecheck scripts
+pnpm typecheck                # sdk/player/server-sdk typecheck scripts
 pnpm typecheck:tsc            # server + delivery tsc --noEmit
 (cd transcoding && .venv/bin/python -m pytest)   # python logic tests
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev \
@@ -166,6 +177,30 @@ expected values from literals/worked examples (never re-derived from code).
   runtime-specific capability means adding a port there — not branching on the
   runtime in a route. Fatal combinations (`DB_DRIVER=pg` or `REDIS_URL` on
   Workers, an unknown `TRANSCODE_PROVIDER`) refuse to boot by design.
+- **Documentation**: two surfaces, split by audience. `docs-site/` is the
+  published Fumadocs site for developers integrating and operators deploying
+  (content in `docs-site/content/docs/`, groups ordered by `meta.json` at each
+  level). `docs/` is maintainer-facing material that belongs next to the code —
+  cross-service contracts (`delivery-contract.md`), architecture rationale
+  (`deployment-shapes.md`), operator guides and build recipes.
+  **`docs/known-gaps.md` is the standing record of deliberate gaps and deferred
+  work** — put a new limitation there rather than writing another point-in-time
+  handoff document.
+  A new docs-site page must be listed in the nearest `meta.json` or it falls to
+  that file's `...` catch-all, unordered — keep `...` and keep it last.
+  `docs-site` is built in CI (`docs` job) and typechecked through the
+  `js-workspace` matrix, so a broken page fails the build; run
+  `pnpm --filter openvod-docs build` before pushing.
+  **Every claim in the docs must be traceable to source** — endpoint fields from
+  `server/src/routes/`, error codes from `sdk/src/errors.ts` and
+  `server-sdk/src/errors.ts`, env vars from the `.example` templates. Never
+  invent a code, field or variable. Framework snippets must stay consistent with
+  `examples/nextjs-integration`, which is compiled on every commit; when they
+  disagree, the example is right. Do not bounce readers to the README for setup
+  content that belongs on the docs site. See `docs-site/README.md` for the
+  authoring conventions and the MDX gotchas (`{#anchor}` is invalid MDX; the
+  root `.gitignore` allowlists `docs-site/`, so a new top-level directory there
+  needs an entry).
 
 ## Environment variables (key set — see `server/.dev.vars.example` for development; root `.env.example` for deployment)
 

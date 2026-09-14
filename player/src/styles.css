@@ -1,0 +1,13 @@
+/**
+ * Optional standalone stylesheet.
+ *
+ * The player inlines its styles into the JS bundle by default, so
+ * `import { OpenVodPlayer } from '@openvod/player'` needs no CSS import and no
+ * bundler configuration. Import this file instead
+ * (`import '@openvod/player/styles.css'`) when you want the styles in a real
+ * CSS asset — for a strict CSP, or to keep the component chunk smaller.
+ *
+ * Do not do both: the rules would be applied twice.
+ */
+@import './vidstack-styles.css';
+@import './openvod-player.css';

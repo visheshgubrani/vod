@@ -1,0 +1,376 @@
+---
+title: Next.js
+description: The full OpenVOD flow in a Next.js App Router project — route handlers for token minting, the uploader in a client component, the player, and verified webhooks.
+---
+
+This is the flagship integration, and the one with a **runnable, CI-compiled
+reference**: [`examples/nextjs-integration`](https://github.com/visheshgubrani/vod/tree/main/examples/nextjs-integration)
+is this exact page as a working app. When the two disagree, the build is wrong —
+that example compiles on every commit, so it cannot drift.
+
+Everything here is App Router (Next 15/16, React 19, strict TypeScript).
+
+## What goes where
+
+<Files>
+  <Folder name="app" defaultOpen>
+    <Folder name="api" defaultOpen>
+      <File name="upload-token/route.ts" />
+      <File name="video-status/[id]/route.ts" />
+      <File name="play-token/[id]/route.ts" />
+      <Folder name="webhooks" defaultOpen>
+        <File name="openvod/route.ts" />
+      </Folder>
+    </Folder>
+    <File name="page.tsx" />
+  </Folder>
+  <Folder name="lib" defaultOpen>
+    <File name="openvod.ts" />
+  </Folder>
+  <File name=".env.local" />
+</Files>
+
+The split is forced by the API key: everything under `app/api/**` runs on the
+server and can read `OPENVOD_API_KEY`; `app/page.tsx` ships to the browser and
+cannot.
+
+## Environment
+
+```bash
+# .env.local — Next.js loads this automatically. Never commit it.
+OPENVOD_API_KEY=sk_live_…
+OPENVOD_API_URL=http://localhost:8787     # no /v1 suffix
+OPENVOD_WEBHOOK_SECRET=whsec_…
+
+# Browser-side. NEXT_PUBLIC_ is inlined at build time, so it must not be a
+# secret — and must be the same origin that minted the token.
+NEXT_PUBLIC_OPENVOD_API_URL=http://localhost:8787
+```
+
+<Callout type="error" title="No NEXT_PUBLIC_ prefix on the API key. Ever.">
+  Adding one inlines `sk_live_…` into the client bundle, where anyone can read it
+  and spend your storage and GPU budget. The only reason the key is safe in a
+  Next.js app is that route handlers are server-only. This is also why the
+  browser needs `NEXT_PUBLIC_OPENVOD_API_URL` separately — it is the same value,
+  but it is not a secret.
+</Callout>
+
+## The shared server client
+
+One memoized client, so a route does not rebuild the SDK per request:
+
+```ts
+// lib/openvod.ts
+import { OpenVod } from '@openvod/server'
+
+const clients = new Map<string, OpenVod>()
+
+export function getOpenVod(): OpenVod {
+  const apiKey = process.env.OPENVOD_API_KEY
+  if (!apiKey) throw new Error('OPENVOD_API_KEY is not set')
+
+  const baseUrl = process.env.OPENVOD_API_URL ?? 'http://localhost:8787'
+  const cacheKey = `${apiKey}:${baseUrl}`
+
+  const existing = clients.get(cacheKey)
+  if (existing) return existing
+
+  const client = new OpenVod({ apiKey, baseUrl })
+  clients.set(cacheKey, client)
+  return client
+}
+```
+
+## 1. Mint an upload token
+
+```ts
+// app/api/upload-token/route.ts
+import { getOpenVod } from '@/lib/openvod'
+
+// Reads a request-time secret, so it must never be evaluated at build time.
+export const dynamic = 'force-dynamic'
+
+export async function POST() {
+  const vod = getOpenVod()
+
+  const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+
+  // The API's own field names are snake_case; the SDK options are camelCase.
+  return Response.json({
+    uploadToken: token.upload_token,
+    expiresAt: token.expires_at,
+  })
+}
+```
+
+<Callout type="warn" title="export const dynamic = 'force-dynamic'">
+  Without it Next.js may try to evaluate the route at build time, where your
+  secrets do not exist. Any route that reads `process.env` for a secret or mints
+  a token needs this.
+</Callout>
+
+## 2. Upload in a client component
+
+```tsx
+'use client'
+
+import { useState } from 'react'
+import { OpenVodUploader, isUploadAbortedError, OpenVodError } from '@openvod/uploader'
+
+export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
+  const [percent, setPercent] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const [controller] = useState(() => new AbortController())
+
+  async function handleFile(file: File) {
+    setError(null)
+
+    // Your own route mints the token — the API key stays on the server.
+    const { uploadToken } = await fetch('/api/upload-token', { method: 'POST' })
+      .then((r) => r.json())
+
+    const uploader = new OpenVodUploader({
+      baseUrl: process.env.NEXT_PUBLIC_OPENVOD_API_URL!, // no /v1 suffix
+      uploadToken,
+    })
+
+    try {
+      const result = await uploader.upload(file, {
+        title: file.name,
+        onProgress: (p) => setPercent(p.percentage),
+        signal: controller.signal,
+      })
+      onVideoId(result.fileId)
+    } catch (cause) {
+      if (isUploadAbortedError(cause)) return // cancelled is not a failure
+      if (cause instanceof OpenVodError) setError(`${cause.code}: ${cause.message}`)
+      else setError('Upload failed')
+    }
+  }
+
+  return (
+    <div>
+      <input type="file" accept="video/*" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      <progress value={percent} max={100} />
+      <button onClick={() => controller.abort()}>Cancel</button>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  )
+}
+```
+
+`isUploadAbortedError` matters: a cancelled upload rejects, but it is not a
+failure and should not surface an alert.
+
+## 3. Poll status, then mint a playback token
+
+```ts
+// app/api/video-status/[id]/route.ts
+import { OpenVodError } from '@openvod/server'
+import { getOpenVod } from '@/lib/openvod'
+
+export const dynamic = 'force-dynamic'
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params // params are async in Next 15+
+
+  const vod = getOpenVod()
+  const video = await vod.videos.get(id)
+
+  if (video.status !== 'ready') {
+    // 202 tells the browser to keep polling and lets it stop on `failed`.
+    return Response.json({ status: video.status }, { status: 202 })
+  }
+
+  const session = await vod.playback.createToken(id, {
+    // MUST be the viewer's UA — see the warning below.
+    viewerUserAgent: request.headers.get('user-agent') ?? undefined,
+  })
+
+  return Response.json({
+    status: video.status,
+    playbackUrl: session.playback_url, // already carries ?token= for signed videos
+    token: session.token,              // null for public videos
+    subtitleUrl: session.subtitle_url,
+    chapters: session.chapters,
+  })
+}
+```
+
+<Callout type="warn" title="Forward the viewer's User-Agent, not the server's">
+  For `signed` videos the token is bound to the viewer's normalized browser
+  family and the delivery worker enforces it. `request.headers.get('user-agent')`
+  inside a route handler is the **viewer's** header, because the browser called
+  this route — that is exactly why this shape works. A token minted from a
+  background job or a server-side fetch has no viewer, and will be rejected.
+</Callout>
+
+`VIDEO_NOT_READY` can still race here if the status flips between the two calls.
+Catch it and answer `202` again rather than surfacing an error.
+
+## 4. Play it
+
+```tsx
+'use client'
+
+import { OpenVodPlayer } from '@openvod/player'
+
+export function Player({ videoId, playbackUrl, token, subtitles, chapters }: Props) {
+  return (
+    <OpenVodPlayer
+      playbackId={videoId}
+      src={playbackUrl}
+      token={token}
+      subtitles={subtitles}
+      chapters={chapters}
+      title="My Video"
+      // Fetched with credentials: 'include', so your session cookie is sent
+      // and this same-origin route can authorize the viewer.
+      tokenRefreshEndpoint={`/api/play-token/${videoId}`}
+    />
+  )
+}
+```
+
+The refresh route the player calls before the token expires:
+
+```ts
+// app/api/play-token/[id]/route.ts
+import { OpenVodError } from '@openvod/server'
+import { getOpenVod } from '@/lib/openvod'
+
+export const dynamic = 'force-dynamic'
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params
+
+  // TODO: this is where a viewer proves they may watch *this* video.
+  // The cookie proves who is asking, not what they are allowed to see.
+  try {
+    const session = await getOpenVod().playback.createToken(id, {
+      expiresIn: '30m',
+      viewerUserAgent: request.headers.get('user-agent') ?? undefined,
+    })
+    return Response.json({ token: session.token, expiresAt: session.expires_at })
+  } catch (error) {
+    if (error instanceof OpenVodError && error.code === 'NOT_FOUND') {
+      return Response.json({ error: 'Unknown video id' }, { status: 404 })
+    }
+    return Response.json({ error: 'Could not mint a playback token' }, { status: 500 })
+  }
+}
+```
+
+<Callout type="error" title="Authorize the refresh route">
+  `tokenRefreshEndpoint` as a **string** is fetched with `credentials: 'include'`.
+  That is what makes a same-origin route work — and it is also why this route is
+  a security boundary, not a convenience. Without an ownership check, anyone
+  signed in can mint a token for any video id they can guess.
+</Callout>
+
+For a cross-origin API, use the player's **callback** form instead of a string,
+so you control the request's credentials:
+
+```tsx
+tokenRefreshEndpoint={async () => {
+  const res = await fetch('https://api.example.com/play-token', { headers: { 'x-csrf': csrf } })
+  return res.json() // { token } | { playback_token } | { playback_url } all work
+}}
+```
+
+## 5. Verify webhooks
+
+```ts
+// app/api/webhooks/openvod/route.ts
+import { WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+
+export async function POST(req: Request) {
+  const secret = process.env.OPENVOD_WEBHOOK_SECRET!
+
+  // The RAW body. `JSON.stringify(await req.json())` is NOT the same bytes.
+  const rawBody = await req.text()
+
+  try {
+    const event = await constructWebhookEvent({
+      secret,
+      rawBody,
+      signature: req.headers.get('x-webhook-signature'),
+      timestamp: req.headers.get('x-webhook-timestamp'),
+      event: req.headers.get('x-webhook-event'),
+    })
+
+    switch (event.event) {
+      case 'video.ready':
+        // AT-LEAST-ONCE: de-duplicate on event.id before non-idempotent work.
+        // await db.videos.markReady(event.data.videoId, event.data.hlsUrl)
+        break
+      case 'video.failed':
+        // event.data.failureCode is a stable code — see /errors
+        break
+    }
+
+    return Response.json({ received: true })
+  } catch (error) {
+    if (error instanceof WebhookSignatureError) {
+      // 400 so the sender does not retry a forged or stale delivery.
+      return Response.json({ error: `Invalid signature: ${error.reason}` }, { status: 400 })
+    }
+    throw error
+  }
+}
+```
+
+`constructWebhookEvent` verifies **before** it parses, so a forged body never
+reaches your JSON. The `seen` set in the example app is process-local and says
+so — a real integration needs durable storage keyed on `event.id`.
+
+## Gotchas
+
+<Accordions>
+  <Accordion title="params is a Promise in Next 15+">
+    Both `video-status/[id]` and `play-token/[id]` take
+    `{ params }: { params: Promise<{ id: string }> }` and must `await params`.
+    Destructuring without awaiting yields a Promise where a string is expected.
+  </Accordion>
+  <Accordion title="Server Components cannot use the uploader or the player">
+    Both are browser code — the uploader needs `File` and `fetch` against R2, the
+    player needs a DOM. They live in `'use client'` components. Token minting is
+    the opposite: it is server-only, which is the whole point of the split.
+  </Accordion>
+  <Accordion title="The player's styles ship inside its JS bundle">
+    There is nothing extra to import. If you need a real CSS asset instead (strict
+    CSP, smaller JS chunk), `import '@openvod/player/styles.css'` — but not both.
+  </Accordion>
+  <Accordion title="Vercel deployments and R2 CORS">
+    Add your Vercel preview pattern (`https://*.vercel.app`) to both the raw
+    bucket's CORS `AllowedOrigins` and the API's `CORS_ORIGINS`. `CORS_ORIGINS`
+    supports `*.` wildcard subdomain patterns for exactly this case.
+  </Accordion>
+</Accordions>
+
+## Run the reference app
+
+```bash
+pnpm install
+pnpm --filter @openvod/uploader build
+pnpm --filter @openvod/player build
+pnpm --filter @openvod/server build
+
+cd examples/nextjs-integration
+cp .env.example .env.local     # then set OPENVOD_API_KEY (+ the webhook secret)
+
+pnpm dev                       # repo root, a second terminal: the API on :8787
+pnpm --filter ./examples/nextjs-integration dev
+```
+
+<Cards>
+  <Card title="Framework integrations" href="/integrations" description="The same flow for Vite, Nuxt, SvelteKit and Node backends." />
+  <Card title="Uploads" href="/upload" description="Resumable sessions, pause/resume and progress in depth." />
+  <Card title="Errors & status codes" href="/errors" description="Every code these routes can throw." />
+</Cards>

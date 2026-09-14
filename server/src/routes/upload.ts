@@ -15,7 +15,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
-import { video } from '../db/schema'
+import { uploadToken, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { dispatchFailureStatus } from '../utils/dispatchTranscode'
 import { dispatchWithProvider } from '../utils/dispatchProvider'
@@ -157,8 +157,98 @@ const requireUploadsEnabled = createMiddleware(async (c, next) => {
 app.use('/url', requireUploadsEnabled)
 app.use('/complete', requireUploadsEnabled)
 app.use('/multipart/*', requireUploadsEnabled)
+app.use('/token', requireUploadsEnabled)
 
 app.use('/*', requireUploadAuth)
+
+/** Parse `1h` / `30m` / `24h` into seconds, rejecting anything over a day. */
+function parseUploadTokenExpiry(value: unknown): { seconds: number; error?: string } {
+  if (value === undefined) return { seconds: 3600 }
+  if (typeof value !== 'string') return { seconds: 3600, error: 'expires_in must be a string' }
+
+  const match = value.trim().match(/^(\d+)(s|m|h|d)$/)
+  if (!match) {
+    return { seconds: 3600, error: 'expires_in must look like "30m", "1h" or "24h"' }
+  }
+
+  const multipliers: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 }
+  const seconds = parseInt(match[1], 10) * multipliers[match[2]]
+  if (seconds > 86400) return { seconds, error: 'expires_in cannot exceed 24h' }
+  return { seconds }
+}
+
+/**
+ * POST /api/upload/token
+ *
+ * Mint an upload token for the signed-in dashboard user.
+ *
+ * The dashboard then uploads through exactly the path an external integrator
+ * uses — `/v1/upload/{create,parts,complete}` with
+ * `Authorization: UploadToken ut_…` — instead of its own bespoke multipart
+ * routes. Two upload implementations existed before this; keeping one means the
+ * documented integration path is the one OpenVOD itself exercises.
+ */
+app.post('/token', async (c) => {
+  const session = c.var.session
+  const organizationId = session?.activeOrganizationId ?? c.var.organizationId
+
+  if (!session) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  if (!organizationId) {
+    return c.json({ error: 'No active organization' }, 400)
+  }
+
+  const body: Record<string, unknown> = await c.req
+    .json<Record<string, unknown>>()
+    .catch(() => ({}))
+
+  const { seconds, error } = parseUploadTokenExpiry(body.expires_in ?? body.expiresIn)
+  if (error) return c.json({ error }, 400)
+
+  let maxFiles = 1
+  const rawMaxFiles = body.max_files ?? body.maxFiles
+  if (rawMaxFiles !== undefined) {
+    const parsed = Number(rawMaxFiles)
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+      return c.json({ error: 'max_files must be an integer between 1 and 100' }, 400)
+    }
+    maxFiles = parsed
+  }
+
+  let maxSizeBytes: number | null = null
+  const rawMaxSize = body.max_size_bytes ?? body.maxSizeBytes
+  if (rawMaxSize !== undefined && rawMaxSize !== null) {
+    const parsed = Number(rawMaxSize)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return c.json({ error: 'max_size_bytes must be a positive integer' }, 400)
+    }
+    maxSizeBytes = parsed
+  }
+
+  const tokenId = `ut_${crypto.randomUUID().replace(/-/g, '')}`
+  const tokenValue = `${tokenId}_${crypto.randomUUID().replace(/-/g, '')}`
+  const expiresAt = new Date(Date.now() + seconds * 1000)
+
+  await db.insert(uploadToken).values({
+    id: tokenId,
+    token: tokenValue,
+    organizationId,
+    // Session-minted, not API-key-minted: the dashboard is not an API client.
+    apiKeyId: null,
+    maxFiles,
+    usedFiles: 0,
+    maxSizeBytes,
+    expiresAt,
+  })
+
+  return c.json({
+    upload_token: tokenValue,
+    expires_at: expiresAt.toISOString(),
+    max_files: maxFiles,
+    max_size_bytes: maxSizeBytes,
+  })
+})
 
 // Single file upload (for smaller files)
 app.post('/url', async (c) => {

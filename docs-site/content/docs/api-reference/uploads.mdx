@@ -1,0 +1,309 @@
+---
+title: Upload endpoints
+description: The five endpoints of the OpenVOD upload protocol — token, create, parts, complete and abort — with exact request and response fields.
+---
+
+Uploads are a two-party flow. Your **backend** holds the API key and mints an
+upload token; the **browser** drives create → parts → PUT → complete with that
+token. Video bytes go straight to your R2 raw bucket and never pass through the
+API.
+
+```
+Your backend                 OpenVOD API                  R2 (raw bucket)
+     │                            │                             │
+     │  POST /v1/upload/token     │                             │
+     │  Authorization: Bearer sk_live_…                         │
+     ├───────────────────────────▶│                             │
+     │◀── upload_token (ut_…), expires_at ──────────────────────┤
+     │                            │                             │
+Browser                           │                             │
+     │  POST /v1/upload/create    │                             │
+     │  Authorization: UploadToken ut_…                         │
+     ├───────────────────────────▶│  create multipart upload    │
+     │◀── upload_id, file_id, key, part_size, part_count ───────┤
+     │                            │                             │
+     │  POST /v1/upload/parts      (windowed presigned URLs)    │
+     ├───────────────────────────▶│                             │
+     │  PUT each part ────────────┼────────────────────────────▶│
+     │  POST /v1/upload/complete   │                             │
+     ├───────────────────────────▶│  HEAD-verify size, dispatch transcode
+```
+
+<Callout type="info" title="You do not have to write this by hand">
+  `@openvod/uploader` implements this protocol completely, including windowed
+  presigning, retries with backoff and resumable sessions. These pages are the
+  contract behind it — read them when you are debugging, or when you are
+  implementing a client in another language.
+</Callout>
+
+## `POST /upload/token`
+
+Mint a short-lived upload token. **API key required** — this is the one upload
+endpoint that needs `sk_live_…`, so it belongs on your server.
+
+**Body** (optional — an absent or unparseable body yields the defaults rather
+than an error):
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `expires_in` | string | `"1h"` | `Ns` / `Nm` / `Nh` / `Nd`. Maximum `24h` (86400s). |
+| `max_files` | integer | `1` | 1–100. How many uploads this token may **start**. |
+| `max_size_bytes` | integer | `null` | Positive. No per-token ceiling when omitted. |
+
+```bash
+curl -X POST "$OPENVOD_API_URL/v1/upload/token" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "expires_in": "1h", "max_files": 1, "max_size_bytes": 5368709120 }'
+```
+
+**`200`**
+
+```json
+{
+  "upload_token": "ut_6f1c…_a93b…",
+  "expires_at": "2025-01-15T11:30:00.000Z",
+  "max_files": 1,
+  "max_size_bytes": 5368709120
+}
+```
+
+`expires_at` is an **ISO 8601 string** here — unlike the playback endpoint.
+
+**`400`** — one of:
+
+| Message | Cause |
+| --- | --- |
+| `expires_in cannot exceed 24h` | The value parses to more than 86400 seconds. |
+| `max_files must be an integer between 1 and 100` | Non-integer, or out of range. |
+| `max_size_bytes must be a positive integer` | Zero, negative, or non-integer. |
+
+<Callout type="info" title="max_files is a start budget, not a concurrency budget">
+  A token with `maxFiles: 1` can start exactly one upload. A **resumed** upload
+  continues the one it already started and does not consume another. The token is
+  also checked **only on `/create`** — an upload that began before the token
+  lapsed still finishes, which is what makes a two-hour upload safe.
+</Callout>
+
+## `POST /upload/create`
+
+Declare an upload and create the multipart upload. **Upload token required.**
+
+This is where the video row is created. Its status is `uploading` from here
+until `/complete` succeeds.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `filename` | string | ✅ | Used as the default title. |
+| `content_type` | string | ✅ | `contentType` is also accepted. |
+| `size` | integer | ✅ | Exact byte length. Must be positive. |
+| `title` | string | — | Defaults to `filename`. |
+| `playback_policy` | `"public"` \| `"signed"` | — | Defaults to `public`. `playbackPolicy` also accepted. |
+| `generate_subtitle` | boolean | — | Runs Whisper transcription. |
+| `generate_chapters` | boolean | — | Requires subtitles; the server forces it off without them. |
+| `transcoding_provider` | `"modal"` \| `"self-hosted"` | — | Overrides the installation default for this job. |
+
+**`200`**
+
+```json
+{
+  "upload_id": "2~abcDEF…",
+  "file_id": "8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70",
+  "key": "uploads/8c4f0f4e-…/source.mp4",
+  "part_size": 8388608,
+  "part_count": 125
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `upload_id` | Multipart upload id. Required for `/parts`, `/complete` and `/abort`. |
+| `file_id` | **The video id.** This is what you poll and what webhooks refer to. |
+| `key` | Object key in the raw bucket. Required for every subsequent call. |
+| `part_size` | Bytes per part. Every part except the last must be exactly this size. |
+| `part_count` | Number of parts. `ceil(size / part_size)`. |
+
+<Callout type="warn" title="Keep file_id, key and upload_id together">
+  All three are needed to finish or abort the upload, and only `file_id` appears
+  anywhere else in the API. Persist all three alongside your own record before
+  you start uploading parts — losing `upload_id` means the multipart upload can
+  only be cleaned up by lifecycled expiry, and storage bills for it until then.
+</Callout>
+
+**Failures**
+
+| Status | Message | Fix |
+| --- | --- | --- |
+| `400` | `Missing filename or content_type` | Send both. |
+| `400` | `Invalid size` | `size` must be a positive integer. |
+| `400` | `File size exceeds maximum allowed (N bytes)` | The token's `max_size_bytes` is too small. |
+| `400` | `File exceeds the maximum allowed size (N bytes)` | `MAX_UPLOAD_SIZE_BYTES` (default 25 GiB). |
+| `401` | — | Token expired, exhausted, or malformed. See [Errors](/errors#uploader-codes). |
+| `403` | — | `UPLOADS_ENABLED=false` on this deployment. |
+| `500` | `Failed to create multipart upload` | Storage credentials or the raw bucket are wrong. |
+
+A size needing more than 10 000 parts is refused with `TOO_MANY_PARTS`.
+
+## `POST /upload/parts`
+
+Fetch presigned URLs for a window of parts. **Upload token required.**
+
+Presigned URLs are valid for **one hour**. Request them in windows just before
+each window uploads rather than all at once — a 25 GiB file can need thousands of
+parts, and presigning them upfront produces URLs that expire before they are used.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `key` | string | ✅ | From `/create`. |
+| `upload_id` | string | ✅ | From `/create`. `uploadId` also accepted. |
+| `part_numbers` | integer[] | ✅ | Non-empty. **Maximum 100 per call** — this is the window size. |
+
+```bash
+curl -X POST "$OPENVOD_API_URL/v1/upload/parts" \
+  -H "Authorization: UploadToken $UPLOAD_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "key": "uploads/8c4f…/source.mp4", "upload_id": "2~abcDEF…", "part_numbers": [1,2,3] }'
+```
+
+**`200`**
+
+```json
+{
+  "upload_id": "2~abcDEF…",
+  "key": "uploads/8c4f0f4e-…/source.mp4",
+  "part_size": 8388608,
+  "part_count": 125,
+  "urls": [
+    { "part_number": 1, "url": "https://….r2.cloudflarestorage.com/…&X-Amz-Signature=…", "size": 8388608 },
+    { "part_number": 2, "url": "https://…", "size": 8388608 },
+    { "part_number": 3, "url": "https://…", "size": 8388608 }
+  ]
+}
+```
+
+Each `url` is a presigned `PUT`. Send the part's bytes as the request body with
+no extra headers — the signature covers the method, key and expiry.
+
+**Failures:** `400` (`Missing key or upload_id`, `part_numbers must be a non-empty
+array`, `Invalid part_numbers`, `part_numbers out of range`), `403` (`Access denied`
+— the key belongs to another organization), `404` (`Video not found`).
+
+<Callout type="error" title="R2 must expose ETag, or the upload cannot complete">
+  The `PUT` response carries the `ETag` that `/complete` needs, and R2 does not
+  expose it to browser JavaScript by default. Add `ExposeHeaders: ["ETag"]` to
+  the raw bucket's CORS policy — see
+  [R2 CORS must expose ETag](/upload#r2-cors-must-expose-etag).
+</Callout>
+
+## `POST /upload/complete`
+
+Finish the multipart upload. **Upload token required.**
+
+The API `HEAD`-verifies the object against the size declared at `/create` before
+dispatching a transcode job, so a truncated upload never costs you GPU time.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `key` | string | ✅ | From `/create`. |
+| `upload_id` | string | ✅ | From `/create`. |
+| `parts` | object[] | ✅ | Non-empty. `{ part_number, etag }` per uploaded part. |
+| `file_id` | string | — | Associates the completion with the video row. |
+
+`etag` is accepted as `etag` or `ETag`, and surrounding quotes are stripped for
+you. Parts are sorted by `part_number` server-side, so send them in any order.
+
+```bash
+curl -X POST "$OPENVOD_API_URL/v1/upload/complete" \
+  -H "Authorization: UploadToken $UPLOAD_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "uploads/8c4f…/source.mp4",
+    "upload_id": "2~abcDEF…",
+    "file_id": "8c4f0f4e-…",
+    "parts": [{ "part_number": 1, "etag": "\"a54357aff0632cce46d942af68356b38\"" }]
+  }'
+```
+
+**`200`**
+
+```json
+{
+  "location": "https://….r2.cloudflarestorage.com/raw-bucket/uploads/8c4f…/source.mp4",
+  "bucket": "raw-bucket",
+  "key": "uploads/8c4f0f4e-…/source.mp4",
+  "etag": "\"3858f62230ac3c915f300c664312c11f-9\"",
+  "file_id": "8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70"
+}
+```
+
+The video moves to `processing` and a transcode job is dispatched. You will get
+`video.uploaded` and, later, `video.ready` or `video.failed`.
+
+**`409`** — the object is missing or its size disagrees with what you declared:
+
+| Cause | Effect |
+| --- | --- |
+| `SIZE_MISMATCH` | The video is marked `failed`. No transcode job is dispatched. |
+| `OBJECT_MISSING` | Same. The object never landed in the bucket. |
+
+<Callout type="warn" title="409 is a client bug — re-upload, do not retry">
+  A size mismatch means the bytes in storage are not the bytes you declared —
+  usually a truncated part, or a part re-uploaded after its ETag was captured.
+  Retrying `/complete` with the same ETags reproduces the same failure. See
+  [Errors & status codes](/errors#http-statuses).
+</Callout>
+
+**Failures:** `400` (`Missing key or upload_id`, `parts must be a non-empty array`,
+`Invalid parts`), `403` (`Access denied`), `404` (`Video not found`).
+
+## `POST /upload/abort`
+
+Abandon a multipart upload and delete its parts. **Upload token required.**
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `key` | string | ✅ | From `/create`. |
+| `upload_id` | string | ✅ | From `/create`. |
+| `file_id` | string | — | When supplied **and owned by your organization**, the video row is deleted too. |
+
+**`200`**
+
+```json
+{ "aborted": true, "deleted": true }
+```
+
+`deleted` is false when no `file_id` was sent, or the id does not belong to your
+organization — the parts are still removed either way.
+
+<Callout type="info" title="Abort is not the same as DELETE">
+  `DELETE /v1/video/:id` soft-deletes a finished video and enqueues reclamation
+  of its transcoded output. `POST /v1/upload/abort` removes the **unfinished**
+  multipart parts, which storage bills for until they are cleaned up. An upload
+  the user cancelled needs `abort`, not `DELETE`.
+</Callout>
+
+## Doing it by hand
+
+If you are implementing a client in another language, this is the whole loop:
+
+<Steps>
+  <Step>Backend: `POST /v1/upload/token` → hand `upload_token` to the browser.</Step>
+  <Step>Browser: `POST /v1/upload/create` with `filename`, `content_type`, `size` → keep `upload_id`, `file_id`, `key`, `part_size`, `part_count`.</Step>
+  <Step>
+    For each window of up to 100 parts:
+    - `POST /v1/upload/parts` with that window's `part_numbers`
+    - `PUT` each part's bytes to its presigned `url`, collecting the `ETag`
+      response header
+  </Step>
+  <Step>Browser: `POST /v1/upload/complete` with `key`, `upload_id`, `file_id` and the collected `{ part_number, etag }` list.</Step>
+  <Step>Wait for `video.ready` (webhook) or poll `GET /v1/video/:id`.</Step>
+</Steps>
+
+On any fatal error, `POST /v1/upload/abort` so storage stops billing for the
+parts.
+
+<Cards>
+  <Card title="Uploads guide" href="/upload" description="The SDK path: progress, pause/resume, cancellation and typed errors." />
+  <Card title="Videos" href="/api-reference/videos" description="Reading status and managing videos after the upload." />
+  <Card title="Errors & status codes" href="/errors" description="Every code and what to do about it." />
+</Cards>

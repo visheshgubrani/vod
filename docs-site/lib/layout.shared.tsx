@@ -4,8 +4,18 @@ export function baseOptions(): BaseLayoutProps {
   return {
     links: [
       {
-        text: 'Overview',
-        url: '/overview',
+        text: 'Quickstart',
+        url: '/quickstart',
+        active: 'nested-url',
+      },
+      {
+        text: 'Integrations',
+        url: '/integrations',
+        active: 'nested-url',
+      },
+      {
+        text: 'API reference',
+        url: '/api-reference',
         active: 'nested-url',
       },
     ],

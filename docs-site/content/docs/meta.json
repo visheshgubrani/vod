@@ -1,0 +1,25 @@
+{
+  "title": "OpenVOD Documentation",
+  "pages": [
+    "index",
+    "---Get started---",
+    "quickstart",
+    "install",
+    "first-video",
+    "---Build---",
+    "integrations",
+    "upload",
+    "playback",
+    "webhooks",
+    "errors",
+    "---Concepts---",
+    "overview",
+    "migration-from-mux",
+    "---Deploy---",
+    "deploy",
+    "configuration",
+    "---API reference---",
+    "api-reference",
+    "..."
+  ]
+}

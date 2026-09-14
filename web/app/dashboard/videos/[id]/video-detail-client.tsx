@@ -35,7 +35,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { OpenVodPlayer } from "@/components/ui/openvod-player";
+import { OpenVodPlayer } from "@openvod/player";
 import {
   DashboardSectionSkeleton,
   DashboardVideoDetailSkeleton,
@@ -324,19 +324,28 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
     return title.slice(0, maxLen) + "...";
   };
 
+  // The previous snippet pointed an <iframe> straight at the HLS manifest and
+  // appended a second `?token=` to a URL that already carried one — no browser
+  // renders a raw manifest, so the embed never played. This is the actual
+  // integration: the player component, with a token your backend mints.
   const getEmbedCode = () => {
     if (!video?.playbackUrl) return "";
-    const autoplayAttr = embedAutoplay ? " autoplay" : "";
-    const mutedAttr = embedMuted ? " muted" : "";
-    return `<iframe
-    src="${video.playbackUrl}${
-      video.playbackPolicy === "signed" ? `?token=${video.token}` : ""
-    }"
-    width="100%"
-    height="100%"
-    frameborder="0"
-    allowfullscreen${autoplayAttr}${mutedAttr}
-></iframe>`;
+    return [
+      'import { OpenVodPlayer } from "@openvod/player";',
+      "",
+      "<OpenVodPlayer",
+      `  playbackId="${video.id}"`,
+      `  src="${video.playbackUrl}"`,
+      video.playbackPolicy === "signed"
+        ? '  token={playbackToken} // mint server-side, refresh before it expires'
+        : null,
+      '  tokenRefreshEndpoint="/api/play-token"',
+      embedAutoplay ? "  autoPlay" : null,
+      embedMuted ? "  muted" : null,
+      "/>",
+    ]
+      .filter((line): line is string => line !== null)
+      .join("\n");
   };
 
   if (loading) {
@@ -487,11 +496,21 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
           <div className="overflow-hidden rounded-sm bg-black shadow-2xl">
             {video.status === "ready" && video.playbackUrl ? (
               <OpenVodPlayer
+                playbackId={video.id}
                 src={video.playbackUrl}
-                videoId={video.id}
+                token={video.token || undefined}
+                // The dashboard's own session-authenticated refresher. Signed
+                // tokens last an hour; a lesson is usually watched for longer.
+                tokenRefreshEndpoint={
+                  video.playbackPolicy === "signed"
+                    ? `${API_URL}/video/${video.id}/token`
+                    : undefined
+                }
                 title={video.title}
                 subtitles={video.subtitleUrl || undefined}
                 chapters={video.chapters || undefined}
+                // Analytics are opt-in in @openvod/player; the dashboard opts in.
+                analyticsEndpoint={`${API_URL}/playback/journal`}
               />
             ) : (
               <div className="aspect-video flex flex-col items-center justify-center bg-muted/20">

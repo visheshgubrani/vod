@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2e2443"/>
+      <stop offset=".5" stop-color="#7653da"/>
+      <stop offset="1" stop-color="#efb09f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="#19171f"/>
+  <rect x="180" y="100" width="1240" height="700" rx="24" fill="url(#g)"/>
+  <circle cx="1220" cy="225" r="150" fill="none" stroke="#fff" stroke-opacity=".26"/>
+  <circle cx="1220" cy="225" r="220" fill="none" stroke="#fff" stroke-opacity=".12"/>
+  <text x="245" y="680" fill="#fff" font-family="Arial, sans-serif" font-size="86" font-weight="700" letter-spacing="-5">THE QUIET FRAME</text>
+  <text x="245" y="735" fill="#fff" fill-opacity=".68" font-family="monospace" font-size="22" letter-spacing="3">READY / ADAPTIVE PLAYBACK / OPENVOD</text>
+</svg>

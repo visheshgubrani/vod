@@ -1,37 +1,82 @@
 ---
 title: OpenVOD Documentation
-description: Build video upload, encoding, playback, and delivery workflows with OpenVOD — bring your own Cloudflare R2 + Modal keys.
+description: Build video upload, encoding, playback and delivery into your own product — with your own Cloudflare R2 and Modal accounts.
 ---
 
-OpenVOD is an open-source, self-hosted VOD platform (Apache-2.0). Paste your
-Cloudflare R2 credentials and Modal API key and get Mux-style HLS/DASH
+OpenVOD is open-source video infrastructure you run on your own accounts. Paste
+Cloudflare R2 credentials and a Modal API key, and you get Mux-style HLS/DASH
 ingestion: multipart uploads, GPU transcoding with adaptive-bitrate ladders,
-signed playback URLs, AI subtitles & chapters, tenant webhooks and analytics.
+signed playback URLs, AI subtitles and chapters, tenant webhooks and analytics.
 
-> The full Quickstart, BYOK walkthrough, environment reference and API details
-> live in the repository README and the `docs/` folder (delivery contract,
-> deploy). Content here is a navigable subset of that.
+**No vendor in the middle.** No metered SaaS, no per-minute billing, no hosted
+API that can change under you. Apache-2.0, and the whole thing is this repository.
+
+## Start here
 
 <Cards>
-  <Card
-    title="Quickstart"
-    href="/docs/quickstart"
-    description="Go from clone to first playback in ~5 minutes on your own accounts."
-  />
-  <Card
-    title="Deployment"
-    href="/docs/deploy"
-    description="Cloudflare Workers or Node (Docker/VPS) for the API — delivery is always Cloudflare. Zero-touch migrations."
-  />
-  <Card
-    title="Overview"
-    href="/docs/overview"
-    description="Product model, pipeline stages and platform scope."
-  />
+  <Card title="Quickstart" href="/quickstart" description="Create the accounts and keys, then go from clone to a running deployment." />
+  <Card title="Your first video" href="/first-video" description="Token → upload → transcode → play → webhook, with no framework involved." />
+  <Card title="Framework integrations" href="/integrations" description="Next.js, React + Vite, Nuxt, SvelteKit, or a plain Node backend." />
+  <Card title="API reference" href="/api-reference" description="Every public endpoint, with exact request and response fields." />
 </Cards>
+
+## The shape of an integration
+
+Three packages, split by where the code runs:
+
+| Package | Runs in | What it is for |
+| --- | --- | --- |
+| [`@openvod/server`](https://www.npmjs.com/package/@openvod/server) | Your backend only | Mints upload and playback tokens, manages videos, verifies webhooks. Holds the API key. |
+| [`@openvod/uploader`](https://www.npmjs.com/package/@openvod/uploader) | The browser | Windowed multipart uploads with progress, pause/resume and typed errors. |
+| [`@openvod/player`](https://www.npmjs.com/package/@openvod/player) | React 18/19 in the browser | HLS/DASH playback with signed-token auto-refresh, chapters and subtitles. |
+
+The API key never reaches a browser. The browser gets short-lived tokens and
+talks to **your** R2 bucket directly — video bytes never pass through the API.
+
+```ts
+// Your backend — the API key stays here.
+const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+```
+
+```ts
+// The browser — uploads straight to your storage.
+const result = await new OpenVodUploader({ baseUrl, uploadToken }).upload(file, {
+  onProgress: (p) => setProgress(p.percentage),
+})
+```
+
+## What you are responsible for
+
+OpenVOD is infrastructure, not a service. Three things are yours to run, and the
+docs say so plainly rather than burying them:
+
+- **Delivery is always a Cloudflare Worker in front of R2.** It is not a default
+  that a flag changes — there is no Node delivery path.
+- **Object storage is always Cloudflare R2.** Generic S3 and MinIO are not
+  implemented.
+- **`@openvod/player` is React-only.** The same manifests play anywhere with
+  hls.js or a native `<video>` tag; see the
+  [integrations matrix](/integrations#the-matrix).
+
+Everything else — API runtime, Postgres transport, transcode provider, dispatch,
+rate-limit store — is a documented choice. See
+[Configuration](/configuration) and [Deployment](/deploy).
 
 ## Why OpenVOD
 
-- Bring-your-own-keys: no vendor lock-in for storage, compute or database.
-- Mux-style DX: upload tokens, typed transcode callbacks, signed playback.
-- Truly open: Apache-2.0, no metered SaaS behind the scenes.
+- **Bring your own keys.** Storage, compute and database are yours. Nothing is
+  metered by us because there is no us.
+- **Mux-style DX.** Upload tokens, typed transcode callbacks, signed playback,
+  webhooks with signature verification. The mental model transfers.
+- **Honest contracts.** Stable error codes, at-least-once webhooks you can
+  de-duplicate on, and a health endpoint that reports the deployment's actual
+  shape instead of a version string.
+
+## Coming from another platform?
+
+<Cards>
+  <Card title="Coming from Mux" href="/migration-from-mux" description="A concept map from Mux primitives to the OpenVOD equivalent you run yourself." />
+  <Card title="Concepts" href="/overview" description="Assets, processing, playback and delivery — the product model." />
+  <Card title="Errors & status codes" href="/errors" description="Every error the API and SDKs can produce, in one place." />
+  <Card title="Webhooks" href="/webhooks" description="Every event, the payload shape, and the delivery guarantees." />
+</Cards>

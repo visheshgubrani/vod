@@ -30,8 +30,9 @@ CORS_ORIGINS=
 # `pnpm dev`. Modal's cloud cannot reach localhost, so without a public URL
 # videos strand in `processing` and the DB status never flips to
 # `ready`/`failed`. The transcoder allows callbacks only to hosts listed in its
-# own ALLOWED_CALLBACK_HOSTS (the r2-creds Modal secret) — update that too, or
-# the callback is blocked before it is sent.
+# own ALLOWED_CALLBACK_HOSTS (the openvod-creds Modal secret) — update that too,
+# or the callback is blocked before it is sent. `--deploy` derives it from
+# BACKEND_URL for you.
 BACKEND_URL=http://localhost:8787
 
 # Cloudflare (R2 storage — the BYOK pair)

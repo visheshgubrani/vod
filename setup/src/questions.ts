@@ -2,6 +2,10 @@
  * Interactive decision flow (clack TUI). Every question falls back to a
  * default on Enter; every secret is collected with askPassword and only ever
  * stored in .dev.vars files, never echoed.
+ *
+ * Each credential prompt is preceded by the page that creates it — for the
+ * provider the user actually chose, not a generic list of everything OpenVOD
+ * can talk to. The links live in links.ts so they can be tested in one place.
  */
 
 import type {
@@ -13,11 +17,15 @@ import type {
   WizardAnswers,
 } from './types'
 import { DEFAULT_ANSWERS } from './types'
-import { askConfirm, askPassword, askSelect, askText, note } from './ui'
+import { linksNote } from './links'
+import { askConfirm, askPassword, askSelect, askText, note, step } from './ui'
 
 const POSTGRES_URL_RE = /^postgres(ql)?:\/\/\S+/
 const HTTP_URL_RE = /^https?:\/\/\S+/
 const REDIS_URL_RE = /^rediss?:\/\/\S+/
+
+/** Six decisions, in the order the wizard asks them. */
+const TOTAL_STEPS = 6
 
 const URL_HINTS = {
   postgres: 'must be a postgres:// or postgresql:// URL',
@@ -54,6 +62,8 @@ export interface AskContext {
 export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
   const prefill = ctx.prefill
 
+  // ── 1. Runtime ─────────────────────────────────────────────────────────
+  step(1, TOTAL_STEPS, 'Where the API runs')
   const runtime: RuntimeKind =
     prefill.runtime ??
     (await askSelect<RuntimeKind>(
@@ -73,7 +83,8 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
       'workers',
     ))
 
-  // ── Postgres ───────────────────────────────────────────────────────────
+  // ── 2. Postgres ────────────────────────────────────────────────────────
+  step(2, TOTAL_STEPS, 'Postgres')
   // A --db prefill only applies when it is valid for the chosen runtime
   // (workers ⇒ neon only; compose ⇒ local/existing); otherwise fall back.
   const prefillDbValid =
@@ -99,8 +110,8 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
   let dbUrl: string | undefined
   if (dbKind === 'neon') {
     note(
-      'Workers use the neon-http driver, so DATABASE_URL must be a Neon project URL.\n' +
-        'Create a project at https://console.neon.tech and paste its connection string.',
+      'Workers use the neon-http driver, so DATABASE_URL must be a Neon project URL.\n\n' +
+        linksNote(['neon']),
       'Postgres (Neon)',
     )
     dbUrl = await requireUrl('Paste the Neon project DATABASE_URL:', 'postgres')
@@ -111,7 +122,8 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
     )
   }
 
-  // ── Queue ──────────────────────────────────────────────────────────────
+  // ── 3. Transcode queue ─────────────────────────────────────────────────
+  step(3, TOTAL_STEPS, 'How transcode jobs are dispatched')
   const queueKind: QueueKind =
     prefill.queueKind ??
     (await askSelect<QueueKind>(
@@ -125,15 +137,19 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
         {
           value: 'qstash',
           label: 'QStash (durable retries + queueing)',
-          hint: 'requires a QStash token from console.upstash.com/qstash',
+          hint: 'requires a QStash token',
         },
       ],
       'direct',
     ))
-  const queueToken =
-    queueKind === 'qstash' ? await askPassword('Paste your QStash token:') : undefined
+  let queueToken: string | undefined
+  if (queueKind === 'qstash') {
+    note(linksNote(['qstash']), 'Where to get it')
+    queueToken = await askPassword('Paste your QStash token:')
+  }
 
-  // ── Rate limiting ──────────────────────────────────────────────────────
+  // ── 4. Rate limiting ───────────────────────────────────────────────────
+  step(4, TOTAL_STEPS, 'Where rate limits are stored')
   const rateLimitKind: RateLimitKind =
     prefill.rateLimitKind ??
     (await askSelect<RateLimitKind>(
@@ -156,7 +172,7 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
         {
           value: 'upstash',
           label: 'Upstash Redis (hosted, works on Workers too)',
-          hint: 'requires REST URL + token from console.upstash.com',
+          hint: 'requires a REST URL + token',
         },
       ],
       'memory',
@@ -169,18 +185,29 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
   let upstashUrl: string | undefined
   let upstashToken: string | undefined
   if (rateLimitKind === 'upstash') {
+    note(linksNote(['upstash']), 'Where to get it')
     upstashUrl = await requireUrl('Paste the Upstash Redis REST URL:', 'http')
     upstashToken = await askPassword('Paste the Upstash Redis token:')
   }
 
-  // ── Optional Groq ──────────────────────────────────────────────────────
+  // ── 5. Optional Groq ───────────────────────────────────────────────────
+  step(5, TOTAL_STEPS, 'AI subtitles and chapters (optional)')
   const wantGroq = await askConfirm(
     'Enable AI subtitles/chapters with a Groq API key? (optional)',
     false,
   )
-  const groqApiKey = wantGroq ? await askPassword('Paste your GROQ_API_KEY:') : undefined
+  let groqApiKey: string | undefined
+  if (wantGroq) {
+    note(
+      linksNote(['groq']) +
+        '\n\nSkipping it now is fine — the AI steps are simply left out of the pipeline.',
+      'Where to get it',
+    )
+    groqApiKey = await askPassword('Paste your GROQ_API_KEY:')
+  }
 
-  // ── Origins & buckets ──────────────────────────────────────────────────
+  // ── 6. Origins, buckets and Cloudflare credentials ─────────────────────
+  step(6, TOTAL_STEPS, 'Cloudflare — storage, delivery and credentials')
   const frontendUrl = await askText('Dashboard origin (CORS + FRONTEND_URL):', {
     initialValue: DEFAULT_ANSWERS.frontendUrl,
     validate: (value) =>
@@ -195,14 +222,12 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
     validate: (value) => (value.trim() ? undefined : 'bucket name is required'),
   })
 
-  // ── Cloudflare credentials ─────────────────────────────────────────────
   note(
     'Storage (R2 buckets) and the delivery worker are Cloudflare-only in this\n' +
-      'release. Wrangler can create buckets for you during the deploy phase, but it\n' +
-      'cannot mint S3 API tokens — create one at:\n' +
-      'https://dash.cloudflare.com/?to=/:account/r2/api-tokens\n' +
-      'Permission: Object Read & Write on both buckets (or the whole account).',
-    'Cloudflare (locked for now)',
+      'release — and the transcoder runs on Modal. Wrangler can create the buckets\n' +
+      'for you during the deploy phase, but it cannot mint S3 API tokens.\n\n' +
+      linksNote(['r2ApiTokens', 'cfAccountId', 'modal']),
+    'What this step needs',
   )
   const accountId = await askText('Cloudflare account id (32-hex):', {
     initialValue: ctx.accountIdDefault,

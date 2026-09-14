@@ -1,0 +1,326 @@
+---
+title: Nuxt / Vue
+description: OpenVOD in a Nuxt app — Nitro server routes for token minting, the uploader in a component, and hls.js playback because the React player does not apply here.
+---
+
+Nuxt is a good fit: Nitro server routes are a natural home for token minting, so
+you get the Next.js shape without needing Next.js.
+
+**One difference from the Next.js guide:** `@openvod/player` is React-only. This
+guide plays the same manifests with `hls.js`. You lose the automatic token-refresh
+timer and gain ~15 lines of code — see
+[Playback without React](/playback#playback-without-react).
+
+## Layout
+
+<Files>
+  <Folder name="server" defaultOpen>
+    <Folder name="api" defaultOpen>
+      <File name="upload-token.post.ts" />
+      <File name="play-token/[id].post.ts" />
+      <Folder name="webhooks" defaultOpen>
+        <File name="openvod.post.ts" />
+      </Folder>
+    </Folder>
+  </Folder>
+  <Folder name="composables" defaultOpen>
+    <File name="useOpenVodUpload.ts" />
+  </Folder>
+  <Folder name="components" defaultOpen>
+    <File name="VideoUploader.vue" />
+    <File name="HlsPlayer.vue" />
+  </Folder>
+  <File name="nuxt.config.ts" />
+</Files>
+
+`server/api/**` is server-only, which is exactly where the API key belongs.
+
+## Environment
+
+```bash
+# .env — server-side only. No NUXT_PUBLIC_ prefix, so the browser never sees it.
+OPENVOD_API_KEY=sk_live_…
+OPENVOD_API_URL=http://localhost:8787
+
+# Public: inlined into the client bundle. Never put a secret here.
+NUXT_PUBLIC_OPENVOD_API_URL=http://localhost:8787
+```
+
+Expose them through `runtimeConfig` so the code reads typed values rather than
+`process.env`:
+
+```ts
+// nuxt.config.ts
+export default defineNuxtConfig({
+  runtimeConfig: {
+    // Server-only. Overridden by NUXT_OPENVOD_API_KEY at runtime.
+    openVodApiKey: '',
+    openVodApiUrl: 'http://localhost:8787',
+    openVodWebhookSecret: '',
+    public: {
+      openVodApiUrl: '', // overridden by NUXT_PUBLIC_OPENVOD_API_URL
+    },
+  },
+})
+```
+
+<Callout type="warn" title="runtimeConfig.public is public">
+  Anything under `public` is serialized into the payload and readable by the
+  client. Keep the API key and the webhook secret in the top-level (private)
+  section — that is the whole reason `runtimeConfig` exists rather than plain
+  `NUXT_PUBLIC_` everywhere.
+</Callout>
+
+## 1. Mint an upload token
+
+```ts
+// server/api/upload-token.post.ts
+import { OpenVod } from '@openvod/server'
+
+export default defineEventHandler(async (event) => {
+  const config = useRuntimeConfig(event)
+
+  const vod = new OpenVod({
+    apiKey: config.openVodApiKey,
+    baseUrl: config.openVodApiUrl, // no /v1 suffix
+  })
+
+  const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+
+  return { uploadToken: token.upload_token, expiresAt: token.expires_at }
+})
+```
+
+Add an authorization check before minting in a real app — an unauthenticated
+token endpoint lets anyone spend your storage budget. `event.context.auth` from
+your own Nitro middleware is the natural place.
+
+## 2. Upload in a component
+
+The uploader is browser-only, so guard against SSR. `<ClientOnly>` is the
+explicit option:
+
+```vue
+<!-- components/VideoUploader.vue -->
+<script setup lang="ts">
+import { OpenVodUploader, OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+
+const emit = defineEmits<{ uploaded: [videoId: string] }>()
+const runtime = useRuntimeConfig()
+
+const percent = ref(0)
+const error = ref<string | null>(null)
+
+async function handleFile(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+
+  error.value = null
+  const { uploadToken } = await $fetch<{ uploadToken: string }>('/api/upload-token', { method: 'POST' })
+
+  const uploader = new OpenVodUploader({
+    baseUrl: runtime.public.openVodApiUrl, // no /v1 suffix
+    uploadToken,
+  })
+
+  try {
+    const result = await uploader.upload(file, {
+      title: file.name,
+      onProgress: (p) => { percent.value = p.percentage },
+    })
+    emit('uploaded', result.fileId)
+  } catch (cause) {
+    if (isUploadAbortedError(cause)) return
+    error.value = cause instanceof OpenVodError ? `${cause.code}: ${cause.message}` : 'Upload failed'
+  }
+}
+</script>
+
+<template>
+  <ClientOnly>
+    <input type="file" accept="video/*" @change="handleFile" />
+    <progress :value="percent" max="100" />
+    <p v-if="error" role="alert">{{ error }}</p>
+  </ClientOnly>
+</template>
+```
+
+<Callout type="info" title="Why ClientOnly and not onMounted">
+  `OpenVodUploader` needs `Blob` and `AbortController`, and it must not run during
+  SSR. `<ClientOnly>` is clearer than an `onMounted` guard about the intent, and
+  it also prevents the component from hydrating against server markup it could
+  never have produced.
+</Callout>
+
+## 3. Mint a playback token
+
+```ts
+// server/api/play-token/[id].post.ts
+import { OpenVod } from '@openvod/server'
+
+export default defineEventHandler(async (event) => {
+  const id = getRouterParam(event, 'id')!
+  const config = useRuntimeConfig(event)
+
+  // TODO: authorize the viewer against *this* video id before minting.
+  const vod = new OpenVod({ apiKey: config.openVodApiKey, baseUrl: config.openVodApiUrl })
+
+  // The browser sends the viewer's UA explicitly — see below.
+  const viewerUserAgent = getHeader(event, 'x-viewer-user-agent')
+
+  const session = await vod.playback.createToken(id, {
+    expiresIn: '2h',
+    viewerUserAgent,
+  })
+
+  return { token: session.token, playbackUrl: session.playback_url }
+})
+```
+
+<Callout type="warn" title="The browser must send x-viewer-user-agent">
+  A signed playback token is bound to the viewer's browser family, and the
+  delivery worker enforces the binding. Your Nitro route cannot see the viewer's
+  browser — `getHeader(event, 'user-agent')` here is the **browser-to-Nitro**
+  request, which is the viewer, but a server-side `$fetch` would carry Nitro's
+  own UA. Be explicit: have the client send `x-viewer-user-agent:
+  navigator.userAgent` and forward that.
+</Callout>
+
+## 4. Play with hls.js
+
+```bash
+npm install hls.js
+```
+
+```vue
+<!-- components/HlsPlayer.vue -->
+<script setup lang="ts">
+import Hls from 'hls.js'
+
+const props = defineProps<{ src: string; poster?: string }>()
+
+const video = ref<HTMLVideoElement | null>(null)
+let hls: Hls | null = null
+
+onMounted(() => {
+  const el = video.value
+  if (!el) return
+
+  if (Hls.isSupported()) {
+    hls = new Hls()
+    hls.loadSource(props.src) // already carries ?token= for signed videos
+    hls.attachMedia(el)
+  } else if (el.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari and iOS play HLS natively — no library involved.
+    el.src = props.src
+  }
+})
+
+onBeforeUnmount(() => hls?.destroy()) // else the segment loader keeps running
+</script>
+
+<template>
+  <video ref="video" controls playsinline :poster="poster" />
+</template>
+```
+
+<Callout type="info" title="hls.js is not required on Safari or iOS">
+  `Hls.isSupported()` is false there, and the native `canPlayType` branch takes
+  over. Importing hls.js unconditionally is still correct, but lazy-importing it
+  inside the `isSupported` check keeps ~200 KB out of your bundle for the
+  browsers that do not need it.
+</Callout>
+
+### Refreshing an expiring token
+
+Without the React player there is no refresh timer, so a token that expires
+mid-playback stops playback. Two options:
+
+**Mint a long-enough token.** For most video-on-demand playback a 4-hour token
+outlives the session, and this is the simplest correct answer.
+
+**Or refresh on demand.** Re-mint and hand the new URL to hls.js, which reloads
+the manifest without losing the current position. Use `expires_at` from the
+playback-token response — it is in epoch **seconds** — rather than decoding the
+JWT yourself:
+
+```ts
+async function refreshToken() {
+  const { playbackUrl, expiresAt } = await $fetch(`/api/play-token/${videoId}`, {
+    method: 'POST',
+    headers: { 'x-viewer-user-agent': navigator.userAgent },
+  })
+  hls?.loadSource(playbackUrl) // position is preserved by hls.js
+  scheduleRefresh(expiresAt)   // your own timer, ~60s before expiry
+}
+```
+
+## 5. Verify webhooks
+
+```ts
+// server/api/webhooks/openvod.post.ts
+import { WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+
+export default defineEventHandler(async (event) => {
+  const config = useRuntimeConfig(event)
+
+  // The RAW body. `readBody(event)` parses JSON — re-serializing it will
+  // never reproduce the signed bytes.
+  const rawBody = await readRawBody(event)
+
+  try {
+    const payload = await constructWebhookEvent({
+      secret: config.openVodWebhookSecret,
+      rawBody: rawBody ?? '',
+      signature: getHeader(event, 'x-webhook-signature'),
+      timestamp: getHeader(event, 'x-webhook-timestamp'),
+      event: getHeader(event, 'x-webhook-event'),
+    })
+
+    if (payload.event === 'video.ready') {
+      // AT-LEAST-ONCE: de-duplicate on payload.id first.
+    }
+
+    return { received: true }
+  } catch (error) {
+    if (error instanceof WebhookSignatureError) {
+      throw createError({ statusCode: 400, statusMessage: `Invalid signature: ${error.reason}` })
+    }
+    throw error
+  }
+})
+```
+
+<Callout type="error" title="readRawBody, not readBody">
+  `readBody(event)` returns parsed JSON, and `JSON.stringify` of that is not the
+  bytes that were signed — key order, whitespace and number formatting are all
+  free to differ, so the digest never matches. `readRawBody(event)` is the correct
+  call. This is the single most common webhook bug in every framework.
+</Callout>
+
+## Gotchas
+
+<Accordions>
+  <Accordion title="Nuxt auto-imports hide where things come from">
+    `useRuntimeConfig`, `getHeader` and `defineEventHandler` are H3 auto-imports.
+    Importing them explicitly from `h3` is fine and makes the server-only boundary
+    obvious when reading the file.
+  </Accordion>
+  <Accordion title="Presigned part URLs go straight to R2, not through Nitro">
+    The uploader `PUT`s each part to a presigned R2 URL in the browser. Nitro
+    never proxies video bytes, and you do not need a Nitro route for any part of
+    the upload beyond minting the token. This is why the R2 CORS policy matters
+    even though you have a server.
+  </Accordion>
+  <Accordion title="Static generation disables your token routes">
+    If you deploy with `nuxt generate` (full static), `server/api/**` is not
+    executed at request time. Use `nuxt build` with a Node/Nitro preset, or move
+    token minting to a separate backend.
+  </Accordion>
+</Accordions>
+
+<Cards>
+  <Card title="Framework integrations" href="/integrations" description="The React-only player constraint, and the other stacks." />
+  <Card title="Playback" href="/playback" description="Signed tokens, chapters, subtitles and the non-React embed snippets." />
+  <Card title="Node backend" href="/integrations/node-backend" description="If you would rather keep token minting out of Nitro entirely." />
+</Cards>

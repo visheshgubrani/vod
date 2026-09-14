@@ -1,0 +1,250 @@
+---
+title: Webhooks
+description: Every OpenVOD event, the payload shape, raw-body signature verification with @openvod/server, and the delivery guarantees.
+---
+
+OpenVOD POSTs a JSON event to every enabled webhook endpoint that subscribed to
+that event name. Webhook endpoints belong to your deployment: the dashboard
+registers them (URL, subscribed events, description) and shows the signing
+secret **once** — save it, because the API never displays it again.
+
+## Payload shape
+
+Every delivery has the same envelope:
+
+```json
+{
+  "id": "evt_9f2c1a7b4e3d5a6b8c9d0e1f",
+  "event": "video.ready",
+  "timestamp": "2025-01-15T10:30:00.000Z",
+  "data": {
+    "videoId": "8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70",
+    "title": "My Video",
+    "status": "ready",
+    "duration": 312.4,
+    "hlsUrl": "https://media.example.com/videos/8c4f.../playlist.m3u8",
+    "thumbnailUrl": "https://media.example.com/videos/8c4f.../poster.jpg",
+    "publishedPrefix": null
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `evt_…` — stable across retries. **De-duplicate on this.** |
+| `event` | One of the event names in the table below. |
+| `timestamp` | ISO 8601 time of the delivery. |
+| `data` | Event-specific object; its keys are listed per event below. |
+
+The request also carries these headers:
+
+| Header | Value |
+| --- | --- |
+| `X-Webhook-Signature` | `sha256=<hex hmac-sha256(secret, "<timestamp>.<raw body>")>` |
+| `X-Webhook-Timestamp` | Unix seconds used in the signed string |
+| `X-Webhook-Id` | The payload's `id` |
+| `X-Webhook-Event` | The payload's `event` |
+| `X-Webhook-Attempt` | Present on outbox deliveries; 1 on the first attempt |
+| `User-Agent` | `OpenVOD-Webhooks/1.0` |
+
+Deliveries time out after 10 seconds.
+
+## Verify the signature
+
+The signature is `HMAC-SHA256(secret, "<timestamp>.<raw body>")`, hex-encoded,
+prefixed with `sha256=`. `@openvod/server` verifies and parses in one call:
+
+```ts
+// app/api/webhooks/openvod/route.ts
+import { constructWebhookEvent } from '@openvod/server'
+
+export async function POST(req: Request) {
+  const rawBody = await req.text() // NOT req.json()
+
+  const event = await constructWebhookEvent({
+    secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+    rawBody,
+    signature: req.headers.get('x-webhook-signature'),
+    timestamp: req.headers.get('x-webhook-timestamp'),
+    event: req.headers.get('x-webhook-event'),
+  })
+
+  if (event.event === 'video.ready') {
+    await db.videos.markReady(event.data.videoId, event.data.hlsUrl)
+  }
+
+  return Response.json({ received: true })
+}
+```
+
+`event.data` is `Record<string, unknown>` unless you pass a type argument —
+`constructWebhookEvent<{ videoId: string; hlsUrl: string | null }>({ … })` — so
+narrow it before use in a strict TypeScript project.
+
+<Callout type="error" title="Verify the raw body, never a re-serialization">
+  `JSON.stringify(req.body)` does not reproduce the bytes that were signed.
+  Key order, whitespace, escaping and number formatting are all free to differ
+  between your framework's parser and the sender, so the digest never matches.
+  This is the single most common webhook integration bug — read the body as
+  text (or bytes) and verify that.
+</Callout>
+
+Getting the raw body depends on your framework, and in two of the three common
+ones it takes deliberate configuration:
+
+<Tabs items={['Next.js', 'Hono / Workers', 'Express', 'Fastify', 'SvelteKit', 'Nuxt']}>
+  <Tab value="Next.js">
+    ```ts
+    const rawBody = await req.text() // NOT req.json()
+    ```
+  </Tab>
+  <Tab value="Hono / Workers">
+    ```ts
+    const rawBody = await c.req.text() // Hono never parses unless you ask
+    ```
+
+    ```ts
+    const rawBody = await request.text() // raw Workers
+    ```
+  </Tab>
+  <Tab value="Express">
+    ```ts
+    // express.raw on THIS route only. A global app.use(express.json()) consumes
+    // the body first and express.raw never sees it.
+    app.post('/api/webhooks/openvod', express.raw({ type: 'application/json' }), handler)
+
+    // inside the handler:
+    const rawBody = req.body.toString('utf8') // a Buffer
+    ```
+  </Tab>
+  <Tab value="Fastify">
+    ```ts
+    // Fastify parses JSON before your handler runs, so keep a copy on the way in.
+    app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+      ;(req as { rawBody?: string }).rawBody = body as string
+      try { done(null, JSON.parse(body as string)) } catch (e) { done(e as Error, undefined) }
+    })
+
+    // inside the handler:
+    const rawBody = (request as { rawBody?: string }).rawBody ?? ''
+    ```
+  </Tab>
+  <Tab value="SvelteKit">
+    ```ts
+    const rawBody = await request.text() // NOT request.json()
+    ```
+  </Tab>
+  <Tab value="Nuxt">
+    ```ts
+    const rawBody = await readRawBody(event) // NOT readBody()
+    ```
+  </Tab>
+</Tabs>
+
+The per-framework guides have these in full context, with the guards and status
+codes: [Next.js](/integrations/nextjs#5-verify-webhooks),
+[Node backend](/integrations/node-backend),
+[SvelteKit](/integrations/sveltekit#5-verify-webhooks),
+[Nuxt](/integrations/nuxt#5-verify-webhooks).
+
+`constructWebhookEvent` verifies before it parses, so a forged body never
+reaches your JSON. It throws `WebhookSignatureError` with a `reason`:
+
+| `reason` | Meaning |
+| --- | --- |
+| `missing_header` | No signature or timestamp header. |
+| `malformed` | Signature is not 64 hex characters (optionally `sha256=`-prefixed). |
+| `invalid_timestamp` | Timestamp is not an integer number of seconds. |
+| `stale` | Outside the replay window — a possible replay, or a clock that disagrees. |
+| `mismatch` | The digest does not match, or `X-Webhook-Event` disagrees with the payload. |
+
+Each one is expanded on [Errors & status codes](/errors#webhook-signature-failures),
+including the likely cause of each.
+
+### The replay window
+
+A signed timestamp older than the tolerance is rejected, which is what stops a
+captured delivery from being replayed later. The default window is ±300 seconds
+(`DEFAULT_TOLERANCE_SECONDS`); widen or narrow it with `toleranceSeconds`, or
+set `0` to disable the check:
+
+```ts
+await constructWebhookEvent({ secret, rawBody, signature, timestamp, toleranceSeconds: 600 })
+```
+
+Related exports, for the cases the one-call helper does not cover:
+
+- `verifyWebhookSignature({ ... })` — verify only, returns `{ timestamp }`.
+- `checkWebhookSignature({ ... })` — the non-throwing form, returns `{ ok: true }` or `{ ok: false, error }`.
+- `parseWebhookEvent(rawBody)` — parse **without** verifying; named to be conspicuous.
+- `isWebhookEvent(name)` — true when the name is in the catalogue.
+- `WEBHOOK_EVENTS` / `RELIABLE_WEBHOOK_EVENTS` — the catalogues below.
+
+## Events
+
+| Event | When | `data` keys |
+| --- | --- | --- |
+| `video.uploading` | The video row was created and the upload started. | `videoId`, `title`, `status` |
+| `video.uploaded` | The client completed the upload and transcoding was dispatched. | `videoId`, `title`, `status` |
+| `video.processing` | A transcode job was submitted for an existing video — a retry, or a self-hosted import. | `videoId`, `title`, plus `retried` / `attempts`, or `provider` |
+| `video.ready` | Transcoding finished and the video was published. | `videoId`, `title`, `status`, `duration`, `hlsUrl`, `thumbnailUrl`, `publishedPrefix` |
+| `video.failed` | The transcode attempt ended in failure. | `videoId`, `title`, `error`, `failureCode` |
+| `video.updated` | Title or playback policy changed. | `videoId`, `title`, `playbackPolicy`, `changes` |
+| `video.deleted` | The video was deleted. | `videoId`, `title` |
+| `subtitle.generating` | Declared in the catalogue; the server does not emit it today. | — |
+| `subtitle.generated` | Subtitles were requested and completed. | `videoId`, `subtitleUrl` |
+| `subtitle.failed` | Subtitles were requested and failed. | `videoId` |
+| `chapters.generating` | Declared in the catalogue; the server does not emit it today. | — |
+| `chapters.generated` | Chapters were requested and completed. | `videoId`, `chapters` |
+| `chapters.failed` | Chapters were requested and failed. | `videoId` |
+
+`failureCode` is the transcoder's stable error code (see
+[`docs/delivery-contract.md`](https://github.com/visheshgubrani/vod/blob/main/docs/delivery-contract.md)),
+so you can branch on the reason without parsing prose. `video.ready` carries
+`hlsUrl` and `thumbnailUrl` resolved against your own delivery origin, and
+`duration` in seconds.
+
+<Callout type="info" title="The dashboard test button is a video.ready">
+  `POST /api/webhooks/:id/test` dispatches a `video.ready` with
+  `{ videoId: 'test_video_123', title: 'Test Video', status: 'ready', message: 'This is a test webhook event' }`,
+  so your handler can be exercised end to end before a real video exists.
+</Callout>
+
+## Delivery guarantees
+
+| Events | Delivery |
+| --- | --- |
+| `video.ready`, `video.failed` | Transactional outbox — retried until delivered or the attempt budget is spent, so treat as **at-least-once** and de-duplicate on `event.id`. |
+| Every other event | Dispatched once, with no retries. A failure is logged and the event is gone. |
+
+`RELIABLE_WEBHOOK_EVENTS` exports that list; `WEBHOOK_EVENTS` is the full
+catalogue.
+
+What the outbox actually does:
+
+- The state change and its event are written in **one** database statement, so a
+  crash cannot leave a `ready` video whose tenant is never told.
+- Delivery retries with exponential backoff (30s, 60s, 120s, 240s, 480s… capped
+  at 1 hour) for up to 6 attempts. A 4xx other than 408/429 is terminal —
+  retrying an identical body that the receiver already refused cannot succeed.
+- Each delivery row is visible in the dashboard's delivery log, so "we sent it"
+  is verifiable rather than a stdout line.
+- A sweeper picks up pending events, so an event delayed by a restart is late
+  rather than lost.
+
+Because `id` is stable across retries and `timestamp` is regenerated per
+attempt, make your handler idempotent on `event.id` — not on `timestamp`:
+
+```ts
+const seen = await db.processedEvents.has(event.id)
+if (seen) return Response.json({ received: true, duplicate: true })
+await handle(event)
+await db.processedEvents.record(event.id)
+```
+
+<Callout type="warn" title="Do not assume at-least-once for everything">
+  Only `video.ready` and `video.failed` go through the outbox. If your product
+  depends on `video.updated`, `video.deleted` or a subtitle/chapter event, it
+  must tolerate a missed delivery — reconcile with the API
+  (`vod.videos.get(id)`) rather than assuming the webhook always arrives.
+</Callout>

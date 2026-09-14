@@ -1,0 +1,286 @@
+---
+title: Your first video
+description: The complete OpenVOD flow — mint a token, upload a file, wait for transcoding, play it back, and receive a webhook — with no framework involved.
+---
+
+This is the whole platform in six steps. No framework, no SDK required: every
+step shows the raw HTTP call alongside the SDK equivalent, because the SDKs are
+thin wrappers over exactly these requests.
+
+Do this once and every [framework guide](/integrations) is just the same six
+steps mapped onto a directory layout.
+
+**What you need first**
+
+- A running OpenVOD deployment. If you do not have one, [Quickstart](/quickstart)
+  takes you from clone to a live API.
+- An API key (`sk_live_…`) from your dashboard.
+- Your delivery origin — the Cloudflare delivery worker URL.
+
+```bash
+export OPENVOD_API_URL="https://api.yourvod.com"   # your API origin, no /v1 suffix
+export OPENVOD_API_KEY="sk_live_…"
+export DELIVERY_URL="https://media.yourvod.com"    # your delivery worker
+```
+
+<Callout type="info" title="baseUrl never includes /v1">
+  The API is mounted at the origin root. Pass `https://api.yourvod.com`, not
+  `https://api.yourvod.com/v1` — the SDKs append the full path themselves.
+</Callout>
+
+## Step 1 — Confirm the deployment is reachable
+
+```bash
+curl "$OPENVOD_API_URL/health"
+# ok
+```
+
+`GET /health/config` answers with the capability flags and the resolved
+deployment shape — uploads on or off, which transcode provider, which rate-limit
+store. It never contains secrets, so it is safe to check from anywhere. If
+uploads are disabled here, step 3 answers `403`.
+
+## Step 2 — Mint an upload token (server-side)
+
+The API key mints short-lived upload tokens. This call belongs on your server —
+the key must never reach a browser.
+
+<Tabs items={['curl', '@openvod/server']}>
+  <Tab value="curl">
+    ```bash
+    curl -X POST "$OPENVOD_API_URL/v1/upload/token" \
+      -H "Authorization: Bearer $OPENVOD_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{ "expires_in": "1h", "max_files": 1 }'
+    ```
+
+    ```json
+    {
+      "upload_token": "ut_…",
+      "expires_at": "2025-01-15T11:30:00.000Z",
+      "max_files": 1,
+      "max_size_bytes": null
+    }
+    ```
+  </Tab>
+  <Tab value="@openvod/server">
+    ```ts
+    import { OpenVod } from '@openvod/server'
+
+    const vod = new OpenVod({
+      apiKey: process.env.OPENVOD_API_KEY!,
+      baseUrl: process.env.OPENVOD_API_URL!,
+    })
+
+    const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+    // token.upload_token, token.expires_at
+    ```
+  </Tab>
+</Tabs>
+
+Two properties matter operationally:
+
+- The token is **checked only on `/create`**. An upload that started before the
+  token lapsed still finishes — that is what makes an hour-long upload safe.
+- `maxFiles` is a **start** budget, not a concurrency budget. A resumed upload
+  continues the one it already started.
+
+## Step 3 — Upload the file
+
+`@openvod/uploader` handles the whole multipart protocol: it splits the file,
+fetches presigned URLs just before each window uploads, retries transient part
+failures, and completes the upload. Use it in a browser, or anywhere with
+`fetch` and `Blob`.
+
+```ts
+import { OpenVodUploader } from '@openvod/uploader'
+
+const uploader = new OpenVodUploader({
+  baseUrl: process.env.OPENVOD_API_URL!, // your origin — no /v1 suffix
+  uploadToken,
+})
+
+const result = await uploader.upload(file, {
+  title: 'My First Video',
+  onProgress: (p) => console.log(`${p.percentage}%`),
+})
+
+console.log(result.fileId) // the video id — keep it
+```
+
+`result.fileId` is the only thing you need to carry forward. Save it next to your
+own record.
+
+<Accordions>
+  <Accordion title="What the SDK is doing under the hood">
+    Four requests, in this order:
+
+    1. `POST /v1/upload/create` — declares `filename`, `content_type` and `size`.
+       The API creates the video row (status `uploading`) and a multipart upload,
+       and answers with `upload_id`, `key`, `part_size` and `part_count`.
+    2. `POST /v1/upload/parts` — asks for presigned URLs for a window of parts.
+       URLs live for one hour, which is why the SDK fetches them just in time
+       instead of all at once.
+    3. `PUT <presigned URL>` — one per part, straight to your R2 raw bucket.
+       **Video bytes never pass through the API.**
+    4. `POST /v1/upload/complete` — sends the ETags. The API HEAD-verifies the
+       object against the declared size, then dispatches the transcode job.
+
+    Doing this yourself is fine — see the
+    [upload API reference](/api-reference/uploads) for exact fields. The one
+    thing you cannot skip is the R2 CORS policy: the browser `PUT`s to R2
+    directly, and completion needs the `ETag` response header
+    ([why](/upload#r2-cors-must-expose-etag)).
+  </Accordion>
+  <Accordion title="Uploading from Node, a Worker, or anywhere without a File">
+    `@openvod/uploader` runs outside a browser too. Pass a `Blob` plus an
+    explicit `filename`, because there is no `File` to read a name from:
+
+    ```ts
+    await uploader.upload(blob, { filename: 'keynote.mp4', contentType: 'video/mp4' })
+    ```
+  </Accordion>
+</Accordions>
+
+## Step 4 — Wait for `ready`
+
+Completing the upload puts the video in `processing`. Transcoded output is not
+playable until it flips to `ready`.
+
+<Tabs items={['Poll', 'Webhook']}>
+  <Tab value="Poll">
+    ```bash
+    curl "$OPENVOD_API_URL/v1/video/$VIDEO_ID" \
+      -H "Authorization: Bearer $OPENVOD_API_KEY"
+    ```
+
+    ```json
+    {
+      "id": "8c4f0f4e-…",
+      "title": "My First Video",
+      "status": "processing",
+      "playback_policy": "public",
+      "duration": null,
+      "thumbnail_url": null,
+      "created_at": "2025-01-15T10:29:12.000Z"
+    }
+    ```
+
+    Poll every few seconds. Polling is fine for a demo; for anything real use a
+    webhook, because a long video can take minutes.
+  </Tab>
+  <Tab value="Webhook">
+    Register an endpoint in your dashboard (**Webhooks**), subscribe to
+    `video.ready` and `video.failed`, and save the signing secret — the
+    dashboard shows it exactly once.
+
+    ```json
+    {
+      "id": "evt_9f2c1a7b…",
+      "event": "video.ready",
+      "timestamp": "2025-01-15T10:30:00.000Z",
+      "data": {
+        "videoId": "8c4f0f4e-…",
+        "title": "My First Video",
+        "status": "ready",
+        "duration": 312.4,
+        "hlsUrl": "https://media.yourvod.com/videos/8c4f0f4e-…/playlist.m3u8",
+        "thumbnailUrl": "https://media.yourvod.com/videos/8c4f0f4e-…/poster.jpg"
+      }
+    }
+    ```
+
+    Verify the signature against the **raw** body before trusting it — see
+    [Webhooks](/webhooks#verify-the-signature).
+  </Tab>
+</Tabs>
+
+`video.ready` and `video.failed` go through a transactional outbox and are
+retried, so treat them as **at-least-once** and de-duplicate on `event.id`.
+Every other event is fire-once.
+
+## Step 5 — Play it back
+
+A **public** video needs no token. Ask for the playback session anyway — you get
+the manifest URL, the poster and any subtitles in one response, and the same call
+keeps working if you switch the video to `signed` later.
+
+A **signed** video needs a short-lived JWT minted per viewer. The viewer's
+user-agent is required, because the delivery worker binds the token to the
+viewer's browser family and refuses a request that does not match.
+
+```bash
+curl -X POST "$OPENVOD_API_URL/v1/video/$VIDEO_ID/playback-token" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "x-viewer-user-agent: $VIEWER_UA" \
+  -d '{ "expires_in": "2h", "allowed_domains": ["app.example.com"] }'
+```
+
+```json
+{
+  "playback_url": "https://media.yourvod.com/videos/…/playlist.m3u8?token=eyJ…",
+  "token": "eyJ…",
+  "expires_at": 1737029400,
+  "playback_policy": "signed",
+  "subtitle_url": null,
+  "chapters": null
+}
+```
+
+<Callout type="warn" title="Forward the viewer's user-agent, not your server's">
+  The binding is what stops a leaked URL from being pasted into another browser.
+  A token minted with your server's `User-Agent` is rejected in the viewer's
+  browser. Forward the header from the viewer's own request.
+</Callout>
+
+Then play it. In React, use the player:
+
+```tsx
+import { OpenVodPlayer } from '@openvod/player'
+
+<OpenVodPlayer
+  playbackId={videoId}
+  src={session.playbackUrl}
+  token={session.token}
+  tokenRefreshEndpoint={`/api/videos/${videoId}/play-token`}
+  title="My First Video"
+/>
+```
+
+Anywhere else, HLS.js or native HLS:
+
+```ts
+import Hls from 'hls.js'
+
+const video = document.querySelector('video')!
+const hls = new Hls()
+hls.loadSource(playbackUrl) // already carries ?token=… for signed videos
+hls.attachMedia(video)
+```
+
+`expires_at` is in **epoch seconds**. A token that expires mid-playback stops
+playback, which is why the player refreshes it ~60 seconds early — see
+[Token auto-refresh](/playback#token-auto-refresh).
+
+## Step 6 — Handle failures
+
+You now have a working loop. The last piece is doing the right thing when it
+breaks:
+
+- `video.failed` carries a stable `failureCode`. Branch on it.
+- API errors are `OpenVodError` with a stable `code`. Branch on it, not on the
+  message.
+- Honour `retryAfterMs` on `RATE_LIMITED` instead of a fixed backoff.
+
+The full catalogue — every HTTP status, SDK code, webhook reason and transcode
+failure code — is on [Errors & status codes](/errors).
+
+## Where to go next
+
+<Cards>
+  <Card title="Framework integrations" href="/integrations" description="The same six steps in Next.js, React + Vite, Nuxt, SvelteKit, or a plain Node backend." />
+  <Card title="Uploads" href="/upload" description="Resumable sessions, pause/resume, cancellation and typed errors in depth." />
+  <Card title="Playback" href="/playback" description="Signed tokens, refresh, chapters, subtitles and analytics." />
+  <Card title="API reference" href="/api-reference" description="Every public endpoint with exact request and response fields." />
+</Cards>

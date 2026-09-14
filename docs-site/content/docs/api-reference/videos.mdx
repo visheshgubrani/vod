@@ -1,0 +1,210 @@
+---
+title: Video endpoints
+description: Read, list, update and delete videos through the OpenVOD API — the Video object, status transitions, and soft-delete semantics.
+---
+
+All four endpoints require the **API key** (`Authorization: Bearer sk_live_…`).
+They operate only on your own organization's videos; another tenant's id is a
+`404`, not a `403`.
+
+## The Video object
+
+`GET /v1/video/:id` and each entry of `GET /v1/videos` share this shape:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | The video id (UUID). The `file_id` from `/v1/upload/create`. |
+| `title` | string | Display title. Defaults to the uploaded filename. |
+| `status` | string | `pending`, `uploading`, `processing`, `ready`, or `failed`. |
+| `playback_policy` | `"public"` \| `"signed"` | Whether playback requires a token. |
+| `duration` | number \| null | Seconds. `null` until transcoding finishes. |
+| `thumbnail_url` | string \| null | Poster URL on your delivery origin. `null` before `ready`. |
+| `created_at` | string | ISO 8601. |
+
+<Callout type="warn" title="The Video object has no manifest URL">
+  There is no `hls_url` on this object. The playback manifest comes from
+  [`POST /v1/video/:id/playback-token`](/api-reference/playback), which returns
+  it as `playback_url` — for public videos too, with `token: null`. Use that
+  endpoint as your single source of playback URLs, and switching a video between
+  `public` and `signed` will not change your client code.
+</Callout>
+
+### Lifecycle
+
+```
+pending ──▶ uploading ──▶ processing ──▶ ready
+   │            │              │
+   └────────────┴──────────────┴──────▶ failed      (terminal)
+```
+
+`ready` is also terminal in one direction only: a finished video can still be
+marked `failed` by a later job, but `failed` and `ready` are never revisited by a
+late or duplicate transcode callback.
+
+`GET /v1/video/:id` is the polling equivalent of the webhooks: poll while
+`processing` or `uploading`, stop on `ready` or `failed`. This endpoint does not
+carry the failure reason — the stable `failureCode` arrives on the `video.failed`
+webhook, so prefer the webhook and reconcile with this endpoint. See
+[Transcode failure codes](/errors#transcode-failure-codes).
+
+<Callout type="info" title="There is no cancelled video status">
+  Cancelling a transcode job is recorded as a **job** state, not a video status.
+  The video remains whatever it was — usually `processing` — until something else
+  moves it. If you cancel a job and then poll the video, do not wait for a
+  `cancelled` status that will never arrive.
+</Callout>
+
+## `GET /video/:id`
+
+| | |
+| --- | --- |
+| **Auth** | API key |
+| **Path** | The video id |
+
+```bash
+curl "$OPENVOD_API_URL/v1/video/8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY"
+```
+
+**`200`**
+
+```json
+{
+  "id": "8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70",
+  "title": "My First Video",
+  "status": "ready",
+  "playback_policy": "public",
+  "duration": 312.4,
+  "thumbnail_url": "https://media.yourvod.com/videos/8c4f0f4e-…/poster.jpg",
+  "created_at": "2025-01-15T10:29:12.000Z"
+}
+```
+
+**`404`** `{"error": "Video not found"}` — no such video, it belongs to another
+organization, or it has been deleted. A deleted video stays a `404` forever.
+
+## `GET /videos`
+
+| | |
+| --- | --- |
+| **Auth** | API key |
+| **Query** | `status` (optional), `limit` (optional) |
+
+| Parameter | Default | Notes |
+| --- | --- | --- |
+| `status` | — | Filter by one status, e.g. `ready`. |
+| `limit` | `50` | **Capped at 100.** A larger value is silently clamped, not rejected. |
+
+```bash
+curl "$OPENVOD_API_URL/v1/videos?status=ready&limit=20" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY"
+```
+
+**`200`**
+
+```json
+{
+  "data": [
+    {
+      "id": "8c4f0f4e-…",
+      "title": "My First Video",
+      "status": "ready",
+      "playback_policy": "public",
+      "duration": 312.4,
+      "thumbnail_url": "https://media.yourvod.com/videos/8c4f0f4e-…/poster.jpg",
+      "created_at": "2025-01-15T10:29:12.000Z"
+    }
+  ]
+}
+```
+
+<Callout type="warn" title="No pagination, and oldest first">
+  The response wraps results in `data` (not a bare array), and the list is ordered
+  by `created_at` **ascending** — so a truncated list is your *oldest* videos, not
+  your newest. There is no cursor or offset parameter today. For a large
+  catalogue, page through `status` filters or reconcile from the webhooks rather
+  than listing everything.
+</Callout>
+
+## `PATCH /video/:id`
+
+| | |
+| --- | --- |
+| **Auth** | API key |
+| **Body** | `title` and/or `playback_policy` |
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `title` | string | Whitespace-trimmed. An empty or whitespace-only value is ignored. |
+| `playback_policy` | `"public"` \| `"signed"` | `playbackPolicy` also accepted. Any other value is ignored. |
+
+```bash
+curl -X PATCH "$OPENVOD_API_URL/v1/video/$VIDEO_ID" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "title": "Keynote 2025", "playback_policy": "signed" }'
+```
+
+**`200`**
+
+```json
+{
+  "id": "8c4f0f4e-…",
+  "title": "Keynote 2025",
+  "playback_policy": "signed"
+}
+```
+
+Only the changed fields are echoed, so this response is **not** the full Video
+object — re-`GET` if you need the rest.
+
+**Failures**
+
+| Status | Message | Cause |
+| --- | --- | --- |
+| `400` | `No valid fields to update` | Neither field was present, or both were rejected as invalid. |
+| `404` | `Video not found` | Unknown, other organization's, or deleted. |
+
+<Callout type="info" title="Switching to signed does not invalidate anything">
+  Changing the policy affects the *next* playback-token call. Tokens already
+  minted for a previously public video are not revoked, and existing viewers keep
+  playing. Issued tokens for a signed video remain valid until they expire.
+</Callout>
+
+Emits a `video.updated` webhook — which is fire-once, not retried. Do not depend
+on receiving it; see [Webhooks](/webhooks#delivery-guarantees).
+
+## `DELETE /video/:id`
+
+| | |
+| --- | --- |
+| **Auth** | API key |
+
+A **soft delete**: the row is marked deleted, and reclamation of its transcoded
+objects is enqueued. It remains a `404` on every read afterwards. The reclaimed
+R2 bytes are freed by background maintenance, so a deployment with maintenance
+disabled keeps paying for them — see
+[Configuration](/configuration#maintenance-and-sweeper).
+
+```bash
+curl -X DELETE "$OPENVOD_API_URL/v1/video/$VIDEO_ID" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY"
+```
+
+**`200`**
+
+```json
+{ "deleted": true, "id": "8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70" }
+```
+
+**`404`** `{"error": "Video not found"}` on an unknown id **and on a repeat
+delete** — deleting is not idempotent in its response, so treat a second `404`
+after a successful delete as success rather than an error.
+
+Emits `video.deleted`, also fire-once.
+
+<Cards>
+  <Card title="Upload endpoints" href="/api-reference/uploads" description="Where the video id comes from." />
+  <Card title="Playback tokens" href="/api-reference/playback" description="Turning a ready video into a playable session." />
+  <Card title="Webhooks" href="/webhooks" description="The event-driven alternative to polling these endpoints." />
+</Cards>

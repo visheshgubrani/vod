@@ -1,5 +1,5 @@
-import { LLMCopyButton } from '@/components/ai/page-actions';
-import { getMarkdownUrl, type DocsSourcePage } from '@/lib/docs';
+import { LLMCopyButton, ViewOptions } from '@/components/ai/page-actions';
+import { getGitHubUrl, getMarkdownUrl, type DocsSourcePage } from '@/lib/docs';
 import { source } from '@/lib/source';
 import { getMDXComponents } from '@/mdx-components';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
@@ -19,6 +19,10 @@ export function DocsPageView({ page }: { page: DocsSourcePage }) {
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
       <div className="flex items-center gap-2 border-b pb-6">
         <LLMCopyButton markdownUrl={getMarkdownUrl(page)} />
+        <ViewOptions
+          markdownUrl={getMarkdownUrl(page)}
+          githubUrl={getGitHubUrl(page)}
+        />
       </div>
       <DocsBody>
         <MDX

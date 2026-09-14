@@ -31,8 +31,18 @@ export const color = {
   cmd: (text: string) => chalk.cyan(text),
 }
 
-export function intro(subtitle = 'BYOK bootstrap'): void {
-  clack.intro(`${chalk.bold.cyan('OpenVOD')}  ${chalk.dim('·')}  ${chalk.dim(subtitle)}`)
+export function intro(version?: string, subtitle = 'BYOK bootstrap'): void {
+  const parts = [chalk.bold.cyan('OpenVOD'), chalk.dim('·'), chalk.dim(subtitle)]
+  if (version) parts.push(chalk.dim(`v${version}`))
+  clack.intro(parts.join(' '))
+}
+
+/**
+ * Numbered step header. The wizard is a sequence of decisions, so saying where
+ * the user is matters more than naming the phase twice.
+ */
+export function step(index: number, total: number, title: string): void {
+  clack.log.step(`${chalk.dim(`${index}/${total}`)}  ${chalk.bold(title)}`)
 }
 
 export function outro(message: string): void {
@@ -96,29 +106,43 @@ export function printCheckRows(rows: CheckRow[]): void {
 export function printHelp(): void {
   const flag = (name: string) => chalk.cyan(name)
   const cmd = (line: string) => chalk.dim(line)
+  const head = (text: string) => chalk.bold(text)
   const lines = [
     `${chalk.bold.cyan('OpenVOD')} ${chalk.dim('bootstrap')} — BYOK environment wizard`,
     '',
-    chalk.bold('Usage') + color.muted(' (run from anywhere inside the repo):'),
-    `  ${cmd('./scripts/bootstrap.sh')}                        interactive configure (writes server/.dev.vars + delivery/.dev.vars)`,
-    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--force')}                regenerate; pre-existing keys the wizard does not manage are preserved`,
-    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--answers')} <file.json>  headless configure using a JSON answers file (no terminal`,
-    '                                                needed; file paths are relative to the repo root)',
-    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--deploy')}               provision & deploy: Cloudflare login, R2 buckets/CORS, Modal secrets +`,
-    '                                                pipeline, API + delivery deploys (uses existing .dev.vars when present)',
-    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--check')} [api-url]      lint .dev.vars without printing secrets (+ probe api/health/config)`,
+    head('Usage') + color.muted(' (run from anywhere inside the repo):'),
+    `  ${cmd('./scripts/bootstrap.sh')}`,
+    `      ${color.muted('interactive configure — writes server/.dev.vars + delivery/.dev.vars')}`,
+    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--force')}`,
+    `      ${color.muted('regenerate; keys the wizard does not manage are preserved')}`,
+    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--answers')} <file.json>`,
+    `      ${color.muted('headless configure from JSON (no terminal needed; paths are repo-relative)')}`,
+    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--deploy')}`,
+    `      ${color.muted('provision & deploy: Cloudflare login, R2 buckets/CORS, Modal secrets +')}`,
+    `      ${color.muted('pipeline, API + delivery deploys (reuses an existing .dev.vars)')}`,
+    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--check')} [api-url]`,
+    `      ${color.muted('verify .dev.vars without printing secrets (+ probe api/health/config)')}`,
     `  ${cmd('./scripts/bootstrap.sh')} ${flag('--help')}`,
     '',
-    chalk.bold('Prefill flags') + color.muted(' (interactive mode only):') +
-      ` ${flag('--runtime')} workers|node ${flag('--db')} neon|local|existing`,
-    `  ${flag('--queue')} direct|qstash ${flag('--ratelimit')} memory|upstash`,
+    head('Prefill flags') + color.muted(' (interactive mode only):'),
+    `  ${flag('--runtime')} workers|node   ${flag('--db')} neon|local|existing`,
+    `  ${flag('--queue')} direct|qstash    ${flag('--ratelimit')} memory|upstash`,
     '',
-    chalk.bold('Headless answers file') + color.muted(' (same shape the wizard collects interactively):'),
+    head('Environment:'),
+    `  ${flag('OPENVOD_SKIP_INSTALL=1')}     ${color.muted('skip `pnpm install` in the launcher')}`,
+    `  ${flag('OPENVOD_STRICT_ENGINES=1')}   ${color.muted('fail when node’s major differs from engines.node')}`,
+    `  ${flag('NO_COLOR=1')}                 ${color.muted('plain output')}`,
+    '',
+    head('Already configured?') +
+      color.muted(' Re-running writes nothing until you pick “Reconfigure”.'),
+    '',
+    head('Headless answers file') + color.muted(' (the same shape the wizard collects):'),
     chalk.dim('  {'),
     chalk.dim('    "runtime": "workers",             // "workers" | "node"'),
-    chalk.dim('    "db": { "kind": "neon", "url": "postgresql://…" },   // node: "local" | { "kind":"existing", "url": "…" }'),
+    chalk.dim('    "db": { "kind": "neon", "url": "postgresql://…" },'),
+    chalk.dim('                                      // node: "local" | { "kind":"existing", "url": "…" }'),
     chalk.dim('    "queue": { "kind": "direct" },    // or { "kind": "qstash", "token": "…" }'),
-    chalk.dim('    "rateLimit": { "kind": "memory" }, // or { "kind": "upstash", "restUrl": "https://…", "token": "…" }'),
+    chalk.dim('    "rateLimit": { "kind": "memory" }, // or { "kind": "upstash", "restUrl": "…", "token": "…" }'),
     chalk.dim('    "accountId": "…", "r2AccessKeyId": "…", "r2SecretAccessKey": "…",'),
     chalk.dim('    "rawBucket": "openvod-raw", "transcodedBucket": "openvod-transcoded",'),
     chalk.dim('    "frontendUrl": "http://localhost:3000", "groqApiKey": ""   // optional'),

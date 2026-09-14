@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#111015"/>
+  <path d="M0 690C280 570 430 810 720 650s430-260 880-80v330H0Z" fill="#6940d9" fill-opacity=".65"/>
+  <path d="M0 770c300-170 470 60 760-100s430-220 840-70" fill="none" stroke="#ece5fa" stroke-opacity=".5" stroke-width="2"/>
+  <circle cx="800" cy="420" r="112" fill="#f7f5f0"/>
+  <path d="M770 355a18 18 0 0 1 28-15l76 57a18 18 0 0 1 0 46l-76 57a18 18 0 0 1-28-15V355Z" fill="#6940d9"/>
+  <text x="90" y="140" fill="#f7f5f0" font-family="monospace" font-size="24" letter-spacing="5">OPENVOD / ADAPTIVE PLAYBACK</text>
+  <text x="90" y="790" fill="#f7f5f0" font-family="Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="-4">From file to frame.</text>
+</svg>

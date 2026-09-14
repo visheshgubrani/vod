@@ -7,7 +7,7 @@
  * exactly what to install when even the venv route fails.
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { WizardError } from './errors'
@@ -17,6 +17,21 @@ import { logInfo, logStep, logWarn, withSpinner } from './ui'
 
 /** Repo-relative dir of the Modal pipeline (a python dir, not a pnpm pkg). */
 const TRANSCODING = 'transcoding'
+
+/**
+ * The Modal secret the GPU pipeline reads its credentials from.
+ *
+ * Named after the product so it is obvious in a shared Modal workspace which
+ * app owns it. `transcoding/main.py` references this exact string, and
+ * `LEGACY_MODAL_SECRETS` is what the deploy phase offers to clean up.
+ */
+export const MODAL_CREDS_SECRET = 'openvod-creds'
+
+/** The Groq key lives in its own secret: it is optional and must not be clobbered. */
+export const MODAL_GROQ_SECRET = 'openvod-groq-creds'
+
+/** Pre-rename secret names, offered for deletion so a workspace has one set. */
+export const LEGACY_MODAL_SECRETS: readonly string[] = ['r2-creds', 'groq-creds']
 
 /** `modal` inside transcoding/.venv — used for deploy so main.py can import boto3. */
 export function transcodingVenvModalBin(root: string): string {
@@ -176,22 +191,44 @@ export async function runModalSetup(bin: string): Promise<boolean> {
   return true
 }
 
-async function listModalSecretNames(bin: string): Promise<string[]> {
+export async function listModalSecretNames(bin: string): Promise<string[]> {
   const json = await runCapture([bin, 'secret', 'list', '--json'], { timeoutMs: 60_000 })
   if (json.code === 0) return parseModalSecretNames(json.stdout + json.stderr)
   const table = await runCapture([bin, 'secret', 'list'], { timeoutMs: 60_000 })
   return parseModalSecretNames(table.stdout + table.stderr)
 }
 
+/** Which of the pre-rename secret names still exist in this workspace. */
+export function legacySecretsPresent(
+  existingNames: readonly string[],
+  legacy: readonly string[] = LEGACY_MODAL_SECRETS,
+): string[] {
+  return legacy.filter((name) => existingNames.includes(name))
+}
+
+/** Delete a Modal secret by name. */
+export async function deleteModalSecret(bin: string, name: string): Promise<boolean> {
+  const result = await runCapture(
+    [bin, 'secret', 'delete', '--yes', '--allow-missing', name],
+    { timeoutMs: 60_000 },
+  )
+  if (result.code === 0) return true
+  // Older CLIs have neither flag; without --yes it still asks, so the plain
+  // form is a last resort that may legitimately fail.
+  const retry = await runCapture([bin, 'secret', 'delete', name], { timeoutMs: 60_000 })
+  return retry.code === 0
+}
+
 export type ModalSecretWritePlan = 'create' | 'skip' | 'overwrite'
 
 /**
- * r2-creds always matches server/.dev.vars (ingest secret cannot drift).
- * groq-creds stays skip-if-exists so a re-run with an empty Groq key cannot
- * overwrite a real key with "unused".
+ * `openvod-creds` is always rewritten from server/.dev.vars: the ingest secret
+ * and the bucket/host allowlists cannot be allowed to drift from the API's own
+ * environment. `openvod-groq-creds` stays skip-if-exists so a re-run with an
+ * empty Groq key cannot overwrite a real key with "unused".
  */
 export function forceOverwriteModalSecret(name: string): boolean {
-  return name === 'r2-creds'
+  return name === MODAL_CREDS_SECRET
 }
 
 /** Decide create / skip / overwrite from the current secret list and force flag. */
@@ -204,7 +241,25 @@ export function modalSecretWritePlan(
   return 'create'
 }
 
-export function secretCreateArgs(
+/**
+ * `modal secret create --from-json <file>`.
+ *
+ * Values go through a 0600 file rather than argv so they never appear in the
+ * process table (`ps`) — the same reason `wrangler secret bulk` takes a file.
+ */
+export function secretCreateJsonArgs(
+  name: string,
+  jsonPath: string,
+  force: boolean,
+): string[] {
+  const args = ['secret', 'create']
+  if (force) args.push('--force')
+  args.push('--from-json', jsonPath, name)
+  return args
+}
+
+/** Inline `NAME KEY=value …` form, for Modal CLIs without `--from-json`. */
+export function secretCreateValueArgs(
   name: string,
   values: Record<string, string>,
   force: boolean,
@@ -216,12 +271,29 @@ export function secretCreateArgs(
   return args
 }
 
+/** True when a Modal CLI failure looks like "this version has no --from-json". */
+export function modalRejectsFromJson(output: string): boolean {
+  const text = (output ?? '').toLowerCase()
+  return (
+    text.includes('--from-json') ||
+    text.includes('no such option') ||
+    text.includes('unrecognized option') ||
+    text.includes('unexpected extra argument')
+  )
+}
+
+export interface PutModalSecretOptions {
+  force?: boolean
+  /** Private temp dir for the 0600 JSON payload. */
+  tempDir: string
+}
+
 /** Create a Modal secret unless it already exists. Pass force to overwrite. */
 export async function putModalSecret(
   bin: string,
   name: string,
   values: Record<string, string>,
-  options: { force?: boolean } = {},
+  options: PutModalSecretOptions,
 ): Promise<void> {
   const force = options.force === true
   const existing = force ? [] : await listModalSecretNames(bin)
@@ -231,21 +303,38 @@ export async function putModalSecret(
     return
   }
   const overwrite = plan === 'overwrite' || force
-  await withSpinner(
-    `Creating Modal secret ${name}…`,
-    async () => {
-      const result = await runCapture([bin, ...secretCreateArgs(name, values, overwrite)], {
-        timeoutMs: 120_000,
-      })
-      if (result.code !== 0) {
-        throw new WizardError(
-          `modal secret create "${name}" failed: ${result.stderr.trim()}\n` +
-            `Re-run with: modal secret create ${name} KEY=value …`,
-        )
-      }
-    },
-    `Modal secret ${name} ready`,
-  )
+  const jsonPath = join(options.tempDir, `${name}.json`)
+  writeFileSync(jsonPath, JSON.stringify(values, null, 2), { encoding: 'utf8', mode: 0o600 })
+
+  try {
+    await withSpinner(
+      `Creating Modal secret ${name}…`,
+      async () => {
+        let result = await runCapture([bin, ...secretCreateJsonArgs(name, jsonPath, overwrite)], {
+          timeoutMs: 120_000,
+        })
+        if (result.code !== 0 && modalRejectsFromJson(result.stderr + result.stdout)) {
+          logInfo(`this Modal CLI does not accept --from-json — retrying with inline values`)
+          result = await runCapture([bin, ...secretCreateValueArgs(name, values, overwrite)], {
+            timeoutMs: 120_000,
+          })
+        }
+        if (result.code !== 0) {
+          throw new WizardError(
+            `modal secret create "${name}" failed: ${result.stderr.trim()}\n` +
+              `Re-run with: modal secret create ${name} KEY=value …`,
+          )
+        }
+      },
+      `Modal secret ${name} ready`,
+    )
+  } finally {
+    try {
+      unlinkSync(jsonPath)
+    } catch {
+      // the temp dir cleanup covers it
+    }
+  }
 }
 
 /**
@@ -282,46 +371,141 @@ export async function deployModalPipeline(root: string): Promise<string | null> 
 }
 
 /**
- * The ingest secret Modal and the API must share. Empty would upload a
- * secret that 401s every dispatch — fail here instead.
+ * `bareHost` below replaced the old `hostOf`/`rawBucketFromServerEnv` pair, and
+ * `openvodCredsFromEnv` replaced `r2CredsValues` + `requireTranscodeIngestSecret`:
+ * one function now reads every credential value from server/.dev.vars, so there
+ * is exactly one place where the Modal secret can be built.
  */
-export function requireTranscodeIngestSecret(
+
+/**
+ * The host part of a URL, lowercased and without scheme/port/path.
+ *
+ * `utils/network.py` compares `urlparse(url).hostname.lower()` against the
+ * allowlist, so anything with a port or a scheme in it would never match.
+ * Accepts a bare `host.example` too: a tunnel URL pasted without `https://`
+ * is a common typo that should still produce a usable allowlist entry.
+ */
+export function bareHost(url: string | null | undefined): string | null {
+  const raw = (url ?? '').trim()
+  if (raw === '') return null
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    try {
+      const host = new URL(raw).hostname.toLowerCase()
+      if (host !== '') return host
+    } catch {
+      // fall through to the permissive parse
+    }
+  }
+  const match = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)(?::\d+)?(?:[/?#]|$)/i.exec(
+    raw,
+  )
+  return match ? match[1].toLowerCase() : null
+}
+
+/** Hosts a Modal container can never call back into. */
+export function isLoopbackHost(host: string | null): boolean {
+  if (!host) return false
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    /^127\./.test(host)
+  )
+}
+
+/**
+ * `ALLOWED_CALLBACK_HOSTS` for the Modal secret.
+ *
+ * The API builds callbacks from `BACKEND_URL` (server/src/utils/queue.ts), so
+ * that — not BETTER_AUTH_URL — is the host that has to be allowlisted. Loopback
+ * is always present: `config.allowed_callback_hosts` treats a missing allowlist
+ * as "localhost only", and local development needs it.
+ */
+export function callbackHostsFromEnv(env: Record<string, string | undefined>): string[] {
+  const hosts: string[] = []
+  const seen = new Set<string>()
+  const push = (host: string | null): void => {
+    if (host === null) return
+    const key = host.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    hosts.push(key)
+  }
+  push('localhost')
+  push('127.0.0.1')
+  push(bareHost(env['BACKEND_URL']))
+  return hosts
+}
+
+export interface ModalCredsPayload {
+  /** Exactly what goes into the `openvod-creds` secret. */
+  values: Record<string, string>
+  /** Missing required keys — the caller must refuse to upload. */
+  problems: string[]
+  /** Usable-but-degraded configuration worth saying out loud. */
+  advisories: string[]
+}
+
+/**
+ * Build the `openvod-creds` payload from server/.dev.vars.
+ *
+ * Reading the env file — rather than the wizard's in-memory answers — is the
+ * point: a bucket name or callback host edited by hand must reach Modal, or the
+ * transcoder reads from one bucket and writes to another (or silently refuses
+ * every callback).
+ */
+export function openvodCredsFromEnv(
   env: Record<string, string | undefined>,
-): string {
-  const value = (env['TRANSCODE_INGEST_SECRET'] ?? '').trim()
-  if (!value) {
-    throw new WizardError(
-      'TRANSCODE_INGEST_SECRET is missing from server/.dev.vars — run ./scripts/bootstrap.sh first',
+): ModalCredsPayload {
+  const read = (key: string): string => (env[key] ?? '').trim()
+  const problems: string[] = []
+  const advisories: string[] = []
+
+  for (const [key, label] of [
+    ['ACCOUNT_ID', 'Cloudflare account id'],
+    ['R2_ACCESS_KEY_ID', 'R2 access key id'],
+    ['R2_SECRET_ACCESS_KEY', 'R2 secret access key'],
+    ['TRANSCODED_BUCKET_NAME', 'transcoded bucket'],
+    ['TRANSCODE_INGEST_SECRET', 'transcode ingest secret'],
+  ] as const) {
+    if (read(key) === '') problems.push(`${label} (${key}) is missing from server/.dev.vars`)
+  }
+
+  const rawBucket = read('RAW_BUCKET_NAME')
+  if (rawBucket === '') {
+    advisories.push(
+      'RAW_BUCKET_NAME is empty — ALLOWED_SOURCE_BUCKETS stays unset, so ingest ' +
+        'payloads may reference any bucket under the R2 credentials',
     )
   }
-  return value
-}
 
-/** Prefer server/.dev.vars RAW_BUCKET_NAME over a stale wizard answer. */
-export function rawBucketFromServerEnv(
-  env: Record<string, string | undefined>,
-  answersRawBucket: string,
-): string {
-  return (env['RAW_BUCKET_NAME'] ?? answersRawBucket).trim()
-}
-
-/** Modal r2-creds payload shared by the API and the Modal GPU function. */
-export function r2CredsValues(opts: {
-  accountId: string
-  accessKeyId: string
-  secretAccessKey: string
-  transcodedBucket: string
-  rawBucket: string
-  ingestSecret: string
-  callbackHosts: string
-}): Record<string, string> {
-  return {
-    R2_ACCOUNT_ID: opts.accountId,
-    R2_ACCESS_KEY_ID: opts.accessKeyId,
-    R2_SECRET_ACCESS_KEY: opts.secretAccessKey,
-    R2_BUCKET_NAME: opts.transcodedBucket,
-    TRANSCODE_INGEST_SECRET: opts.ingestSecret,
-    ALLOWED_SOURCE_BUCKETS: opts.rawBucket,
-    ALLOWED_CALLBACK_HOSTS: opts.callbackHosts,
+  const backendUrl = read('BACKEND_URL')
+  if (backendUrl === '') {
+    advisories.push(
+      'BACKEND_URL is not set — only localhost callbacks will be allowed, so a ' +
+        'Modal worker can never report a finished job back to this API',
+    )
+  } else if (isLoopbackHost(bareHost(backendUrl))) {
+    advisories.push(
+      `BACKEND_URL is ${backendUrl} (loopback) — a Modal worker cannot reach it; ` +
+        'set it to a tunnel/public URL, or finished jobs will never update their video',
+    )
   }
+
+  const values: Record<string, string> = {
+    R2_ACCOUNT_ID: read('ACCOUNT_ID'),
+    R2_ACCESS_KEY_ID: read('R2_ACCESS_KEY_ID'),
+    R2_SECRET_ACCESS_KEY: read('R2_SECRET_ACCESS_KEY'),
+    // Outputs: what the worker writes HLS/DASH into.
+    R2_BUCKET_NAME: read('TRANSCODED_BUCKET_NAME'),
+    TRANSCODE_INGEST_SECRET: read('TRANSCODE_INGEST_SECRET'),
+    ALLOWED_CALLBACK_HOSTS: callbackHostsFromEnv(env).join(','),
+  }
+  // Inputs: which buckets an ingest payload may name. Omitted rather than
+  // written empty — an empty secret value is indistinguishable from a missing
+  // one at runtime, and the transcoder treats "unset" as "any bucket".
+  if (rawBucket !== '') values.ALLOWED_SOURCE_BUCKETS = rawBucket
+
+  return { values, problems, advisories }
 }

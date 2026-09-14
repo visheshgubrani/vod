@@ -56,7 +56,7 @@ Playback is designed around the same concerns as larger platforms:
 - predictable URLs and playback identifiers
 - a drop-in React player (`@openvod/player`)
 
-The delivery worker is Cloudflare-only and that is **fixed**, not a default. The API and dashboard can run on Workers **or** Node/Docker; signed playback still goes through the delivery worker in front of R2. See [Deployment](/docs/deploy).
+The delivery worker is Cloudflare-only and that is **fixed**, not a default. The API and dashboard can run on Workers **or** Node/Docker; signed playback still goes through the delivery worker in front of R2. See [Deployment](/deploy).
 
 ## Deployment Shapes
 
@@ -71,7 +71,7 @@ An installation chooses part of its infrastructure and inherits the rest:
 | Rate-limit store | in-memory \| Redis (TCP, Node only) \| Upstash (REST) | `REDIS_URL`, else Upstash REST, else in-memory |
 | Analytics read | Analytics Engine SQL \| none | `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` |
 
-**Fixed:** delivery is always the Cloudflare delivery worker + R2, and object storage is always Cloudflare R2. `GET /health/config` reports the resolved choices in its `deployment` object. The full contract, including the combinations that refuse to boot, is [`docs/deployment-shapes.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deployment-shapes.md).
+**Fixed:** delivery is always the Cloudflare delivery worker + R2, and object storage is always Cloudflare R2. `GET /health/config` reports the resolved choices in its `deployment` object — see [the health endpoint](/api-reference#get-healthconfig) for the full shape.
 
 ## API-First by Default
 
@@ -82,8 +82,11 @@ The platform is shaped for developers first:
 - SDKs reduce ceremony around upload and playback
 - webhooks fit into existing product workflows
 
-## Where This Documentation Goes Next
+## Where to go next
 
-- [Quickstart](/docs/quickstart) — clone to first playback
-- [Deployment](/docs/deploy) — Compose deployment, Workers path, maintenance
-- Long-form contracts in the repo `docs/` folder (deployment shapes, delivery contract, upload integration)
+<Cards>
+  <Card title="Quickstart" href="/quickstart" description="Accounts and keys, then clone to a running deployment." />
+  <Card title="Your first video" href="/first-video" description="The whole flow in six steps, no framework required." />
+  <Card title="Framework integrations" href="/integrations" description="Next.js, React + Vite, Nuxt, SvelteKit and Node backends." />
+  <Card title="Configuration" href="/configuration" description="Every environment variable, and the combinations that refuse to boot." />
+</Cards>

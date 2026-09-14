@@ -1,0 +1,313 @@
+---
+title: SvelteKit
+description: OpenVOD in a SvelteKit app — +server.ts endpoints for token minting and webhooks, the uploader in a component, and hls.js playback.
+---
+
+SvelteKit maps onto OpenVOD cleanly: `+server.ts` endpoints are server-only, so
+that is where the API key lives, and the uploader and playback run in the browser.
+
+**One difference from the Next.js guide:** `@openvod/player` is React-only. This
+guide plays the same manifests with `hls.js` — see
+[Playback without React](/playback#playback-without-react).
+
+## Layout
+
+<Files>
+  <Folder name="src" defaultOpen>
+    <Folder name="routes" defaultOpen>
+      <Folder name="api" defaultOpen>
+        <Folder name="upload-token" defaultOpen>
+          <File name="+server.ts" />
+        </Folder>
+        <Folder name="play-token/[id]" defaultOpen>
+          <File name="+server.ts" />
+        </Folder>
+        <Folder name="webhooks/openvod" defaultOpen>
+          <File name="+server.ts" />
+        </Folder>
+      </Folder>
+      <File name="+page.svelte" />
+    </Folder>
+    <Folder name="lib" defaultOpen>
+      <File name="openvod.ts" />
+      <File name="HlsPlayer.svelte" />
+    </Folder>
+  </Folder>
+  <File name=".env" />
+</Files>
+
+## Environment
+
+```bash
+# .env — server-side only. NO PUBLIC_ prefix, so the browser never sees it.
+OPENVOD_API_KEY=sk_live_…
+OPENVOD_API_URL=http://localhost:8787
+OPENVOD_WEBHOOK_SECRET=whsec_…
+
+# Public: inlined into the client bundle. Never put a secret here.
+PUBLIC_OPENVOD_API_URL=http://localhost:8787
+```
+
+<Callout type="error" title="PUBLIC_ prefix means published">
+  `PUBLIC_OPENVOD_API_KEY` would inline your key into the client bundle. In
+  SvelteKit the un-prefixed variables are the private ones — import them from
+  `$env/dynamic/private`, never `$env/static/public`.
+</Callout>
+
+Read them from the right module, depending on the boundary:
+
+| Module | Visible to | Use for |
+| --- | --- | --- |
+| `$env/dynamic/private` | Server only, read at runtime | `OPENVOD_API_KEY`, the webhook secret |
+| `$env/static/private` | Server only, inlined at build | Same, but frozen into the build |
+| `$env/static/public` | Client and server | `PUBLIC_OPENVOD_API_URL` |
+
+Use `dynamic/private` for secrets so one build artifact can be deployed against
+different environments.
+
+## 1. Mint an upload token
+
+```ts
+// src/routes/api/upload-token/+server.ts
+import { json } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
+import { OpenVod } from '@openvod/server'
+import type { RequestHandler } from './$types'
+
+export const POST: RequestHandler = async () => {
+  // TODO: authorize the caller before minting — an open endpoint lets anyone
+  // spend your storage budget. `locals.user` from your auth hook goes here.
+  const vod = new OpenVod({
+    apiKey: env.OPENVOD_API_KEY,
+    baseUrl: env.OPENVOD_API_URL, // no /v1 suffix
+  })
+
+  const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+
+  return json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
+}
+```
+
+## 2. Upload from a page
+
+```svelte
+<!-- src/routes/+page.svelte -->
+<script lang="ts">
+  import { PUBLIC_OPENVOD_API_URL } from '$env/static/public'
+  import { OpenVodUploader, OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+
+  let percent = $state(0)
+  let error = $state<string | null>(null)
+  let videoId = $state<string | null>(null)
+
+  async function handleFile(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0]
+    if (!file) return
+
+    error = null
+    const { uploadToken } = await fetch('/api/upload-token', { method: 'POST' })
+      .then((r) => r.json())
+
+    const uploader = new OpenVodUploader({
+      baseUrl: PUBLIC_OPENVOD_API_URL, // no /v1 suffix
+      uploadToken,
+    })
+
+    try {
+      const result = await uploader.upload(file, {
+        title: file.name,
+        onProgress: (p) => { percent = p.percentage },
+      })
+      videoId = result.fileId
+    } catch (cause) {
+      if (isUploadAbortedError(cause)) return
+      error = cause instanceof OpenVodError ? `${cause.code}: ${cause.message}` : 'Upload failed'
+    }
+  }
+</script>
+
+<input type="file" accept="video/*" onchange={handleFile} />
+<progress value={percent} max="100"></progress>
+{#if error}<p role="alert">{error}</p>{/if}
+{#if videoId}<p>Uploaded — video id {videoId}</p>{/if}
+```
+
+<Callout type="info" title="The uploader is browser-only — no SSR guard needed here">
+  SvelteKit does not run `onchange` handlers on the server, so the uploader is
+  only ever constructed in the browser. The module itself is safe to import in a
+  page component. If you construct an uploader at module scope or inside a `load`
+  function, it *will* run during SSR — keep it inside an event handler.
+</Callout>
+
+## 3. Mint a playback token
+
+```ts
+// src/routes/api/play-token/[id]/+server.ts
+import { error, json } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
+import { OpenVod, OpenVodError } from '@openvod/server'
+import type { RequestHandler } from './$types'
+
+export const POST: RequestHandler = async ({ params, request }) => {
+  // TODO: this is where the viewer proves they may watch *this* video.
+  const vod = new OpenVod({ apiKey: env.OPENVOD_API_KEY, baseUrl: env.OPENVOD_API_URL })
+
+  // The browser sends the viewer's own UA in this header — see the warning.
+  const viewerUserAgent = request.headers.get('x-viewer-user-agent') ?? undefined
+
+  try {
+    const session = await vod.playback.createToken(params.id, {
+      expiresIn: '2h',
+      viewerUserAgent,
+    })
+    return json({ token: session.token, playbackUrl: session.playback_url })
+  } catch (cause) {
+    if (cause instanceof OpenVodError && cause.code === 'NOT_FOUND') {
+      error(404, 'Unknown video id')
+    }
+    error(500, 'Could not mint a playback token')
+  }
+}
+```
+
+<Callout type="warn" title="Forward the viewer's User-Agent explicitly">
+  Signed playback tokens are bound to the viewer's browser family and the
+  delivery worker enforces it. This request arrives from the browser, so
+  `request.headers.get('user-agent')` is the viewer's — but if you later mint the
+  same token from a `load` function or a server-side `fetch`, the UA becomes the
+  server's and the token is rejected in the browser. Sending
+  `x-viewer-user-agent: navigator.userAgent` from the client and forwarding that
+  makes the intent explicit and survives refactors.
+</Callout>
+
+## 4. Play with hls.js
+
+```bash
+npm install hls.js
+```
+
+```svelte
+<!-- src/lib/HlsPlayer.svelte -->
+<script lang="ts">
+  import { onMount, onDestroy } from 'svelte'
+  import Hls from 'hls.js'
+
+  let { src, poster = undefined }: { src: string; poster?: string } = $props()
+
+  let video: HTMLVideoElement
+  let hls: Hls | null = null
+
+  onMount(() => {
+    if (Hls.isSupported()) {
+      hls = new Hls()
+      hls.loadSource(src) // already carries ?token= for signed videos
+      hls.attachMedia(video)
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari and iOS play HLS natively — no library involved.
+      video.src = src
+    }
+  })
+
+  onDestroy(() => hls?.destroy()) // else the segment loader keeps running
+</script>
+
+<video bind:this={video} controls playsinline {poster}></video>
+```
+
+<Callout type="info" title="hls.js is not required on Safari or iOS">
+  `Hls.isSupported()` is false there and the native branch takes over. Lazy-import
+  hls.js inside that check to keep ~200 KB out of the bundle for the browsers that
+  do not need it.
+</Callout>
+
+### Refreshing an expiring token
+
+Without the React player there is no refresh timer. Mint a token long enough for
+the session (four hours covers most VOD viewing), or re-mint and hand the new URL
+to hls.js, which reloads the manifest without losing position:
+
+```ts
+const { playbackUrl } = await fetch(`/api/play-token/${videoId}`, {
+  method: 'POST',
+  headers: { 'x-viewer-user-agent': navigator.userAgent },
+}).then((r) => r.json())
+
+hls?.loadSource(playbackUrl)
+```
+
+## 5. Verify webhooks
+
+```ts
+// src/routes/api/webhooks/openvod/+server.ts
+import { json, error } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
+import { WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+import type { RequestHandler } from './$types'
+
+export const POST: RequestHandler = async ({ request }) => {
+  // The RAW body. `await request.json()` is parsed and re-serialized output —
+  // it is not the bytes that were signed.
+  const rawBody = await request.text()
+
+  try {
+    const payload = await constructWebhookEvent({
+      secret: env.OPENVOD_WEBHOOK_SECRET,
+      rawBody,
+      signature: request.headers.get('x-webhook-signature'),
+      timestamp: request.headers.get('x-webhook-timestamp'),
+      event: request.headers.get('x-webhook-event'),
+    })
+
+    if (payload.event === 'video.ready') {
+      // AT-LEAST-ONCE: de-duplicate on payload.id before non-idempotent work.
+    }
+
+    return json({ received: true })
+  } catch (cause) {
+    if (cause instanceof WebhookSignatureError) {
+      // 400 so the sender does not retry a forged or stale delivery.
+      error(400, `Invalid signature: ${cause.reason}`)
+    }
+    throw cause
+  }
+}
+```
+
+<Callout type="error" title="request.text(), not request.json()">
+  The signature covers `<timestamp>.<raw body>`. `request.json()` parses, and
+  `JSON.stringify` of the parsed value does not reproduce the original bytes —
+  key order, whitespace and number formatting all differ. This is the single most
+  common webhook integration bug, in every framework.
+</Callout>
+
+## Gotchas
+
+<Accordions>
+  <Accordion title="SvelteKit ships a body parser, but only where you ask for it">
+    `request.json()` is how you opt into parsing. Reading `request.text()` keeps
+    the raw bytes, which is exactly why the webhook route reads text and the
+    upload route lets the SDK do the HTTP. Do not add a global
+    `handle`-based JSON parser for these routes.
+  </Accordion>
+  <Accordion title="adapter-static disables your token endpoints">
+    With `@sveltejs/adapter-static` there is no server at runtime, so
+    `+server.ts` endpoints under `src/routes/api/**` never execute. Use
+    `adapter-node` or a platform adapter, or move token minting to a separate
+    backend.
+  </Accordion>
+  <Accordion title="Presigned part URLs bypass SvelteKit entirely">
+    The uploader `PUT`s each part straight to R2 from the browser. No SvelteKit
+    endpoint proxies video bytes — but the R2 bucket's CORS policy still has to
+    allow your origin and expose `ETag`, or `/complete` fails.
+  </Accordion>
+  <Accordion title="Svelte 5 runes in these examples">
+    `$state` and `$props` are Svelte 5. On Svelte 4 use `let percent = 0` and
+    `export let src`. The OpenVOD SDKs do not care which you use.
+  </Accordion>
+</Accordions>
+
+<Cards>
+  <Card title="Framework integrations" href="/integrations" description="The React-only player constraint, and the other stacks." />
+  <Card title="Playback" href="/playback" description="Signed tokens, chapters, subtitles and the non-React embed snippets." />
+  <Card title="Errors & status codes" href="/errors" description="Every code these endpoints can throw." />
+</Cards>

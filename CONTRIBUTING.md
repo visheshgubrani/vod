@@ -16,8 +16,10 @@ maintainers (see the CoC for contact details).
 server/         Hono API (Cloudflare Worker or Node/Docker) — control plane
 delivery/       Cloudflare Worker — media delivery (JWT, manifest rewrite, metering)
 web/            Next.js dashboard + Developer Welcome (standalone build; Vercel or Docker)
-sdk/            @openvod/uploader — TypeScript upload SDK
+sdk/            @openvod/uploader — browser upload SDK
 player/         @openvod/player — Vidstack-based React player
+server-sdk/     @openvod/server — server SDK (tokens, videos, webhooks)
+examples/       nextjs-integration — runnable end-to-end integration example
 transcoding/   Modal Python GPU pipeline (FFmpeg + Shaka + Whisper)
 docs-site/     Fumadocs documentation site
 docs/          Long-form markdown (integration guides, contracts)
@@ -128,8 +130,11 @@ pnpm typecheck        # type-check every package
        a callback URL only this machine can reach never arrives.
    3. Allow that host on the transcoder, or the callback is blocked before it is
        ever sent: set `ALLOWED_CALLBACK_HOSTS=<your-tunnel-host>` (hostname
-       only, no scheme) on the `r2-creds` Modal secret the transcoder deploys
-       with, then redeploy if the secret is read at container start.
+       only, no scheme) on the `openvod-creds` Modal secret the transcoder
+       deploys with, then redeploy if the secret is read at container start.
+       `./scripts/bootstrap.sh --deploy` derives that allowlist from
+       `BACKEND_URL`, so setting `BACKEND_URL` before deploying does this for
+       you.
    4. Check the URL answers before uploading anything:
       `curl -s -o /dev/null -w '%{http_code}\n' https://<your-tunnel-host>/health`
       must print `200`. A `404`/`502` from ngrok's own edge means the tunnel is

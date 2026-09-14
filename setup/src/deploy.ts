@@ -26,23 +26,36 @@ import {
   type TempDir,
 } from './cloudflare'
 import {
+  deleteModalSecret,
   deployModalPipeline,
   findModalBin,
   forceOverwriteModalSecret,
   installModalCli,
+  legacySecretsPresent,
+  listModalSecretNames,
   modalAuthed,
+  MODAL_CREDS_SECRET,
+  MODAL_GROQ_SECRET,
+  openvodCredsFromEnv,
   putModalSecret,
-  rawBucketFromServerEnv,
-  r2CredsValues,
-  requireTranscodeIngestSecret,
   runModalSetup,
 } from './modal'
 import { analyticsTokenTemplateUrl } from './parsers'
 import { findOnPath, runInherit } from './runners'
 import { readServerEnv, upsertDeployEnv, upsertServerEnv } from './envio'
 import type { EntryList } from './mapping'
-import { askConfirm, askPassword, logInfo, logStep, logSuccess, logWarn, printCheckRows, withSpinner } from './ui'
-import { lintServerEnv } from './verify'
+import {
+  askConfirm,
+  askPassword,
+  logInfo,
+  logStep,
+  logSuccess,
+  logWarn,
+  note,
+  printCheckRows,
+  withSpinner,
+} from './ui'
+import { lintServerEnv, maskSecret } from './verify'
 
 export interface DeployResult {
   apiUrl: string | null
@@ -50,10 +63,61 @@ export interface DeployResult {
   modalUrl: string | null
 }
 
-function hostOf(url: string | null): string | null {
-  if (!url) return null
-  const match = /^https?:\/\/([^/:?#]+)/.exec(url)
-  return match ? match[1] : null
+/** Keys whose *values* must never be echoed; everything else in the secret is
+ * configuration (bucket names, allowlisted hosts) and is safe to show. */
+const CREDS_SECRET_KEYS = new Set([
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'TRANSCODE_INGEST_SECRET',
+])
+
+/**
+ * Show exactly what was uploaded, masked where it matters.
+ *
+ * The bucket names and callback hosts are the values most likely to be wrong,
+ * and they are not secrets — printing them is what turns "secrets should match
+ * the env" from a promise into something the operator can verify.
+ */
+function reportCredsPayload(values: Record<string, string>): void {
+  const lines = Object.entries(values).map(([key, value]) =>
+    CREDS_SECRET_KEYS.has(key) ? `${key} = ${maskSecret(value)}` : `${key} = ${value}`,
+  )
+  note(lines.join('\n'), `${MODAL_CREDS_SECRET} (built from server/.dev.vars)`)
+}
+
+/**
+ * Offer to remove the pre-rename secrets from the workspace.
+ *
+ * `transcoding/main.py` now references only the new names, so the old ones are
+ * dead weight that makes a workspace confusing — but deleting cloud resources
+ * is not a decision the wizard gets to make on its own.
+ */
+async function cleanUpLegacySecrets(modalBin: string): Promise<void> {
+  let existing: string[]
+  try {
+    existing = await listModalSecretNames(modalBin)
+  } catch {
+    return
+  }
+  const legacy = legacySecretsPresent(existing)
+  if (legacy.length === 0) return
+
+  logWarn(`this Modal workspace still has the pre-rename secret(s): ${legacy.join(', ')}`)
+  const remove = await askConfirm(
+    `Delete ${legacy.join(', ')}? The new secrets replace them and nothing references them any more.`,
+    true,
+  )
+  if (!remove) {
+    logInfo(`left in place — remove them with: modal secret delete ${legacy.join(' ')}`)
+    return
+  }
+  for (const name of legacy) {
+    if (await deleteModalSecret(modalBin, name)) {
+      logSuccess(`Deleted legacy Modal secret ${name}`)
+    } else {
+      logWarn(`could not delete ${name} — run: modal secret delete ${name}`)
+    }
+  }
 }
 
 async function probeHealth(baseUrl: string | null): Promise<void> {
@@ -118,6 +182,9 @@ export async function runDeployPhase(
   }
 
   const result: DeployResult = { apiUrl: null, deliveryUrl: null, modalUrl: null }
+  /** What the last upload put into ALLOWED_CALLBACK_HOSTS, so step 6 can tell
+   * whether the API host that emerged during the deploy is already in it. */
+  let uploadedCallbackHosts: string | null = null
   const temp: TempDir = makeTempDir()
   try {
     logInfo('Deploy phase — idempotent: if anything interrupts you, re-run to resume.')
@@ -264,26 +331,38 @@ export async function runDeployPhase(
       if (authed) {
         const current = readServerEnv(root)
         if (!current) throw new WizardError('server/.dev.vars disappeared during Modal setup')
-        const ingestSecret = requireTranscodeIngestSecret(current)
-        logStep('Uploading Modal secrets (r2-creds, groq-creds)')
+
+        await cleanUpLegacySecrets(modalBin)
+
+        // Built from server/.dev.vars, never from the in-memory answers: a
+        // bucket or callback host edited by hand has to reach the transcoder,
+        // and a stale answer silently pointing at the wrong bucket is the kind
+        // of bug that only shows up as a failed encode.
+        const creds = openvodCredsFromEnv(current)
+        if (creds.problems.length > 0) {
+          throw new WizardError(
+            `the ${MODAL_CREDS_SECRET} Modal secret is built from server/.dev.vars, ` +
+              'and that file is incomplete:\n  - ' +
+              creds.problems.join('\n  - ') +
+              '\nRe-run ./scripts/bootstrap.sh to fix the environment, then --deploy again.',
+          )
+        }
+        for (const advisory of creds.advisories) logWarn(advisory)
+
+        logStep(`Uploading Modal secrets (${MODAL_CREDS_SECRET}, ${MODAL_GROQ_SECRET})`)
+        await putModalSecret(modalBin, MODAL_CREDS_SECRET, creds.values, {
+          force: forceOverwriteModalSecret(MODAL_CREDS_SECRET),
+          tempDir: temp.path,
+        })
+        uploadedCallbackHosts = creds.values['ALLOWED_CALLBACK_HOSTS'] ?? null
+        reportCredsPayload(creds.values)
         await putModalSecret(
           modalBin,
-          'r2-creds',
-          r2CredsValues({
-            accountId: effectiveAccountId,
-            accessKeyId: current['R2_ACCESS_KEY_ID'] ?? answers.r2AccessKeyId,
-            secretAccessKey: current['R2_SECRET_ACCESS_KEY'] ?? answers.r2SecretAccessKey,
-            transcodedBucket: answers.transcodedBucket,
-            rawBucket: rawBucketFromServerEnv(current, answers.rawBucket),
-            ingestSecret,
-            callbackHosts: 'localhost',
-          }),
-          { force: forceOverwriteModalSecret('r2-creds') },
+          MODAL_GROQ_SECRET,
+          { GROQ_API_KEY: answers.groqApiKey?.trim() || 'unused' },
+          { tempDir: temp.path },
         )
-        await putModalSecret(modalBin, 'groq-creds', {
-          GROQ_API_KEY: answers.groqApiKey?.trim() || 'unused',
-        })
-        logSuccess('Modal secrets r2-creds + groq-creds ready')
+        logSuccess(`Modal secrets ${MODAL_CREDS_SECRET} + ${MODAL_GROQ_SECRET} ready`)
 
         const modalUrl = await deployModalPipeline(root)
         if (modalUrl) {
@@ -376,29 +455,30 @@ export async function runDeployPhase(
     }
 
     // ── 6. Refresh Modal callback hosts once the API host is known ───────
-    const apiHost =
-      answers.runtime === 'workers'
-        ? hostOf(result.apiUrl)
-        : hostOf(readServerEnv(root)?.['BETTER_AUTH_URL'] ?? null)
-    if (modalBin && apiHost && apiHost !== 'localhost') {
+    //
+    // The API builds `callbackUrl` from BACKEND_URL (server/src/utils/queue.ts),
+    // so that is the host the transcoder has to be allowed to call. Using
+    // BETTER_AUTH_URL here — which keeps pointing at localhost — silently
+    // blocked every callback for a tunnelled or deployed API.
+    // `uploadedCallbackHosts !== null` means step 3 actually uploaded the secret
+    // (Modal was authenticated) — without that guard this step would fail the
+    // whole deploy on a workspace the user deliberately skipped Modal in.
+    if (modalBin && wantsModal && uploadedCallbackHosts !== null) {
       const env = readServerEnv(root)
       if (env) {
-        logStep('Refreshing ALLOWED_CALLBACK_HOSTS on the r2-creds Modal secret')
-        await putModalSecret(
-          modalBin,
-          'r2-creds',
-          r2CredsValues({
-            accountId: effectiveAccountId,
-            accessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
-            secretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',
-            transcodedBucket: answers.transcodedBucket,
-            rawBucket: rawBucketFromServerEnv(env, answers.rawBucket),
-            ingestSecret: requireTranscodeIngestSecret(env),
-            callbackHosts: ['localhost', apiHost].join(','),
-          }),
-          { force: forceOverwriteModalSecret('r2-creds') },
-        )
-        logSuccess('r2-creds ALLOWED_CALLBACK_HOSTS updated')
+        const refreshed = openvodCredsFromEnv(env)
+        const hosts = refreshed.values['ALLOWED_CALLBACK_HOSTS'] ?? null
+        if (refreshed.problems.length === 0 && hosts !== null && hosts !== uploadedCallbackHosts) {
+          logStep(`Refreshing ALLOWED_CALLBACK_HOSTS on the ${MODAL_CREDS_SECRET} Modal secret`)
+          await putModalSecret(modalBin, MODAL_CREDS_SECRET, refreshed.values, {
+            force: true,
+            tempDir: temp.path,
+          })
+          uploadedCallbackHosts = hosts
+          logSuccess(`${MODAL_CREDS_SECRET} ALLOWED_CALLBACK_HOSTS set to ${hosts}`)
+        } else if (refreshed.advisories.length > 0 && hosts !== uploadedCallbackHosts) {
+          for (const advisory of refreshed.advisories) logWarn(advisory)
+        }
       }
     }
 

@@ -1,0 +1,214 @@
+---
+title: API reference
+description: The OpenVOD public HTTP API — base URL, both authentication schemes, conventions, rate limits, health probes and the full endpoint index.
+---
+
+The public API is mounted at your own API origin, under `/v1`. There is no
+hosted OpenVOD API — `https://api.yourvod.com` below is your deployment.
+
+<Callout type="info" title="baseUrl never includes /v1">
+  The SDKs take the **origin** and append the full path themselves. Pass
+  `https://api.yourvod.com`, not `https://api.yourvod.com/v1`. This is the most
+  common configuration mistake in a new integration.
+</Callout>
+
+## Authentication
+
+Two schemes, both in the `Authorization` header. Which one applies is determined
+by the endpoint, not by you.
+
+<Tabs items={['API key', 'Upload token']}>
+  <Tab value="API key">
+    ```
+    Authorization: Bearer sk_live_…
+    ```
+
+    **Where it is used:** every organization-level endpoint — minting upload
+    tokens, reading and modifying videos, minting playback tokens.
+
+    **Where it lives:** your server. Never a browser, never a `NEXT_PUBLIC_` /
+    `VITE_` / `PUBLIC_` variable. Create and rotate keys in the dashboard.
+
+    **If it leaks:** anyone can mint tokens against your storage and GPU budget
+    and read your video catalogue. Rotate immediately.
+  </Tab>
+  <Tab value="Upload token">
+    ```
+    Authorization: UploadToken ut_…
+    ```
+
+    **Where it is used:** only the `/v1/upload/*` endpoints except `/token`
+    itself.
+
+    **Where it lives:** the browser is fine. It is scoped to one organization,
+    expires within 24 hours, caps how many uploads it may **start** and how large
+    each may be, and **cannot mint playback tokens or read your catalogue**.
+
+    **If it leaks:** an attacker can start uploads against your raw bucket until
+    `maxFiles` or the expiry is reached. Cheap to contain — mint a new one.
+  </Tab>
+</Tabs>
+
+```bash
+# API key — mint an upload token
+curl -X POST "$OPENVOD_API_URL/v1/upload/token" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY"
+
+# Upload token — declare an upload
+curl -X POST "$OPENVOD_API_URL/v1/upload/create" \
+  -H "Authorization: UploadToken $UPLOAD_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"a.mp4","content_type":"video/mp4","size":1048576}'
+```
+
+Note the prefix differs: `Bearer` for the API key, `UploadToken` (no space
+variations) for the upload token. A key sent as `UploadToken` or a token sent as
+`Bearer` is rejected as invalid.
+
+## Conventions
+
+| Convention | Detail |
+| --- | --- |
+| **Field naming** | Request and response bodies are `snake_case`. SDK options are `camelCase` and translated for you. |
+| **Content type** | `application/json` on every request with a body. |
+| **IDs** | UUIDs. Video ids appear both as `id` and, in some responses, as `file_id`. |
+| **Timestamps** | ISO 8601 strings for wall-clock times; **epoch seconds** for playback-token expiry. |
+| **Request id** | Every response carries `x-request-id`. Quote it in a bug report. |
+| **Unknown fields** | Ignored, not rejected. Extra keys are safe to send. |
+| **Errors** | `{ error, hint?, status? }`. See [Errors & status codes](/errors). |
+
+<Callout type="warn" title="Timestamps are not consistently typed">
+  `expires_at` is an **ISO 8601 string** on `POST /v1/upload/token`, and an
+  **epoch-seconds number** on `POST /v1/video/:id/playback-token`. That is the
+  API's current behaviour, not a typo in these docs. Check the endpoint page
+  before you `new Date()` a value.
+</Callout>
+
+## Rate limiting
+
+The limiter is always on and never fails open. It backs three stores — plain
+Redis, Upstash REST, or an in-memory window — chosen by your configuration (see
+[Configuration](/configuration#rate-limiting)).
+
+An exceeded limit answers `429` with a `Retry-After` header. The SDKs surface it
+as `OpenVodError` with `code: 'RATE_LIMITED'` and `retryAfterMs` already parsed
+from that header — honour it rather than using a fixed backoff.
+
+```ts
+if (error instanceof OpenVodError && error.code === 'RATE_LIMITED') {
+  await sleep(error.retryAfterMs ?? 1000)
+}
+```
+
+## Health probes
+
+These are the only endpoints outside `/v1`. Both are public and use no
+credentials.
+
+### `GET /health`
+
+Liveness. Returns the plain text `ok` with a `200`. Point your load balancer or
+container healthcheck here.
+
+### `GET /health/config`
+
+Capability flags for your deployment, the fully resolved deployment shape, and
+any non-fatal advisories.
+
+```json
+{
+  "service": "openvod",
+  "time": "2025-01-15T10:00:00.000Z",
+  "ready": true,
+  "checks": {
+    "database": true,
+    "storage": true,
+    "transcoder": true,
+    "auth": true,
+    "analytics": false,
+    "ai": false
+  },
+  "deployment": {
+    "runtime": "node",
+    "dbTransport": "pg",
+    "rateLimitStore": "redis",
+    "transcodeProvider": "modal",
+    "selfHostedEnabled": false,
+    "modalDispatch": "direct-http",
+    "analyticsWrite": "none",
+    "analyticsRead": "none",
+    "uploadsEnabled": true,
+    "deliveryRuntime": "cloudflare-worker",
+    "deliveryUrl": "https://media.yourvod.com"
+  },
+  "maintenance": { "enabled": true, "stale": false, "lastSucceededAt": "2025-01-15T09:55:00.000Z" },
+  "problems": [],
+  "advisories": [],
+  "transcode": {
+    "providers": ["modal"],
+    "defaultProvider": "modal",
+    "uploads": true,
+    "localImport": false,
+    "subtitles": false,
+    "chapters": false,
+    "agents": { "paired": 0, "online": 0 }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `ready` | False when a fatal configuration problem exists. |
+| `checks` | Per-capability booleans: database, storage, transcoder, auth, analytics, AI. |
+| `deployment` | Which runtime, transport, provider and store this process actually resolved to. |
+| `maintenance` | Whether background maintenance is **enabled**, and whether it is **stale** — enabled but no recent successful pass. |
+| `problems` | Fatal and non-fatal configuration problems, as strings. |
+| `advisories` | Optional-capability notices. Not blockers. |
+| `transcode` | Coarse capability projection: `uploads` answers "can a browser upload be processed?" |
+
+**Secret-free by construction** — no credentials, tokens, connection strings,
+agent hostnames or file paths appear anywhere in it, which is why it is safe to
+call from a browser or a status page. Agent names and hostnames live behind the
+authenticated dashboard health instead.
+
+Two things worth checking on a new deployment: `maintenance.stale` (if true,
+webhook retries and storage reclamation are silently not running — see
+[Configuration](/configuration#maintenance-and-sweeper)) and `checks.storage`
+(false means uploads will fail).
+
+```bash
+curl -s "$OPENVOD_API_URL/health/config" | jq '{ready, checks, deployment}'
+```
+
+## Endpoint index
+
+Everything an integration uses. All are under `/v1`.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | [`/upload/token`](/api-reference/uploads#post-uploadtoken) | API key | Mint a short-lived upload token |
+| `POST` | [`/upload/create`](/api-reference/uploads#post-uploadcreate) | Upload token | Declare an upload, get the part plan |
+| `POST` | [`/upload/parts`](/api-reference/uploads#post-uploadparts) | Upload token | Get presigned URLs for a window of parts |
+| `POST` | [`/upload/complete`](/api-reference/uploads#post-uploadcomplete) | Upload token | Finish the upload and dispatch transcoding |
+| `POST` | [`/upload/abort`](/api-reference/uploads#post-uploadabort) | Upload token | Abandon an upload and delete its parts |
+| `GET` | [`/video/:id`](/api-reference/videos#get-videoid) | API key | Read one video's status and metadata |
+| `GET` | [`/videos`](/api-reference/videos#get-videos) | API key | List videos, newest last |
+| `PATCH` | [`/video/:id`](/api-reference/videos#patch-videoid) | API key | Rename, or change the playback policy |
+| `DELETE` | [`/video/:id`](/api-reference/videos#delete-videoid) | API key | Soft-delete a video and reclaim its objects |
+| `POST` | [`/video/:id/playback-token`](/api-reference/playback) | API key | Mint a playback session for one viewer |
+
+<Callout type="info" title="What is deliberately not here">
+  The dashboard's own `/api/*` routes (keys, webhook configuration, usage,
+  analytics) are session-authenticated by better-auth and are not a public
+  contract — they change with the dashboard. Build against `/v1` and the SDKs.
+  `POST /api/playback/journal` is the one exception: it is public and
+  unauthenticated, documented under [Analytics](/playback#analytics-opt-in), and
+  you should keep it behind your own proxy if the numbers drive decisions.
+</Callout>
+
+<Cards>
+  <Card title="Uploads" href="/api-reference/uploads" description="The five endpoints of the upload protocol." />
+  <Card title="Videos" href="/api-reference/videos" description="Reading, listing, updating and deleting videos." />
+  <Card title="Playback tokens" href="/api-reference/playback" description="Minting a playback session for one viewer." />
+  <Card title="Errors & status codes" href="/errors" description="Every code, in one place." />
+</Cards>

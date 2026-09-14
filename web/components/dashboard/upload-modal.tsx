@@ -1,13 +1,19 @@
 "use client";
 
 import * as React from "react";
-import Uppy, { UppyFile, Meta, Body } from "@uppy/core";
-import AwsS3 from "@uppy/aws-s3";
-import Dashboard from "@uppy/dashboard";
-import { Lock, Globe, Captions, ListVideo, Play } from "lucide-react";
-
-import "@uppy/core/css/style.min.css";
-import "@uppy/dashboard/css/style.min.css";
+import { OpenVodError, OpenVodUploader, UploadAbortedError } from "@openvod/uploader";
+import type { UploadProgress, UploadSession } from "@openvod/uploader";
+import {
+  AlertTriangle,
+  Captions,
+  FolderUp,
+  Globe,
+  ListVideo,
+  Lock,
+  Pause,
+  Play,
+  X,
+} from "lucide-react";
 
 import {
   Sheet,
@@ -23,15 +29,47 @@ interface UploadModalProps {
   onUploadComplete?: (fileId: string, key: string) => void;
 }
 
-interface CustomMeta extends Meta {
-  fileId?: string;
-  key?: string;
-  partSize?: number;
-  partCount?: number;
-}
-
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
+
+/**
+ * The public API lives at the **origin root** (`/v1/upload/...`), while
+ * `NEXT_PUBLIC_API_BASE_URL` points at the dashboard's own `/api` prefix. The
+ * uploader SDK takes the origin, so the suffix is stripped here rather than
+ * asking the deployment for a second URL that could drift from this one.
+ */
+const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, "");
+
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
+
+type Phase = "idle" | "uploading" | "paused" | "done" | "error";
+
+/** Human-readable message for an `OpenVodError` code. */
+function describeError(error: unknown): string {
+  if (error instanceof OpenVodError) {
+    switch (error.code) {
+      case "UPLOADS_DISABLED":
+        return "Uploads are disabled on this deployment.";
+      case "UPLOAD_TOKEN_EXPIRED":
+        return "The upload session expired before it started. Try again.";
+      case "UPLOAD_TOKEN_EXHAUSTED":
+        return "This upload session was already used. Try again.";
+      case "RATE_LIMITED":
+        return "Too many requests — the API is rate limiting this upload. Retry in a moment.";
+      case "SIZE_MISMATCH":
+      case "OBJECT_MISSING":
+        return "The uploaded bytes did not arrive intact. Please upload the file again.";
+      case "TOO_MANY_PARTS":
+        return "This file needs more parts than the API allows.";
+      case "NETWORK":
+        return "Network error while uploading. Retry when the connection is back.";
+      default:
+        return error.message;
+    }
+  }
+  if (error instanceof Error) return error.message;
+  return "Upload failed.";
+}
 
 function ToggleSwitch({
   checked,
@@ -64,354 +102,157 @@ function ToggleSwitch({
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(bytes) / Math.log(1024))
+  );
+  const value = bytes / 1024 ** exponent;
+  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
 export function UploadModal({
   open,
   onClose,
   onUploadComplete,
 }: UploadModalProps) {
-  const dashboardRef = React.useRef<HTMLDivElement>(null);
-  const uppyRef = React.useRef<Uppy<CustomMeta, Body> | null>(null);
   const [playbackPolicy, setPlaybackPolicy] = React.useState<
     "public" | "signed"
   >("public");
   const [generateSubtitle, setGenerateSubtitle] = React.useState(false);
   const [generateChapters, setGenerateChapters] = React.useState(false);
 
-  // Store in refs so they're accessible in Uppy callbacks
-  const playbackPolicyRef = React.useRef(playbackPolicy);
-  const generateSubtitleRef = React.useRef(generateSubtitle);
-  const generateChaptersRef = React.useRef(generateChapters);
-  React.useEffect(() => {
-    playbackPolicyRef.current = playbackPolicy;
-  }, [playbackPolicy]);
-  React.useEffect(() => {
-    generateSubtitleRef.current = generateSubtitle;
-  }, [generateSubtitle]);
-  React.useEffect(() => {
-    generateChaptersRef.current = generateChapters;
-  }, [generateChapters]);
-  // Auto-disable chapters if subtitles are disabled (chapters require transcription)
-  React.useEffect(() => {
-    if (!generateSubtitle && generateChapters) {
-      setGenerateChapters(false);
-    }
-  }, [generateSubtitle, generateChapters]);
+  const [file, setFile] = React.useState<File | null>(null);
+  const [phase, setPhase] = React.useState<Phase>("idle");
+  const [progress, setProgress] = React.useState<UploadProgress | null>(null);
+  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const [isDragging, setIsDragging] = React.useState(false);
+
+  const sessionRef = React.useRef<UploadSession | null>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const mountedRef = React.useRef(true);
 
   React.useEffect(() => {
-    if (!open || !dashboardRef.current) return;
-
-    // Initialize Uppy
-    const uppy = new Uppy<CustomMeta, Body>({
-      id: "uploader",
-      autoProceed: false,
-      restrictions: {
-        maxFileSize: 10 * 1024 * 1024 * 1024, // 10GB
-        allowedFileTypes: ["video/*"],
-      },
-    });
-
-    // Configure AWS S3 multipart upload with custom endpoints
-    uppy.use(AwsS3, {
-      id: "AwsS3",
-      shouldUseMultipart: (file: UppyFile<CustomMeta, Body>) =>
-        (file.size ?? 0) > 100 * 1024 * 1024, // Use multipart for files > 100MB
-
-      // For small files - single PUT upload
-      async getUploadParameters(file: UppyFile<CustomMeta, Body>) {
-        const response = await fetch(`${API_BASE_URL}/upload/url`, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            filename: file.name,
-            contentType: file.type,
-            size: file.size,
-            playbackPolicy: playbackPolicyRef.current,
-            generateSubtitle: generateSubtitleRef.current,
-            generateChapters: generateChaptersRef.current,
-          }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || "Failed to get upload URL");
-        }
-
-        const data = await response.json();
-
-        // Store fileId and key for later use
-        if (file.meta) {
-          file.meta.fileId = data.fileId;
-          file.meta.key = data.key;
-        }
-
-        return {
-          method: "PUT" as const,
-          url: data.uploadUrl,
-          headers: {
-            "Content-Type": file.type || "application/octet-stream",
-          },
-        };
-      },
-
-      // For large files - multipart upload
-      async createMultipartUpload(file: UppyFile<CustomMeta, Body>) {
-        const response = await fetch(
-          `${API_BASE_URL}/upload/multipart/create`,
-          {
-            method: "POST",
-            credentials: "include",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              filename: file.name,
-              contentType: file.type,
-              size: file.size,
-              playbackPolicy: playbackPolicyRef.current,
-              generateSubtitle: generateSubtitleRef.current,
-              generateChapters: generateChaptersRef.current,
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || "Failed to create multipart upload");
-        }
-
-        const data = await response.json();
-
-        // Store metadata for later
-        if (file.meta) {
-          file.meta.fileId = data.fileId;
-          file.meta.key = data.key;
-          file.meta.partSize = data.partSize;
-          file.meta.partCount = data.partCount;
-        }
-
-        return {
-          uploadId: data.uploadId,
-          key: data.key,
-        };
-      },
-
-      async listParts() {
-        // Not implementing resume functionality for now
-        return [];
-      },
-
-      async signPart(file: UppyFile<CustomMeta, Body>, partData) {
-        const { uploadId, key, partNumber } = partData;
-
-        const response = await fetch(`${API_BASE_URL}/upload/multipart/parts`, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            key,
-            uploadId,
-            partNumbers: [partNumber],
-            size: file.size,
-            partSize: file.meta?.partSize,
-          }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || "Failed to get part upload URL");
-        }
-
-        const data = await response.json();
-        const partInfo = data.urls[0];
-
-        return {
-          url: partInfo.url,
-          headers: {},
-        };
-      },
-
-      async completeMultipartUpload(
-        file: UppyFile<CustomMeta, Body>,
-        { uploadId, key, parts }
-      ) {
-        const response = await fetch(
-          `${API_BASE_URL}/upload/multipart/complete`,
-          {
-            method: "POST",
-            credentials: "include",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              key,
-              uploadId,
-              fileId: file.meta?.fileId,
-              parts: parts.map((part) => ({
-                partNumber: part.PartNumber,
-                etag: part.ETag,
-              })),
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || "Failed to complete upload");
-        }
-
-        const data = await response.json();
-        return { location: data.location };
-      },
-
-      async abortMultipartUpload(
-        file: UppyFile<CustomMeta, Body>,
-        { uploadId, key }
-      ) {
-        await fetch(`${API_BASE_URL}/upload/multipart/abort`, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            key,
-            uploadId,
-            fileId: file.meta?.fileId,
-          }),
-        });
-      },
-    });
-
-    // Use Dashboard UI
-    uppy.use(Dashboard, {
-      target: dashboardRef.current,
-      inline: true,
-      width: "100%",
-      height: 350,
-      proudlyDisplayPoweredByUppy: false,
-      theme: "dark",
-      note: "Video files up to 10GB. MP4, MOV, WebM, MKV supported.",
-      locale: {
-        strings: {
-          dropPasteFiles: "Drop video files here or %{browseFiles}",
-          browseFiles: "browse files",
-        },
-      },
-    });
-
-    // Handle individual file upload success (for single-file uploads, call /complete)
-    uppy.on("upload-success", async (file, response) => {
-      console.log("upload-success event fired", { file, response });
-      if (!file) return;
-
-      const meta = file.meta as CustomMeta;
-      const fileId = meta?.fileId;
-
-      // Only call /complete for single-file uploads (non-multipart)
-      // Multipart uploads have their own completeMultipartUpload callback
-      const isMultipart = (file.size ?? 0) > 100 * 1024 * 1024;
-
-      if (fileId && !isMultipart) {
-        try {
-          const result = await fetch(`${API_BASE_URL}/upload/complete`, {
-            method: "POST",
-            credentials: "include",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ fileId }),
-          });
-
-          if (!result.ok) {
-            // The bytes are in R2 but no transcode job started, so this upload
-            // will sit unprocessed until the sweeper gives up on it. Say so
-            // instead of closing the modal as if nothing happened.
-            const body = await result.json().catch(() => null);
-            console.error(
-              `Transcode not started for ${fileId}: HTTP ${result.status}`,
-              body?.error ?? body
-            );
-          }
-        } catch (err) {
-          console.error("Failed to mark upload as complete:", err);
-        }
-      }
-    });
-
-    // Handle upload complete
-    uppy.on("complete", (result) => {
-      if (result.successful && result.successful.length > 0) {
-        result.successful.forEach((file) => {
-          const fileId = (file.meta as CustomMeta)?.fileId;
-          const key = (file.meta as CustomMeta)?.key;
-          if (fileId && key) {
-            onUploadComplete?.(fileId, key);
-          }
-        });
-        onClose();
-      }
-    });
-
-    // Handle errors
-    uppy.on("error", (error) => {
-      console.error("Uppy error:", error);
-    });
-
-    // Handle file removal/cancel - delete from backend
-    uppy.on("file-removed", async (file: UppyFile<CustomMeta, Body>) => {
-      const meta = file.meta as CustomMeta;
-      const fileId = meta?.fileId;
-
-      if (!fileId) return;
-
-      // `file-removed` is not only a user cancel. The effect cleanup below calls
-      // `uppy.cancelAll()` when this modal closes — which the `complete` handler
-      // above triggers on every successful upload — and Uppy's `removeFiles()`
-      // emits `file-removed` for every file it drops. A file that finished
-      // uploading must never be cancelled: `/upload/complete` has already
-      // claimed the row and dispatched a transcode job against the object, so
-      // the DELETE this used to send destroyed both, and the worker then 404'd
-      // on a source that no longer existed. Uppy marks a finished upload in
-      // `progress.uploadComplete`, which survives into this event.
-      if (file.progress?.uploadComplete) return;
-
-      // If file had a fileId, delete the record from backend
-      // This handles both single-file and multipart uploads
-      try {
-        const response = await fetch(`${API_BASE_URL}/upload/${fileId}`, {
-          method: "DELETE",
-          credentials: "include",
-        });
-        const body = (await response.json().catch(() => null)) as {
-          deleted?: boolean;
-        } | null;
-
-        if (response.ok && body?.deleted) {
-          console.log(`Deleted canceled upload: ${fileId}`);
-        } else {
-          console.warn(
-            `Cancel not applied for ${fileId}: HTTP ${response.status}`,
-            body
-          );
-        }
-      } catch (err) {
-        console.error("Failed to delete upload:", err);
-      }
-    });
-
-    uppyRef.current = uppy;
-
+    mountedRef.current = true;
     return () => {
-      uppy.cancelAll();
-      uppy.destroy();
-      uppyRef.current = null;
+      mountedRef.current = false;
     };
-  }, [open, onUploadComplete]);
+  }, []);
+
+  const selectFile = (next: File | null) => {
+    if (!next) return;
+    if (next.size > MAX_UPLOAD_BYTES) {
+      setFile(null);
+      setPhase("error");
+      setErrorMessage(
+        `That file is ${formatBytes(next.size)} — the limit is 10 GB.`
+      );
+      return;
+    }
+    setFile(next);
+    setPhase("idle");
+    setProgress(null);
+    setErrorMessage(null);
+  };
+
+  const startUpload = async () => {
+    if (!file) return;
+
+    setPhase("uploading");
+    setErrorMessage(null);
+
+    try {
+      // Session-authenticated upload token: the API key stays on the server,
+      // and the browser talks to the same /v1/upload/* endpoints an external
+      // integration uses.
+      const tokenResponse = await fetch(`${API_BASE_URL}/upload/token`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expires_in: "1h", max_files: 1 }),
+      });
+
+      if (!tokenResponse.ok) {
+        const body = (await tokenResponse.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          body?.error ||
+            `Could not start an upload session (HTTP ${tokenResponse.status})`
+        );
+      }
+
+      const { upload_token: uploadToken } = (await tokenResponse.json()) as {
+        upload_token: string;
+      };
+
+      const uploader = new OpenVodUploader({
+        baseUrl: API_ORIGIN,
+        uploadToken,
+      });
+
+      const session = uploader.startUpload(file, {
+        title: file.name,
+        playbackPolicy,
+        generateSubtitle,
+        generateChapters: generateSubtitle && generateChapters,
+        onProgress: (next) => {
+          if (!mountedRef.current) return;
+          setProgress(next);
+        },
+      });
+      sessionRef.current = session;
+
+      const result = await session.run();
+
+      // The upload finished: drop the handle so nothing can cancel it.
+      // `/complete` has already claimed the row and dispatched a transcode job
+      // against the object, so a late abort would destroy both.
+      sessionRef.current = null;
+
+      if (!mountedRef.current) return;
+      setPhase("done");
+      onUploadComplete?.(result.fileId, result.key);
+      onClose();
+    } catch (error) {
+      sessionRef.current = null;
+      if (!mountedRef.current) return;
+
+      if (error instanceof UploadAbortedError) {
+        setPhase("idle");
+        setProgress(null);
+        return;
+      }
+
+      setPhase("error");
+      setErrorMessage(describeError(error));
+    }
+  };
+
+  const cancelUpload = async () => {
+    const session = sessionRef.current;
+    sessionRef.current = null;
+
+    // Abandoning the multipart upload also deletes the video row — abandoned
+    // parts are billed by storage until they are removed.
+    await session?.cancel().catch(() => undefined);
+
+    if (!mountedRef.current) return;
+    setPhase("idle");
+    setProgress(null);
+  };
+
+  const reset = () => {
+    setFile(null);
+    setPhase("idle");
+    setProgress(null);
+    setErrorMessage(null);
+  };
+
+  const percent = progress?.percentage ?? 0;
+  const isBusy = phase === "uploading" || phase === "paused";
 
   return (
     <Sheet
@@ -438,12 +279,14 @@ export function UploadModal({
           <div className="flex flex-col gap-2 rounded-sm border border-border bg-muted/30 p-1 sm:flex-row">
             <button
               type="button"
+              disabled={isBusy}
               onClick={() => setPlaybackPolicy("public")}
               className={cn(
                 "flex flex-1 flex-col items-start gap-1 rounded-sm px-3 py-2 text-left text-sm font-medium transition-all",
                 playbackPolicy === "public"
                   ? "bg-primary text-white shadow-sm"
-                  : "bg-black/70 text-muted-foreground hover:text-foreground"
+                  : "bg-black/70 text-muted-foreground hover:text-foreground",
+                isBusy && "cursor-not-allowed opacity-70"
               )}
             >
               <div className="flex items-center gap-2">
@@ -453,12 +296,14 @@ export function UploadModal({
             </button>
             <button
               type="button"
+              disabled={isBusy}
               onClick={() => setPlaybackPolicy("signed")}
               className={cn(
                 "flex flex-1 flex-col items-start gap-1 rounded-sm px-3 py-2 text-left text-sm font-medium transition-all",
                 playbackPolicy === "signed"
                   ? "bg-primary text-white shadow-sm"
-                  : "bg-black/70 text-muted-foreground hover:text-foreground"
+                  : "bg-black/70 text-muted-foreground hover:text-foreground",
+                isBusy && "cursor-not-allowed opacity-70"
               )}
             >
               <div className="flex items-center gap-2">
@@ -472,7 +317,15 @@ export function UploadModal({
         {/* AI Subtitles Toggle */}
         <div
           className="flex items-center justify-between gap-4 rounded-sm border border-border bg-muted-foreground/20 p-4 transition-colors"
-          onClick={() => setGenerateSubtitle(!generateSubtitle)}
+          onClick={() => {
+            if (isBusy) return;
+            const next = !generateSubtitle;
+            setGenerateSubtitle(next);
+            // Chapters are derived from the transcript, so they cannot outlive
+            // subtitles. Enforced here rather than in an effect that would
+            // re-render on every toggle.
+            if (!next) setGenerateChapters(false);
+          }}
         >
           <div className="flex flex-1 items-stretch gap-3">
             <div className="flex min-h-full w-11 shrink-0 items-center justify-center rounded-sm bg-black/40">
@@ -492,7 +345,12 @@ export function UploadModal({
           <div className="flex items-center gap-3">
             <ToggleSwitch
               checked={generateSubtitle}
-              onChange={() => setGenerateSubtitle(!generateSubtitle)}
+              disabled={isBusy}
+              onChange={() => {
+                const next = !generateSubtitle;
+                setGenerateSubtitle(next);
+                if (!next) setGenerateChapters(false);
+              }}
             />
           </div>
         </div>
@@ -501,12 +359,12 @@ export function UploadModal({
         <div
           className={cn(
             "flex items-center justify-between gap-4 rounded-sm border border-border bg-muted-foreground/20 p-4 transition-colors",
-            generateSubtitle
+            generateSubtitle && !isBusy
               ? "cursor-pointer"
               : "opacity-50 cursor-not-allowed"
           )}
           onClick={() =>
-            generateSubtitle && setGenerateChapters(!generateChapters)
+            generateSubtitle && !isBusy && setGenerateChapters(!generateChapters)
           }
         >
           <div className="flex flex-1 items-stretch gap-3">
@@ -521,15 +379,15 @@ export function UploadModal({
                 {!generateSubtitle
                   ? "Enable AI Subtitles first (chapters require transcription)"
                   : generateChapters
-                  ? "Chapters will be auto-generated from transcript"
-                  : "No chapters will be generated"}
+                    ? "Chapters will be auto-generated from transcript"
+                    : "No chapters will be generated"}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <ToggleSwitch
               checked={generateChapters && generateSubtitle}
-              disabled={!generateSubtitle}
+              disabled={!generateSubtitle || isBusy}
               onChange={() => {
                 if (generateSubtitle) {
                   setGenerateChapters(!generateChapters);
@@ -555,28 +413,153 @@ export function UploadModal({
             </div>
           </div>
 
+          {/* Drop zone / picker */}
           <div
-            ref={dashboardRef}
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (!isBusy) setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setIsDragging(false);
+              if (isBusy) return;
+              const dropped = event.dataTransfer.files?.[0];
+              if (dropped) selectFile(dropped);
+            }}
             className={cn(
-              "uppy-container rounded-sm overflow-hidden",
-              "[&_.uppy-Dashboard-inner]:!min-h-[300px]",
-              "[&_.uppy-Dashboard-inner]:!rounded-sm [&_.uppy-Dashboard-inner]:!border-border [&_.uppy-Dashboard-inner]:!bg-card/50",
-              "[&_.uppy-Dashboard-AddFiles]:!rounded-sm [&_.uppy-Dashboard-AddFiles]:!border-border [&_.uppy-Dashboard-AddFiles]:!bg-black/40",
-              "[&_.uppy-Dashboard-AddFiles]:!p-6 [&_.uppy-Dashboard-AddFiles-title]:!text-sm [&_.uppy-Dashboard-AddFiles-title]:!font-medium",
-              "[&_.uppy-Dashboard-browse]:!rounded-sm [&_.uppy-Dashboard-browse]:!px-2 [&_.uppy-Dashboard-browse]:!mx-1 [&_.uppy-Dashboard-browse]:!py-2 [&_.uppy-Dashboard-browse]:!bg-accent [&_.uppy-Dashboard-browse]:!text-foreground",
-              "[&_.uppy-Dashboard-note]:!text-xs [&_.uppy-Dashboard-note]:!text-muted-foreground/70",
-              "[&_.uppy-StatusBar]:!mt-4 [&_.uppy-StatusBar]:!border-t [&_.uppy-StatusBar]:!border-border [&_.uppy-StatusBar]:!bg-muted/30",
-              "[&_.uppy-StatusBar-actionBtn]:!h-11 [&_.uppy-StatusBar-actionBtn]:!w-40 [&_.uppy-StatusBar-actionBtn]:!rounded-sm",
-              "[&_.uppy-StatusBar-actionBtn_svg]:!h-5 [&_.uppy-StatusBar-actionBtn_svg]:!w-5",
-              "[&_.uppy-Dashboard-files]:!mt-4",
-              "[&_.uppy-Dashboard-Item]:!w-full [&_.uppy-Dashboard-Item]:!rounded-sm [&_.uppy-Dashboard-Item]:!border-border [&_.uppy-Dashboard-Item]:!bg-lime-500/10",
-              "[&_.uppy-Dashboard-Item-preview]:!w-full [&_.uppy-Dashboard-Item-previewInnerWrap]:!w-full [&_.uppy-Dashboard-Item-previewInnerWrap]:!rounded-sm [&_.uppy-Dashboard-Item-previewInnerWrap]:!bg-lime-500/10",
-              "[&_.uppy-Dashboard-Item-action]:!z-10",
-              "[&_.uppy-Dashboard-Item-name]:!text-foreground [&_.uppy-Dashboard-Item-status]:!text-lime-300",
-              "[&_.uppy-StatusBar.is-waiting]:!bg-muted/20 [&_.uppy-StatusBar.is-uploading]:!bg-muted/20",
-              "[&_.uppy-StatusBar-actionCircle]:!bg-black/10 [&_.uppy-StatusBar-actionCircle]:!shadow-none"
+              "flex min-h-[300px] flex-col items-center justify-center gap-3 rounded-sm border border-dashed border-border bg-black/40 p-6 text-center transition-colors",
+              isDragging && "border-primary bg-primary/10"
             )}
-          />
+          >
+            {file ? (
+              <div className="w-full space-y-3">
+                <div className="flex items-start justify-between gap-3 text-left">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {file.name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatBytes(file.size)}
+                      {progress && progress.partsTotal > 0
+                        ? ` • part ${progress.partsCompleted}/${progress.partsTotal}`
+                        : ""}
+                    </p>
+                  </div>
+                  {!isBusy && (
+                    <button
+                      type="button"
+                      onClick={reset}
+                      className="text-muted-foreground transition-colors hover:text-foreground"
+                      aria-label="Remove file"
+                    >
+                      <X className="size-4" />
+                    </button>
+                  )}
+                </div>
+
+                {(isBusy || phase === "done") && (
+                  <div className="space-y-2">
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-black/50">
+                      <div
+                        className="h-full rounded-full bg-lime-500/80 transition-[width]"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>
+                        {phase === "paused"
+                          ? "Paused"
+                          : phase === "done"
+                            ? "Uploaded"
+                            : progress?.phase === "completing"
+                              ? "Finishing…"
+                              : "Uploading…"}
+                      </span>
+                      <span>
+                        {percent}% • {formatBytes(progress?.bytesUploaded ?? 0)} /{" "}
+                        {formatBytes(progress?.bytesTotal ?? file.size)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  {phase === "idle" && (
+                    <button
+                      type="button"
+                      onClick={startUpload}
+                      className="rounded-sm bg-primary px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
+                    >
+                      Upload
+                    </button>
+                  )}
+                  {phase === "uploading" && (
+                    <button
+                      type="button"
+                      onClick={() => sessionRef.current?.pause()}
+                      className="inline-flex items-center gap-2 rounded-sm bg-black/70 px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-black/50"
+                    >
+                      <Pause className="size-4" />
+                      Pause
+                    </button>
+                  )}
+                  {phase === "paused" && (
+                    <button
+                      type="button"
+                      onClick={() => sessionRef.current?.resume()}
+                      className="inline-flex items-center gap-2 rounded-sm bg-primary px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
+                    >
+                      <Play className="size-4" />
+                      Resume
+                    </button>
+                  )}
+                  {isBusy && (
+                    <button
+                      type="button"
+                      onClick={cancelUpload}
+                      className="rounded-sm border border-border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                <FolderUp className="size-6 text-muted-foreground" />
+                <button
+                  type="button"
+                  onClick={() => inputRef.current?.click()}
+                  className="rounded-sm bg-accent px-3 py-2 text-sm font-medium text-foreground transition-opacity hover:opacity-90"
+                >
+                  browse files
+                </button>
+                <p className="text-xs text-muted-foreground/70">
+                  MP4, MOV, WebM, MKV
+                </p>
+              </>
+            )}
+
+            <input
+              ref={inputRef}
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={(event) => {
+                const picked = event.target.files?.[0] ?? null;
+                event.target.value = "";
+                selectFile(picked);
+              }}
+            />
+          </div>
+
+          {errorMessage && (
+            <div className="mt-3 flex items-start gap-2 rounded-sm border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
         </div>
 
         <p className="text-center text-xs text-muted-foreground/60">
@@ -585,6 +568,11 @@ export function UploadModal({
           {generateSubtitle && " • AI subtitles"}
           {generateChapters && " • AI chapters"}
         </p>
+        {isBusy && (
+          <p className="text-center text-xs text-muted-foreground/50">
+            Closing this panel does not stop the upload.
+          </p>
+        )}
       </SheetContent>
     </Sheet>
   );

@@ -1,0 +1,369 @@
+---
+title: Node backend
+description: Mint upload and playback tokens and verify webhooks from Express, Hono or Fastify — the server half an SPA or mobile app needs.
+---
+
+This guide covers the server side only: minting tokens and verifying webhooks.
+The browser half — uploading and playing — is identical on every stack and lives
+in the [React + Vite](/integrations/react-vite) or [Next.js](/integrations/nextjs)
+guides.
+
+If you are here because a client-only app has nowhere to keep the API key, you
+need exactly two routes. That is the whole requirement.
+
+## Two routes, minimum
+
+| Route | Called by | Returns |
+| --- | --- | --- |
+| `POST /api/upload-token` | Your frontend, before an upload | `{ uploadToken, expiresAt }` |
+| `POST /api/play-token/:id` | Your frontend, before playback or on refresh | `{ token, playbackUrl }` |
+
+Add a third for webhooks if you want to know when a transcode finishes.
+
+<Tabs items={['Express', 'Hono', 'Fastify']}>
+  <Tab value="Express">
+    ```bash
+    npm install express @openvod/server
+    ```
+
+    ```ts
+    import express from 'express'
+    import { OpenVod, WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+
+    const app = express()
+
+    const vod = new OpenVod({
+      apiKey: process.env.OPENVOD_API_KEY!,
+      baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+    })
+
+    // ── Upload token ──────────────────────────────────────────────────────
+    app.post('/api/upload-token', express.json(), async (req, res) => {
+      // TODO: authorize `req` — your session middleware goes here.
+      const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+      res.json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
+    })
+
+    // ── Playback token ────────────────────────────────────────────────────
+    app.post('/api/play-token/:id', express.json(), async (req, res) => {
+      const viewerUserAgent = req.get('x-viewer-user-agent') ?? req.get('user-agent')
+
+      const session = await vod.playback.createToken(req.params.id, {
+        expiresIn: '2h',
+        viewerUserAgent,
+      })
+
+      res.json({ token: session.token, playbackUrl: session.playback_url })
+    })
+
+    // ── Webhooks ──────────────────────────────────────────────────────────
+    // express.raw, NOT express.json: the signature covers the raw bytes.
+    app.post(
+      '/api/webhooks/openvod',
+      express.raw({ type: 'application/json' }),
+      async (req, res) => {
+        const rawBody = req.body.toString('utf8') // a Buffer, thanks to express.raw
+
+        try {
+          const event = await constructWebhookEvent({
+            secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+            rawBody,
+            signature: req.get('x-webhook-signature'),
+            timestamp: req.get('x-webhook-timestamp'),
+            event: req.get('x-webhook-event'),
+          })
+
+          if (event.event === 'video.ready') {
+            // AT-LEAST-ONCE: de-duplicate on event.id first.
+          }
+
+          res.json({ received: true })
+        } catch (error) {
+          if (error instanceof WebhookSignatureError) {
+            // 400 so the sender does not retry a forged or stale delivery.
+            return res.status(400).json({ error: `Invalid signature: ${error.reason}` })
+          }
+          throw error
+        }
+      },
+    )
+
+    app.listen(3001)
+    ```
+
+    <Callout type="error" title="Do not add express.json() globally">
+      A global `app.use(express.json())` runs before your webhook route and
+      consumes the raw body, so `express.raw` never sees it and every delivery
+      fails with `mismatch`. Mount the JSON parser **per route**, as above, or
+      exclude the webhook path.
+    </Callout>
+  </Tab>
+
+  <Tab value="Hono">
+    ```bash
+    npm install hono @hono/node-server @openvod/server
+    ```
+
+    ```ts
+    import { Hono } from 'hono'
+    import { serve } from '@hono/node-server'
+    import { OpenVod, WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+
+    const app = new Hono()
+
+    const vod = new OpenVod({
+      apiKey: process.env.OPENVOD_API_KEY!,
+      baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+    })
+
+    app.post('/api/upload-token', async (c) => {
+      // TODO: authorize `c` — c.get('user') from your middleware goes here.
+      const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+      return c.json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
+    })
+
+    app.post('/api/play-token/:id', async (c) => {
+      const viewerUserAgent =
+        c.req.header('x-viewer-user-agent') ?? c.req.header('user-agent')
+
+      const session = await vod.playback.createToken(c.req.param('id'), {
+        expiresIn: '2h',
+        viewerUserAgent,
+      })
+
+      return c.json({ token: session.token, playbackUrl: session.playback_url })
+    })
+
+    app.post('/api/webhooks/openvod', async (c) => {
+      // Hono does not parse the body until you ask — text() gives the raw bytes.
+      const rawBody = await c.req.text()
+
+      try {
+        const event = await constructWebhookEvent({
+          secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+          rawBody,
+          signature: c.req.header('x-webhook-signature'),
+          timestamp: c.req.header('x-webhook-timestamp'),
+          event: c.req.header('x-webhook-event'),
+        })
+
+        if (event.event === 'video.ready') {
+          // AT-LEAST-ONCE: de-duplicate on event.id first.
+        }
+
+        return c.json({ received: true })
+      } catch (error) {
+        if (error instanceof WebhookSignatureError) {
+          return c.json({ error: `Invalid signature: ${error.reason}` }, 400)
+        }
+        throw error
+      }
+    })
+
+    serve({ fetch: app.fetch, port: 3001 })
+    ```
+
+    <Callout type="info" title="Hono gives you the raw body for free">
+      `c.req.text()` reads the body as text and never parses it — the natural
+      correct behaviour for signature verification. Just do not call
+      `c.req.json()` first; a request body is a stream and can only be read once.
+    </Callout>
+  </Tab>
+
+  <Tab value="Fastify">
+    ```bash
+    npm install fastify @openvod/server
+    ```
+
+    ```ts
+    import Fastify from 'fastify'
+    import { OpenVod, WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+
+    const app = Fastify()
+
+    const vod = new OpenVod({
+      apiKey: process.env.OPENVOD_API_KEY!,
+      baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+    })
+
+    // Keep the raw JSON text on every request, so the webhook route can verify
+    // against the exact bytes that were signed.
+    app.addContentTypeParser(
+      'application/json',
+      { parseAs: 'string' },
+      (req, body, done) => {
+        ;(req as { rawBody?: string }).rawBody = body as string
+        try {
+          done(null, JSON.parse(body as string))
+        } catch (error) {
+          done(error as Error, undefined)
+        }
+      },
+    )
+
+    app.post('/api/upload-token', async () => {
+      // TODO: authorize `request` — app.addHook('preHandler', …) goes here.
+      const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+      return { uploadToken: token.upload_token, expiresAt: token.expires_at }
+    })
+
+    app.post<{ Params: { id: string } }>('/api/play-token/:id', async (request) => {
+      const viewerUserAgent =
+        request.headers['x-viewer-user-agent'] ?? request.headers['user-agent']
+
+      const session = await vod.playback.createToken(request.params.id, {
+        expiresIn: '2h',
+        viewerUserAgent: typeof viewerUserAgent === 'string' ? viewerUserAgent : undefined,
+      })
+
+      return { token: session.token, playbackUrl: session.playback_url }
+    })
+
+    app.post('/api/webhooks/openvod', async (request, reply) => {
+      const rawBody = (request as { rawBody?: string }).rawBody ?? ''
+      const headers = request.headers as Record<string, string | undefined>
+
+      try {
+        const event = await constructWebhookEvent({
+          secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+          rawBody,
+          signature: headers['x-webhook-signature'],
+          timestamp: headers['x-webhook-timestamp'],
+          event: headers['x-webhook-event'],
+        })
+
+        if (event.event === 'video.ready') {
+          // AT-LEAST-ONCE: de-duplicate on event.id first.
+        }
+
+        return { received: true }
+      } catch (error) {
+        if (error instanceof WebhookSignatureError) {
+          return reply.status(400).send({ error: `Invalid signature: ${error.reason}` })
+        }
+        throw error
+      }
+    })
+
+    app.listen({ port: 3001 })
+    ```
+
+    <Callout type="warn" title="Fastify parses JSON before your handler runs">
+      Unlike Hono, Fastify consumes the body first. The custom content-type parser
+      above keeps a copy of the raw text on each request — that copy is what you
+      verify. Register it **before** any route that needs it.
+    </Callout>
+  </Tab>
+</Tabs>
+
+## Cloudflare Workers and edge runtimes
+
+`@openvod/server` runs unchanged on Workers, Deno and Bun. It uses WebCrypto for
+webhook verification, so there is no Node `crypto` dependency and nothing to
+polyfill.
+
+```ts
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const vod = new OpenVod({
+      apiKey: env.OPENVOD_API_KEY,
+      baseUrl: env.OPENVOD_API_URL,
+    })
+
+    const url = new URL(request.url)
+
+    if (url.pathname === '/api/upload-token' && request.method === 'POST') {
+      const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+      return Response.json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
+    }
+
+    if (url.pathname === '/api/webhooks/openvod' && request.method === 'POST') {
+      const rawBody = await request.text() // Workers: no framework parser in the way
+
+      const event = await constructWebhookEvent({
+        secret: env.OPENVOD_WEBHOOK_SECRET,
+        rawBody,
+        signature: request.headers.get('x-webhook-signature'),
+        timestamp: request.headers.get('x-webhook-timestamp'),
+        event: request.headers.get('x-webhook-event'),
+      })
+
+      return Response.json({ received: true })
+    }
+
+    return new Response('Not found', { status: 404 })
+  },
+}
+```
+
+<Callout type="info" title="A Worker is a great home for the token routes">
+  No cold-start penalty worth mentioning, and it is exactly the same deployment
+  model as the OpenVOD delivery worker. If your frontend is already on Workers or
+  Pages, this is the least-moving-parts place to mint tokens.
+</Callout>
+
+## Authenticate the token routes
+
+The examples carry a `TODO` because OpenVOD cannot know your auth model — and
+because these routes are a real security boundary:
+
+- **`/api/upload-token`** lets the caller start an upload against your storage
+  and spend a transcode job. Require a session.
+- **`/api/play-token/:id`** decides who may watch *what*. A signed-in user must
+  still be checked against **this video id** — otherwise any account can mint a
+  token for any id it can guess. This is the most commonly missed check in an
+  OpenVOD integration.
+
+```ts
+app.post('/api/play-token/:id', express.json(), async (req, res) => {
+  const user = await requireSession(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+
+  if (!(await db.videos.canWatch(user.id, req.params.id))) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+
+  // …then mint.
+})
+```
+
+## Forward the viewer's User-Agent
+
+For a signed video, the playback token is bound to the viewer's normalized browser
+family and the delivery worker enforces the binding. Your backend cannot see the
+viewer's browser on its own, so have the client send it:
+
+```ts
+// Client — Vite, Svelte, Vue, anything.
+const res = await fetch(`/api/play-token/${videoId}`, {
+  method: 'POST',
+  headers: { 'x-viewer-user-agent': navigator.userAgent },
+})
+```
+
+The server forwards that header to `viewerUserAgent`. Fall back to the request's
+own `user-agent` header for a plain browser fetch, but never let a server-side
+`fetch` supply it — that produces a token bound to your server and rejected in
+the browser.
+
+## Verify the response isn't lying to you
+
+Mint a token and check it round-trips before wiring a frontend:
+
+```bash
+curl -s -X POST localhost:3001/api/upload-token | jq
+# { "uploadToken": "ut_…", "expiresAt": "2025-01-15T11:30:00.000Z" }
+
+curl -s -X POST localhost:3001/api/play-token/VIDEO_ID \
+  -H "x-viewer-user-agent: $UA" | jq
+# { "token": "eyJ…", "playbackUrl": "https://media.…/playlist.m3u8?token=eyJ…" }
+```
+
+If `playbackUrl` has no `?token=`, the video is `public` and the token is `null`.
+That is correct, not a bug.
+
+<Cards>
+  <Card title="React + Vite" href="/integrations/react-vite" description="The browser half that calls these routes." />
+  <Card title="Webhooks" href="/webhooks" description="Every event, the payload shape and the delivery guarantees." />
+  <Card title="API reference" href="/api-reference" description="The raw HTTP these SDK calls make." />
+</Cards>

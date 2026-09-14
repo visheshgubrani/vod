@@ -65,7 +65,7 @@ _config_warned = False
 
 
 def _emit_config_warnings_once() -> None:
-    """Log allowlist gaps inside the container, where r2-creds is injected.
+    """Log allowlist gaps inside the container, where openvod-creds is injected.
 
     Do not call this at module import: `modal deploy` imports this file on the
     laptop, which has no Modal secret env, and the warnings are a false alarm.
@@ -218,7 +218,19 @@ def healthz(request: Request):
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("r2-creds")],
+    secrets=[
+        modal.Secret.from_name(
+            "openvod-creds",
+            # Asserted at deploy time: a secret missing one of these would
+            # otherwise surface as a 500 on the first upload or, worse, as an
+            # empty allowlist that silently accepts any bucket.
+            required_keys=[
+                "TRANSCODE_INGEST_SECRET",
+                "ALLOWED_SOURCE_BUCKETS",
+                "ALLOWED_CALLBACK_HOSTS",
+            ],
+        )
+    ],
 )
 @modal.fastapi_endpoint(method="POST")
 def transcode_video(request: Request, payload: dict):
@@ -355,7 +367,20 @@ def transcode_video(request: Request, payload: dict):
 @app.function(
     gpu="l4",
     image=image,
-    secrets=[modal.Secret.from_name("r2-creds"), modal.Secret.from_name("groq-creds")],
+    secrets=[
+        modal.Secret.from_name(
+            "openvod-creds",
+            required_keys=[
+                "R2_BUCKET_NAME",
+                "TRANSCODE_INGEST_SECRET",
+                "ALLOWED_SOURCE_BUCKETS",
+                "ALLOWED_CALLBACK_HOSTS",
+            ],
+        ),
+        # Required to exist even when AI subtitles are skipped; the wizard
+        # creates it with a dummy value.
+        modal.Secret.from_name("openvod-groq-creds"),
+    ],
     timeout=3600,  # 1 hour max
     memory=16384,  # 16GB RAM
     # Four cores are enough for three GPU renditions plus a software fallback;

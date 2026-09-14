@@ -1,20 +1,26 @@
 ---
 title: Deployment
-description: Docker Compose deployment, the Workers path, and the axes a deployment can choose.
+description: Docker Compose and Cloudflare Workers deployment shapes, the axes a deployment chooses, maintenance, recovery and what refuses to boot.
 ---
 
-OpenVOD has one codebase and two stacks. Local development runs Postgres +
-Redis from `docker-compose.dev.yml` and the API/dashboard on the host
-(`pnpm dev`). The **deployment** stack is `docker-compose.yml`, configured by
-`.env` at the repo root, and signed playback is always the **Cloudflare
-delivery worker** in front of R2.
+OpenVOD has one codebase and two stacks. Local development runs Postgres and
+Redis from `docker-compose.dev.yml` with the API and dashboard on the host
+(`pnpm dev`). A **deployment** is `docker-compose.yml`, configured by `.env` at
+the repo root — or Workers, configured by `wrangler secret`.
 
-The canonical walkthrough is
-[`docs/deploy.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deploy.md)
-in the repository; the architecture axes are
-[`docs/deployment-shapes.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deployment-shapes.md).
+Signed playback is always the **Cloudflare delivery worker** in front of R2. That
+is fixed, not a default.
 
-## Compose deployment
+<Callout type="info" title="Not sure which shape you want?">
+  [Quickstart](/quickstart) walks both paths end to end. Come back here for the
+  operational detail — maintenance, recovery, and what breaks on the Workers
+  runtime.
+</Callout>
+
+## Path A — Docker Compose
+
+Runs the API, dashboard, Postgres and Redis. Requires a Cloudflare delivery worker
+deployed separately.
 
 ```bash
 cp .env.example .env      # secrets, public URLs, R2 buckets — never commit it
@@ -22,14 +28,46 @@ pnpm docker:migrate       # one-shot migrate service (profile "tools")
 pnpm docker:up            # docker compose up -d
 ```
 
-- API `http://localhost:8787`, dashboard `http://localhost:3000` — bound to
-  `127.0.0.1`; use a reverse proxy for public traffic.
-- Postgres and Redis are internal to the stack (no host port). Set
-  `DATABASE_URL`/`REDIS_URL` in `.env` to point at your own servers.
-- `NEXT_PUBLIC_*` are baked at web image build time; rebuild after changing
-  them.
-- `pnpm dev` and `docker compose up -d` both want ports 8787/3000 — run one or
+- API on `http://localhost:8787`, dashboard on `http://localhost:3000`, both
+  bound to `127.0.0.1`. Put a reverse proxy in front for public traffic.
+- Postgres and Redis are internal to the stack with no host port. Set
+  `DATABASE_URL` / `REDIS_URL` in `.env` to point at your own servers instead.
+- `NEXT_PUBLIC_*` values are baked into the web image at build time. Changing one
+  means rebuilding the image.
+- `pnpm dev` and `docker compose up -d` both want ports 8787 and 3000. Run one or
   the other, not both.
+
+**The Compose stack has no delivery service** — there is no Node delivery path.
+Deploy `delivery/` to Cloudflare regardless of which shape you choose.
+
+## Path B — Cloudflare Workers
+
+The API runs on Workers, so Postgres must be reachable over HTTP.
+
+```bash
+cd server
+pnpm exec wrangler secret bulk <secrets.json>   # or one `wrangler secret put` each
+pnpm exec wrangler deploy
+```
+
+Two hard requirements:
+
+- `DB_DRIVER=neon-http` with a Neon URL. `DB_DRIVER=pg` and `REDIS_URL` **cannot**
+  work on Workers — the runtime cannot hold a TCP connection across requests or
+  open a plain socket. The server refuses to start and explains why rather than
+  failing later in a confusing way.
+- Rate limiting uses Upstash REST or the in-memory limiter. Not `REDIS_URL`.
+
+The dashboard goes wherever Next.js runs — Vercel, the Docker web image, or a
+Node host. Set its `NEXT_PUBLIC_*` values to your deployed API.
+
+<Callout type="warn" title="Modal cannot reach localhost">
+  `BACKEND_URL` is the API's own **public** origin, and the transcode callback URL
+  is built from it. If it points at `localhost`, Modal's cloud cannot deliver the
+  callback and videos strand in `processing` forever while the database never
+  flips to `ready` or `failed`. For local development against real Modal, expose
+  the API with a tunnel and point `BACKEND_URL` at it.
+</Callout>
 
 ## What varies, and what does not
 
@@ -40,35 +78,134 @@ pnpm docker:up            # docker compose up -d
 | Transcode provider | `modal` \| `self-hosted` | `TRANSCODE_PROVIDER` |
 | Dispatch transport | `direct-http` \| `qstash` | `QSTASH_TOKEN` presence |
 | Rate-limit store | `memory` \| `redis` (TCP, Node only) \| `upstash` (REST) | `REDIS_URL` → Upstash REST → in-memory |
-| Analytics write | `workers-analytics-engine` \| `none` | `PLAYBACK_ANALYTICS` binding (Workers only) |
+| Analytics write | `workers-analytics-engine` \| `none` | The `PLAYBACK_ANALYTICS` binding (Workers only) |
 | Analytics read | `cloudflare-sql` \| `none` | `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` |
 
-**Fixed:** delivery is the Cloudflare Worker + R2 (there is no Node delivery,
-so the Compose stack has no service for it); object storage is Cloudflare R2.
+**Fixed:** delivery is the Cloudflare Worker + R2, and object storage is
+Cloudflare R2. Generic S3 and MinIO are not implemented.
 
-Fatal at boot, with an explanatory message: `DB_DRIVER=pg` on Workers,
-`REDIS_URL` on Workers, and an unrecognised `TRANSCODE_PROVIDER`.
+`GET /health/config` reports exactly which of these your running deployment
+resolved to — see [the health endpoint](/api-reference#get-healthconfig).
 
-## Other deployment facts
+### Combinations that refuse to boot
 
-- **Migrations**: `pnpm docker:migrate` in a deployment, `pnpm db:migrate` in
-  development. The API container also migrates on boot, but that races with
-  multiple replicas. `db:push` is not a substitute — it cannot create the
-  hand-written cleanup trigger.
-- **Profiles**: `migrate` (profile `tools`, via `pnpm docker:migrate`) and
-  `transcoder` (profile `transcoder`, the self-hosted agent —
-  `docker compose --profile transcoder up -d`).
-- **Transcoding**: Modal GPU (`modal deploy main.py` in `transcoding/`) or a
-  self-hosted agent. Both run the same engine; the choice is stored per job.
-- **Delivery**: Cloudflare Worker (R2 binding, JWT verification, manifest
-  rewriting, bandwidth metering). `DEFAULT_POLICY=signed` sets the fallback
-  playback policy (delivery `.dev.vars` / worker env). Add your custom domain
-  after `wrangler deploy` (the config ships commented examples, not live
-  hostnames).
-- **Storage**: Cloudflare R2. Generic S3/MinIO is not implemented yet.
-- **Health**: `GET /health` (liveness), `GET /health/config` (BYOK capability
-  flags including an advisory `delivery` check and the resolved `deployment`
-  object, no secrets), delivery `GET /health`, Modal `GET /healthz`.
-- **Recovery**: heartbeat-aware job sweeper; Workers cron (`SWEEP_ENABLED` +
-  `triggers.crons`) or the Compose `maintenance` service calling
-  `POST /api/internal/sweep` with `INTERNAL_SWEEP_SECRET`.
+| Combination | Why it is fatal |
+| --- | --- |
+| `DB_DRIVER=pg` on Workers | Workers cannot hold a Postgres TCP connection across requests. The first query succeeds and the rest fail. |
+| `REDIS_URL` on Workers | Workers cannot open a plain TCP socket. Use Upstash REST. |
+| An unrecognised `TRANSCODE_PROVIDER` | The provider is stored per job at creation. Guessing would silently misroute work. |
+
+## Profiles and services
+
+| Service | Profile | How to run it |
+| --- | --- | --- |
+| `api` | default | `pnpm docker:up` |
+| `web` | default | `pnpm docker:up` |
+| `postgres`, `redis` | default | internal only, no host ports |
+| `migrate` | `tools` | `pnpm docker:migrate` |
+| `maintenance` | default | runs the sweep loop on `MAINTENANCE_INTERVAL_SECONDS` |
+| `transcoder` | `transcoder` | `docker compose --profile transcoder up -d` (self-hosted agent) |
+
+## Migrations
+
+```bash
+pnpm docker:migrate       # a deployment
+pnpm db:migrate           # development
+```
+
+The `api` container also migrates on boot, but that races when you run more than
+one replica — the one-shot service is the right call in production.
+
+<Callout type="error" title="db:push is not a substitute">
+  `db:push` cannot create the hand-written cleanup trigger, so the schema is
+  subtly wrong in a way nothing catches until a video is deleted. Always
+  `db:migrate`.
+</Callout>
+
+## Transcoding
+
+Two providers share one engine:
+
+- **Modal GPU** — `modal deploy main.py` in `transcoding/`. Needs the
+  `openvod-creds` secret (and `openvod-groq-creds`, which the GPU function
+  requires to exist even when you skip AI — use a dummy value).
+- **Self-hosted agent** — `docker compose --profile transcoder up -d`, or the
+  `openvod_transcoder.agent` CLI. Pairing uses an organization-scoped token that
+  cannot mint playback tokens or read another tenant's data, and holds no storage
+  credentials: transfers are presigned per artifact and bounded to the attempt
+  prefix.
+
+The choice is stored **per job** at creation, so changing `TRANSCODE_PROVIDER`
+never reroutes work that already exists. `SELF_HOSTED_ENABLED=false` is the
+documented rollback — it stops new local submissions and cancels nothing.
+
+## Delivery worker
+
+`wrangler deploy` in `delivery/`. It:
+
+- verifies HS256 playback JWTs per request for signed content,
+- rewrites every URI-bearing HLS/DASH tag, never foreign-host URLs,
+- serves `206` range requests,
+- meters bandwidth into Analytics Engine,
+- cache-tags signed segments.
+
+`DEFAULT_POLICY=signed` sets the fallback playback policy for the worker. Add your
+custom domain after deploying — the shipped config contains commented examples,
+not live hostnames.
+
+<Callout type="error" title="JWT_SECRET must match on both sides">
+  The API signs playback tokens and the delivery worker verifies them with the
+  same HS256 secret. A mismatch makes every signed video fail with a `401` that
+  looks like an auth bug in your app. One value, two places.
+</Callout>
+
+## Maintenance and recovery
+
+Without maintenance, two things silently stop: **webhook retries** and **storage
+reclamation**. Deleted videos keep their bytes in R2 and failed deliveries are
+never retried.
+
+| Runtime | What runs the sweep |
+| --- | --- |
+| Compose | The `maintenance` service, automatically |
+| Workers | The cron trigger in `server/wrangler.jsonc`, when `SWEEP_ENABLED=true` |
+| Node, bare | **Nothing.** Hit the endpoint from your own cron |
+
+```bash
+curl -X POST http://localhost:8787/api/internal/sweep \
+  -H "x-sweep-secret: $INTERNAL_SWEEP_SECRET"
+```
+
+The sweeper is heartbeat-aware: a `processing` job stale for more than 45 minutes
+is retried up to 3 times, then fails with a typed `JOB_TIMEOUT`. Abandoned
+`uploading` rows are cleaned up separately.
+
+`GET /health/config` reports `maintenance.enabled` **and** `maintenance.stale`.
+Stale means the flag is on but no pass has succeeded recently — the exact silent
+failure worth alerting on.
+
+### Health probes
+
+| Probe | Returns |
+| --- | --- |
+| `GET /health` (API) | Plain text `ok`. Use for liveness. |
+| `GET /health/config` (API) | Capability flags, deployment shape, maintenance status. Secret-free. |
+| `GET /health` (delivery worker) | Liveness for the delivery worker. |
+| `GET /healthz` (Modal) | Liveness for the transcode endpoint. |
+
+## Environment
+
+Every variable, grouped, with the development-versus-deployment file split and the
+fatal combinations, is on [Configuration](/configuration). The short version:
+
+- **Development:** `server/.dev.vars`, loaded via `load-local-env.ts`.
+- **Deployment:** `.env` at the repo root, read by Compose.
+- **Workers:** `wrangler secret put` / `wrangler secret bulk`. Never a committed
+  file.
+
+<Cards>
+  <Card title="Configuration" href="/configuration" description="Every environment variable and which file it belongs in." />
+  <Card title="Quickstart" href="/quickstart" description="The step-by-step path to a running deployment." />
+  <Card title="Errors & status codes" href="/errors" description="Typed failure codes, including the transcode ones the sweeper produces." />
+  <Card title="Self-hosted transcoding" href="https://github.com/visheshgubrani/vod/blob/main/docs/self-hosted-transcoding.md" description="The agent protocol, attempt scoping and publication verification." />
+</Cards>

@@ -1,13 +1,21 @@
 name: Publish packages
 
+# Tag-triggered, and deliberately not the same namespace as app releases: a
+# `v*` tag used to publish three npm packages as a side effect.
 on:
   push:
     tags:
-      - 'v*'
+      - 'packages-v*'
+
+concurrency:
+  group: publish-packages
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -20,11 +28,49 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Install workspace
         run: pnpm install --frozen-lockfile
-      - name: Publish @openvod/uploader
-        run: pnpm --filter @openvod/uploader publish --no-git-checks
+      - name: Test the packages being published
+        run: |
+          pnpm --filter @openvod/uploader test
+          pnpm --filter @openvod/player test
+          pnpm --filter @openvod/server test
+      - name: Build
+        run: |
+          pnpm --filter @openvod/uploader build
+          pnpm --filter @openvod/player build
+          pnpm --filter @openvod/server build
+      # A dry run catches the packaging mistakes (a missing `files` entry, a
+      # dist path that no longer exists, exports pointing at an unbuilt file)
+      # before the registry has an immutable version to regret.
+      - name: Pack (dry run)
+        run: |
+          for pkg in @openvod/uploader @openvod/player @openvod/server; do
+            echo "::group::npm pack $pkg"
+            (cd "$(pnpm --filter "$pkg" exec pwd)" && npm pack --dry-run)
+            echo "::endgroup::"
+          done
+      - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Publish @openvod/player
-        run: pnpm --filter @openvod/player publish --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in @openvod/uploader @openvod/player @openvod/server; do
+            version=$(node -p "require('./$(pnpm --filter "$pkg" exec pwd | sed 's|^'$PWD'/||')/package.json').version")
+            if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
+              echo "${pkg}@${version} is already on the registry — skipping"
+              continue
+            fi
+            echo "Publishing ${pkg}@${version}"
+            pnpm --filter "$pkg" publish --no-git-checks --access public
+          done
+      - name: Verify the published tarballs resolve
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          cd "$workdir"
+          npm init -y >/dev/null
+          npm install @openvod/uploader @openvod/player @openvod/server
+          # The exports map must resolve from both module systems: ESM for
+          # bundlers, CJS for the server SDK inside a CommonJS app.
+          node -e "const u = require('@openvod/uploader'); if (!u.OpenVodUploader) process.exit(1)"
+          node -e "const s = require('@openvod/server'); if (!s.OpenVod || !s.constructWebhookEvent) process.exit(1)"
+          node --input-type=module -e "import { OpenVodUploader } from '@openvod/uploader'; import { OpenVod } from '@openvod/server'; if (!OpenVodUploader || !OpenVod) process.exit(1)"

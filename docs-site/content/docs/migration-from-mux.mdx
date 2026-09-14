@@ -1,0 +1,97 @@
+---
+title: Coming from Mux
+description: A concept map from Mux primitives to the OpenVOD equivalents, and what actually changes when you run the infrastructure yourself.
+---
+
+The primitives line up one-to-one; the ownership does not. Mux runs the control
+plane, the storage and the delivery network for you. OpenVOD gives you the same
+shape of API on top of infrastructure **you** run: your API process, your
+Postgres, your Cloudflare R2 buckets, and a Cloudflare delivery worker you
+deploy.
+
+## Concept map
+
+| Mux | OpenVOD | Notes |
+| --- | --- | --- |
+| Asset | Video (`GET /v1/video/:id`) | Created by the upload flow; status is `pending`, `uploading`, `processing`, `ready` or `failed`. |
+| Playback ID | Video id (UUID) | One id per video. `playback_policy` (`'public'` or `'signed'`) is a property of the video, not of a separate playback ID. |
+| Direct upload | Upload token (`ut_…`) + `/v1/upload/create`, `/parts`, `/complete`, `/abort` | Your backend mints the token with the API key; the browser uploads straight to R2. |
+| Signing key + playback ID | Playback token (`POST /v1/video/:id/playback-token`) + the delivery worker | HS256 JWT built from the deployment's shared `JWT_SECRET`, delivered as `?token=`, verified per request. |
+| Signed playback URL | `session.playback_url` from `@openvod/server` | The API builds it from your delivery origin and appends the token. |
+| Webhook signature verification | `constructWebhookEvent` from `@openvod/server` | HMAC-SHA256 over `<timestamp>.<raw body>`; see [Webhooks](/webhooks). |
+| Mux Data | Opt-in `@openvod/player` analytics to `POST /api/playback/journal` | Read in your own dashboard. No analytics SDK, and the journal route is unauthenticated today. |
+| Mux Player / hosted embed | `@openvod/player`, or any HLS player with the manifest URL | No hosted embed or iframe service. The player is React-only — see [Framework integrations](/integrations#the-matrix). |
+| Environments | One OpenVOD deployment | API runtime, database, buckets and delivery worker are all yours. |
+
+## Side by side
+
+Creating an upload and uploading from the browser:
+
+```ts
+// Your backend — the API key stays here.
+import { OpenVod } from '@openvod/server'
+
+const vod = new OpenVod({
+  apiKey: process.env.OPENVOD_API_KEY!,
+  baseUrl: process.env.OPENVOD_API_URL!, // your API origin, no /v1 suffix
+})
+
+const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+return Response.json({ uploadToken: token.upload_token })
+```
+
+```ts
+// The browser — only the short-lived token.
+import { OpenVodUploader } from '@openvod/uploader'
+
+const uploader = new OpenVodUploader({ baseUrl, uploadToken })
+const result = await uploader.upload(file, { title: 'My Video' })
+// result.fileId is the video id; wait for the video.ready webhook.
+```
+
+Minting playback for one viewer:
+
+```ts
+const session = await vod.playback.createToken(videoId, {
+  expiresIn: '2h',
+  viewerUserAgent: req.headers.get('user-agent') ?? undefined, // required for signed
+})
+
+session.playback_url // already carries ?token= for signed videos
+session.subtitle_url
+session.chapters
+```
+
+## What is different
+
+- **You run the infrastructure.** The API is a Node process or a Cloudflare
+  Worker, the database is Postgres, the transcoder is Modal GPU or a
+  self-hosted agent. There is no hosted control plane, no hosted dashboard, no
+  CLI and no metered service behind the SDKs.
+- **Storage is Cloudflare R2.** The raw and transcoded buckets are both R2;
+  generic S3/MinIO is not implemented.
+- **Delivery is always the Cloudflare delivery worker.** It is in front of R2 in
+  every deployment shape — there is no Node/Docker delivery path.
+- **There is one playback credential per view, not per asset.** You mint a
+  short-lived token per viewer, forwarding that viewer's user-agent, and the
+  player refreshes it before expiry. The token binds the viewer's browser
+  family; there is no IP binding.
+- **Use the URL the API returns.** With a self-hosted transcoder the output
+  lives under an attempt prefix (`videos/<id>/attempts/<attempt-id>/…`), so a
+  URL assembled as `cdnBase + videoId` is not guaranteed to resolve. The
+  `cdnBase` + `playbackId` player shortcut matches the legacy Modal layout only.
+- **Uploads are explicitly multipart.** The SDK fetches presigned part URLs in
+  windows, honours a 10 000-part ceiling, and gives you pause/resume, progress
+  and `abort()`. Completing an upload verifies the object's size before a
+  transcode job is dispatched.
+- **Transcoding is a per-job choice.** `TRANSCODE_PROVIDER` sets the
+  installation default and `transcodingProvider` overrides it for one upload
+  (`'modal'` or `'self-hosted'`).
+- **Only two events are retried.** `video.ready` and `video.failed` go through
+  the transactional outbox; every other event is dispatched once with no retry.
+  Anything your product depends on must reconcile against the API.
+- **The public API is a subset.** `@openvod/server` models upload token
+  minting, playback token minting, video read/list/update/delete and webhook
+  verification; `vod.request({ method, path, body })` keeps auth, timeouts and
+  typed errors for anything else. There is no analytics API SDK.
+- **No live streaming.** The platform is VOD only.

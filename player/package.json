@@ -1,24 +1,29 @@
 {
   "name": "@openvod/player",
-  "version": "0.1.2",
-  "description": "OpenVOD video player \u2014 drop-in React component with built-in analytics",
+  "version": "0.2.0",
+  "description": "OpenVOD video player — drop-in React component with HLS, signed tokens, chapters and opt-in analytics",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": [
+    "*.css"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./styles.css": "./dist/styles.css",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "README.md"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsup --config tsup.styles.config.ts",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

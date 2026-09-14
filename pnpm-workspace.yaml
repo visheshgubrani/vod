@@ -3,9 +3,12 @@ packages:
   - delivery
   - sdk
   - player
+  - server-sdk
   - web
+  - marketing
   - docs-site
   - setup
+  - examples/*
 
 allowBuilds:
   esbuild: true

@@ -1,0 +1,154 @@
+---
+title: Configuration
+description: Every environment variable OpenVOD reads — which file it belongs in for development versus a deployment, which ones are secret, and the combinations that refuse to boot.
+---
+
+OpenVOD has exactly two server-side environment files, and using the wrong one is
+the most common configuration mistake.
+
+| | Development | Deployment |
+| --- | --- | --- |
+| File | `server/.dev.vars` | `.env` at the repo root |
+| Template | `server/.dev.vars.example` | `.env.example` |
+| Read by | `pnpm dev`, `pnpm dev:workers`, migrations, the seed script, the drizzle CLI | Docker Compose, for both interpolation and the `api`/`maintenance` container environment |
+| Loaded through | `server/src/lib/load-local-env.ts` — `.dev.vars` first, then `.env`, with real environment variables always winning | Compose itself |
+
+<Callout type="warn" title="Never commit either file">
+  Both are in `.gitignore`. Commit only the `.example` templates. `pnpm exec
+  wrangler secret bulk <file>` is how secrets reach a Workers deployment — not a
+  committed file.
+</Callout>
+
+<Callout type="error" title="A Compose deployment is not configured by .dev.vars">
+  `docker compose up` does not read `server/.dev.vars`. Set deployment values in
+  the root `.env`. If a variable seems ignored in production but works locally,
+  this is why.
+</Callout>
+
+## Database
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | — | Postgres connection string. Required. |
+| `DB_DRIVER` | `pg` | `pg` (postgres.js over TCP) or `neon-http`. |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `postgres` / — / `openvod` | Compose only; used to build the internal Postgres service. |
+
+`DB_DRIVER=pg` **cannot run on Cloudflare Workers**: the Workers runtime cannot
+hold a Postgres TCP connection across requests, so the first query succeeds and
+the rest fail. The server refuses to start and says so. Use `neon-http` with a
+Neon URL there — that is what `pnpm dev:workers` requires by design, which is why
+`pnpm dev` (Node) is the default local workflow.
+
+## URLs and origins
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `BACKEND_URL` | — | The API's **own public origin**. The transcode callback URL is built from it. Modal's cloud cannot reach `localhost`, so without a public URL videos strand in `processing`. |
+| `FRONTEND_URL` | — | Dashboard origin, used for redirects. |
+| `CORS_ORIGINS` | empty | Comma-separated browser origins allowed by CORS. Supports `*.example.com` wildcard subdomains. Exact entries are also added to better-auth's trusted origins. |
+| `BETTER_AUTH_URL` | — | better-auth's own origin. |
+| `DELIVERY_URL` | — | Absolute base URL of your delivery worker — the single delivery base URL used everywhere. |
+| `NEXT_PUBLIC_API_BASE_URL` | — | Dashboard: API base **including** `/api`. |
+| `NEXT_PUBLIC_AUTH_BASE_URL` | — | Dashboard: auth base, ending in `/api/auth`. |
+| `NEXT_PUBLIC_FRONTEND_URL` | — | Dashboard: its own public origin. |
+
+<Callout type="info" title="CORS_ORIGINS is the #1 cause of a mysterious browser failure">
+  If your browser console shows a blocked request while `curl` works, the origin
+  is missing from `CORS_ORIGINS`. Restart the API after changing it.
+</Callout>
+
+`NEXT_PUBLIC_*` variables are **inlined into the client bundle at build time**.
+`next dev` re-reads them per start; a production build freezes them, so rebuild
+the web image after changing one.
+
+## Secrets
+
+| Variable | Notes |
+| --- | --- |
+| `BETTER_AUTH_SECRET` | At least 32 characters. |
+| `JWT_SECRET` | Shared with the delivery worker, which verifies every signed playback JWT with it. **Must match on both sides** — a mismatch makes every signed video 401. |
+| `TRANSCODE_INGEST_SECRET` | Shared with the transcoder. Wins over the legacy alias `MODAL_WEBHOOK_SECRET` in both directions. |
+| `INTERNAL_SWEEP_SECRET` | Required to call `POST /api/internal/sweep`. |
+| `ACCOUNT_ID` | Cloudflare account id. |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 S3 API token. Required when uploads are enabled or the provider is Modal. |
+| `RAW_BUCKET_NAME` / `TRANSCODED_BUCKET_NAME` | The two R2 buckets. See [Quickstart](/quickstart#create-two-r2-buckets). |
+| `CLOUDFLARE_ANALYTICS_TOKEN` | Read access to Analytics Engine SQL. Optional; without it analytics read as `none`. |
+| `GROQ_API_KEY` | Optional. Faster Whisper transcription. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | Optional OAuth providers. |
+
+## Uploads
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `UPLOADS_ENABLED` | `true` | When `false`, the upload routes answer `403` and the SDK raises `UPLOADS_DISABLED`. Enforced, not advisory. |
+| `MAX_UPLOAD_SIZE_BYTES` | 25 GiB | Global ceiling. `/v1/upload/create` rejects a larger declared size. |
+
+## Transcoding
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `TRANSCODE_PROVIDER` | `modal` | `modal` or `self-hosted`. Stored on each job at creation, so changing it never reroutes existing work. |
+| `SELF_HOSTED_ENABLED` | — | `false` stops accepting **new** self-hosted submissions while accepted jobs drain. This is the documented rollback. |
+| `MODAL_WEBHOOK_URL` | — | Required only when the provider is `modal`. |
+| `QSTASH_TOKEN` | — | Optional. When set, dispatch goes through QStash instead of direct HTTP. |
+| `TRANSCODE_ORG_CONCURRENCY_CAP` | unlimited | Max concurrent transcode attempts per organization. Enforced by an organization-level lock, so it holds under concurrent claims. |
+| `ATTEMPT_MARKER_TTL_SECONDS` | `300` | How long an accepted attempt id suppresses a duplicate dispatch. |
+
+## Rate limiting
+
+Three stores, first match wins. The limiter is always on and never fails open.
+
+| Variable | Store | Runtime |
+| --- | --- | --- |
+| `REDIS_URL` | Plain Redis over TCP — **Node only** | Highest precedence. Fatal on Workers, which cannot open a socket. |
+| `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST | Works on both runtimes, including Workers. |
+| *(neither)* | In-memory sliding window | Per instance. Fine for one API instance — configure one of the two above before running replicas. |
+
+`pnpm dev:infra` starts Redis on `:6382` and Postgres on `:5433`.
+
+## Maintenance and sweeper
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SWEEP_ENABLED` | — | Enables scheduled sweeps. On Workers, pair with the cron trigger in `server/wrangler.jsonc`. |
+| `INTERNAL_SWEEP_SECRET` | — | Required to call `POST /api/internal/sweep`. |
+| `MAINTENANCE_BATCH_SIZE` | `50` | Rows/jobs handled per pass. |
+| `MAINTENANCE_INTERVAL_SECONDS` | `900` | Compose `maintenance` service interval. |
+| `SWEEP_PROCESSING_STALE_MIN` | `45` | A `processing` job older than this is considered stuck. |
+| `SWEEP_UPLOADING_STALE_HOURS` | `24` | An abandoned `uploading` row older than this is cleaned up. |
+| `SWEEP_MAX_ATTEMPTS` | `3` | Retries before a typed `JOB_TIMEOUT`. |
+
+<Callout type="warn" title="Without maintenance, two things silently stop">
+  Webhook retries and storage reclamation. Deleted videos keep their bytes in R2
+  and failed webhook deliveries are never retried. On Node nothing runs a pass by
+  itself — hit the endpoint from cron (or use the Compose `maintenance` service);
+  on Workers the cron trigger does it.
+</Callout>
+
+## Combinations that refuse to boot
+
+These are fatal **by design** — the server refuses to start and prints why,
+rather than behaving strangely at runtime:
+
+| Combination | Why |
+| --- | --- |
+| `DB_DRIVER=pg` on Cloudflare Workers | Workers cannot hold a Postgres TCP connection across requests. |
+| `REDIS_URL` on Cloudflare Workers | Workers cannot open a plain TCP socket. Use Upstash REST. |
+| An unrecognised `TRANSCODE_PROVIDER` | The value is stored per job; guessing would misroute work. |
+
+## Verifying a deployment
+
+`GET /health/config` reports the resolved configuration as capability flags plus
+a `deployment` object — runtime, transports, providers, stores, and the delivery
+URL. It is **secret-free by construction**, so it is safe to hit from anywhere,
+and it is the fastest way to answer "which shape is this thing actually running".
+
+```bash
+curl "$OPENVOD_API_URL/health/config"
+```
+
+<Cards>
+  <Card title="Deployment" href="/deploy" description="Compose and Workers deployment shapes, step by step." />
+  <Card title="Quickstart" href="/quickstart" description="Create the R2 buckets, keys and Modal secrets this page refers to." />
+  <Card title="Errors & status codes" href="/errors" description="What a rejected request actually returns." />
+</Cards>

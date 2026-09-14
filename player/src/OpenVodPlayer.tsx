@@ -8,14 +8,25 @@ import {
     Poster,
     Track,
 } from '@vidstack/react'
-import { planRefreshForToken } from './tokenRefresh'
+import { planNextRefresh } from './tokenRefreshLoop'
+import {
+    createAnalyticsEvent,
+    drainWatchClock,
+    initialWatchClock,
+    resolveAnalyticsUserId,
+    tickWatchClock,
+    type AnalyticsEvent,
+    type WatchClock,
+} from './analyticsQueue'
 import {
     defaultLayoutIcons,
     DefaultVideoLayout,
 } from '@vidstack/react/player/layouts/default'
 
 // Vidstack CSS — vendored locally to avoid sideEffects:false tree-shaking.
-// tsup's injectStyle will bundle these into the JS output.
+// tsup's injectStyle will bundle these into the JS output, so the stylesheet is
+// inlined by default and there is nothing extra to import. Consumers who prefer
+// a separate file can import '@openvod/player/styles.css' (see the README).
 import './vidstack-styles.css'
 import './openvod-player.css'
 
@@ -25,6 +36,26 @@ export type Chapter = {
     startTime: number
     endTime: number
     title: string
+}
+
+/**
+ * How the player obtains a fresh playback token.
+ *
+ * - `string`: an endpoint fetched with `credentials: 'include'` (same-origin
+ *   session endpoints). Returns `{ token }`, `{ playback_token }` or
+ *   `{ playback_url }`.
+ * - `function`: any other source — a cross-origin API, a signed request, a
+ *   token cache. Return the new token, a token-shaped object, or `null` when
+ *   there is no session (the player then keeps the existing token).
+ */
+export type TokenSource = string | (() => Promise<string | TokenResponse | null>)
+
+export interface TokenResponse {
+    token?: string
+    /** Alias accepted by the delivery API. */
+    playback_token?: string
+    /** A full playback URL carrying `?token=` — the token is extracted. */
+    playback_url?: string
 }
 
 export interface OpenVodPlayerProps {
@@ -47,21 +78,23 @@ export interface OpenVodPlayerProps {
      */
     cdnBase?: string
 
-    /** Environment/public key identifying the tenant. */
+    /**
+     * Deprecated alias for `userId`. Sending `envKey` used to be silently
+     * dropped by the journal endpoint, so the player sent no identity at all.
+     */
     envKey?: string
 
     /** Signed playback token for private content. Appended to the URL as `?token=`. */
     token?: string
 
     /**
-     * Optional endpoint (absolute or relative) that returns
-     * `{ "token": "<new playback token>" }` — e.g. `/api/video/:id/token`.
-     * When set together with `token`, the player refreshes the token before
-     * it expires and swaps it into the playback URL seamlessly.
+     * Where to get a fresh token before `token` expires — an endpoint URL or a
+     * callback. Set it together with `token`; the player swaps the new token
+     * into the playback URL without interrupting playback.
      */
-    tokenRefreshEndpoint?: string
+    tokenRefreshEndpoint?: TokenSource
 
-    /** Refresh lead time before token expiry in ms (default: 60_000). */
+    /** Refresh lead time before token expiry in ms (default 60_000). */
     tokenRefreshLeadMs?: number
 
     /** Video title shown in the player chrome. */
@@ -101,7 +134,10 @@ export interface OpenVodPlayerProps {
      */
     analyticsEndpoint?: string | false
 
-    /** Fired when the player is ready. */
+    /** Viewer identity reported with analytics events. */
+    userId?: string
+
+    /** Fired once when the video is ready to play. */
     onReady?: () => void
 
     /** Fired on playback error. */
@@ -121,7 +157,7 @@ function withToken(url: string, token?: string): string {
 }
 
 /** Resolve the playback source URL from props. */
-function resolveSourceUrl(
+export function resolveSourceUrl(
     props: Pick<OpenVodPlayerProps, 'playbackId' | 'src' | 'token' | 'cdnBase'>,
 ): string {
     const fromCdn =
@@ -133,97 +169,119 @@ function resolveSourceUrl(
     return withToken(url, props.token)
 }
 
-/** Convert chapters array to a WebVTT data URL. */
-function chaptersToVttUrl(chapters: Chapter[]): string {
-    let vtt = 'WEBVTT\n\n'
+/**
+ * Pull a token out of whatever shape a refresh endpoint returned.
+ *
+ * Three shapes are accepted because all three exist in the wild: this package's
+ * documented `{ token }`, the delivery contract's `playback_token`, and the
+ * API's `{ playback_url }` (which carries the token in its query string).
+ */
+export function extractToken(response: unknown): string | null {
+    if (typeof response === 'string') return response.trim() || null
+    if (!response || typeof response !== 'object') return null
 
-    chapters.forEach((ch, idx) => {
-        const fmt = (s: number) => {
-            const h = Math.floor(s / 3600)
-            const m = Math.floor((s % 3600) / 60)
-            const sec = s % 60
-            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toFixed(3).padStart(6, '0')}`
-        }
-        vtt += `${idx + 1}\n${fmt(ch.startTime)} --> ${fmt(ch.endTime)}\n${ch.title}\n\n`
-    })
-
-    return `data:text/vtt;charset=utf-8,${encodeURIComponent(vtt)}`
+    const record = response as TokenResponse
+    if (typeof record.token === 'string' && record.token.trim()) return record.token.trim()
+    if (typeof record.playback_token === 'string' && record.playback_token.trim()) {
+        return record.playback_token.trim()
+    }
+    if (typeof record.playback_url === 'string') {
+        const match = record.playback_url.match(/[?&]token=([^&]+)/)
+        if (match) return decodeURIComponent(match[1])
+    }
+    return null
 }
 
-// ─── Analytics Event Types ──────────────────────────────────────────
+/** Convert chapters array to a WebVTT data URL. */
+export function chaptersToVttUrl(chapters: Chapter[]): string {
+    return `data:text/vtt;charset=utf-8,${encodeURIComponent(chaptersToVtt(chapters))}`
+}
 
-type AnalyticsEvent = {
-    event: string
-    ts: string
-    videoId: string
-    sessionId: string
-    envKey?: string
-    currentTime: number
-    duration: number
-    watchedDelta: number
-    errorCode?: string
+export function chaptersToVtt(chapters: Chapter[]): string {
+    const fmt = (s: number) => {
+        const h = Math.floor(s / 3600)
+        const m = Math.floor((s % 3600) / 60)
+        const sec = s % 60
+        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toFixed(3).padStart(6, '0')}`
+    }
+
+    let vtt = 'WEBVTT\n\n'
+    chapters.forEach((ch, idx) => {
+        vtt += `${idx + 1}\n${fmt(ch.startTime)} --> ${fmt(ch.endTime)}\n${ch.title}\n\n`
+    })
+    return vtt
 }
 
 // ─── Analytics Hook ─────────────────────────────────────────────────
 
+interface PlayerState {
+    currentTime: number
+    duration: number
+}
+
 function useVideoAnalytics(
     videoId: string,
-    envKey: string | undefined,
+    userId: string | undefined,
     analyticsUrl: string | false | undefined,
-    playerRef: React.RefObject<{ currentTime: number; duration: number } | null>,
+    playerRef: React.RefObject<PlayerState | null>,
 ) {
     const url = typeof analyticsUrl === 'string' && analyticsUrl.length > 0 ? analyticsUrl : ''
 
-    // Session ID — generated once per component mount
     const sessionIdRef = React.useRef<string>('')
     const eventQueueRef = React.useRef<AnalyticsEvent[]>([])
-    const watchTimeAccumulatorRef = React.useRef<number>(0)
-    const lastTickTimeRef = React.useRef<number | null>(null)
+    const watchClockRef = React.useRef<WatchClock>(initialWatchClock)
     const isPlayingRef = React.useRef<boolean>(false)
     const isSeekingRef = React.useRef<boolean>(false)
-    const heartbeatIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
 
     React.useEffect(() => {
-        sessionIdRef.current = crypto.randomUUID()
+        sessionIdRef.current =
+            typeof crypto !== 'undefined' && crypto.randomUUID
+                ? crypto.randomUUID()
+                : Math.random().toString(36).slice(2)
     }, [])
 
-    const getPlayerState = React.useCallback(() => {
+    const getPlayerState = React.useCallback((): PlayerState => {
         const player = playerRef.current
-        return {
-            currentTime: player?.currentTime ?? 0,
-            duration: player?.duration ?? 0,
-        }
+        return { currentTime: player?.currentTime ?? 0, duration: player?.duration ?? 0 }
     }, [playerRef])
 
-    const createEvent = React.useCallback(
-        (eventType: string, watchedDelta: number = 0, errorCode?: string): AnalyticsEvent => {
+    const tickWatchTime = React.useCallback(() => {
+        watchClockRef.current = tickWatchClock(
+            watchClockRef.current,
+            performance.now(),
+            isPlayingRef.current,
+            isSeekingRef.current,
+        )
+    }, [])
+
+    const makeEvent = React.useCallback(
+        (eventType: string, watchedDelta = 0, errorCode?: string): AnalyticsEvent => {
             const { currentTime, duration } = getPlayerState()
-            return {
+            return createAnalyticsEvent({
                 event: eventType,
-                ts: new Date().toISOString(),
                 videoId,
                 sessionId: sessionIdRef.current,
-                ...(envKey && { envKey }),
+                userId,
                 currentTime,
                 duration,
                 watchedDelta,
-                ...(errorCode && { errorCode }),
-            }
+                errorCode,
+            })
         },
-        [videoId, envKey, getPlayerState],
+        [videoId, userId, getPlayerState],
     )
 
     const flushEvents = React.useCallback(
-        async (useBeacon: boolean = false) => {
+        async (useBeacon = false) => {
             if (!url) return
-            const watchedDelta = watchTimeAccumulatorRef.current
-            watchTimeAccumulatorRef.current = 0
 
-            if (watchedDelta > 0) {
-                eventQueueRef.current.push(createEvent('heartbeat', watchedDelta))
+            const drained = drainWatchClock(watchClockRef.current)
+            watchClockRef.current = drained.clock
+            if (drained.seconds > 0) {
+                eventQueueRef.current.push(makeEvent('heartbeat', drained.seconds))
             }
 
-            const events = [...eventQueueRef.current]
+            const events = eventQueueRef.current
             eventQueueRef.current = []
             if (events.length === 0) return
 
@@ -231,78 +289,68 @@ function useVideoAnalytics(
 
             if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
                 navigator.sendBeacon(url, body)
-            } else {
-                try {
-                    await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body,
-                        keepalive: true,
-                    })
-                } catch {
-                    // Silently fail — analytics should never break the player
-                }
+                return
+            }
+
+            try {
+                await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body,
+                    keepalive: true,
+                })
+            } catch {
+                // Silently fail — analytics must never break playback
             }
         },
-        [createEvent, url],
+        [makeEvent, url],
     )
 
     const queueEvent = React.useCallback(
         (eventType: string, errorCode?: string) => {
             if (!url) return
-            eventQueueRef.current.push(createEvent(eventType, 0, errorCode))
+            eventQueueRef.current.push(makeEvent(eventType, 0, errorCode))
         },
-        [createEvent, url],
+        [makeEvent, url],
     )
 
     const flushImmediate = React.useCallback(() => {
-        flushEvents(false)
+        void flushEvents(false)
     }, [flushEvents])
 
-    const tickWatchTime = React.useCallback(() => {
-        if (!isPlayingRef.current || isSeekingRef.current) {
-            lastTickTimeRef.current = null
-            return
-        }
-        const now = performance.now()
-        if (lastTickTimeRef.current !== null) {
-            watchTimeAccumulatorRef.current += (now - lastTickTimeRef.current) / 1000
-        }
-        lastTickTimeRef.current = now
-    }, [])
-
-    // Event handlers
+    // Event handlers.
+    //
+    // Every handler flips the play/seek flag *before* ticking: the clock
+    // credits the interval that just elapsed and then stops counting, which is
+    // what keeps a pause (or a scrub) from billing the time that follows it.
     const onPlay = React.useCallback(() => {
         isPlayingRef.current = true
-        lastTickTimeRef.current = performance.now()
+        tickWatchTime()
         queueEvent('play')
-    }, [queueEvent])
+    }, [tickWatchTime, queueEvent])
 
     const onPause = React.useCallback(() => {
-        tickWatchTime()
         isPlayingRef.current = false
-        lastTickTimeRef.current = null
+        tickWatchTime()
         queueEvent('pause')
         flushImmediate()
     }, [tickWatchTime, queueEvent, flushImmediate])
 
     const onSeeking = React.useCallback(() => {
-        tickWatchTime()
         isSeekingRef.current = true
+        tickWatchTime()
         queueEvent('seeking')
     }, [tickWatchTime, queueEvent])
 
     const onSeeked = React.useCallback(() => {
         isSeekingRef.current = false
-        if (isPlayingRef.current) {
-            lastTickTimeRef.current = performance.now()
-        }
+        tickWatchTime()
         queueEvent('seeked')
-    }, [queueEvent])
+    }, [tickWatchTime, queueEvent])
 
     const onEnded = React.useCallback(() => {
-        tickWatchTime()
         isPlayingRef.current = false
+        tickWatchTime()
         queueEvent('ended')
         flushImmediate()
     }, [tickWatchTime, queueEvent, flushImmediate])
@@ -319,16 +367,17 @@ function useVideoAnalytics(
     // Heartbeat interval (10s) + watchTime ticker (1s) + beforeunload
     React.useEffect(() => {
         if (!url) return
-        heartbeatIntervalRef.current = setInterval(() => {
+
+        const heartbeat = setInterval(() => {
             tickWatchTime()
-            flushEvents(false)
+            void flushEvents(false)
         }, 10_000)
 
-        const watchTimeTicker = setInterval(tickWatchTime, 1000)
+        const ticker = setInterval(tickWatchTime, 1_000)
 
         const handleBeforeUnload = () => {
             tickWatchTime()
-            flushEvents(true) // sendBeacon — guaranteed delivery
+            void flushEvents(true) // sendBeacon — guaranteed delivery
         }
 
         if (typeof window !== 'undefined') {
@@ -336,14 +385,14 @@ function useVideoAnalytics(
         }
 
         return () => {
-            if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current)
-            clearInterval(watchTimeTicker)
+            clearInterval(heartbeat)
+            clearInterval(ticker)
             if (typeof window !== 'undefined') {
                 window.removeEventListener('beforeunload', handleBeforeUnload)
             }
             // Flush remaining events on unmount
             tickWatchTime()
-            flushEvents(true)
+            void flushEvents(true)
         }
     }, [tickWatchTime, flushEvents, url])
 
@@ -357,6 +406,7 @@ export function OpenVodPlayer({
     src,
     cdnBase,
     envKey,
+    userId,
     token,
     tokenRefreshEndpoint,
     tokenRefreshLeadMs,
@@ -374,7 +424,6 @@ export function OpenVodPlayer({
     onError,
     onEnded: onEndedCallback,
 }: OpenVodPlayerProps) {
-    // Resolve video ID — playbackId is preferred, fall back to extracting from src
     const videoId = playbackId || 'unknown'
 
     // Live token state: `token` from props is the initial/static value; a
@@ -382,42 +431,61 @@ export function OpenVodPlayer({
     const [liveToken, setLiveToken] = React.useState<string | null>(null)
     const effectiveToken = liveToken ?? token
 
-    // Resolve the playback URL
+    const effectiveUserId = resolveAnalyticsUserId({ userId, envKey })
+
     const videoSrc = React.useMemo(
         () => resolveSourceUrl({ playbackId, src, token: effectiveToken, cdnBase }),
         [playbackId, src, effectiveToken, cdnBase],
     )
 
     // ── Signed-token auto-refresh ─────────────────────────────────────────
+    const failuresRef = React.useRef(0)
+
     React.useEffect(() => {
         if (!token || !tokenRefreshEndpoint || typeof window === 'undefined') return
+
         let cancelled = false
         let timer: ReturnType<typeof setTimeout> | undefined
 
+        const fetchToken = async (): Promise<string | null> => {
+            if (typeof tokenRefreshEndpoint === 'function') {
+                return extractToken(await tokenRefreshEndpoint())
+            }
+            const res = await fetch(tokenRefreshEndpoint, { credentials: 'include' })
+            if (!res.ok) throw new Error(`token refresh failed: ${res.status}`)
+            return extractToken(await res.json())
+        }
+
         const schedule = () => {
-            const plan = planRefreshForToken(
-                liveToken ?? token,
-                Date.now() / 1000,
-                tokenRefreshLeadMs,
-            )
-            if (!plan) return
-            const delayMs = Math.max(plan.delayMs, 1_000)
+            const decision = planNextRefresh({
+                token: liveToken ?? token,
+                nowEpochSec: Date.now() / 1000,
+                leadMs: tokenRefreshLeadMs,
+                failures: failuresRef.current,
+            })
+            if (decision.kind === 'stop') return
+
+            // Never busy-loop on clock skew.
+            const delayMs = Math.max(decision.delayMs, 250)
+
             timer = setTimeout(async () => {
                 if (cancelled) return
                 try {
-                    const res = await fetch(tokenRefreshEndpoint, { credentials: 'include' })
-                    if (!res.ok) throw new Error(`token refresh failed: ${res.status}`)
-                    const data = (await res.json()) as { token?: string }
-                    if (data.token) {
-                        setLiveToken(data.token)
-                    } else {
-                        schedule() // no token yet — retry on the next cycle
+                    const next = await fetchToken()
+                    if (next) {
+                        failuresRef.current = 0
+                        setLiveToken(next)
+                        return // the state change reschedules with the new token
                     }
+                    // No session (yet) — count it and try again later.
+                    failuresRef.current += 1
                 } catch {
-                    schedule() // transient failure — never interrupt playback
+                    failuresRef.current += 1 // transient failure — never interrupt playback
                 }
+                if (!cancelled) schedule()
             }, delayMs)
         }
+
         schedule()
 
         return () => {
@@ -427,10 +495,10 @@ export function OpenVodPlayer({
     }, [token, tokenRefreshEndpoint, tokenRefreshLeadMs, liveToken])
 
     // Player state ref for analytics
-    const playerStateRef = React.useRef<{ currentTime: number; duration: number } | null>(null)
+    const playerStateRef = React.useRef<PlayerState | null>(null)
 
     // Analytics hook
-    const analytics = useVideoAnalytics(videoId, envKey, analyticsEndpoint, playerStateRef)
+    const analytics = useVideoAnalytics(videoId, effectiveUserId, analyticsEndpoint, playerStateRef)
 
     // Chapters → VTT
     const chaptersVttUrl = React.useMemo(() => {
@@ -448,13 +516,17 @@ export function OpenVodPlayer({
         return withToken(subtitles, effectiveToken)
     }, [subtitles, effectiveToken])
 
-    // Build inline style with theme CSS variables
     const mergedStyle = React.useMemo(() => {
         const vars: Record<string, string> = {}
         if (theme?.primaryColor) vars['--video-brand'] = theme.primaryColor
         if (theme?.accentColor) vars['--video-accent'] = theme.accentColor
-        return { ...vars, ...style }
+        return { ...vars, ...style } as React.CSSProperties &
+            Record<`--${string}`, string | number | undefined>
     }, [theme, style])
+
+    // `onCanPlay` fires again after every seek on some browsers; a "ready"
+    // callback that fires mid-playback is a bug for anything that counts it.
+    const readyForSrcRef = React.useRef<string | null>(null)
 
     return (
         <MediaPlayer
@@ -465,7 +537,7 @@ export function OpenVodPlayer({
             muted={muted}
             crossOrigin="anonymous"
             playsInline
-            style={mergedStyle as any}
+            style={mergedStyle}
             onPlay={analytics.onPlay}
             onPause={analytics.onPause}
             onSeeking={analytics.onSeeking}
@@ -474,9 +546,10 @@ export function OpenVodPlayer({
                 analytics.onEnded()
                 onEndedCallback?.()
             }}
-            onError={(e) => {
-                analytics.onError(e?.message || 'unknown')
-                onError?.(new Error(e?.message || 'Playback error'))
+            onError={(event) => {
+                const detail = event as unknown as { message?: string } | undefined
+                analytics.onError(detail?.message || 'unknown')
+                onError?.(new Error(detail?.message || 'Playback error'))
             }}
             onProviderChange={(provider) => {
                 if (isHLSProvider(provider)) {
@@ -499,6 +572,8 @@ export function OpenVodPlayer({
             }}
             onCanPlay={() => {
                 playerStateRef.current = { currentTime: 0, duration: 0 }
+                if (readyForSrcRef.current === videoSrc) return
+                readyForSrcRef.current = videoSrc
                 onReady?.()
             }}
         >

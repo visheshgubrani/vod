@@ -1,0 +1,201 @@
+---
+title: Errors & status codes
+description: Every error shape OpenVOD can return — HTTP statuses, SDK error codes, webhook signature failures and transcode failure codes — and what to do about each one.
+---
+
+Everything OpenVOD fails with is enumerable. This page is the catalogue: match on a
+stable `code`, never on a message.
+
+There are four families, and they show up in different places:
+
+| Family | Arrives as | Defined by |
+| --- | --- | --- |
+| [HTTP statuses](#http-statuses) | The response your first `fetch` reads | The API |
+| [Server SDK codes](#server-sdk-codes) | `error.code` from a thrown `OpenVodError` | `@openvod/server` |
+| [Uploader codes](#uploader-codes) | `error.code` from a thrown `OpenVodError` | `@openvod/uploader` |
+| [Webhook reasons](#webhook-signature-failures) | `error.reason` from a thrown `WebhookSignatureError` | `@openvod/server` |
+| [Transcode failure codes](#transcode-failure-codes) | `failureCode` on a `video.failed` webhook | The transcoder |
+
+## The error body
+
+A failed API request answers with JSON:
+
+```json
+{
+  "error": "Video not ready for playback",
+  "status": "processing",
+  "hint": "Wait for the video.ready webhook before minting a playback token"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `error` | Human-readable message. **Safe to log, never safe to branch on.** |
+| `hint` | Optional. Usually names the exact fix — read it. |
+| `status` | Optional. Present on `VIDEO_NOT_READY`; the video's current state. |
+
+Every response carries an `x-request-id` header. Quote it in a bug report — it is
+the only thing that ties your failed request to the server's logs.
+
+## HTTP statuses
+
+| Status | Meaning | Retry? |
+| --- | --- | --- |
+| `400` | The request body or query is wrong — a bad expiration, a bad size, a missing field. The message names the field. | No — fix the request. |
+| `401` | Missing, malformed or unknown credential. Either the API key, or an upload token that has expired or been exhausted. | No — mint a new token. |
+| `403` | The credential is valid but is not allowed to do this — the resource belongs to another organization, or the deployment has `UPLOADS_ENABLED=false`. | No. |
+| `404` | No such video, or the video is soft-deleted. | No. |
+| `409` | `/v1/upload/complete` found a size mismatch or a missing object. The video is marked `failed` and the transcode job is never spent. | No — re-upload. |
+| `429` | Rate limited. Read `Retry-After`. | Yes, after the delay. |
+| `5xx` | The API failed. | Yes, with backoff. |
+
+<Callout type="warn" title="A 409 on /complete is a client bug, not a race">
+  `/complete` HEAD-verifies the object against the size declared at `/create`
+  before dispatching a transcode job. A mismatch means the bytes that landed in
+  storage are not the bytes you declared — usually a truncated part or a part
+  re-uploaded after the ETag was captured. Re-run the upload; do not retry
+  `/complete`.
+</Callout>
+
+## Server SDK codes
+
+`@openvod/server` throws `OpenVodError` with a `code`. `isRetryableCode(code)` and
+`error.retryable` agree with the table.
+
+| `code` | Status | Meaning | Retry? |
+| --- | --- | --- | --- |
+| `UNAUTHORIZED` | 401 | Missing, malformed or unknown API key. | No. |
+| `FORBIDDEN` | 403 | The key is valid, but this resource belongs to another organization. | No. |
+| `NOT_FOUND` | 404 | No such video, or it is soft-deleted. | No. |
+| `INVALID_REQUEST` | 400 | A field was rejected — bad expiration, bad size, bad domain pattern. | No. |
+| `VIDEO_NOT_READY` | 400 | The video exists but has not finished transcoding, so no playback token can be minted. | After `video.ready`. |
+| `RATE_LIMITED` | 429 | The rate limiter answered. `error.retryAfterMs` is set when the API sent `Retry-After`. | Yes. |
+| `NETWORK` | — | `fetch` failed before any response arrived. `error.cause` holds the original. | Yes. |
+| `TIMEOUT` | — | The request timed out. | Yes. |
+| `SERVER_ERROR` | 5xx | The API failed. | Yes. |
+| `HTTP` | any other | Unclassified non-2xx. | Depends on `retryable`. |
+
+```ts
+import { OpenVod, OpenVodError } from '@openvod/server'
+
+try {
+  await vod.playback.createToken(videoId, { viewerUserAgent })
+} catch (error) {
+  if (error instanceof OpenVodError) {
+    // Branch on the code. The message is for humans.
+    if (error.code === 'VIDEO_NOT_READY') return waitForReady(videoId)
+    if (error.retryable) return retryAfter(error.retryAfterMs ?? 1000)
+    console.error(error.code, error.requestId)
+  }
+  throw error
+}
+```
+
+## Uploader codes
+
+`@openvod/uploader` throws `OpenVodError` for failures and `UploadAbortedError`
+for cancellation. The two are disjoint: **cancellation is not a failure**, so
+`isUploadAbortedError(error)` is the check, not a message match.
+
+| `code` | Meaning | Retry? |
+| --- | --- | --- |
+| `UPLOAD_TOKEN_EXPIRED` | The token lapsed before `/create`. Only `/create` checks it. | Mint a new token. |
+| `UPLOAD_TOKEN_EXHAUSTED` | The token's `maxFiles` budget is spent. | Mint a new token. |
+| `UPLOAD_TOKEN_INVALID` | Missing or unknown token. | No — fix the auth header. |
+| `UPLOADS_DISABLED` | The deployment has `UPLOADS_ENABLED=false`. | No. |
+| `SIZE_MISMATCH` | The uploaded bytes differ from the declared size. | Re-upload. |
+| `OBJECT_MISSING` | The object never landed in storage. | Re-upload. |
+| `RATE_LIMITED` | The rate limiter answered 429. | Yes, after `retryAfterMs`. |
+| `TOO_MANY_PARTS` | The file needs more than 10 000 parts — the API's ceiling. | No. |
+| `PART_URL_REJECTED` | A presigned part URL was rejected even after a refresh. | Usually no. |
+| `PART_CONFIG_INVALID` | The server's part plan drifted mid-upload. | No. |
+| `NETWORK` | `fetch` itself failed. | Yes. |
+| `HTTP` | Any other non-2xx. | Depends on `retryable`. |
+
+```ts
+import { OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+
+try {
+  await uploader.upload(file, { onProgress })
+} catch (error) {
+  if (isUploadAbortedError(error)) return // the user cancelled — not an error
+  if (error instanceof OpenVodError) {
+    console.error(error.code, error.requestId)
+  }
+}
+```
+
+## Webhook signature failures
+
+`constructWebhookEvent` throws `WebhookSignatureError` with a `reason` before it
+parses the body, so a forged payload never reaches your JSON.
+
+| `reason` | Meaning | Usual cause |
+| --- | --- | --- |
+| `missing_header` | No signature or timestamp header. | A proxy stripped headers, or the request is not a webhook. |
+| `malformed` | The signature is not 64 hex characters (optionally `sha256=`-prefixed). | You signed the wrong thing, or copied the wrong header. |
+| `invalid_timestamp` | The timestamp is not an integer number of seconds. | Wrong header. |
+| `stale` | Outside the replay window (default ±300s). | A replay, or a clock that disagrees with the API's. |
+| `mismatch` | The digest does not match, or `X-Webhook-Event` disagrees with the payload. | **Almost always a re-serialized body** — see below. |
+
+<Callout type="error" title="mismatch is nearly always the raw body">
+  The signature covers `<timestamp>.<raw body>`. `JSON.stringify(await req.json())`
+  does not reproduce those bytes: key order, whitespace, escaping and number
+  formatting are all free to differ. Read the body as text or bytes and verify
+  that. This is the single most common webhook integration bug.
+</Callout>
+
+See [Webhooks](/webhooks) for the full verification flow and the replay window.
+
+## Transcode failure codes
+
+A `video.failed` webhook carries `failureCode` — the transcoder's stable reason.
+The class tells you whether re-running is worth anything.
+
+| Class | Codes | What happens |
+| --- | --- | --- |
+| Source condition | `SOURCE_MISSING`, `SOURCE_CHANGED`, `SOURCE_UNREADABLE` | Returned to the queue with a `waiting_reason`; the attempt budget is **not** spent. Fix the file and it proceeds on its own. |
+| Retryable | Everything else — `PACKAGING_FAILED`, `PARTIAL_UPLOAD`, `STALLED`, `ENCODER_UNAVAILABLE`, `ENCODER_FAILED`, `INSUFFICIENT_DISK`, `TRANSCODE_FAILED` | Retried until the attempt budget is spent, then terminal. |
+| Terminal | `INVALID_CONTAINER`, `EMPTY_FILE`, `INVALID_METADATA`, `UNSUPPORTED_HDR`, `AUDIO_ONLY_UNSUPPORTED`, `MISSING_RENDITION` | Failed immediately. Re-running the same bytes changes nothing. |
+
+`CANCELLED` is the exception: an operator cancel maps the video to `cancelled`,
+and never emits `video.failed` at all.
+
+| Code | Meaning |
+| --- | --- |
+| `SOURCE_MISSING` | The file moved, was deleted, or the folder is unmounted. |
+| `SOURCE_CHANGED` | The file changed since it was registered. |
+| `SOURCE_UNREADABLE` | Permissions, or not a regular file. |
+| `ENCODER_UNAVAILABLE` | The selected encoder backend is unusable on this machine. Falls back in `auto` mode. |
+| `ENCODER_FAILED` | The backend started but the encode failed. |
+| `UNSUPPORTED_HDR` | An HDR variant with no validated SDR conversion. |
+| `PACKAGING_FAILED` | Shaka failed or produced an incomplete package. |
+| `PARTIAL_UPLOAD` | The number of uploaded files does not match the expected outputs. |
+| `MISSING_RENDITION` | A required rendition is absent from the package. |
+| `STALLED` | No encoder progress within the stall window. |
+| `INSUFFICIENT_DISK` | Scratch space is too small for this source. |
+| `TRANSCODE_FAILED` | Generic pipeline failure with no more specific code. |
+
+<Callout type="info" title="Terminal does not mean the video is unrecoverable">
+  A terminal failure is a statement about *those bytes*, not about your account.
+  Fix the source file, then `POST /api/video/:id/retry` (or re-upload) to get a
+  fresh attempt.
+</Callout>
+
+## Handling failures well
+
+1. **Branch on `code`**, never on `error.message`. Messages are improved between
+   releases; codes are part of the contract.
+2. **Log `requestId`.** Without it a support thread has nothing to search.
+3. **Honour `retryAfterMs`** rather than a fixed backoff — the limiter already
+   knows when the window resets.
+4. **Treat `video.failed` as data**, not an exception: `failureCode` tells you
+   whether to surface "try again" or "this file can't be used".
+5. **De-duplicate webhooks on `event.id`** first, then handle the event. See
+   [Webhooks](/webhooks#delivery-guarantees).
+
+<Cards>
+  <Card title="Uploads" href="/upload" description="The upload flow these codes come from." />
+  <Card title="Playback" href="/playback" description="Minting playback tokens, including VIDEO_NOT_READY." />
+  <Card title="API reference" href="/api-reference" description="Exact request and response shapes per endpoint." />
+</Cards>

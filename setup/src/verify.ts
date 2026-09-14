@@ -8,6 +8,8 @@ export interface CheckRow {
   /** Advisory rows (○) never fail the run. */
   advisory?: boolean
   text: string
+  /** The env key behind the row, so callers can point at where to get it. */
+  key?: string
 }
 
 const MIN_SECRET_LENGTH = 32
@@ -28,17 +30,17 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
   const check = (key: string, label: string) => {
     const ok = isSet(env[key])
     if (!ok) failed = true
-    rows.push({ ok, text: `${label} (${key})` })
+    rows.push({ ok, text: `${label} (${key})`, key })
   }
   const advisory = (key: string, label: string) => {
     const ok = isSet(env[key])
-    rows.push({ ok, advisory: true, text: `${label} (${key})` })
+    rows.push({ ok, advisory: true, text: `${label} (${key})`, key })
   }
 
   const db = env['DATABASE_URL']
   const dbOk = isSet(db) && /^postgres(ql)?:\/\/\S+/.test(db ?? '')
   if (!dbOk) failed = true
-  rows.push({ ok: dbOk, text: 'Postgres connection URL (DATABASE_URL)' })
+  rows.push({ ok: dbOk, text: 'Postgres connection URL (DATABASE_URL)', key: 'DATABASE_URL' })
 
   advisory('DB_DRIVER', 'DB driver (neon-http | pg)')
   check('ACCOUNT_ID', 'Cloudflare account id')
@@ -74,7 +76,7 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
     const value = env[key]
     if (isSet(value) && value.trim().length < MIN_SECRET_LENGTH) {
       failed = true
-      rows.push({ ok: false, text: `${key} shorter than 32 chars` })
+      rows.push({ ok: false, text: `${key} shorter than 32 chars`, key })
     }
   }
 
@@ -90,16 +92,22 @@ export function lintDeliveryMirror(
   deliveryEnv: Record<string, string> | undefined,
 ): CheckRow[] {
   if (!deliveryEnv) {
-    return [{ ok: false, text: 'delivery/.dev.vars missing (JWT_SECRET must match the API)' }]
+    return [
+      { ok: false, text: 'delivery/.dev.vars missing (JWT_SECRET must match the API)', key: 'JWT_SECRET' },
+    ]
   }
   const dJwt = deliveryEnv['JWT_SECRET']
   if (!isSet(serverJwt) || !isSet(dJwt)) {
-    return [{ ok: false, text: 'delivery/.dev.vars JWT_SECRET does not match the API' }]
+    return [
+      { ok: false, text: 'delivery/.dev.vars JWT_SECRET does not match the API', key: 'JWT_SECRET' },
+    ]
   }
   if (serverJwt !== dJwt) {
-    return [{ ok: false, text: 'delivery/.dev.vars JWT_SECRET does not match the API' }]
+    return [
+      { ok: false, text: 'delivery/.dev.vars JWT_SECRET does not match the API', key: 'JWT_SECRET' },
+    ]
   }
-  return [{ ok: true, text: 'delivery/.dev.vars JWT_SECRET matches the API' }]
+  return [{ ok: true, text: 'delivery/.dev.vars JWT_SECRET matches the API', key: 'JWT_SECRET' }]
 }
 
 /** Full report for both files given as parsed maps. */

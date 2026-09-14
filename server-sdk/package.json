@@ -1,0 +1,62 @@
+{
+  "name": "@openvod/server",
+  "version": "0.1.0",
+  "description": "OpenVOD server SDK — upload tokens, playback tokens, video management and webhook verification",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "~3.2.7"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "openvod",
+    "vod",
+    "video",
+    "webhooks",
+    "server",
+    "sdk"
+  ],
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visheshgubrani/vod.git"
+  },
+  "homepage": "https://github.com/visheshgubrani/vod/tree/main/server-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/visheshgubrani/vod/issues"
+  }
+}

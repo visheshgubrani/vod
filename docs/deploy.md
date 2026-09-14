@@ -145,11 +145,19 @@ warns if they diverge. A Workers deployment sets it with
 
 ## Modal
 
-Create secrets `r2-creds` and optional `groq-creds`, then `modal deploy main.py`.
-Set `ALLOWED_CALLBACK_HOSTS` to your API host and `ALLOWED_SOURCE_BUCKETS` to
-the raw bucket name. The API needs `MODAL_WEBHOOK_URL` and
-`TRANSCODE_INGEST_SECRET` (the primary name — the legacy `MODAL_WEBHOOK_SECRET`
-alias is accepted but loses to it in both directions).
+Create secrets `openvod-creds` and optional `openvod-groq-creds`, then
+`modal deploy main.py`. Set `ALLOWED_CALLBACK_HOSTS` to your API host and
+`ALLOWED_SOURCE_BUCKETS` to the raw bucket name. The API needs
+`MODAL_WEBHOOK_URL` and `TRANSCODE_INGEST_SECRET` (the primary name — the legacy
+`MODAL_WEBHOOK_SECRET` alias is accepted but loses to it in both directions).
+
+`./scripts/bootstrap.sh --deploy` creates both secrets for you, deriving every
+value from `server/.dev.vars`: `R2_BUCKET_NAME` from `TRANSCODED_BUCKET_NAME`,
+`ALLOWED_SOURCE_BUCKETS` from `RAW_BUCKET_NAME`, and `ALLOWED_CALLBACK_HOSTS`
+from `BACKEND_URL` (the host the API actually builds callbacks from). The creds
+secret is rewritten on every deploy, so editing `.dev.vars` and re-running
+`--deploy` is how a bucket or callback host is changed. The old `r2-creds` /
+`groq-creds` names are detected and offered for deletion.
 
 ## Background maintenance (required for correctness, not optional)
 

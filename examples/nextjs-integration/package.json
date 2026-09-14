@@ -1,0 +1,31 @@
+{
+  "name": "openvod-example-nextjs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runnable Next.js (app router) integration example for OpenVOD: browser upload, playback, token refresh and webhooks",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openvod/player": "workspace:*",
+    "@openvod/server": "workspace:*",
+    "@openvod/uploader": "workspace:*",
+    "next": "16.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5"
+  }
+}

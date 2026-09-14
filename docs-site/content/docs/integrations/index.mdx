@@ -1,0 +1,87 @@
+---
+title: Framework integrations
+description: Pick your stack — Next.js, React + Vite, Nuxt, SvelteKit, or a plain Node backend — and get the full upload, playback and webhook flow for it.
+---
+
+Every guide below is the [same six steps](/first-video) mapped onto a directory
+layout. Read that page first if the token → upload → transcode → play loop is not
+yet clear; these guides assume it.
+
+## Which pieces do I need?
+
+OpenVOD ships three packages. Which ones apply depends on where your code runs —
+not on which framework you picked.
+
+| Package | Where it runs | What it does |
+| --- | --- | --- |
+| [`@openvod/server`](https://www.npmjs.com/package/@openvod/server) | **Your backend only** — Node, Bun, Deno, Workers, edge | Mints upload and playback tokens, reads/updates/deletes videos, verifies webhooks. Holds the API key. |
+| [`@openvod/uploader`](https://www.npmjs.com/package/@openvod/uploader) | **The browser** — anything with `fetch`, `Blob`, `AbortController` | Uploads to your R2 bucket via windowed presigned URLs. Also runs server-side with a `Blob`. |
+| [`@openvod/player`](https://www.npmjs.com/package/@openvod/player) | **React 18/19** in the browser | Vidstack-based HLS/DASH player with signed-token auto-refresh, chapters and subtitles. |
+
+<Callout type="warn" title="@openvod/player is React-only. This is the one real constraint.">
+  The player is built on `@vidstack/react` and takes `react`/`react-dom` as peers.
+  **Next.js, React Router and any React app use it. Nuxt/Vue, SvelteKit and Astro
+  do not** — they play the exact same manifests with `hls.js` or a native
+  `<video>` tag instead.
+
+  The player is a convenience wrapper, not the product. Nothing about signed
+  tokens, chapters or subtitles requires React: the manifest URL already carries
+  `?token=`, and chapters are a WebVTT track. The non-React guides show the
+  equivalent, and you lose only the auto-refresh timer.
+</Callout>
+
+## The matrix
+
+| | Token minting | Upload | Playback |
+| --- | --- | --- | --- |
+| [**Next.js**](/integrations/nextjs) (App Router) | Route handlers | `@openvod/uploader` | `@openvod/player` |
+| [**React + Vite**](/integrations/react-vite) | **Needs a separate backend** → | `@openvod/uploader` | `@openvod/player` |
+| [**Nuxt / Vue**](/integrations/nuxt) | Nitro server routes | `@openvod/uploader` | `hls.js` |
+| [**SvelteKit**](/integrations/sveltekit) | `+server.ts` endpoints | `@openvod/uploader` | `hls.js` |
+| [**Node backend**](/integrations/node-backend) | Express / Hono / Fastify | *(client does it)* | *(client does it)* |
+| Realtime / edge | Workers, Deno, Bun | `@openvod/uploader` with a `Blob` | any HLS client |
+
+<Callout type="info" title="A pure SPA cannot hold the API key">
+  React + Vite, or any client-only app, has nowhere to keep `sk_live_…`. Mint
+  tokens on a backend you control — the [Node backend guide](/integrations/node-backend)
+  is that backend, and it is a single route. This is not a Vite limitation; it is
+  the design. An API key in a browser bundle is an API key you have published.
+</Callout>
+
+## Two CORS surfaces, not one
+
+Browser uploads touch two different origins, and both must be configured:
+
+1. **Your R2 raw bucket** — the browser `PUT`s each part directly to a presigned
+   URL. R2 must expose the `ETag` response header or `/complete` fails. See
+   [R2 CORS must expose ETag](/upload#r2-cors-must-expose-etag).
+2. **Your OpenVOD API** — the browser calls `/v1/upload/create`, `/parts` and
+   `/complete` with the upload token. Your API origin must be in `CORS_ORIGINS`.
+   See [Configuration](/configuration#urls-and-origins).
+
+Forgetting the first produces a failed `/complete`; forgetting the second produces
+a CORS error on `/create`. They are different failures with different fixes.
+
+## Two footguns, in every framework
+
+These cause more broken integrations than everything else combined:
+
+- **The raw webhook body.** The signature covers `<timestamp>.<raw body>`. If
+  your framework parses JSON before your handler sees it, re-serializing will
+  never reproduce those bytes and every delivery fails with `mismatch`. Every
+  guide below shows that framework's raw-body idiom.
+- **The viewer's User-Agent.** A signed playback token is bound to the viewer's
+  browser family, and the delivery worker enforces it. Forward the header from
+  the viewer's own request — never your server's, and never a hardcoded one.
+  Server-side rendering and proxies are where this breaks.
+
+Both are explained in depth on [Errors & status codes](/errors).
+
+<Cards>
+  <Card title="Next.js" href="/integrations/nextjs" description="App Router route handlers, uploader, player and webhook verification — the compiled example." />
+  <Card title="React + Vite" href="/integrations/react-vite" description="Uploader and player in a pure SPA, plus the backend route that must exist beside it." />
+  <Card title="Nuxt / Vue" href="/integrations/nuxt" description="Nitro server routes for tokens, hls.js for playback." />
+  <Card title="SvelteKit" href="/integrations/sveltekit" description="+server.ts endpoints for tokens and webhooks, hls.js for playback." />
+  <Card title="Node backend" href="/integrations/node-backend" description="Express, Hono and Fastify: token minting and webhook verification." />
+  <Card title="Your first video" href="/first-video" description="The framework-free version of everything here." />
+</Cards>

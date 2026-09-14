@@ -5,34 +5,36 @@ import { APP_NAME, GITHUB_URL } from "@/lib/site";
 
 const BADGES = ["HLS + DASH", "Cloudflare R2", "Modal GPU", "Apache-2.0"];
 
-// Pseudo-curl example — endpoints are illustrative and vary per deployment.
+// The public API is mounted at the origin root (/v1/...), which is why the
+// SDK takes the bare origin — not an /api or /v1 URL.
 const CURL_SNIPPET = [
-  "# Example — pseudo-curl; adjust the host to your deployment",
-  "# 1. Create an upload token with your API key",
-  'curl -X POST https://api.example.com/api/v1/upload/token \\',
+  "# 1. Mint a short-lived upload token with your API key, on your server",
+  'curl -X POST https://api.example.com/v1/upload/token \\',
   '  -H "Authorization: Bearer $OPENVOD_API_KEY" \\',
-  '  -d \'{ "expires_in": "1h" }\'',
+  '  -H "Content-Type: application/json" \\',
+  '  -d \'{ "expires_in": "1h", "max_files": 1 }\'',
   "",
-  "# 2. Upload via the SDK",
+  "# 2. The browser uploads with that token — no key, no storage credentials",
 ];
 
-// Illustrative — @openvod/uploader is not published yet.
 const REACT_SNIPPET = [
-  '// Illustrative — @openvod/uploader is not published yet',
-  'import { Uploader } from "@openvod/uploader";',
+  'import { OpenVodUploader } from "@openvod/uploader";',
   "",
-  "const uploader = new Uploader({",
-  '  baseUrl: "https://api.example.com/api",',
-  "  uploadToken, // created by your backend in step 1",
+  "const uploader = new OpenVodUploader({",
+  '  baseUrl: "https://api.example.com", // your API origin, no /v1 suffix',
+  "  uploadToken, // minted by your backend in step 1",
   "});",
   "",
-  "await uploader.upload(file, {",
+  "const video = await uploader.upload(file, {",
   '  title: "My first video",',
-  '  onProgress: ({ percentage }) => console.log(percentage + "%"),',
+  "  playbackPolicy: \"signed\",",
+  '  onProgress: ({ percentage }) => console.log(`${percentage}%`),',
   "});",
+  "",
+  "// video.fileId — play it with <OpenVodPlayer /> once it is ready",
 ];
 
-const KEYWORDS = new Set(["curl", "import", "from", "const", "new", "await"]);
+const KEYWORDS = new Set(["curl", "import", "from", "const", "new", "await", "npm"]);
 
 function highlightLine(line: string): React.ReactNode {
   if (/^\s*(#|\/\/)/.test(line)) {
@@ -241,20 +243,22 @@ export default function Home() {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <CodeExamplePanel
                 title="Server — request an upload token"
-                badge="cURL · example"
+                badge="cURL · API key"
                 lines={CURL_SNIPPET}
               />
               <CodeExamplePanel
                 title="Client — upload from React"
-                badge="React SDK · illustrative"
+                badge="React SDK"
                 lines={REACT_SNIPPET}
               />
             </div>
             <p className="mx-auto mt-6 max-w-3xl text-center text-xs text-muted-foreground">
-              Endpoints and package names above are illustrative until the
-              OpenVOD API and @openvod packages are published. Never expose
-              your API key in the browser — the SDK takes a short-lived upload
-              token instead.
+              Install with{" "}
+              <code className="font-mono text-foreground/80">
+                npm install @openvod/uploader @openvod/player @openvod/server
+              </code>
+              . Never expose your API key in the browser — the uploader takes a
+              short-lived upload token instead.
             </p>
           </div>
         </section>

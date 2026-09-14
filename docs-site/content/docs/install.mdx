@@ -1,0 +1,106 @@
+---
+title: Install the SDKs
+description: The three OpenVOD packages — what each one is for, which runtime it belongs in, and how to install it.
+---
+
+OpenVOD ships three small, independent packages. Your backend keeps the API key;
+the browser gets short-lived tokens and talks to your storage directly.
+
+<Tabs items={['npm', 'pnpm', 'yarn', 'bun']}>
+  <Tab value="npm">
+    ```bash
+    # Browser app
+    npm install @openvod/uploader @openvod/player
+
+    # Backend
+    npm install @openvod/server
+    ```
+  </Tab>
+  <Tab value="pnpm">
+    ```bash
+    pnpm add @openvod/uploader @openvod/player
+    pnpm add @openvod/server
+    ```
+  </Tab>
+  <Tab value="yarn">
+    ```bash
+    yarn add @openvod/uploader @openvod/player
+    yarn add @openvod/server
+    ```
+  </Tab>
+  <Tab value="bun">
+    ```bash
+    bun add @openvod/uploader @openvod/player
+    bun add @openvod/server
+    ```
+  </Tab>
+</Tabs>
+
+`@openvod/player` bundles Vidstack and takes `react` / `react-dom` as peers.
+There is nothing else to install.
+
+## Which package do I need?
+
+| If your code… | Install |
+| --- | --- |
+| mints tokens, verifies webhooks, or reads video status — a server, a route handler, a Worker | `@openvod/server` |
+| runs in a browser and uploads a file | `@openvod/uploader` |
+| renders video in **React** | `@openvod/player` |
+| renders video in Vue, Svelte, Astro, or plain HTML | *(nothing — use `hls.js`, see below)* |
+| is a widget with no backend you control | `@openvod/server` on a backend you add — see [Node backend](/integrations/node-backend) |
+
+| Package | Runs in | What it is for |
+| --- | --- | --- |
+| [`@openvod/server`](https://www.npmjs.com/package/@openvod/server) | Your backend only — Node 18+, Bun, Deno, Workers, edge runtimes | Mints upload tokens and playback tokens, reads/updates/deletes videos, verifies webhooks. Zero runtime dependencies. |
+| [`@openvod/uploader`](https://www.npmjs.com/package/@openvod/uploader) | The browser — anywhere with `fetch`, `Blob` and `AbortController` | Uploads to your R2 raw bucket through windowed presigned URLs, with progress, pause/resume and typed errors. |
+| [`@openvod/player`](https://www.npmjs.com/package/@openvod/player) | React 18 or 19, in the browser | A Vidstack-based HLS/DASH player with signed-token auto-refresh, chapters, subtitles and opt-in analytics. |
+
+<Callout type="warn" title="The player is React-only">
+  `@openvod/player` is built on `@vidstack/react`. Vue, Svelte, Astro and plain
+  HTML play the same manifests with `hls.js` or a native `<video>` tag — no SDK
+  needed. See [Playback without React](/playback#playback-without-react) and the
+  [integrations matrix](/integrations#the-matrix).
+</Callout>
+
+## The API key never leaves your server
+
+`@openvod/server` authenticates with an API key (`sk_live_…`). Every other
+package authenticates with a token your backend minted for one purpose:
+
+- `@openvod/uploader` sends a short-lived **upload token** (`ut_…`), scoped to
+  your organization, expiring within 24 hours, and able to cap the number and
+  size of files.
+- `@openvod/player` receives a **playback token** your backend minted for one
+  viewer, and only for `signed` videos.
+
+<Callout type="error" title="No hosted service behind these packages">
+  There is no OpenVOD-hosted API, dashboard, CLI or default delivery domain.
+  Every package points at the deployment **you** run — `baseUrl` is your own API
+  origin, `cdnBase` is your own delivery worker. Analytics are read in your own
+  dashboard, and there is no analytics SDK.
+</Callout>
+
+## Which runtime belongs to which package
+
+```ts
+// Server only — the API key must never reach a browser.
+import { OpenVod, constructWebhookEvent } from '@openvod/server'
+
+// Browser only — upload tokens are safe here.
+import { OpenVodUploader, OpenVodError, UploadAbortedError } from '@openvod/uploader'
+
+// React components only.
+import { OpenVodPlayer } from '@openvod/player'
+```
+
+`@openvod/uploader` also runs outside a browser — Workers, Deno, Bun, Node 18+ —
+as long as you pass a `Blob` plus an explicit `filename`, because there is no
+`File` to read a name from. `@openvod/server` uses WebCrypto for webhook
+verification, so it runs on Workers and edge runtimes too.
+
+<Cards>
+  <Card title="Your first video" href="/first-video" description="The whole flow in six steps, with no framework involved." />
+  <Card title="Framework integrations" href="/integrations" description="Next.js, React + Vite, Nuxt, SvelteKit, and Node backends." />
+  <Card title="Uploads" href="/upload" description="Upload tokens, resumable sessions, cancellation and typed errors." />
+  <Card title="Playback" href="/playback" description="Public and signed playback, token refresh, chapters and subtitles." />
+</Cards>

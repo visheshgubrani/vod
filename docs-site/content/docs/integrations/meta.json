@@ -1,0 +1,4 @@
+{
+  "title": "Framework integrations",
+  "pages": ["index", "nextjs", "react-vite", "nuxt", "sveltekit", "node-backend", "..."]
+}

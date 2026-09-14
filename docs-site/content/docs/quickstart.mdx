@@ -1,88 +1,277 @@
 ---
 title: Quickstart
-description: Accounts, keys, and the first deploy — Cloudflare R2, Modal, and Postgres.
+description: Create the accounts and keys, run the bootstrap wizard, deploy the delivery worker, and confirm the stack — from nothing to a working deployment.
 ---
 
-The full first-run guide (what to create in Cloudflare, which keys to copy,
-R2 CORS, Modal secrets) is the repository
-[README](https://github.com/visheshgubrani/vod#prerequisites).
+This is the operator's path: accounts and keys, then a running deployment. If you
+already have a deployment and just want to integrate, go to
+[Your first video](/first-video) instead.
 
-You need **before clone**:
+Budget about 30 minutes. Most of it is waiting for Cloudflare and Modal.
 
-- Cloudflare account → two R2 buckets (raw + transcoded) + R2 API token
-- Wrangler login (delivery worker is always Cloudflare)
-- Postgres (Neon) **or** the Compose stack's own Postgres
-- Modal account (`pip install modal && modal setup`)
+<Callout type="warn" title="Create the accounts first, before you clone">
+  The stack cannot mint uploads or play video until the R2 buckets, the R2 API
+  token and a Postgres URL exist. The wizard asks for all of them.
+</Callout>
 
-Then `./scripts/bootstrap.sh`: it installs Node/pnpm (nvm) when missing,
-installs workspace deps, and runs an interactive wizard — pick the API
-runtime (Cloudflare Workers vs Node), Postgres driver, queue and rate
-limiting, then paste the R2 S3 token (and a Neon URI unless you deploy with
-Compose). Provisioning (Cloudflare/Modal logins, R2 buckets, worker + Modal
-deploys) is the opt-in `--deploy` phase.
+## What you need
 
-The wizard writes `server/.dev.vars` + `delivery/.dev.vars`, which are
-**development** files. A Compose deployment is configured by `.env` at the
-repo root — `cp .env.example .env`. Never commit either file.
+| You need | Why | Where |
+| --- | --- | --- |
+| [Cloudflare](https://dash.cloudflare.com/sign-up) account | R2 buckets, the **delivery** Worker (always), and the API Worker on the Workers path | The free tier is enough to start |
+| Two **R2** buckets | Raw uploads, and transcoded HLS/DASH output | R2 → Create bucket |
+| An **R2 API token** (S3 credentials) | The API, the transcoder and uploads all talk to R2 over the S3 API | R2 → Manage R2 API Tokens |
+| Cloudflare login for `wrangler` | Deploys the delivery worker, and the API worker on the Workers path | `pnpm exec wrangler login` — wrangler is a pinned local devDependency, never a global `npx wrangler` |
+| [Postgres](https://neon.tech) **or** Docker | Metadata, auth, video rows | A Neon serverless URL, or the `postgres` service inside the Compose stack |
+| [Modal](https://modal.com) account | GPU transcoding (FFmpeg / Shaka / Whisper) | `--deploy` installs the Modal CLI (uv/pipx/venv) and runs `modal setup` |
+| Node 22 + pnpm 12 | Workspace install, wrangler, the dashboard | `./scripts/bootstrap.sh` installs both via nvm when missing |
+
+**Delivery and storage are fixed, not choices.** Signed playback is always the
+Cloudflare Worker in `delivery/` in front of your R2 transcoded bucket — there is
+no Node delivery path, and the Compose stack deliberately has no service for it.
+The API runtime, Postgres transport, transcoder provider, dispatch transport and
+rate-limit store *are* choosable per deployment: see
+[Deployment](/deploy) and [Configuration](/configuration).
+
+## Keys you will collect
+
+Put these in `server/.dev.vars` for local development, or in `.env` at the repo
+root for a Docker Compose deployment. The bootstrap wizard writes the `.dev.vars`
+pair and mirrors `JWT_SECRET` into `delivery/.dev.vars`.
+
+<Callout type="error" title="Never commit .env or .dev.vars">
+  Only the `*.example` templates are tracked. This repository's history was
+  rewritten once to purge a leaked R2 key — rotate first, then scrub.
+</Callout>
+
+### Required
+
+| Variable | What it is | How to get it |
+| --- | --- | --- |
+| `ACCOUNT_ID` | Cloudflare account id | Dashboard → R2 overview, or the account home URL (`dash.cloudflare.com/<this>`) |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | S3 key pair for R2 | R2 → **Manage R2 API Tokens** → Create API token. Permission: **Object Read & Write** on **both** buckets. Copy the secret once — it is not shown again. |
+| `RAW_BUCKET_NAME` | Bucket browsers upload into | The name you chose, e.g. `openvod-raw` |
+| `TRANSCODED_BUCKET_NAME` | Bucket the transcoder writes HLS/DASH into | The name you chose, e.g. `openvod-transcoded` |
+| `DATABASE_URL` | Postgres connection string | Neon: project → Connection details → URI. Compose: leave blank to use the bundled Postgres. |
+| `DB_DRIVER` | `neon-http` (Workers) or `pg` (Node/Docker) | Set by the wizard from your runtime choice; Compose defaults to `pg` |
+| `MODAL_WEBHOOK_URL` | HTTPS ingest URL of your deployed Modal app | Printed by `modal deploy`, e.g. `https://<workspace>--vod-production-pipeline-transcode-video.modal.run` |
+| `TRANSCODE_INGEST_SECRET` | Shared secret, API ↔ Modal | Generate once: `openssl rand -hex 32`. The same value in the API env **and** the Modal `openvod-creds` secret. |
+| `JWT_SECRET` | HS256 key for playback tokens (≥32 chars) | Generated by the wizard. **Must** match the delivery worker's value. |
+| `BETTER_AUTH_SECRET` | Session signing (≥32 chars) | Generated by the wizard |
+| `DELIVERY_URL` | Public origin of the delivery worker | After `wrangler deploy` in `delivery/` |
+| `BETTER_AUTH_URL` / `BACKEND_URL` / `FRONTEND_URL` | Public API and dashboard origins | Local: `http://localhost:8787` and `http://localhost:3000`. Production: your deployed hosts. |
+
+### Optional
+
+| Variable | What it is | How to get it |
+| --- | --- | --- |
+| `GROQ_API_KEY` | AI subtitles and chapters | [Groq console](https://console.groq.com). Also goes in the Modal `openvod-groq-creds` secret, which the GPU function **requires to exist** — use a dummy value if you skip AI. |
+| `CLOUDFLARE_ANALYTICS_TOKEN` | Read Analytics Engine for the usage dashboard | A Cloudflare API token with Analytics Engine read. The usage UI degrades without it. |
+| `GOOGLE_*` / `GITHUB_*` | OAuth login | Leave empty for email/password only. |
+| `QSTASH_TOKEN`, `REDIS_URL`, Upstash Redis | Durable queue, shared rate limit | Unset means direct HTTP dispatch and an in-memory rate limit. `REDIS_URL` is Node-only; Workers use Upstash REST. |
+
+## 1. Create two R2 buckets
+
+In [Cloudflare dashboard → R2](https://dash.cloudflare.com/?to=/:account/r2):
+
+1. Create a **raw** bucket. Example: `openvod-raw`.
+2. Create a **transcoded** bucket. Example: `openvod-transcoded`.
+
+On the **raw** bucket only, add an
+[S3 CORS policy](https://developers.cloudflare.com/r2/buckets/cors/) so the
+browser can `PUT` presigned parts. Settings → CORS policy:
+
+```json
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "http://127.0.0.1:3000"
+    ],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+<Callout type="error" title="ExposeHeaders must include ETag">
+  Multipart completion needs the `ETag` response header from each part `PUT`, and
+  R2 does not expose it to browser JavaScript by default. Without it `/complete`
+  fails and every upload dies at the last step.
+</Callout>
+
+Add your production dashboard origin to `AllowedOrigins` when you deploy the web
+app. Now create the R2 API token from the table above — that gives you
+`ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and two bucket names.
+
+## 2. Postgres
+
+- **Workers path:** create a [Neon](https://neon.tech) project (or any Postgres
+  that accepts `postgresql://…`) and copy `DATABASE_URL`.
+- **Compose deployment:** skip this. The stack runs its own Postgres and
+  `DATABASE_URL` may be left blank in `.env`.
+
+## 3. Modal
+
+```bash
+pip install modal
+modal setup          # browser login
+```
+
+You do **not** have a webhook URL yet — that appears after `modal deploy` in
+[step 6](#6-deploy-the-transcoder).
+
+## 4. Clone and run the wizard
+
+```bash
+git clone https://github.com/visheshgubrani/vod.git
+cd vod
+./scripts/bootstrap.sh
+```
+
+The wizard:
+
+<Steps>
+  <Step>Checks Node and pnpm against what the repository pins, installing them via nvm or corepack when missing. It keeps going when they are already present.</Step>
+  <Step>Installs workspace dependencies at the root — never inside a package.</Step>
+  <Step>Asks how you want to run the API — **Cloudflare Workers** (`DB_DRIVER=neon-http`) or **Node via Docker Compose** (`pg`) — and which optional services to enable: QStash queueing and a rate-limit store.</Step>
+  <Step>Walks through every key with a step counter and a link to the console page for each one.</Step>
+  <Step>Writes `server/.dev.vars` and `delivery/.dev.vars`, sharing one `JWT_SECRET`. Secrets are generated locally and the files are `chmod 600`.</Step>
+</Steps>
+
+Re-running it is safe. With `server/.dev.vars` already written it offers
+**verify / reconfigure / deploy** instead of overwriting anything.
+
+```bash
+./scripts/bootstrap.sh --check     # re-verify an existing configuration
+./scripts/bootstrap.sh --force     # regenerate; unrelated keys are preserved
+```
+
+<Callout type="info" title="The wizard writes development files, not deployment config">
+  `server/.dev.vars` and `delivery/.dev.vars` are **development** configuration. A
+  Compose deployment is configured by `.env` at the repo root
+  (`cp .env.example .env`). The wizard does not write it. See
+  [Configuration](/configuration).
+</Callout>
+
+## 5. Migrate
+
+```bash
+pnpm db:migrate
+```
+
+Use `db:migrate`, not `db:push`. `db:push` cannot create the hand-written cleanup
+trigger, so the schema will be subtly wrong in a way nothing catches until a
+video is deleted.
+
+## 6. Deploy the transcoder
+
+```bash
+./scripts/bootstrap.sh --deploy
+```
+
+The opt-in `--deploy` phase performs the Cloudflare and Modal logins, creates the
+R2 buckets if needed, and deploys the workers and the Modal app. It builds the
+Modal `openvod-creds` secret **from `server/.dev.vars`**, so bucket names and
+callback hosts cannot drift from what the API believes.
+
+By hand, the pieces are:
+
+```bash
+# Modal
+cd transcoding && modal deploy main.py     # prints MODAL_WEBHOOK_URL
+
+# Delivery worker (always Cloudflare) — pinned local wrangler
+cd delivery && pnpm exec wrangler deploy   # prints the worker URL → DELIVERY_URL
+
+# API worker (Workers path only)
+cd server && pnpm exec wrangler deploy
+```
+
+Two values on the Modal side must be set from your own environment: the
+`ALLOWED_CALLBACK_HOSTS` secret (the host of your `BACKEND_URL`) and
+`ALLOWED_SOURCE_BUCKETS` (your raw bucket). `--deploy` derives both from
+`server/.dev.vars`.
+
+## 7. Confirm
+
+```bash
+curl http://localhost:8787/health          # ok
+curl -s http://localhost:8787/health/config | jq '{ready, checks}'
+```
+
+The dashboard is on `http://localhost:3000`, and its setup page (`/setup`) shows
+the BYOK status cards driven by `/health/config`.
+
+<Callout type="warn" title="Check maintenance.stale, not just ready">
+  `/health/config` reports `maintenance.enabled` **and** `maintenance.stale`. A
+  deployment can have `SWEEP_ENABLED=true` and still never run a pass — in which
+  case webhook retries and storage reclamation are silently not running, and
+  deleted videos keep costing you storage. See
+  [Configuration](/configuration#maintenance-and-sweeper).
+</Callout>
 
 ## Deployment shapes
 
-Only some things vary per installation. Delivery (the Cloudflare Worker +
-R2) and object storage (R2) are **fixed**; the API runtime, Postgres
-transport, transcoder provider, dispatch transport and rate-limit store are
-chosen by which entrypoint and which env vars you use. The full table, the
-fatal combinations, and the `deployment` object on `/health/config` are in
-[`docs/deployment-shapes.md`](https://github.com/visheshgubrani/vod/blob/main/docs/deployment-shapes.md).
+Only some things vary per installation. Delivery (the Cloudflare Worker + R2) and
+object storage (R2) are **fixed**. The API runtime, Postgres transport, transcoder
+provider, dispatch transport and rate-limit store are chosen by which entrypoint
+and which env vars you use.
 
-## Path A — Cloudflare Workers + Vercel
+### Path A — Cloudflare Workers + Vercel
 
-1. `./scripts/bootstrap.sh` (choose the **Workers** runtime →
-   `DB_DRIVER=neon-http`).
-2. `pnpm db:migrate` (committed migrations — not `db:push`, which
-   cannot create the hand-written cleanup trigger).
-3. `pnpm exec wrangler deploy` in `server/` and `delivery/` (the pinned local
-   devDependency — never a global `npx wrangler`). Set `DELIVERY_URL`.
-4. Modal secrets `r2-creds` / `groq-creds`, then `modal deploy main.py`.
-   Set `ALLOWED_CALLBACK_HOSTS` and `ALLOWED_SOURCE_BUCKETS`.
-5. Import `web/` into Vercel (`NEXT_PUBLIC_*`) or run the Docker web image.
+1. `./scripts/bootstrap.sh` choosing the **Workers** runtime (`DB_DRIVER=neon-http`).
+2. `pnpm db:migrate` with the Neon URL.
+3. `pnpm exec wrangler deploy` in `server/` and `delivery/`. Set `DELIVERY_URL`.
+4. Modal secrets `openvod-creds` / `openvod-groq-creds`, then
+   `modal deploy main.py`. Set `ALLOWED_CALLBACK_HOSTS` and
+   `ALLOWED_SOURCE_BUCKETS` — `--deploy` creates both from `server/.dev.vars`.
+5. Import `web/` into Vercel (set the `NEXT_PUBLIC_*` values) or run the Docker
+   web image.
 
-`DB_DRIVER=pg` and `REDIS_URL` cannot work on Workers — the server refuses to
+`DB_DRIVER=pg` and `REDIS_URL` cannot work on Workers. The server refuses to
 start and says so. Use `neon-http` with a Neon URL, and Upstash REST or the
 in-memory limiter for rate limiting.
 
-## Path B — Docker Compose (API + dashboard + Postgres + Redis)
+### Path B — Docker Compose
 
 ```bash
 cp .env.example .env      # deployment configuration — never commit it
-pnpm docker:migrate       # one-shot migrate service
+pnpm docker:migrate       # the one-shot migrate service
 pnpm docker:up            # docker compose up -d
 ```
 
-API: `http://localhost:8787` · dashboard: `http://localhost:3000` (both bound
-to `127.0.0.1`). Postgres and Redis are internal to the stack and are not
-published on host ports. The `api` container migrates on boot too, but the
-one-shot service is the right call when you run more than one replica.
+API on `http://localhost:8787`, dashboard on `http://localhost:3000`, both bound
+to `127.0.0.1`. Postgres and Redis are internal to the stack and not published on
+host ports. The `api` container migrates on boot too, but the one-shot service is
+the right call when you run more than one replica.
 
-**Playback still needs the Cloudflare delivery worker** in front of R2. The
-Compose stack does not include it.
+**Playback still needs the Cloudflare delivery worker in front of R2.** The
+Compose stack does not include it. Full detail on [Deployment](/deploy).
 
-## Develop OpenVOD locally
+## Develop OpenVOD itself
 
 ```bash
 pnpm install
 cp server/.dev.vars.example server/.dev.vars   # DATABASE_URL for migrations
-pnpm dev:infra            # Postgres :5433 + Redis :6379
+pnpm dev:infra            # Postgres :5433 + Redis :6382
 pnpm db:migrate
 pnpm dev                  # API :8787 on Node + dashboard :3000
 ```
 
-`pnpm dev:workers` runs the API under `wrangler dev` instead (Neon URL
-required by design). See
-[CONTRIBUTING.md](https://github.com/visheshgubrani/vod/blob/main/CONTRIBUTING.md).
+`pnpm dev:workers` runs the API under `wrangler dev` instead, which requires a
+Neon URL by design — the Workers runtime cannot hold a Postgres TCP connection
+across requests, which is why `pnpm dev` (Node) is the default local workflow.
 
-## Verify
+See [CONTRIBUTING.md](https://github.com/visheshgubrani/vod/blob/main/CONTRIBUTING.md)
+for the test suites, the guard jobs and the review conventions.
 
-- `curl <api>/health` → `ok`
-- `curl <api>/health/config` → JSON capability checks plus the resolved
-  `deployment` shape
-- Open `<frontend>/setup` for the BYOK status page
+<Cards>
+  <Card title="Your first video" href="/first-video" description="Now that it runs: mint a token, upload, play, and receive a webhook." />
+  <Card title="Configuration" href="/configuration" description="Every environment variable, and the combinations that refuse to boot." />
+  <Card title="Deployment" href="/deploy" description="Compose, Workers, maintenance and recovery in depth." />
+  <Card title="Framework integrations" href="/integrations" description="Wire the API into Next.js, Vite, Nuxt, SvelteKit or a Node backend." />
+</Cards>

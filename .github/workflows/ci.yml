@@ -76,10 +76,92 @@ jobs:
           cache: pnpm
       - name: Install workspace
         run: pnpm install --frozen-lockfile
+      # The dashboard consumes @openvod/player and @openvod/uploader as
+      # workspace packages, so their built output must exist before Next builds.
+      - name: Build SDK packages
+        run: |
+          pnpm --filter @openvod/uploader build
+          pnpm --filter @openvod/player build
+          pnpm --filter @openvod/server build
       - name: Lint
         run: pnpm --filter ./web lint
       - name: Build (standalone)
         run: pnpm --filter ./web build
+
+  marketing:
+    runs-on: ubuntu-latest
+    # Production builds intentionally reject missing marketing destinations.
+    # CI supplies syntactically valid test destinations; deployments provide the
+    # real docs and hosted-form URLs through marketing/.env.example.
+    env:
+      MARKETING_CANONICAL_ORIGIN: https://openvod.dev
+      MARKETING_DOCS_URL: https://docs.openvod.dev
+      MARKETING_QUICKSTART_URL: https://docs.openvod.dev/quickstart
+      MARKETING_GITHUB_URL: https://github.com/visheshgubrani/vod
+      MARKETING_MANAGED_FORM_URL: https://forms.example.invalid/openvod-managed
+      MARKETING_ENTERPRISE_FORM_URL: https://forms.example.invalid/openvod-enterprise
+      MARKETING_PRIVACY_URL: https://openvod.dev/privacy
+      MARKETING_WALKTHROUGH_VIDEO_URL: /walkthrough.mp4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm --filter openvod-marketing typecheck
+      - name: Lint
+        run: pnpm --filter openvod-marketing lint
+      - name: Build marketing site
+        run: pnpm --filter openvod-marketing build
+
+  # The integration example *is* the documented developer experience, compiled
+  # on every change. Docs rot silently; a broken build does not.
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Build SDK packages
+        run: |
+          pnpm --filter @openvod/uploader build
+          pnpm --filter @openvod/player build
+          pnpm --filter @openvod/server build
+      - name: Build the example
+        run: pnpm --filter ./examples/nextjs-integration build
+
+  # The docs site is the developer-facing product, and it was the only package
+  # with no CI job at all: a broken MDX page or a dead component shipped
+  # silently. `typecheck` is covered by the js-workspace matrix, which runs
+  # `pnpm -r --if-present typecheck` and now matches docs-site's script.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Build the docs site
+        run: pnpm --filter openvod-docs build
 
   transcoding-python:
     runs-on: ubuntu-latest

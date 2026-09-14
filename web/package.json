@@ -15,11 +15,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@openvod/player": "workspace:*",
+    "@openvod/uploader": "workspace:*",
     "@tanstack/react-query": "^5.90.16",
-    "@uppy/aws-s3": "^5.1.0",
-    "@uppy/core": "^5.2.0",
-    "@uppy/dashboard": "^5.1.0",
-    "@vidstack/react": "^1.12.13",
     "better-auth": "~1.7.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

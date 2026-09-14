@@ -1,0 +1,246 @@
+---
+title: React + Vite
+description: OpenVOD in a client-only React SPA — the uploader and player in the browser, and the single backend route a pure SPA cannot avoid.
+---
+
+A Vite SPA is the most common integration shape and the one with the sharpest
+constraint: **there is nowhere in a browser bundle to keep your API key.**
+Everything else here is straightforward.
+
+<Callout type="error" title="VITE_ variables are public. All of them.">
+  Anything prefixed `VITE_` is inlined into the client bundle at build time and
+  is readable by anyone who opens DevTools. `VITE_OPENVOD_API_KEY` would publish
+  your key.
+
+  This is not a Vite quirk — the same is true of `NEXT_PUBLIC_`, `NUXT_PUBLIC_`
+  and `PUBLIC_` in every framework. A client-only app cannot mint tokens, so it
+  needs a backend you control. That backend is
+  [one route](/integrations/node-backend) — you do not need a second OpenVOD
+  deployment, just a place to keep one secret.
+</Callout>
+
+## Architecture
+
+```
+┌── Browser (Vite SPA) ──────────┐
+│  @openvod/uploader             │      ┌── Your backend ────────┐
+│  @openvod/player               │─────▶│ POST /api/upload-token │──┐
+└────────────────────────────────┘      │ POST /api/play-token   │  │
+            │                           └────────────────────────┘  │
+            │ PUT parts (presigned)                                 │ sk_live_…
+            ▼                                                       ▼
+      ┌── R2 raw bucket ──┐                                  ┌── OpenVOD API ──┐
+      └───────────────────┘                                  └─────────────────┘
+```
+
+The browser talks to R2 directly and to *your* backend for tokens. It never sees
+the API key.
+
+## Environment
+
+```bash
+# .env.local — Vite loads VITE_* into the client bundle.
+VITE_OPENVOD_API_URL=http://localhost:8787    # public: the API origin
+VITE_BACKEND_URL=http://localhost:3001        # public: your token-minting backend
+```
+
+Your **backend** holds `OPENVOD_API_KEY`, in its own environment — not here.
+
+## The backend route you need
+
+This is the part a SPA cannot skip. Full versions for Express, Hono and Fastify
+are in the [Node backend guide](/integrations/node-backend); this is the shape:
+
+```ts
+// your backend — POST /api/upload-token
+import { OpenVod } from '@openvod/server'
+
+const vod = new OpenVod({
+  apiKey: process.env.OPENVOD_API_KEY!,
+  baseUrl: process.env.OPENVOD_API_URL!,
+})
+
+app.post('/api/upload-token', async (req, res) => {
+  const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+  res.json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
+})
+```
+
+During development, proxy it so the browser sees one origin:
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001', // your token backend
+        changeOrigin: true,
+      },
+    },
+  },
+})
+```
+
+Then the app fetches `/api/upload-token` and never deals with cross-origin
+credentials in development. In production, put both behind one domain or set the
+API's `CORS_ORIGINS` to your SPA origin.
+
+## Upload
+
+```tsx
+import { useState } from 'react'
+import { OpenVodUploader, OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+
+export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
+  const [percent, setPercent] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleFile(file: File) {
+    setError(null)
+
+    // Your backend mints this — see above. The API key is never here.
+    const { uploadToken } = await fetch('/api/upload-token', { method: 'POST' })
+      .then((r) => r.json())
+
+    const uploader = new OpenVodUploader({
+      baseUrl: import.meta.env.VITE_OPENVOD_API_URL, // no /v1 suffix
+      uploadToken,
+    })
+
+    try {
+      const result = await uploader.upload(file, {
+        title: file.name,
+        onProgress: (p) => setPercent(p.percentage),
+      })
+      onVideoId(result.fileId)
+    } catch (cause) {
+      if (isUploadAbortedError(cause)) return
+      setError(cause instanceof OpenVodError ? `${cause.code}: ${cause.message}` : 'Upload failed')
+    }
+  }
+
+  return (
+    <>
+      <input type="file" accept="video/*" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      <progress value={percent} max={100} />
+      {error && <p role="alert">{error}</p>}
+    </>
+  )
+}
+```
+
+<Callout type="warn" title="`import.meta.env` values are baked in at build time">
+  `VITE_OPENVOD_API_URL` is substituted during `vite build`. To point one build
+  artifact at staging and production you need runtime configuration — a
+  `/config.json` the app fetches on boot, or a `window.__ENV__` script tag — not
+  a different `.env` per deploy.
+</Callout>
+
+## Upload state survives a reload
+
+An SPA's advantage is that you control the whole page lifecycle, so resume is
+worth wiring up. A session holds no `File` and no presigned URLs — both expire or
+cannot be serialized — so it is safe to persist:
+
+```tsx
+const session = uploader.startUpload(file, { title: file.name, onProgress })
+session.pause()   // stops scheduling parts; in-flight parts finish
+session.resume()
+await session.run()
+```
+
+```tsx
+// Persist across a reload, then resume once the file is picked again.
+localStorage.setItem('upload', JSON.stringify(session))
+
+const state = JSON.parse(localStorage.getItem('upload')!)
+const resumed = uploader.resumeUpload(state, file)
+await resumed.run() // already-uploaded parts are skipped
+```
+
+The file itself cannot be persisted — the browser will not let you store a `File`
+handle. Prompt the user to re-select it, then resume; the parts already uploaded
+are not re-sent. See [Resumable uploads](/upload#resumable-uploads).
+
+## Playback
+
+The player is React, so it drops straight in:
+
+```tsx
+import { OpenVodPlayer } from '@openvod/player'
+import { useEffect, useState } from 'react'
+
+export function Video({ videoId }: { videoId: string }) {
+  const [session, setSession] = useState<PlaybackSession | null>(null)
+
+  useEffect(() => {
+    // For a signed video your backend must forward the viewer's UA:
+    //   fetch(`/api/play-token/${videoId}`, { headers: { 'x-viewer-user-agent': navigator.userAgent } })
+    fetch(`/api/video-status/${videoId}`)
+      .then((r) => r.json())
+      .then(setSession)
+  }, [videoId])
+
+  if (!session) return <p>Loading…</p>
+
+  return (
+    <OpenVodPlayer
+      playbackId={videoId}
+      src={session.playbackUrl}
+      token={session.token}
+      subtitles={session.subtitleUrl}
+      chapters={session.chapters}
+    />
+  )
+}
+```
+
+<Callout type="info" title="Forward navigator.userAgent when your backend mints the token">
+  Your SPA cannot mint tokens itself, so the backend cannot see the viewer's
+  browser. Pass it explicitly (`x-viewer-user-agent`) and have the route forward
+  it to `viewerUserAgent`. Without this, signed playback fails with a
+  user-agent binding error and public playback is unaffected — which makes it
+  easy to miss until you switch a video to `signed`.
+</Callout>
+
+For token refresh, skip the string form (it implies a same-origin session route
+you probably do not have) and use the callback:
+
+```tsx
+<OpenVodPlayer
+  playbackId={videoId}
+  src={session.playbackUrl}
+  token={session.token}
+  tokenRefreshEndpoint={async () => {
+    const res = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/play-token/${videoId}`, {
+      headers: { 'x-viewer-user-agent': navigator.userAgent },
+    })
+    return res.json() // { token } works
+  }}
+/>
+```
+
+## CORS checklist
+
+Two separate origins, two separate fixes:
+
+| Surface | Configure | Symptom if missing |
+| --- | --- | --- |
+| R2 raw bucket | `ExposeHeaders: ["ETag"]` + your SPA origin in `AllowedOrigins` | `/complete` fails; multipart completion has no ETags |
+| OpenVOD API | Your SPA origin in `CORS_ORIGINS` | `/v1/upload/create` blocked in the console |
+| Your token backend | Its own CORS, or serve it same-origin | `/api/upload-token` blocked |
+
+The R2 policy is on [Uploads](/upload#r2-cors-must-expose-etag); `CORS_ORIGINS`
+supports `*.` wildcard subdomains so preview deployments work — see
+[Configuration](/configuration#urls-and-origins).
+
+<Cards>
+  <Card title="Node backend" href="/integrations/node-backend" description="Express, Hono and Fastify versions of the token routes." />
+  <Card title="Uploads" href="/upload" description="Progress, pause/resume, cancellation and typed errors." />
+  <Card title="Playback" href="/playback" description="Signed tokens, refresh, chapters and subtitles." />
+</Cards>

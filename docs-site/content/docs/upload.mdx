@@ -1,0 +1,290 @@
+---
+title: Uploads
+description: Mint upload tokens on your server, upload from the browser with @openvod/uploader, and handle progress, resumption, cancellation and typed errors.
+---
+
+Uploads are a two-party flow. Your backend holds the API key and mints a
+short-lived **upload token**; the browser uploads the file straight to your R2
+raw bucket with that token. The API key never reaches the client, and video
+bytes never pass through the API.
+
+```
+Your backend                 OpenVOD API                  R2 (raw bucket)
+     │                            │                             │
+     │  POST /v1/upload/token     │                             │
+     │  Authorization: Bearer sk_live_…                         │
+     ├───────────────────────────▶│                             │
+     │◀── upload_token (ut_…), expires_at ──────────────────────┤
+     │                            │                             │
+Browser                           │                             │
+     │  POST /v1/upload/create    │                             │
+     │  Authorization: UploadToken ut_…                         │
+     ├───────────────────────────▶│  create multipart upload    │
+     │◀── upload_id, file_id, key, part_size, part_count ───────┤
+     │                            │                             │
+     │  POST /v1/upload/parts      (windowed presigned URLs)     │
+     ├───────────────────────────▶│                             │
+     │  PUT each part ────────────┼────────────────────────────▶│
+     │  POST /v1/upload/complete   │                             │
+     ├───────────────────────────▶│  HEAD-verify size, dispatch transcode
+```
+
+<Callout type="info" title="This page is the SDK path">
+  `@openvod/uploader` implements the whole protocol — windowed presigning, retry
+  with backoff, resumable sessions. If you are implementing a client yourself, or
+  debugging a raw request, the exact field-by-field contract for all five
+  endpoints is in the [upload API reference](/api-reference/uploads).
+</Callout>
+
+<Callout type="warn" title="R2 CORS must expose ETag, or nothing completes">
+  The browser `PUT`s each part straight to R2, and multipart completion needs the
+  `ETag` response header — which R2 does not expose by default. This is the
+  single most common failed upload. See
+  [R2 CORS must expose ETag](#r2-cors-must-expose-etag).
+</Callout>
+
+## 1. Mint an upload token (server)
+
+`POST /v1/upload/token` requires the API key, so it belongs on your server.
+With `@openvod/server` it is one call:
+
+```ts
+// app/api/upload-token/route.ts
+import { OpenVod } from '@openvod/server'
+
+const vod = new OpenVod({
+  apiKey: process.env.OPENVOD_API_KEY!,
+  baseUrl: process.env.OPENVOD_API_URL!, // https://api.yourvod.com — no /v1 suffix
+})
+
+export async function POST() {
+  const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
+
+  // `upload_token` / `expires_at` are the API's own field names.
+  return Response.json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
+}
+```
+
+Options (`CreateUploadTokenParams`) and the response:
+
+| Option | Meaning |
+| --- | --- |
+| `expiresIn` | Lifetime such as `'1h'`, `'30m'`, `'24h'`. Default `1h`, maximum `24h`. |
+| `maxFiles` | How many uploads this token may start. 1–100, default 1. |
+| `maxSizeBytes` | Per-file size ceiling in bytes. Default no per-token ceiling. |
+
+The response is `{ upload_token, expires_at, max_files, max_size_bytes }` —
+`expires_at` is an ISO 8601 string. Two properties matter operationally:
+
+- The token is **checked only on `/create`**. An upload that started before the
+  token lapsed still finishes; that is what makes hour-long uploads safe.
+- `maxFiles` is a **start** budget, not a concurrency budget: a token with
+  `maxFiles: 1` can start exactly one upload, and a resumed upload continues
+  the one it already started.
+
+## 2. Upload in the browser
+
+```ts
+import { OpenVodUploader } from '@openvod/uploader'
+
+// Your backend returns { uploadToken } — see step 1.
+const { uploadToken } = await fetch('/api/upload-token').then((r) => r.json())
+
+const uploader = new OpenVodUploader({
+  baseUrl: 'https://api.yourvod.com', // your API origin — no /v1 suffix
+  uploadToken,
+})
+
+const result = await uploader.upload(file, {
+  title: 'My Video',
+  onProgress: (p) => console.log(`${p.percentage}%`),
+})
+
+console.log(result.fileId) // the video id — poll it, or wait for video.ready
+```
+
+The SDK splits the file into parts, fetches presigned URLs in windows just
+before each window uploads, retries transient part failures with exponential
+backoff, and completes the multipart upload for you. A file that needs more
+than 10 000 parts is refused (`TOO_MANY_PARTS`) — that is the API's ceiling,
+not the SDK's.
+
+`upload()` resolves with:
+
+| Field | Meaning |
+| --- | --- |
+| `fileId` | The video id. Poll `vod.videos.get(fileId)` or wait for `video.ready`. |
+| `status` | `'processing'` once the upload completed. |
+| `title` | The title the upload was created with. |
+| `key` | Object key in the raw bucket — needed to abort a stranded upload. |
+| `uploadId` | Multipart upload id — needed to abort a stranded upload. |
+| `etag` | ETag of the completed object, when storage returned one. |
+| `bytesUploaded`, `partCount`, `partSize` | What was uploaded. |
+
+### Upload options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `title` | filename | Video title. |
+| `playbackPolicy` | `'public'` | `'public'` or `'signed'`. |
+| `generateSubtitle` | `false` | Run Whisper subtitle generation. |
+| `generateChapters` | `false` | Generate chapters. Requires subtitles; the server forces it off without them. |
+| `filename` / `contentType` | from the file | Override what is sent to the API — required for a bare `Blob`. |
+| `transcodingProvider` | installation default | `'modal'` or `'self-hosted'` for this job. |
+| `onProgress` | — | Called on every state change. |
+| `signal` | — | `AbortSignal` for cancellation. |
+
+### Configuration
+
+```ts
+new OpenVodUploader({
+  baseUrl: 'https://api.yourvod.com', // required, no /v1 suffix
+  uploadToken: 'ut_…',                // required
+  concurrency: 3,                     // parallel parts (default 3)
+  maxRetries: 3,                      // retries per part (default 3)
+  retryDelay: 1000,                   // backoff base, ms (default 1000)
+  windowSize: 100,                    // part URLs per /parts call (max 100)
+  presignRefreshMs: 2700000,          // re-fetch a window after 45 min
+  transcodingProvider: 'modal',       // 'modal' | 'self-hosted'
+})
+```
+
+Presigned part URLs are valid for one hour. The SDK fetches each window just
+before it uploads and re-fetches after `presignRefreshMs` (45 minutes by
+default), so a slow upload never fails because a URL expired.
+
+## Resumable uploads
+
+`upload()` is the one-shot convenience call. When you need pause/resume, or
+want to survive a page reload, use a session:
+
+```ts
+const session = uploader.startUpload(file, {
+  title: 'Keynote',
+  onProgress: (p) => setPercent(p.percentage),
+})
+
+session.pause() // stops scheduling parts; in-flight parts finish
+session.resume()
+await session.run()
+```
+
+A session holds no `File` handle and no presigned URLs — both expire or cannot
+be serialized — so it is safe to persist:
+
+```ts
+localStorage.setItem('upload', JSON.stringify(session))
+
+// After a reload, with the file re-selected:
+const state = JSON.parse(localStorage.getItem('upload')!)
+const resumed = uploader.resumeUpload(state, file)
+await resumed.run() // already-uploaded parts are skipped
+```
+
+## Progress
+
+`onProgress` receives an `UploadProgress` on every state change, including
+pauses:
+
+| Field | Meaning |
+| --- | --- |
+| `percentage` | 0–100, based on parts the server confirmed. |
+| `bytesUploaded` / `bytesTotal` | Bytes confirmed / total bytes. |
+| `phase` | `'initializing'`, `'uploading'`, `'paused'` or `'completing'`. |
+| `partsCompleted` / `partsTotal` | Parts finished / planned. |
+
+## Cancellation
+
+```ts
+// An in-flight upload
+const controller = new AbortController()
+uploader.upload(file, { signal: controller.signal })
+controller.abort()
+
+// Or, for a session — also abandons the multipart upload server-side
+await session.cancel()
+
+// Or, later, from what the upload returned. This deletes the abandoned parts,
+// which storage keeps billing until they are removed.
+await uploader.abort(result.key, result.uploadId, result.fileId)
+```
+
+Cancellation is not a failure: an aborted `signal` and `cancel()` reject with
+`UploadAbortedError`, which you can recognise with
+`isUploadAbortedError(error)`.
+
+## Typed errors
+
+Every failure is an `OpenVodError` with a stable `code`. Match on the code, not
+on the message. The three you will actually hit while building:
+
+| `code` | Meaning | Retry? |
+| --- | --- | --- |
+| `UPLOAD_TOKEN_EXPIRED` | The token lapsed before `/create`. | Mint a new token. |
+| `UPLOAD_TOKEN_EXHAUSTED` | The `maxFiles` budget is spent. | Mint a new token. |
+| `RATE_LIMITED` | The API rate limiter answered 429. | Yes — after `retryAfterMs`. |
+
+The full catalogue — all twelve uploader codes, plus what the server SDK, the
+webhook verifier and the transcoder produce — is on
+[Errors & status codes](/errors). It is the single source of truth; this page
+does not duplicate it.
+
+```ts
+import { OpenVodError } from '@openvod/uploader'
+
+try {
+  await uploader.upload(file)
+} catch (error) {
+  if (error instanceof OpenVodError && error.retryable) {
+    // error.retryAfterMs is set when the API sent Retry-After.
+  }
+  if (error instanceof OpenVodError) {
+    console.error(error.code, error.requestId) // requestId helps support
+  }
+}
+```
+
+## R2 CORS must expose `ETag`
+
+The browser `PUT`s each part straight to R2 with a presigned URL, and multipart
+completion needs the `ETag` response header. R2 does not expose it by default.
+
+<Callout type="warn" title="Without ETag in ExposeHeaders, /complete fails">
+  Add this CORS policy to the **raw** bucket (Cloudflare dashboard → R2 →
+  your raw bucket → Settings → CORS policy), replacing the origins with the
+  origins your uploader runs on:
+
+  ```json
+  [
+    {
+      "AllowedOrigins": ["https://app.example.com"],
+      "AllowedMethods": ["GET", "PUT", "HEAD"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3600
+    }
+  ]
+  ```
+</Callout>
+
+The complete policy, including the production origins you will add later, is in
+[Quickstart → Create two R2 buckets](/quickstart#1-create-two-r2-buckets).
+
+## Operational notes
+
+- **Uploads can be switched off per deployment.** With `UPLOADS_ENABLED=false`
+  the upload routes answer 403 and the SDK raises `UPLOADS_DISABLED`.
+- **There is a global size ceiling** (`MAX_UPLOAD_SIZE_BYTES`, 25 GiB by
+  default). `/create` rejects a larger declared size.
+- **`/complete` verifies the object** with a `HEAD` before spending a transcode
+  job on it. A missing object or a size mismatch marks the video `failed`
+  (`OBJECT_MISSING` / `SIZE_MISMATCH`) and answers 409.
+- **Deleting the video is not the same as aborting the upload.** `abort()` is
+  what removes abandoned multipart parts from storage.
+
+<Cards>
+  <Card title="Your first video" href="/first-video" description="The upload step in the context of the whole flow." />
+  <Card title="Upload API reference" href="/api-reference/uploads" description="Every field of all five endpoints, if you are not using the SDK." />
+  <Card title="Errors & status codes" href="/errors" description="All twelve uploader codes, and every HTTP status behind them." />
+  <Card title="Framework integrations" href="/integrations" description="The uploader wired into Next.js, Vite, Nuxt and SvelteKit." />
+</Cards>

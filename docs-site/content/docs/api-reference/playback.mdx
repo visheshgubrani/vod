@@ -1,0 +1,190 @@
+---
+title: Playback tokens
+description: Mint a playback session for one viewer — public and signed behaviour, the user-agent binding, domain restrictions and token expiry.
+---
+
+One endpoint turns a `ready` video into something a player can open. It works for
+both policies, so it can be your only source of playback URLs.
+
+| | |
+| --- | --- |
+| **Auth** | API key (`Authorization: Bearer sk_live_…`) |
+| **Path** | `POST /v1/video/:id/playback-token` |
+| **Server-side only** | The API key mints this per viewer. Never call it from a browser. |
+
+## Request
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `expires_in` | string | `"4h"` | `Ns` / `Nm` / `Nh` / `Nd`. An unparseable value silently falls back to 4h rather than erroring. |
+| `viewer_user_agent` | string | — | **Required for signed videos.** May also be sent as the `x-viewer-user-agent` header. |
+| `allowed_domains` | string[] | `["*"]` | Origins allowed to play, matched against the `Referer` (or `Origin`). |
+| `allow_no_referrer` | boolean | `true` | Whether a request with no `Referer` at all is allowed. |
+
+```bash
+curl -X POST "$OPENVOD_API_URL/v1/video/$VIDEO_ID/playback-token" \
+  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "x-viewer-user-agent: $VIEWER_USER_AGENT" \
+  -d '{
+    "expires_in": "2h",
+    "allowed_domains": ["app.example.com", "*.example.com"],
+    "allow_no_referrer": false
+  }'
+```
+
+Any other field in the body is ignored.
+
+## Domain patterns
+
+`allowed_domains` entries are matched against the viewer's `Referer` or `Origin`:
+
+| Pattern | Matches |
+| --- | --- |
+| `example.com` | Exactly that host. |
+| `*.example.com` | Any subdomain — `app.example.com`, `www.example.com`. Not the bare `example.com`. |
+| `*` | Anywhere. The default, and effectively no restriction. |
+
+An invalid entry answers `400` with a `hint` naming the accepted forms, rather
+than silently failing open.
+
+## Response
+
+```json
+{
+  "playback_url": "https://media.yourvod.com/videos/8c4f0f4e-…/playlist.m3u8?token=eyJhbGciOiJIUzI1NiJ9…",
+  "token": "eyJhbGciOiJIUzI1NiJ9…",
+  "expires_at": 1737029400,
+  "playback_policy": "signed",
+  "subtitle_url": null,
+  "chapters": null
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `playback_url` | string | The manifest URL. **Already carries `?token=`** for signed videos. |
+| `token` | string \| null | The JWT. `null` for public videos — none is needed. |
+| `expires_at` | number \| null | Expiry in **epoch seconds**. `null` for public videos. |
+| `playback_policy` | string | `"public"` or `"signed"`. |
+| `subtitle_url` | string \| null | AI-generated WebVTT, when one exists. Carries the token for signed videos. |
+| `chapters` | array \| null | `{ startTime, endTime, title }[]` when chapters were generated. |
+
+<Callout type="warn" title="expires_at is epoch seconds here, and an ISO string elsewhere">
+  This endpoint returns `expires_at` as a **number of seconds since the epoch**.
+  `POST /v1/upload/token` returns it as an **ISO 8601 string**. Multiply by 1000
+  before `new Date()` here. It is inconsistent by design, not a docs error.
+</Callout>
+
+### Public videos
+
+The response comes back with `token: null`, `expires_at: null`, and
+`playback_url` set to the plain manifest URL. Nothing else changes — which is why
+you can write one client path and switch a video's policy later without touching
+it.
+
+### Ready check
+
+A video must be `ready`. Asking earlier is a `400`, not a retryable error:
+
+```json
+{
+  "error": "Video not ready for playback",
+  "status": "processing"
+}
+```
+
+The `status` field tells you the current state. Wait for `video.ready` (or keep
+polling `GET /v1/video/:id`) and call again. In the SDK this surfaces as
+`OpenVodError` with `code: 'VIDEO_NOT_READY'`.
+
+## The viewer binding
+
+For a signed video, `viewer_user_agent` is **required**:
+
+```json
+{
+  "error": "viewer_user_agent is required for signed playback tokens",
+  "hint": "Send it in JSON body or x-viewer-user-agent header"
+}
+```
+
+The token carries a hash of the viewer's **normalized browser family** — Chrome,
+Safari, Firefox, Edge — and the delivery worker refuses any request whose
+user-agent does not match. The normalization is why a minor browser version
+update does not break playback mid-session.
+
+<Callout type="error" title="Forward the viewer's user-agent, never your server's">
+  This is the most common signed-playback bug. Your backend cannot see the
+  viewer's browser by itself, so the client must send it:
+
+  ```ts
+  // Client: the viewer's own request
+  fetch(`/api/play-token/${videoId}`, {
+    headers: { 'x-viewer-user-agent': navigator.userAgent },
+  })
+
+  // Server: forward exactly that
+  const session = await vod.playback.createToken(videoId, {
+    viewerUserAgent: req.headers['x-viewer-user-agent'],
+  })
+  ```
+
+  A token minted with your server's `User-Agent` is rejected in the viewer's
+  browser — and it fails silently in a React Native or native app, where the
+  header is whatever the HTTP client sends.
+</Callout>
+
+<Callout type="info" title="There is no IP binding">
+  The token binds the browser family, not the IP address. Forwarding the viewer's
+  IP is not required, and not used. A viewer moving between networks mid-playback
+  is unaffected.
+</Callout>
+
+## Expiry, refresh and caching
+
+`expires_in` defaults to 4 hours. A token that expires mid-playback stops
+playback, so:
+
+- **With `@openvod/player` (React)**, set `tokenRefreshEndpoint` and the player
+  refreshes ~60 seconds before expiry without interrupting the stream. See
+  [Token auto-refresh](/playback#token-auto-refresh).
+- **With hls.js or a native `<video>`**, either mint a token longer than any
+  session, or re-mint on a timer and reload the manifest. See the
+  [Nuxt](/integrations/nuxt#refreshing-an-expiring-token) or
+  [SvelteKit](/integrations/sveltekit#refreshing-an-expiring-token) guide.
+
+<Callout type="warn" title="Do not cache playback tokens in a shared cache">
+  A token is per viewer. Putting it behind a CDN or a shared server-side cache
+  hands one viewer's token — and therefore their browser-family binding — to
+  everyone else. Cache the *video metadata*, mint the token per request.
+</Callout>
+
+## Raw HTTP and the SDK
+
+```ts
+import { OpenVod } from '@openvod/server'
+
+const vod = new OpenVod({
+  apiKey: process.env.OPENVOD_API_KEY!,
+  baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+})
+
+const session = await vod.playback.createToken(videoId, {
+  expiresIn: '2h',
+  viewerUserAgent: req.headers['user-agent'],
+  allowedDomains: ['app.example.com'],
+  allowNoReferrer: false,
+})
+
+// session.playback_url, session.token, session.expires_at,
+// session.subtitle_url, session.chapters
+```
+
+The SDK returns the API's own `snake_case` field names. It does not rename them.
+
+<Cards>
+  <Card title="Playback guide" href="/playback" description="The player, refresh, chapters, subtitles and analytics." />
+  <Card title="Video endpoints" href="/api-reference/videos" description="Checking status before you mint a token." />
+  <Card title="Node backend" href="/integrations/node-backend" description="The route that forwards the viewer's user-agent." />
+</Cards>

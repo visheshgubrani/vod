@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { OpenVodPlayer } from "@/components/ui/openvod-player";
+import { OpenVodPlayer } from "@openvod/player";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
@@ -267,11 +267,18 @@ export function VideoDetailModal({
                       Preview Player
                     </p>
                     <OpenVodPlayer
+                      playbackId={video.id}
                       src={detail.playbackUrl}
-                      videoId={video.id}
+                      token={detail.token || undefined}
+                      tokenRefreshEndpoint={
+                        detail.playbackPolicy === "signed"
+                          ? `${API_URL}/video/${video.id}/token`
+                          : undefined
+                      }
                       title={detail?.title || video.title}
                       subtitles={detail?.subtitleUrl || undefined}
                       chapters={detail?.chapters || undefined}
+                      analyticsEndpoint={`${API_URL}/playback/journal`}
                     />
                   </div>
 

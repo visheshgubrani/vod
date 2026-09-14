@@ -43,14 +43,14 @@ import {
   serverVarsPath,
   writeEnvPair,
 } from './envio'
-import { EnvFileExistsError } from './envfile'
 import { newSecretSet } from './secret'
 import { WizardError } from './errors'
 import { askQuestions } from './questions'
 import { cfAccountId } from './cloudflare'
 import { runDeployPhase } from './deploy'
-import { lintEnvFiles } from './verify'
+import { lintEnvFiles, type CheckRow } from './verify'
 import { summaryText } from './display'
+import { linksNote, type LinkKind } from './links'
 import {
   announceCancel,
   askConfirm,
@@ -275,11 +275,51 @@ function nextStepsText(answers: WizardAnswers): string {
   ].join('\n')
 }
 
+/** Where to send someone for each key the verifier can report as missing. */
+const MISSING_KEY_LINKS: Record<string, LinkKind> = {
+  DATABASE_URL: 'neon',
+  ACCOUNT_ID: 'cfAccountId',
+  R2_ACCESS_KEY_ID: 'r2ApiTokens',
+  R2_SECRET_ACCESS_KEY: 'r2ApiTokens',
+  MODAL_WEBHOOK_URL: 'modal',
+  GROQ_API_KEY: 'groq',
+  QSTASH_TOKEN: 'qstash',
+  UPSTASH_REDIS_REST_URL: 'upstash',
+  UPSTASH_REDIS_REST_TOKEN: 'upstash',
+}
+
+/** Links for the providers behind every *failing* (non-advisory) row. */
+function missingLinkKinds(rows: readonly CheckRow[]): LinkKind[] {
+  const kinds: LinkKind[] = []
+  for (const row of rows) {
+    if (row.ok || row.advisory || row.key === undefined) continue
+    const kind = MISSING_KEY_LINKS[row.key]
+    if (kind !== undefined && !kinds.includes(kind)) kinds.push(kind)
+  }
+  return kinds
+}
+
+/** The wizard is part of the repo, so it reports the repo's own version. */
+function repoVersion(root: string): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+      version?: unknown
+    }
+    return typeof parsed.version === 'string' ? parsed.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function runCheck(root: string, checkUrl: string | undefined): Promise<boolean> {
   const serverEnv = readServerEnv(root)
   const deliveryEnv = readDeliveryEnv(root)
   const { rows, failed } = lintEnvFiles(serverEnv, deliveryEnv)
   printCheckRows(rows)
+  if (failed) {
+    const kinds = missingLinkKinds(rows)
+    if (kinds.length > 0) note(linksNote(kinds), 'Where to get what is missing')
+  }
   if (checkUrl !== undefined) {
     const base = checkUrl.replace(/\/+$/, '')
     // eslint-disable-next-line no-console
@@ -411,6 +451,52 @@ async function interactiveConfigure(root: string, opts: CliOptions): Promise<Wiz
   return answers
 }
 
+type ExistingAction = 'verify' | 'reconfigure' | 'deploy' | 'next' | 'exit'
+
+/**
+ * What to do when server/.dev.vars already exists.
+ *
+ * Re-running the wizard used to be a hard error ("already exists — re-run with
+ * --force"), which turned the second run — the normal way to deploy, verify or
+ * tweak — into a failure. This is the same menu shape the create-* CLIs ship.
+ */
+async function askExistingAction(root: string): Promise<ExistingAction> {
+  const serverEnv = readServerEnv(root) ?? {}
+  const report = lintEnvFiles(serverEnv, readDeliveryEnv(root))
+  note(
+    report.rows.map(formatCheckRow).join('\n'),
+    report.failed ? 'Existing configuration (incomplete)' : 'Existing configuration',
+  )
+
+  return askSelect<ExistingAction>(
+    'server/.dev.vars already exists — what now?',
+    [
+      {
+        value: 'verify',
+        label: 'Verify it',
+        hint: 're-check every key without printing secrets',
+      },
+      {
+        value: 'reconfigure',
+        label: 'Reconfigure',
+        hint: 're-run the wizard; keys it does not manage are preserved',
+      },
+      {
+        value: 'deploy',
+        label: 'Provision & deploy',
+        hint: 'Cloudflare + Modal, using this .dev.vars',
+      },
+      {
+        value: 'next',
+        label: 'Show next steps',
+        hint: 'develop, migrate, deploy',
+      },
+      { value: 'exit', label: 'Exit', hint: 'nothing is written' },
+    ],
+    'verify',
+  )
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2))
   if (opts.help) {
@@ -436,6 +522,20 @@ async function main(): Promise<void> {
   const interactive = isTty()
   if (!interactive) {
     if (opts.answersPath === undefined) {
+      // No terminal and an existing configuration means "nothing to do", not
+      // "failure". Report what is there and how to change it, then exit 0.
+      const configured = readServerEnv(root)
+      if (configured !== undefined && !opts.force) {
+        const report = lintEnvFiles(configured, readDeliveryEnv(root))
+        printCheckRows(report.rows)
+        const kinds = report.failed ? missingLinkKinds(report.rows) : []
+        if (kinds.length > 0) note(linksNote(kinds), 'Where to get what is missing')
+        printOk(
+          `${serverVarsPath(root)} already exists — nothing changed. ` +
+            'Reconfigure with --force, or edit the file and re-run --check.',
+        )
+        return
+      }
       throw new WizardError(
         'this wizard needs an interactive terminal.\n' +
           'Headless runs: create an answers JSON file (see --help) and pass --answers <file>.',
@@ -452,26 +552,53 @@ async function main(): Promise<void> {
     return
   }
 
-  intro()
+  intro(repoVersion(root))
 
   const envExists = existsSync(serverVarsPath(root)) || existsSync(deliveryVarsPath(root))
 
   let answers: WizardAnswers
+  let deployNow = opts.deploy
   if (!envExists || opts.force) {
     answers = await interactiveConfigure(root, opts)
   } else if (opts.deploy) {
+    // Explicit flag: deploy with what is already configured, no menu.
     const env = readServerEnv(root)
     if (!env) throw new WizardError(`${serverVarsPath(root)} is missing — configure first`)
     answers = deriveAnswersFromEnv(env)
     logWarn('Using the existing server/.dev.vars — pass --force to regenerate it first')
   } else {
-    throw new EnvFileExistsError(serverVarsPath(root))
+    // A second run is a normal thing to do, not an error: show what is already
+    // configured and let the user pick what they came for.
+    const action = await askExistingAction(root)
+
+    if (action === 'exit') {
+      outro('Nothing changed')
+      return
+    }
+    if (action === 'reconfigure') {
+      answers = await interactiveConfigure(root, { ...opts, force: true })
+    } else {
+      const env = readServerEnv(root)
+      if (!env) throw new WizardError(`${serverVarsPath(root)} is missing — configure first`)
+      answers = deriveAnswersFromEnv(env)
+      if (action === 'deploy') {
+        logWarn('Using the existing server/.dev.vars — pass --force to regenerate it first')
+        deployNow = true
+      } else {
+        // 'verify' and 'next' are read-only: report, then print next steps.
+        if (action === 'verify') await runCheck(root, undefined)
+        note(nextStepsText(answers), 'Next steps')
+        outro('Done')
+        return
+      }
+    }
   }
 
-  if (opts.deploy) {
+  if (deployNow) {
     logStep('Provision & deploy phase')
     await runDeployPhase(root, answers)
   } else if (!envExists || opts.force) {
+    note(linksNote(['modal']), 'Transcoding runs on Modal')
     const choice = await askSelect<'later' | 'deploy'>(
       'Provision and deploy to Cloudflare + Modal now?',
       [
@@ -497,8 +624,13 @@ async function main(): Promise<void> {
   if (serverEnv) {
     const report = lintEnvFiles(serverEnv, readDeliveryEnv(root))
     note(report.rows.map(formatCheckRow).join('\n'), 'Environment check')
-    if (report.failed) logWarn('Some keys are still missing — see rows above, or re-run the wizard')
-    else logSuccess('Environment looks configured')
+    if (report.failed) {
+      logWarn('Some keys are still missing — see rows above, or re-run the wizard')
+      const kinds = missingLinkKinds(report.rows)
+      if (kinds.length > 0) note(linksNote(kinds), 'Where to get what is missing')
+    } else {
+      logSuccess('Environment looks configured')
+    }
   }
 
   note(nextStepsText(answers), 'Next steps')

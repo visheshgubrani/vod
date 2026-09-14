@@ -1,0 +1,328 @@
+---
+title: Playback
+description: Public and signed playback, minting playback tokens server-side, token refresh, chapters, subtitles, analytics and embed snippets.
+---
+
+Playback is served by the **delivery worker** in front of your transcoded R2
+bucket. The API mints a short-lived JWT for private videos; the delivery worker
+verifies it on every request and rewrites the token into each manifest
+sub-resource.
+
+<Callout type="warn" title="@openvod/player is React-only">
+  This page documents the React player in depth. If you are on Vue, Nuxt, Svelte
+  or plain HTML, jump to [Playback without React](#playback-without-react) — you
+  play the same manifests with `hls.js`, and you lose only the auto-refresh
+  timer. The per-framework versions are in
+  [Framework integrations](/integrations).
+</Callout>
+
+## Public vs signed
+
+| | Public | Signed |
+| --- | --- | --- |
+| Per-video setting | `playback_policy: 'public'` (default) | `playback_policy: 'signed'` |
+| Token needed | No | Yes — minted per viewer |
+| Player props | `src` or `cdnBase` + `playbackId` | the same, plus `token` and `tokenRefreshEndpoint` |
+| Delivery worker | Serves the object | Verifies the JWT, binds it to the viewer, rewrites manifests |
+
+Set the policy when the upload is created (`playbackPolicy` on
+`uploader.upload()`) or later with `vod.videos.update(id, { playbackPolicy: 'signed' })`.
+A video must be `ready` before a playback token can be minted; asking earlier
+returns `VIDEO_NOT_READY` so you can wait for `video.ready` instead of guessing.
+
+## Mint a playback token (server)
+
+Your backend mints the token for one viewer. For a **signed** video the
+`viewerUserAgent` is required: the token carries a hash of the viewer's browser
+family, and the delivery worker refuses a request whose user-agent does not
+match. Forward the user-agent from the viewer's own request — not your server's.
+
+```ts
+// app/api/videos/[id]/play-token/route.ts
+import { OpenVod } from '@openvod/server'
+
+const vod = new OpenVod({
+  apiKey: process.env.OPENVOD_API_KEY!,
+  baseUrl: process.env.OPENVOD_API_URL!, // https://api.yourvod.com — no /v1 suffix
+})
+
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+
+  const session = await vod.playback.createToken(id, {
+    expiresIn: '2h',
+    viewerUserAgent: req.headers.get('user-agent') ?? undefined,
+    allowedDomains: ['app.example.com', '*.example.com'],
+    allowNoReferrer: false,
+  })
+
+  return Response.json({
+    playbackUrl: session.playback_url,
+    token: session.token,
+    subtitleUrl: session.subtitle_url,
+    chapters: session.chapters,
+  })
+}
+```
+
+The response (`PlaybackSession`) is:
+
+| Field | Meaning |
+| --- | --- |
+| `playback_url` | The manifest URL. For signed videos it already carries `?token=…`. |
+| `token` | The JWT. `null` for public videos — none is needed. |
+| `expires_at` | Token expiry in epoch **seconds**. `null` for public videos. |
+| `playback_policy` | `'public'` or `'signed'`. |
+| `subtitle_url` | AI-generated WebVTT, when one exists (already carries the token for signed videos). |
+| `chapters` | `{ startTime, endTime, title }[]` when chapters were generated. |
+
+### Restrictions
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `expiresIn` | `4h` | Token lifetime, e.g. `'30m'`, `'2h'`. |
+| `viewerUserAgent` | — | Required for signed videos: forward the viewer's `User-Agent` header. |
+| `allowedDomains` | `['*']` | Origins allowed to play, matched against the Referer (or Origin). |
+| `allowNoReferrer` | `true` | Whether a request with no Referer at all is allowed. |
+
+<Callout type="info" title="The binding is the user-agent, not the IP">
+  The token binds the viewer's normalized browser family (Chrome, Safari,
+  Firefox, Edge…), so a minor version update does not break playback. There is
+  no IP binding claim: forwarding the viewer's IP is not required and is not
+  used.
+</Callout>
+
+Raw HTTP equivalents are `POST /v1/upload/token` and
+`POST /v1/video/:id/playback-token` with `Authorization: Bearer sk_live_…`.
+The playback route accepts `expires_in`, `viewer_user_agent` (or an
+`x-viewer-user-agent` header), `allowed_domains` and `allow_no_referrer`; it
+ignores anything else. The full contract is on
+[Playback tokens](/api-reference/playback).
+
+## The player
+
+```tsx
+import { OpenVodPlayer } from '@openvod/player'
+
+// Public: either give it the manifest URL…
+<OpenVodPlayer
+  playbackId="your-video-id"
+  src="https://media.example.com/videos/your-video-id/playlist.m3u8"
+  title="My Video"
+/>
+
+// …or let it build the URL from your delivery origin.
+<OpenVodPlayer playbackId="your-video-id" cdnBase="https://media.example.com/videos" />
+```
+
+`src` takes precedence over `cdnBase`; with `cdnBase` the player builds
+`{cdnBase}/{playbackId}/playlist.m3u8`. There is no hosted delivery default —
+`cdnBase` is your own delivery worker.
+
+<Callout type="info" title="Prefer the URL the API returns">
+  The `cdnBase` + `playbackId` shortcut matches the legacy `videos/<id>/` output
+  layout. A self-hosted transcode publishes under
+  `videos/<id>/attempts/<attempt-id>/…`, which cannot be reconstructed from the
+  video id — so use `session.playback_url` when the video may have been encoded
+  by a self-hosted agent.
+</Callout>
+
+For signed videos, pass the session your backend minted:
+
+```tsx
+<OpenVodPlayer
+  playbackId={videoId}
+  src={session.playbackUrl}
+  token={session.token}
+  subtitles={session.subtitleUrl}
+  chapters={session.chapters}
+  title={video.title}
+  tokenRefreshEndpoint={`/api/videos/${videoId}/play-token`}
+/>
+```
+
+The token is appended to the manifest, poster and subtitle URLs as `?token=`.
+Delivery responses are readable cross-origin — the delivery worker sends
+`Access-Control-Allow-Origin: *` — so the player works out of the box.
+
+| Prop | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `src` | `string` | — | Direct HLS/DASH URL. Takes precedence over `cdnBase`. |
+| `cdnBase` | `string` | — | Delivery origin used with `playbackId`. |
+| `playbackId` | `string` | — | Video id; also tags analytics. |
+| `token` | `string` | — | Signed token, appended to video/poster/subtitle URLs. |
+| `tokenRefreshEndpoint` | `string \| () => Promise<…>` | — | Where to get a fresh token. |
+| `tokenRefreshLeadMs` | `number` | `60000` | How early to refresh. |
+| `userId` | `string` | — | Viewer identity for analytics. |
+| `title`, `poster`, `subtitles` | `string` | — | Chrome and track metadata. |
+| `chapters` | `Chapter[]` | — | `{ startTime, endTime, title }[]`. |
+| `autoPlay`, `muted` | `boolean` | `false` | Deferred playback. |
+| `theme` | `{ primaryColor?, accentColor? }` | — | Maps to `--video-brand` / `--video-accent`. |
+| `className`, `style` | `string`, `CSSProperties` | — | Applied to the container. |
+| `analyticsEndpoint` | `string \| false` | off | Journal URL. |
+| `onReady`, `onError`, `onEnded` | callbacks | — | Playback lifecycle. |
+
+`envKey` is accepted as a deprecated alias for `userId`.
+
+## Token auto-refresh
+
+A token that expires mid-playback would stop playback, so the player asks for a
+new one shortly before that happens (60 seconds by default) and swaps it into
+the stream without interrupting anything. `tokenRefreshEndpoint` accepts two
+forms:
+
+```tsx
+// 1. A URL, fetched with credentials: 'include' (same-origin session routes).
+tokenRefreshEndpoint="/api/videos/123/play-token"
+
+// 2. A callback, for a cross-origin API, a signed request, or a token cache.
+tokenRefreshEndpoint={async () => {
+  const res = await fetch('/api/play-token', { headers: { 'x-csrf': token } })
+  return res.json()
+}}
+```
+
+The response may be a token string, `{ token }`, `{ playback_token }`, or
+`{ playback_url }` (the token is read out of the query string). Failures never
+interrupt playback: they back off exponentially from 1s to a 60s ceiling and
+stop after 5 consecutive failures rather than hammering your endpoint. If the
+token's expiry cannot be read, the player refreshes on a 5-minute interval.
+
+## Chapters and subtitles
+
+Chapters arrive as `{ startTime, endTime, title }[]` and are converted to a
+WebVTT track internally. Subtitles are a plain WebVTT URL:
+
+```tsx
+<OpenVodPlayer
+  src={playbackUrl}
+  token={token}
+  subtitles="https://media.example.com/videos/abc-123/subs.vtt"
+  chapters={[
+    { startTime: 0, endTime: 60, title: 'Introduction' },
+    { startTime: 60, endTime: 300, title: 'Main content' },
+  ]}
+/>
+```
+
+Set `generateSubtitle: true` (and optionally `generateChapters: true`) at
+upload time; the API then returns both on the playback-token response and
+`subtitle.generated` / `chapters.generated` webhooks tell your backend when they
+are ready.
+
+## Analytics (opt-in)
+
+Analytics are **off** by default; the component never phones home on its own.
+Point `analyticsEndpoint` at your API's journal route and pass a `userId` to
+attribute sessions:
+
+```tsx
+<OpenVodPlayer
+  playbackId={videoId}
+  src={playbackUrl}
+  userId={currentUser.id}
+  analyticsEndpoint="https://api.example.com/api/playback/journal"
+/>
+```
+
+The player batches `play`, `pause`, `seeking`, `seeked`, `ended`, `error` and
+10-second `heartbeat` events with accumulated watch time. Watch time only counts
+while playing and not seeking, so scrubbing does not inflate it. Flushes use
+`navigator.sendBeacon` on unload so the last batch survives navigation.
+
+<Callout type="warn" title="Two limits on the journal route today">
+  `POST /api/playback/journal` accepts unauthenticated events — there is no
+  per-tenant public key yet, so keep it behind your own proxy if the numbers
+  drive business decisions. It also only writes on a deployment with the
+  Workers Analytics Engine write configured; elsewhere it answers 501
+  ("Playback analytics not configured"). There is no analytics SDK: read the
+  aggregates in your own dashboard.
+</Callout>
+
+## Embed snippets
+
+### Playback without React
+
+`@openvod/player` is a **React** component — it is built on `@vidstack/react`. If
+you are using Vue, Nuxt, Svelte, SvelteKit, Astro or plain HTML, you do not need
+it and cannot use it. Play the same manifest URLs directly.
+
+What you give up is only the automatic token-refresh timer; everything else —
+signed tokens, chapters, subtitles — is just URLs and WebVTT, which is why the
+player is a convenience wrapper rather than the product.
+
+```ts
+// Anywhere — hls.js (Chrome, Firefox, Edge)
+import Hls from 'hls.js'
+
+const video = document.querySelector('video')!
+const hls = new Hls()
+hls.loadSource(playbackUrl) // already carries ?token= for signed videos
+hls.attachMedia(video)
+```
+
+```html
+<!-- Safari, iOS, and set-top boxes play HLS natively — no library needed -->
+<video controls playsinline src="https://media.example.com/videos/VIDEO_ID/playlist.m3u8"></video>
+```
+
+`hls.js` is not required on Safari or iOS: `Hls.isSupported()` is false there and
+the native `<video>` path takes over. Lazy-importing hls.js inside that check
+keeps roughly 200 KB out of the bundle for the browsers that do not need it.
+
+<Callout type="warn" title="Signed playback must run in the viewer's browser">
+  The delivery worker checks the token's user-agent binding on every request. A
+  server-side proxy that fetches the manifest with its own `User-Agent` is
+  rejected, so the embed has to run client-side. Append the token yourself
+  (`…playlist.m3u8?token=…`) — or just use `session.playback_url`, which already
+  carries it.
+</Callout>
+
+### Refreshing a token without the player
+
+There is no refresh timer to inherit, so either mint a token longer than any
+session (four hours covers most VOD viewing), or re-mint on a timer and reload
+the manifest. `hls.js` preserves the current position across `loadSource`:
+
+```ts
+const { playback_url, expires_at } = await fetch('/api/play-token/' + videoId, {
+  method: 'POST',
+  headers: { 'x-viewer-user-agent': navigator.userAgent },
+}).then((r) => r.json())
+
+hls.loadSource(playback_url)
+// expires_at is epoch SECONDS — multiply before comparing to Date.now()
+scheduleRefresh(expires_at * 1000 - 60_000) // your own timer
+```
+
+Working versions of this are in the [Nuxt](/integrations/nuxt#refreshing-an-expiring-token)
+and [SvelteKit](/integrations/sveltekit#refreshing-an-expiring-token) guides.
+
+### React
+
+```tsx
+import { OpenVodPlayer } from '@openvod/player'
+
+export function Video({ playbackUrl, poster }: { playbackUrl: string; poster: string }) {
+  return <OpenVodPlayer src={playbackUrl} poster={poster} title="My Video" />
+}
+```
+
+## Styling
+
+Player styles are inlined into the JS bundle, so there is nothing extra to
+import. If you want them as a real CSS asset instead (strict CSP, smaller JS
+chunk):
+
+```ts
+import '@openvod/player/styles.css'
+```
+
+Do not do both.
+
+<Cards>
+  <Card title="Playback token API" href="/api-reference/playback" description="Exact request and response fields, domain patterns and the binding rules." />
+  <Card title="Framework integrations" href="/integrations" description="Player in Next.js and Vite; hls.js in Nuxt and SvelteKit." />
+  <Card title="Errors & status codes" href="/errors" description="VIDEO_NOT_READY, expired tokens and the rest." />
+  <Card title="Webhooks" href="/webhooks" description="subtitle.generated and chapters.generated when AI output is ready." />
+</Cards>
