@@ -35,6 +35,7 @@ type Fixtures = {
   meta: { videoId: string; attemptId: string; r2Prefix: string }
   modal: Record<string, unknown>
   agent: Record<string, unknown>
+  mixedAgent: Record<string, unknown>
 }
 
 const fixtures = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as Fixtures
@@ -45,6 +46,7 @@ describe('completion payload contract', () => {
     expect(fixtures.meta.note).toContain('contract_fixtures.py')
     expect(fixtures.modal).toBeTruthy()
     expect(fixtures.agent).toBeTruthy()
+    expect(fixtures.mixedAgent).toBeTruthy()
   })
 
   describe('Modal callback (rebasing off)', () => {
@@ -108,6 +110,148 @@ describe('completion payload contract', () => {
       // Applying the Modal layout on top of the agent's relative paths would
       // produce `videos/<id>/videos/<id>/attempts/...`, which exists nowhere.
       expect(parsed.hlsUrl).not.toContain(`videos/${fixtures.meta.videoId}/videos/`)
+    })
+  })
+
+  describe('mixed-backend agent completion', () => {
+    const prefix = attemptPrefix(fixtures.meta.videoId, fixtures.meta.attemptId)
+    const parsed = parseCompletionPayload(fixtures.mixedAgent, {
+      outputPrefix: prefix,
+      deliveryBaseUrl: DELIVERY,
+    })
+    const meta = JSON.parse(parsed.metadataJson) as Record<string, unknown>
+
+    it('accepts a ladder the engine finished across two encoders', () => {
+      // `mixed` is not an encoder: it says each rung carried its own fallback
+      // state, so no single name describes the whole job. The API has to store
+      // the literal rather than reject it or normalize it into a claim about an
+      // encoder that never ran the whole ladder.
+      expect(meta.backend).toBe('mixed')
+      expect(parsed.resolutions).toEqual(['1080p', '720p'])
+      expect(parsed.hlsUrl).toBe(`${DELIVERY}/${prefix}/playlist.m3u8`)
+    })
+
+    it('round-trips the per-rendition execution details', () => {
+      // One rung on NVENC (with a software-decode hybrid attempt), one on CPU —
+      // the whole reason the whole-job backend cannot answer "which encoder
+      // produced this rung?".
+      expect(meta.renditions).toEqual([
+        {
+          label: '1080p',
+          width: 1920,
+          height: 1080,
+          bitrate: '5M',
+          backend: 'nvenc',
+          mode: 'hybrid',
+          attempts: 2,
+          seconds: 41.5,
+          bytes: 66560,
+        },
+        {
+          label: '720p',
+          width: 1280,
+          height: 720,
+          bitrate: '3M',
+          backend: 'cpu',
+          mode: 'cpu',
+          attempts: 1,
+          seconds: 22.75,
+          bytes: 30720,
+        },
+      ])
+    })
+
+    it('round-trips the toolchain that produced them', () => {
+      expect(meta.toolchain).toEqual({
+        engine: '1.1.0',
+        ffmpeg: '9.0.1',
+        planVersion: '2',
+        shaka: '3.2.0',
+      })
+    })
+  })
+
+  describe('diagnostics are additive', () => {
+    /** A fixture with the two new `processing` keys removed (older engine). */
+    function withoutDiagnostics(fixture: Record<string, unknown>): Record<string, unknown> {
+      const copy = JSON.parse(JSON.stringify(fixture)) as Record<string, unknown>
+      const processing = copy.processing as Record<string, unknown>
+      delete processing.renditions
+      delete processing.toolchain
+      return copy
+    }
+
+    it('parses an older engine payload without inventing empty keys', () => {
+      // Backwards compatibility is the point: an engine that predates the
+      // diagnostics sends neither key, and `renditions: []` on the video would
+      // read as "this job had no renditions" — a claim the payload never made.
+      const prefix = attemptPrefix(fixtures.meta.videoId, fixtures.meta.attemptId)
+      const parsed = parseCompletionPayload(withoutDiagnostics(fixtures.agent), {
+        outputPrefix: prefix,
+        deliveryBaseUrl: DELIVERY,
+      })
+      const meta = JSON.parse(parsed.metadataJson) as Record<string, unknown>
+
+      expect(meta).not.toHaveProperty('renditions')
+      expect(meta).not.toHaveProperty('toolchain')
+      // The existing keys keep their meaning, `backend` included.
+      expect(meta.backend).toBe('cpu')
+      expect(meta.plan_fingerprint).toBe('fingerprint-contract')
+      expect(parsed.hlsUrl).toBe(`${DELIVERY}/${prefix}/playlist.m3u8`)
+    })
+
+    it('keeps only typed rendition fields and string-valued toolchain entries', () => {
+      const payload = withoutDiagnostics(fixtures.agent)
+      const processing = payload.processing as Record<string, unknown>
+      processing.renditions = [
+        'nope',
+        null,
+        { width: 1920 },
+        { label: 42, backend: 'nvenc' },
+        // A documented field with the wrong type stays typed (`null`), a scalar
+        // field this build has never heard of is carried through for the next
+        // engine version, and a nested object is dropped outright.
+        { label: '1080p', width: 'wide', backend: 'cpu', decode_seconds: 4.2, nested: { a: 1 } },
+      ]
+      processing.toolchain = { ffmpeg: 9, shaka: '3.2.0' }
+
+      const parsed = parseCompletionPayload(payload, {
+        outputPrefix: null,
+        deliveryBaseUrl: DELIVERY,
+      })
+      const meta = JSON.parse(parsed.metadataJson) as Record<string, unknown>
+
+      expect(meta.renditions).toEqual([
+        {
+          label: '1080p',
+          width: null,
+          height: null,
+          bitrate: null,
+          backend: 'cpu',
+          mode: null,
+          attempts: null,
+          seconds: null,
+          bytes: null,
+          decode_seconds: 4.2,
+        },
+      ])
+      expect(meta.toolchain).toEqual({ shaka: '3.2.0' })
+    })
+
+    it('omits both keys when the diagnostics have nothing usable', () => {
+      const payload = withoutDiagnostics(fixtures.agent)
+      const processing = payload.processing as Record<string, unknown>
+      processing.renditions = []
+      processing.toolchain = 'ffmpeg 9.0.1'
+
+      const parsed = parseCompletionPayload(payload, {
+        outputPrefix: null,
+        deliveryBaseUrl: DELIVERY,
+      })
+      const meta = JSON.parse(parsed.metadataJson) as Record<string, unknown>
+
+      expect(meta).not.toHaveProperty('renditions')
+      expect(meta).not.toHaveProperty('toolchain')
     })
   })
 

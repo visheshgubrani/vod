@@ -27,7 +27,7 @@ pnpm install                  # root ONLY — never inside a package
 pnpm dev                      # API (Node, tsx watch :8787) + web (Next :3000), parallel
 pnpm dev:workers              # same pair, API under wrangler dev (:8787)
 pnpm dev:all                  # adds delivery worker + sdk/player watch builds
-pnpm dev:infra                # dev Postgres :5433 + Redis :6379 (docker-compose.dev.yml, waits for health)
+pnpm dev:infra                # dev Postgres :5433 + Redis :6382 (docker-compose.dev.yml, waits for health)
 pnpm dev:infra:down           # stop dev infra, keep data
 pnpm dev:infra:reset          # stop dev infra and drop the dev Postgres volume
 pnpm start                    # build:node + next build, then run both artifacts
@@ -49,7 +49,7 @@ pnpm typecheck:tsc            # server + delivery tsc --noEmit
 (cd transcoding && .venv/bin/python -m pytest)   # python logic tests
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev \
   pnpm --filter vod-api test                     # ...including the real-DB suites
-TEST_REDIS_URL=redis://localhost:6379 pnpm --filter vod-api test   # ...and the live Redis adapter
+TEST_REDIS_URL=redis://localhost:6382 pnpm --filter vod-api test   # ...and the live Redis adapter
 pnpm --filter ./server test   # one package (filters match paths or names)
 pnpm --filter vod-api exec tsc --noEmit
 ```
@@ -194,5 +194,11 @@ Web: `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_BASE_URL`,
 - transcoding: Modal, FFmpeg/Shaka, faster-whisper, Groq (optional).
   The engine and the agent need only `requests`; Modal/boto3/Whisper are optional
   and imported lazily by the code path that uses them.
-- agent image: `transcoding/Dockerfile.agent` (ffmpeg + pinned Shaka + the CLI).
-  GPU support is runtime device passthrough, not a different image.
+- agent image: `transcoding/Dockerfile.agent` (source-built FFmpeg + pinned Shaka
+  + the CLI). GPU support is runtime device passthrough, not a different image.
+- media toolchain: one shared recipe (`transcoding/toolchain/`) builds FFmpeg
+  9.0.1 for BOTH the Modal image (`transcoding/main.py`) and the agent image;
+  `versions.env` is the only place a version/hash/digest is written down, and
+  both images run `verify_toolchain.sh` at build time. See
+  `docs/transcoding-toolchain.md`. `OPENVOD_REQUIRE_MEDIA_TOOLS=1` (set in CI)
+  turns a missing ffmpeg/packager into a test failure instead of a skip.

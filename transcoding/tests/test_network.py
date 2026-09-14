@@ -1,10 +1,13 @@
 """Tests for heartbeat/callback network behavior (no real network)."""
+import requests
+
 from openvod_transcoder.utils import network as netw
 
 
 class FakeResponse:
-    def __init__(self, status_code=200):
+    def __init__(self, status_code=200, text=""):
         self.status_code = status_code
+        self.text = text
 
     @property
     def ok(self):
@@ -15,7 +18,9 @@ class FakeResponse:
             from requests import HTTPError
 
             err = HTTPError(f"HTTP {self.status_code}")
-            err.response = type("R", (), {"status_code": self.status_code})()
+            err.response = type(
+                "R", (), {"status_code": self.status_code, "text": self.text}
+            )()
             raise err
 
 
@@ -85,3 +90,51 @@ class TestSendCallbackRetryPolicy:
         monkeypatch.setattr(netw.time, "sleep", lambda s: None)
         netw.send_callback("http://localhost:8787/api/webhook/transcode-complete", {})
         assert len(calls) == 3  # max_retries attempts, then give up quietly
+
+    def test_a_retried_attempt_says_why(self, monkeypatch, capsys):
+        # The failure that prompted this: every attempt logged "failed" and
+        # nothing else, while the response body carried the answer.
+        _make_posts(
+            monkeypatch,
+            [
+                FakeResponse(530, "error code: 1033")
+                for _ in range(3)
+            ],
+        )
+        monkeypatch.setattr(netw.time, "sleep", lambda s: None)
+
+        netw.send_callback("http://localhost:8787/api/webhook/transcode-complete", {})
+
+        out = capsys.readouterr().out
+        assert "530" in out
+        assert "1033" in out
+
+
+class TestCallbackFailureReason:
+    """One line, and it has to name the cause."""
+
+    def _http_error(self, status_code, text=""):
+        err = requests.HTTPError(f"HTTP {status_code}")
+        err.response = FakeResponse(status_code, text)
+        return err
+
+    def test_names_the_status_and_the_response_body(self):
+        reason = netw.callback_failure_reason(self._http_error(530, "error code: 1033"))
+
+        assert reason == "HTTP 530: error code: 1033"
+
+    def test_collapses_and_truncates_a_multiline_body(self):
+        html = "<html>\n  <head>\n    <title>530</title>\n  </head>\n</html>"
+
+        reason = netw.callback_failure_reason(self._http_error(530, html), limit=40)
+
+        assert len(reason) <= len("HTTP 530: ") + 40
+        assert "\n" not in reason
+
+    def test_survives_an_error_with_no_response(self):
+        assert netw.callback_failure_reason(requests.HTTPError("boom")) == "HTTPError: boom"
+
+    def test_names_network_exceptions(self):
+        assert netw.callback_failure_reason(ConnectionError("refused")) == (
+            "ConnectionError: refused"
+        )

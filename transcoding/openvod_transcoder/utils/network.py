@@ -52,6 +52,39 @@ def _auth_headers() -> dict:
     return headers
 
 
+def _body_snippet(response, limit: int) -> str:
+    """The response body as one short line, for a log line rather than a dump."""
+    try:
+        raw = response.text or ""
+    except Exception:  # noqa: BLE001 — a log line must never raise
+        return ""
+    # Bounded before collapsing: an edge-proxy error page can be megabytes, and
+    # normalising all of it into one line is work nobody asked for.
+    collapsed = " ".join(raw[: limit * 4].split())
+    return collapsed[:limit]
+
+
+def callback_failure_reason(exc: BaseException, limit: int = 200) -> str:
+    """
+    Why one callback attempt failed, in one line.
+
+    Callbacks are the only way the API learns a job finished, so a delivery that
+    fails has to be diagnosable from the worker's own log. Reporting just
+    "attempt failed" is not: the reason lives in the HTTP status and the response
+    body — Cloudflare, for instance, answers an unrouted tunnel hostname with
+    `530` and a body naming error 1033, while a bare `requests` failure carries a
+    connection error that is invisible from the status alone.
+    """
+    if isinstance(exc, requests.HTTPError):
+        response = getattr(exc, "response", None)
+        if response is None:
+            return f"HTTPError: {exc}"
+        status = getattr(response, "status_code", 0)
+        body = _body_snippet(response, limit)
+        return f"HTTP {status}: {body}" if body else f"HTTP {status}"
+    return f"{type(exc).__name__}: {exc}"
+
+
 def send_callback(url: str, data: dict, max_retries: int = 3) -> None:
     """
     Send webhook callback with exponential backoff retry.
@@ -66,6 +99,7 @@ def send_callback(url: str, data: dict, max_retries: int = 3) -> None:
         return
 
     print(f"📞 Sending callback to {url}...")
+    last_reason = ""
     for attempt in range(max_retries):
         try:
             resp = requests.post(
@@ -81,16 +115,18 @@ def send_callback(url: str, data: dict, max_retries: int = 3) -> None:
             status = http_err.response.status_code if http_err.response is not None else 0
             if 400 <= status < 500 and status != 429:
                 # Client rejection — retrying will not help.
-                print(f"❌ Callback rejected with HTTP {status}: not retrying")
+                print(f"❌ Callback rejected with HTTP {status}: not retrying "
+                      f"({callback_failure_reason(http_err)})")
                 return
-            e: BaseException = http_err
-        except Exception as e:  # noqa: F841
-            pass
+            last_reason = callback_failure_reason(http_err)
+        except Exception as e:  # noqa: BLE001 — retried below, then reported
+            last_reason = callback_failure_reason(e)
         if attempt == max_retries - 1:
-            print(f"❌ Callback failed after {max_retries} attempts")
+            print(f"❌ Callback failed after {max_retries} attempts: {last_reason}")
         else:
             wait_time = (2 ** attempt) + random.uniform(0, 0.5)  # jitter
-            print(f"⚠️ Callback attempt {attempt+1} failed. Retrying in {wait_time:.1f}s...")
+            print(f"⚠️ Callback attempt {attempt+1} failed: {last_reason}. "
+                  f"Retrying in {wait_time:.1f}s...")
             time.sleep(wait_time)
 
 

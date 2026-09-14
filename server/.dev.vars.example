@@ -24,11 +24,14 @@ CORS_ORIGINS=
 # The API's own public origin, used to build the transcode callback URL
 # (`${BACKEND_URL}/api/webhook/transcode-complete`). Keep localhost for normal
 # development. To receive real Modal callbacks locally, expose the host-run API
-# with the dev tunnel (`pnpm dev:tunnel` — named tunnel in
-# docker-compose.dev.yml) and point this at its stable public hostname instead,
-# e.g. BACKEND_URL=https://openvod-dev.example.com, then restart `pnpm dev`.
-# localhost stays unreachable from Modal's cloud, so without the tunnel videos
-# strand in `processing` and the DB status never flips to `ready`/`failed`.
+# with a tunnel you run yourself — `ngrok http 8787`, for example — and point
+# this at its public URL, e.g.
+# BACKEND_URL=https://framing-canning-haphazard.ngrok-free.dev, then restart
+# `pnpm dev`. Modal's cloud cannot reach localhost, so without a public URL
+# videos strand in `processing` and the DB status never flips to
+# `ready`/`failed`. The transcoder allows callbacks only to hosts listed in its
+# own ALLOWED_CALLBACK_HOSTS (the r2-creds Modal secret) — update that too, or
+# the callback is blocked before it is sent.
 BACKEND_URL=http://localhost:8787
 
 # Cloudflare (R2 storage — the BYOK pair)
@@ -82,13 +85,13 @@ DELIVERY_URL=https://media.yourdomain.com
 
 # Rate limiting (choose one; first match wins)
 #   REDIS_URL                     a plain Redis over TCP — Node runtime only.
-#                                 `pnpm dev:infra` starts one on :6379.
+#                                 `pnpm dev:infra` starts one on :6382.
 #   UPSTASH_REDIS_REST_URL/TOKEN  Upstash REST — works on both runtimes,
 #                                 including Workers (which cannot open a socket).
 #   neither                       in-memory sliding window, per instance. Fine
 #                                 for one API instance; configure one of the two
 #                                 above before running replicas.
-REDIS_URL=redis://localhost:6379
+REDIS_URL=redis://localhost:6382
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 

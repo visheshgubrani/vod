@@ -86,6 +86,103 @@ export type ParsedCompletion = {
   metadataJson: string
 }
 
+/**
+ * One rung's execution detail, as far as it was usable.
+ *
+ * The documented fields are always present — an absent or wrongly-typed one
+ * arrives as `null` — so a reader does not have to distinguish "this engine
+ * build did not report bytes" from "this rung had no bytes key". A newer engine
+ * may add further scalar fields; those ride along beside these.
+ */
+export type RenditionDiagnostic = {
+  label: string
+  width: number | null
+  height: number | null
+  bitrate: string | null
+  backend: string | null
+  mode: string | null
+  attempts: number | null
+  seconds: number | null
+  bytes: number | null
+}
+
+/**
+ * Per-rendition execution details, filtered down to what is actually usable.
+ *
+ * Why this is recorded at all: once a job can finish across more than one
+ * encoder (`processing.backend === 'mixed'`), the whole-job backend no longer
+ * answers "which encoder produced *this* rung, and on which toolchain?" — the
+ * only place to answer it is per rung. Support asks that question after the
+ * fact, when the job row is long gone, so the answer has to be on the video.
+ *
+ * Only entries that are objects carrying a string `label` survive: the label is
+ * what ties a diagnostic back to a rung, so an entry without one answers
+ * nothing. The documented fields are copied with the type the engine documents
+ * for them, and any *other* field that arrives as a number or string is carried
+ * through as well — diagnostics are additive by nature, and a newer engine's
+ * extra counter should not need a server deploy to be recorded. Anything
+ * untyped is dropped rather than passed through: a nested object is not a
+ * diagnostic and has no business on the video row.
+ *
+ * Returns `[]` for a missing, empty or malformed array, and the caller then
+ * omits the key entirely: `renditions: []` on an older video would read as "the
+ * engine reported no renditions", which is a different thing from "this engine
+ * build did not report per-rendition details".
+ */
+function parseRenditionDiagnostics(value: unknown): RenditionDiagnostic[] {
+  if (!Array.isArray(value)) return []
+
+  const renditions: RenditionDiagnostic[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    if (typeof record.label !== 'string') continue
+
+    const diagnostic: Record<string, string | number | null> = {
+      label: record.label,
+      width: typeof record.width === 'number' ? record.width : null,
+      height: typeof record.height === 'number' ? record.height : null,
+      bitrate: typeof record.bitrate === 'string' ? record.bitrate : null,
+      backend: typeof record.backend === 'string' ? record.backend : null,
+      mode: typeof record.mode === 'string' ? record.mode : null,
+      attempts: typeof record.attempts === 'number' ? record.attempts : null,
+      seconds: typeof record.seconds === 'number' ? record.seconds : null,
+      bytes: typeof record.bytes === 'number' ? record.bytes : null,
+    }
+    for (const [key, field] of Object.entries(record)) {
+      if (key in diagnostic) continue
+      if (typeof field === 'number' || typeof field === 'string') diagnostic[key] = field
+    }
+    renditions.push(diagnostic as RenditionDiagnostic)
+  }
+  return renditions
+}
+
+/**
+ * Toolchain versions behind the attempt: engine build, plan version, FFmpeg and
+ * Shaka.
+ *
+ * Why this is recorded: a diagnostic report is only actionable later if the
+ * versions travelled with the video — "the ladder broke under ffmpeg 9.0.1" is
+ * unanswerable once the job row is gone, and a rolling upgrade means the version
+ * in the image today is not the one that produced these bytes. Key names are
+ * kept as the engine writes them (`planVersion`, not `plan_version`) so the
+ * payload and the stored metadata can be compared by eye.
+ *
+ * Only string-valued entries survive, and `null` is returned when the incoming
+ * value is not a non-null object or when nothing usable remains — the caller
+ * omits the key entirely in that case, for the same reason as `renditions`.
+ */
+function parseToolchainDiagnostics(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+
+  const toolchain: Record<string, string> = {}
+  for (const [key, version] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof version === 'string') toolchain[key] = version
+  }
+  return Object.keys(toolchain).length > 0 ? toolchain : null
+}
+
 export type ParseCompletionOptions = {
   /** Attempt prefix for self-hosted artifacts. Null keeps the legacy layout. */
   outputPrefix?: string | null
@@ -194,6 +291,13 @@ export function parseCompletionPayload(
         ? subtitle.url
         : null
 
+  // Diagnostics for support: "which encoder produced this rung, and on which
+  // toolchain?" Both are additive — an older engine sends neither key, and both
+  // are omitted below when nothing usable arrived, so an existing video's
+  // metadata keeps exactly the shape it had.
+  const renditions = parseRenditionDiagnostics(processing.renditions)
+  const toolchain = parseToolchainDiagnostics(processing.toolchain)
+
   const metadataJson = JSON.stringify({
     ...(prevMetadata ?? {}),
     width: meta.width,
@@ -210,9 +314,15 @@ export function parseCompletionPayload(
     files_uploaded: processing.files_uploaded,
     source_size_mb: processing.source_size_mb,
     transcoded_size_mb: processing.transcoded_size_mb,
+    // A single encoder name (`cpu` | `nvenc` | `vaapi`) — or the literal
+    // `"mixed"`, which reports that the ladder finished across more than one
+    // encoder because every rendition carries its own fallback state. It stays
+    // the coarse whole-job summary; the per-rung answer is `renditions` below.
     backend: processing.backend,
     fallbacks: processing.fallbacks,
     plan_fingerprint: processing.plan_fingerprint,
+    ...(renditions.length > 0 ? { renditions } : {}),
+    ...(toolchain ? { toolchain } : {}),
     dash_manifest: outputs.dash_manifest,
     playback_policy: payload.playback_policy,
     encrypted: payload.encrypted,

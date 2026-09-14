@@ -193,6 +193,53 @@ TONEMAP_SDR_FILTER = (
 # worse outcome than a typed failure the owner can act on.
 SUPPORTED_HDR_TRANSFERS = ("smpte2084", "arib-std-b67")
 
+# Codecs whose hardware *decode* path we have validated on a GPU. Everything
+# else (AV1, VP9 in a WebM container, ProRes mezzanines) still encodes on the
+# GPU through the hybrid path, but decodes in software.
+GPU_DECODABLE_CODECS = ("h264", "hevc")
+
+# Pixel formats a CUDA/VAAPI frame can hold without a conversion we have not
+# validated. 10-bit (p010le, yuv420p10le), 4:2:2 and 4:4:4 sources are excluded:
+# the software chain converts them to yuv420p, which is exactly the hybrid path.
+GPU_INGESTIBLE_PIXEL_FORMATS = ("yuv420p", "nv12", "yuvj420p")
+
+
+def source_gpu_path_supported(metadata: SourceTraits) -> bool:
+    """
+    Whether *this source* may take the full GPU path (GPU decode + GPU filter).
+
+    Decided from the media's own properties — codec, pixel format, bit depth,
+    rotation, HDR — and never from the file's extension or how it was obtained.
+    A ``.webm`` holding H.264 is as eligible as an ``.mp4`` holding the same
+    bytes, and a ``.mp4`` holding 10-bit HEVC is not eligible at all.
+
+    The attributes are read defensively because :class:`SourceTraits` is a
+    protocol: the encoding seam deliberately does not import the video package,
+    and a stub that only knows ``is_hdr`` must keep working.
+    """
+    if getattr(metadata, "is_hdr", False):
+        # Tone-mapping has no validated GPU filter (`tonemap_cuda` is not
+        # guaranteed to exist), so HDR always takes the software transform with
+        # a hardware encoder — the hybrid path.
+        return False
+    if float(getattr(metadata, "rotation", 0.0) or 0.0):
+        # FFmpeg applies the display matrix by inserting a transpose filter;
+        # hardware frames cannot be rotated, so the software path is the only
+        # correct one.
+        return False
+    if int(getattr(metadata, "bit_depth", 8) or 8) > 8:
+        return False
+
+    pixel_format = str(getattr(metadata, "pixel_format", "") or "").lower()
+    if pixel_format and pixel_format not in GPU_INGESTIBLE_PIXEL_FORMATS:
+        return False
+
+    codec = str(getattr(metadata, "codec_name", "") or "").lower()
+    if codec and codec not in GPU_DECODABLE_CODECS:
+        return False
+
+    return True
+
 
 def software_filters(spec: RenderSpec, metadata: SourceTraits) -> str:
     """
@@ -222,26 +269,46 @@ def nvenc_filters(spec: RenderSpec, metadata: SourceTraits, *, gpu_decode: bool)
     Filter chain for NVENC.
 
     With GPU decode the frames are already CUDA surfaces, so only ``scale_cuda``
-    is valid. Without it they are in system memory and must be uploaded first.
-    HDR is deliberately *not* tonemapped here: NVENC's tonemap filter is not
-    present in every build, so HDR sources are routed to the software path
-    instead, which is a correctness decision rather than a performance one.
+    is valid. Without it they are in system memory — and then the chain must not
+    touch ``scale_cuda`` at all: NVENC accepts host frames and uploads them
+    internally, while ``scale_cuda`` is exactly the filter that failed in
+    production (the deployed build rejected its ``format`` option). A hybrid path
+    that still ran the CUDA scaler could never recover from that failure.
+
+    HDR is deliberately *not* tonemapped on the device: NVENC's tonemap filter is
+    not present in every build, so HDR sources take the software transform (with
+    NVENC still doing the encoding — which is the hybrid path) rather than a
+    guess.
     """
     if gpu_decode:
         return f"scale_cuda={spec.width}:{spec.height}:format=yuv420p"
-    return f"hwupload,scale_cuda={spec.width}:{spec.height}:format=yuv420p"
+    return software_filters(spec, metadata)
 
 
 def vaapi_filters(spec: RenderSpec, metadata: SourceTraits, *, gpu_decode: bool) -> str:
-    """Filter chain for VAAPI: frames must be uploaded to the DRM surface first."""
-    chain = []
+    """
+    Filter chain for VAAPI.
+
+    Full GPU: frames are DRM surfaces already, so they are scaled on the device.
+    Hybrid: the transformation happens in software and the result is uploaded
+    once, explicitly, with ``hwupload`` — which is why the caller must also pass
+    ``-vaapi_device`` (see :func:`input_args`); ``hwupload`` with no device
+    configured fails at filter-init time.
+    """
     if gpu_decode:
-        # Frames are DRM surfaces but still need scaling on the same device.
-        chain.append(f"scale_vaapi=w={spec.width}:h={spec.height}:format=nv12")
-    else:
-        chain.append("format=nv12")
-        chain.append("hwupload")
-        chain.append(f"scale_vaapi=w={spec.width}:h={spec.height}:format=nv12")
+        return f"scale_vaapi=w={spec.width}:h={spec.height}:format=nv12"
+
+    chain = []
+    if metadata.is_hdr:
+        chain.append(TONEMAP_SDR_FILTER)
+    chain.append(f"scale={spec.width}:{spec.height}:flags=bicubic")
+    # Preserve square pixels before the upload, exactly as the CPU chain does.
+    chain.append("setsar=1")
+    # NV12 is what VAAPI's H.264 encoder ingests; the software chain above has
+    # just produced yuv420p (or a float format on the tonemap path), so the
+    # conversion is explicit rather than left to the upload.
+    chain.append("format=nv12")
+    chain.append("hwupload")
     return ",".join(chain)
 
 
@@ -259,35 +326,79 @@ def video_filter_chain(
     verified that *this* source decodes on that device (see the preflight in
     :mod:`openvod_transcoder.encoding.probe`); passing ``gpu_decode`` is that
     verification's result, not an assumption.
+
+    Three shapes, matching the plan's execution paths:
+
+    - full GPU — GPU decode, GPU transform, GPU encode;
+    - hybrid — CPU decode and transform, GPU encode;
+    - CPU — everything in software.
+
+    HDR always lands in the hybrid shape: the CUDA tonemap filter is not
+    guaranteed to exist, and a hard failure mid-job is worse than a slower
+    correct encode. That is a correctness decision, not a performance one.
     """
-    if metadata.is_hdr and backend.is_hardware:
-        # Route HDR through the software chain even when the backend is a GPU:
-        # the CUDA tonemap filter is not guaranteed to exist, and a hard failure
-        # mid-job is worse than a slower correct one.
-        return software_filters(spec, metadata)
     if backend.name == BACKEND_NVENC:
-        return nvenc_filters(spec, metadata, gpu_decode=gpu_decode)
+        return nvenc_filters(spec, metadata, gpu_decode=gpu_decode and not metadata.is_hdr)
     if backend.name == BACKEND_VAAPI:
-        return vaapi_filters(spec, metadata, gpu_decode=gpu_decode)
+        return vaapi_filters(spec, metadata, gpu_decode=gpu_decode and not metadata.is_hdr)
     return software_filters(spec, metadata)
 
 
+def nvenc_device_index(backend: EncoderBackend) -> Optional[str]:
+    """
+    The GPU index to pin NVENC/NVDEC to, or ``None`` to let FFmpeg choose.
+
+    ``backend_named("nvenc:1")`` and ``backend_named("nvenc:cuda:1")`` both mean
+    "the second GPU". The default ``cuda:0`` is deliberately *not* passed on: a
+    single-GPU machine keeps FFmpeg's own default, and pinning a device that may
+    not exist is a failure we would be inventing.
+    """
+    device = (backend.device or "").strip()
+    if not device:
+        return None
+    index = device.rsplit(":", 1)[-1] if ":" in device else device
+    if not index.isdigit():
+        return None
+    if index == "0" and device in ("cuda:0", "0"):
+        return None
+    return index
+
+
+def _nvenc_encoder_device_args(backend: EncoderBackend) -> list[str]:
+    index = nvenc_device_index(backend)
+    return ["-gpu", index] if index is not None else []
+
+
 def input_args(backend: EncoderBackend, metadata: SourceTraits, *, gpu_decode: bool) -> list[str]:
-    """Decoder-side arguments, including the hardware device when one is used."""
-    if not backend.is_hardware or not gpu_decode:
-        return []
+    """
+    Decoder-side arguments, including the hardware device when one is used.
+
+    The hybrid paths still need device arguments even though decoding happens in
+    software: VAAPI's ``hwupload`` must be told which device to upload to, and a
+    multi-GPU machine must encode on the GPU the operator selected.
+    """
     if backend.name == BACKEND_NVENC:
-        return [
-            "-threads", "1",
-            "-hwaccel", "cuda",
-            "-hwaccel_output_format", "cuda",
-            "-extra_hw_frames", "8",
-        ]
-    return [
-        "-hwaccel", "vaapi",
-        "-hwaccel_device", backend.device or VAAPI_BACKEND.device,
-        "-hwaccel_output_format", "vaapi",
-    ]
+        if not gpu_decode:
+            return []
+        args = ["-threads", "1", "-hwaccel", "cuda"]
+        index = nvenc_device_index(backend)
+        if index is not None:
+            args += ["-hwaccel_device", index]
+        return [*args, "-hwaccel_output_format", "cuda", "-extra_hw_frames", "8"]
+
+    if backend.name == BACKEND_VAAPI:
+        device = backend.device or VAAPI_BACKEND.device
+        if gpu_decode:
+            return [
+                "-hwaccel", "vaapi",
+                "-hwaccel_device", device,
+                "-hwaccel_output_format", "vaapi",
+            ]
+        # Software decode, explicit device upload: `format=nv12,hwupload` has no
+        # device at all without this.
+        return ["-vaapi_device", device]
+
+    return []
 
 
 def video_encode_args(backend: EncoderBackend, spec: RenderSpec) -> list[str]:
@@ -295,6 +406,7 @@ def video_encode_args(backend: EncoderBackend, spec: RenderSpec) -> list[str]:
     if backend.name == BACKEND_NVENC:
         return [
             "-c:v", backend.codec,
+            *_nvenc_encoder_device_args(backend),
             "-preset:v", "p4",
             "-tune:v", "hq",
             "-rc:v", "vbr",

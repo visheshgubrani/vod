@@ -83,16 +83,46 @@ jobs:
 
   transcoding-python:
     runs-on: ubuntu-latest
+    # 3.12, the version both managed images run (transcoding/toolchain/versions.env
+    # PYTHON_VERSION), so the suite cannot pass here on an interpreter the
+    # images do not have.
+    env:
+      # The real-media suites skip when a binary is missing, which is right on a
+      # laptop and wrong here: in CI a missing ffmpeg/ffprobe/packager has to be
+      # a red build, not a green one with three skipped tests. This turns the
+      # skip into a failure. (The test module reads it; see
+      # transcoding/tests/test_real_media.py.)
+      OPENVOD_REQUIRE_MEDIA_TOOLS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       # The suites import `config`, which imports botocore/boto3, and network
       # tests import requests. Installing only pytest made this job fail at
       # collection (4 of 5 files errored) rather than run.
       - name: Install test dependencies
         run: python -m pip install pytest botocore boto3 requests
+      # ffmpeg from apt is enough for CI: the real-media suites exercise the
+      # engine's argument builders and the packaging flow, not NVIDIA's scaling
+      # path. The managed image builds its own FFmpeg
+      # (transcoding/toolchain/build_ffmpeg.sh) precisely because the
+      # distribution build lacks scale_cuda's `format` option.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+      # Same binary and same checksum as the images: a packager that changes
+      # version changes the bytes every job produces.
+      - name: Install Shaka Packager 3.2.0
+        run: |
+          curl -fsSL https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 \
+            -o /usr/local/bin/packager
+          echo "05af2e9ef5f12d58b9d615b7d31dc0eb61c32aee632c71965340b43c1556043e  /usr/local/bin/packager" | sha256sum -c -
+          chmod +x /usr/local/bin/packager
+          packager --version
       - name: Run pytest
         working-directory: transcoding
         run: python -m pytest tests

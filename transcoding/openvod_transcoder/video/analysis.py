@@ -17,7 +17,16 @@ from openvod_transcoder.utils.cmd import run_cmd
 
 @dataclass
 class VideoMetadata:
-    """Metadata extracted from video file."""
+    """
+    Metadata extracted from video file.
+
+    ``width``/``height`` are the **displayed** dimensions: the analyser applies
+    the rotation side data (see ``_display_dimensions``), because that is what
+    FFmpeg's filter graph sees — it rotates automatically when decoding. Planning
+    from the coded dimensions would fit a portrait video into a landscape
+    rendition. Use ``rotation``/``is_quarter_turned`` when you need to know that
+    a rotation happened at all.
+    """
     width: int
     height: int
     duration: float
@@ -33,6 +42,19 @@ class VideoMetadata:
     color_transfer: str = ""
     pixel_format: str = ""  # e.g. "yuv420p", "yuv420p10le", "p010le"
     bit_depth: int = 8
+
+    @property
+    def is_quarter_turned(self) -> bool:
+        """
+        True when the display matrix swaps the coded axes (±90°, ±270°).
+
+        Informational, and load-bearing for one decision: hardware frames cannot
+        be rotated, so a quarter-turned source never takes the full-GPU path
+        (see ``encoding.backends.source_gpu_path_supported``). It is *not* used
+        to derive the dimensions — ``width``/``height`` are already the displayed
+        ones.
+        """
+        return round((self.rotation or 0.0) / 90.0) % 2 == 1
 
     @property
     def is_vertical(self) -> bool:

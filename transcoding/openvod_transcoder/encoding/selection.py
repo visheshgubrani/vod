@@ -20,8 +20,12 @@ scattered through the pipeline:
 """
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence
+
+from openvod_transcoder.cancellation import CancellationToken
 
 from openvod_transcoder.encoding.backends import (
     ALL_BACKENDS,
@@ -32,7 +36,7 @@ from openvod_transcoder.encoding.backends import (
     EncoderBackend,
     backend_named,
 )
-from openvod_transcoder.encoding.probe import CapabilityReport
+from openvod_transcoder.encoding.probe import CapabilityReport, ChainProbe
 from openvod_transcoder.errors import (
     ERROR_ENCODER_UNAVAILABLE,
     TranscodeError,
@@ -60,6 +64,13 @@ class BackendCandidate:
     def label(self) -> str:
         suffix = "" if self.gpu_decode or not self.backend.is_hardware else "+software-decode"
         return f"{self.backend.name}{suffix}"
+
+    @property
+    def mode(self) -> str:
+        """The execution path this candidate represents, for the job's metadata."""
+        if not self.backend.is_hardware:
+            return "cpu"
+        return "gpu" if self.gpu_decode else "hybrid"
 
 
 def select_chain(
@@ -164,23 +175,163 @@ def _unavailable_message(backend: EncoderBackend, reason: str, detail: str) -> s
     return message
 
 
+def build_attempt_chain(
+    chain: Sequence[BackendCandidate],
+    *,
+    gpu_path_supported: bool,
+    probes: Mapping[str, ChainProbe],
+    require_verification: bool,
+) -> List[BackendCandidate]:
+    """
+    Narrow a capability chain to the paths that were *verified for this source*.
+
+    Three inputs, and each removes something different:
+
+    - the source's own properties (``gpu_path_supported``: codec, pixel format,
+      bit depth, rotation, HDR) remove the GPU *filter* path for sources it has
+      not been validated against — those still get the hybrid path, which is the
+      slow-but-correct answer;
+    - the preflight result removes the whole backend when its encoder could not
+      encode this source at all;
+    - ``require_verification`` expresses the difference between ``auto`` and an
+      explicit choice. Under ``auto`` an unverified GPU is *excluded* (a job must
+      not die half way down the ladder because the accelerator was assumed to
+      work); under an explicit ``nvenc``/``vaapi`` the candidates survive so the
+      operator gets the real error instead of a silent CPU encode.
+
+    The result is never empty: with nothing left, the CPU is attempted, because
+    a real attempt produces a far better error message than "nothing is
+    available".
+    """
+    narrowed: List[BackendCandidate] = []
+
+    for candidate in chain:
+        if not candidate.backend.is_hardware:
+            narrowed.append(candidate)
+            continue
+
+        probe = probes.get(candidate.backend.name)
+        verified = probe is not None and probe.hardware_encode
+
+        if require_verification and not verified:
+            continue
+
+        if candidate.gpu_decode:
+            if not gpu_path_supported:
+                continue
+            # Under `auto` the full-GPU path needs positive verification for
+            # this source. An explicit backend keeps its candidates so the
+            # operator sees the real failure instead of a silent CPU encode.
+            if require_verification and not (
+                verified and probe.hardware_decode and probe.hardware_filters
+            ):
+                continue
+
+        narrowed.append(candidate)
+
+    if not narrowed:
+        narrowed.append(BackendCandidate(CPU_BACKEND, gpu_decode=False))
+    return _dedupe(narrowed)
+
+
+@dataclass
+class WorkerEncoderState:
+    """
+    What one worker has *proven* about the machine while encoding.
+
+    Shared by every rendition in the job, unlike the per-rendition attempt
+    state. A backend that could not open its device is not going to open it for
+    the next rung either, so the proof is recorded once and every other rendition
+    skips that backend's candidates instead of re-discovering the same failure
+    three times.
+
+    GPU admission switches to serial execution after session exhaustion. The
+    retry waits for ordinary encodes too, and every wait observes cancellation.
+    """
+
+    unusable: Dict[str, str] = None  # type: ignore[assignment]
+    cpu_limit: int = 0
+    cpu_slots: Optional[threading.BoundedSemaphore] = None
+    gpu_condition: threading.Condition = None  # type: ignore[assignment]
+    active_gpu: int = 0
+    serialize_gpu: bool = False
+
+    def __post_init__(self) -> None:
+        if self.unusable is None:
+            self.unusable = {}
+        if self.cpu_limit > 0:
+            self.cpu_slots = threading.BoundedSemaphore(self.cpu_limit)
+        self.gpu_condition = threading.Condition()
+
+    @contextmanager
+    def gpu_slot(self, token: CancellationToken, *, serialize: bool = False):
+        """After exhaustion, drain existing GPU work and serialize new attempts."""
+        with self.gpu_condition:
+            if serialize:
+                self.serialize_gpu = True
+            while self.serialize_gpu and self.active_gpu:
+                token.raise_if_cancelled()
+                self.gpu_condition.wait(timeout=0.1)
+            token.raise_if_cancelled()
+            self.active_gpu += 1
+        try:
+            yield
+        finally:
+            with self.gpu_condition:
+                self.active_gpu -= 1
+                self.gpu_condition.notify_all()
+
+    @contextmanager
+    def cpu_slot(self, token: CancellationToken):
+        """Bound CPU work even when it is reached by a GPU worker's fallback."""
+        if self.cpu_slots is None:
+            yield
+            return
+        while not self.cpu_slots.acquire(timeout=0.1):
+            token.raise_if_cancelled()
+        try:
+            token.raise_if_cancelled()
+            yield
+        finally:
+            self.cpu_slots.release()
+
+    def mark_unusable(self, backend_name: str, reason: str) -> None:
+        self.unusable.setdefault(backend_name, reason)
+
+    def is_unusable(self, backend_name: str) -> bool:
+        return backend_name in self.unusable
+
+    def reason(self, backend_name: str) -> str:
+        return self.unusable.get(backend_name, "")
+
+    def as_reasons(self) -> List[str]:
+        return [f"{name}: {reason}" for name, reason in sorted(self.unusable.items())]
+
+
 @dataclass
 class FallbackState:
     """
-    Tracks the chain and decides what to try after a failure.
+    Tracks one rendition's chain and decides what to try after a failure.
 
     Kept as an object rather than a loop-local so the *reason* each fallback
     happened survives into the job report: "encoded on CPU because VAAPI could
     not open the render device" is a support answer, and one the operator can
     act on.
+
+    One instance per rendition, deliberately. A shared instance meant the first
+    rendition to hit a GPU limit advanced *every* rendition's chain, so a ladder
+    could report renditions produced by backends that were never tried.
     """
     chain: Sequence[BackendCandidate]
     index: int = 0
     fallback_reasons: List[str] = None  # type: ignore[assignment]
+    attempt_counts: Dict[str, int] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.fallback_reasons is None:
             self.fallback_reasons = []
+        if self.attempt_counts is None:
+            self.attempt_counts = {}
 
     @property
     def current(self) -> BackendCandidate:
@@ -190,23 +341,43 @@ class FallbackState:
     def exhausted(self) -> bool:
         return self.index >= len(self.chain) - 1
 
+    def attempts_for(self, label: str) -> int:
+        return self.attempt_counts.get(label, 0)
+
+    def record_attempt(self) -> BackendCandidate:
+        """Note that the current candidate is being tried (once more)."""
+        candidate = self.current
+        self.attempt_counts[candidate.label] = self.attempts_for(candidate.label) + 1
+        return candidate
+
     def advance(self, exc: BaseException) -> Optional[BackendCandidate]:
         """
         Move to the next candidate after ``exc``, or return ``None``.
 
         ``None`` means "do not retry": either the failure is not encoder-related
-        (bad media, missing file, full disk, refused upload) or the chain is
-        exhausted.
+        (bad media, missing file, full disk, refused upload, a packager that
+        rejected the package) or the chain is exhausted.
         """
         if not is_fallback_eligible(exc):
             return None
+        return self._step(f"{type(exc).__name__}: {exc}")
+
+    def skip(self, reason: str) -> Optional[BackendCandidate]:
+        """
+        Move past a candidate that was never attempted.
+
+        Used when another rendition already proved this backend unusable: the
+        skip is not a failure of *this* encode, and recording it as one would
+        misreport why the rendition ended up on the CPU.
+        """
+        return self._step(f"skipped: {reason}")
+
+    def _step(self, reason: str) -> Optional[BackendCandidate]:
         if self.exhausted:
             return None
         previous = self.current
         self.index += 1
-        self.fallback_reasons.append(
-            f"{previous.label} -> {self.current.label}: {type(exc).__name__}: {exc}"
-        )
+        self.fallback_reasons.append(f"{previous.label} -> {self.current.label}: {reason}")
         return self.current
 
 

@@ -11,7 +11,7 @@ import {
   UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { requireApiKey } from '../middleware/apiKey'
 import { db } from '../lib/database'
@@ -810,44 +810,68 @@ app.delete('/:fileId', async (c) => {
     return c.json({ error: 'No active organization' }, 400)
   }
 
-  // Get the video record
-  const videos = await db
-    .select()
-    .from(video)
-    .where(and(notDeleted, eq(video.id, fileId)))
-    .limit(1)
-  const videoRecord = videos[0]
+  // The guard and the write are ONE statement, and it runs before any byte is
+  // removed. Reading the row, checking the status in JavaScript and deleting
+  // afterwards is what deleted live uploads: `/upload/complete` claims the row
+  // for transcoding (uploading -> processing) milliseconds later, so a cancel
+  // that had already read `uploading` would still delete the row and its raw
+  // object out from under a dispatched job — the Modal worker then 404'd on
+  // HeadObject, leaving nothing to retry and no trace in R2.
+  const removed = (
+    await db
+      .delete(video)
+      .where(
+        and(
+          eq(video.id, fileId),
+          eq(video.organizationId, organizationId),
+          notDeleted,
+          inArray(video.status, ['uploading', 'failed']),
+        ),
+      )
+      .returning({ rawKey: video.rawKey, status: video.status })
+  )[0]
 
-  if (!videoRecord) {
-    // Already deleted, that's fine
-    return c.json({ deleted: true, fileId })
-  }
+  if (!removed) {
+    // Nothing was removed. Answer exactly as this endpoint always has — gone is
+    // idempotent, another tenant is a 403, an in-flight upload is a 400 — and,
+    // the point of the ordering, without touching object storage.
+    const [existing] = await db
+      .select({ organizationId: video.organizationId })
+      .from(video)
+      .where(and(notDeleted, eq(video.id, fileId)))
+      .limit(1)
 
-  // Verify ownership - video must belong to user's organization
-  if (videoRecord.organizationId !== organizationId) {
-    return c.json({ error: 'Access denied' }, 403)
-  }
+    if (!existing) {
+      // Already deleted, that's fine
+      return c.json({ deleted: true, fileId })
+    }
 
-  // Only allow deletion of uploads in 'uploading' or 'failed' status
-  if (videoRecord.status !== 'uploading' && videoRecord.status !== 'failed') {
+    // Verify ownership - video must belong to user's organization
+    if (existing.organizationId !== organizationId) {
+      return c.json({ error: 'Access denied' }, 403)
+    }
+
+    // Only allow deletion of uploads in 'uploading' or 'failed' status
     return c.json({ error: 'Cannot delete video in current status' }, 400)
   }
 
-  // Try to delete from R2 raw bucket if rawKey exists
-  if (videoRecord.rawKey) {
+  console.log(`[UPLOAD CANCEL] removed upload ${fileId} (status ${removed.status})`)
+
+  // Bytes are removed only after the row is confirmed gone, and only through
+  // the key the deleted row returned — never a key re-read from a row that may
+  // have changed in the meantime.
+  const rawKey = removed.rawKey
+  if (rawKey) {
     try {
       await r2.send(
         new DeleteObjectCommand({
           Bucket: bucket,
-          Key: videoRecord.rawKey,
+          Key: rawKey,
         }),
       )
     } catch (err) {
       // Log but don't fail - file might not exist in R2 yet
-      console.warn(
-        `Failed to delete from R2 raw bucket: ${videoRecord.rawKey}`,
-        err,
-      )
+      console.warn(`Failed to delete from R2 raw bucket: ${rawKey}`, err)
     }
   }
 
@@ -895,9 +919,8 @@ app.delete('/:fileId', async (c) => {
     console.warn(`Failed to delete from R2 transcoded bucket: ${fileId}/`, err)
   }
 
-  // Delete from database
-  await db.delete(video).where(eq(video.id, fileId))
-
+  // The row was already removed by the guarded statement above; deleting it
+  // again here would be the read-then-write shape this handler just left behind.
   return c.json({ deleted: true, fileId })
 })
 

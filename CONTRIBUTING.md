@@ -115,20 +115,30 @@ pnpm typecheck        # type-check every package
    Modal POSTs job results to `${BACKEND_URL}/api/webhook/transcode-complete`,
    and `localhost:8787` is unreachable from Modal's cloud — without this,
    videos strand in `processing` and the DB status never flips to
-   `ready`/`failed`. Since playback already runs on Cloudflare, the dev stack
-   ships an opt-in named tunnel for exactly this:
-   1. One time, in the Cloudflare Zero Trust dashboard: create a tunnel, add a
-      Public Hostname (e.g. `openvod-dev.example.com`) with Service
-      `http://host.docker.internal:8787`, and copy the tunnel token.
-   2. `export CLOUDFLARE_TUNNEL_TOKEN=...` (never commit it — same rule as any
-      secret) and start it: `pnpm dev:tunnel` (`pnpm dev:tunnel:logs` to watch
-      it; it stops with `pnpm dev:infra:down`). Default `pnpm dev:infra` never
-      starts it.
-   3. Set `BACKEND_URL=https://openvod-dev.example.com` in `server/.dev.vars`
-      and restart `pnpm dev` so new dispatches carry the public callback URL.
-   4. Upload a video and watch the row go `uploading → processing → ready`.
-      Webhook auth (`TRANSCODE_INGEST_SECRET`) still applies over the tunnel.
-      Stop the tunnel when done testing — it exposes the local API to the
+   `ready`/`failed`. Public ingress is deliberately not part of
+   `docker-compose.dev.yml`, because the right tool depends on the machine; any
+   tunnel you can run yourself works. With ngrok:
+   1. `ngrok http 8787` (the free tier is enough) and copy the `https://…`
+       forwarding URL it prints. Reserved domains keep the same URL across
+       restarts; a random one changes, and a stale `BACKEND_URL` fails silently.
+   2. Set `BACKEND_URL=https://<your-tunnel-host>` in `server/.dev.vars` and
+       restart `pnpm dev` so new dispatches carry the public callback URL.
+       With the Modal provider, `pnpm dev` also reports a `BACKEND_URL` advisory
+       from `GET /health/config` when it is unset or still points at localhost —
+       a callback URL only this machine can reach never arrives.
+   3. Allow that host on the transcoder, or the callback is blocked before it is
+       ever sent: set `ALLOWED_CALLBACK_HOSTS=<your-tunnel-host>` (hostname
+       only, no scheme) on the `r2-creds` Modal secret the transcoder deploys
+       with, then redeploy if the secret is read at container start.
+   4. Check the URL answers before uploading anything:
+      `curl -s -o /dev/null -w '%{http_code}\n' https://<your-tunnel-host>/health`
+      must print `200`. A `404`/`502` from ngrok's own edge means the tunnel is
+      not forwarding to `:8787`; `530`/error 1033 is a Cloudflare tunnel that is
+      not connected.
+   5. Upload a video and watch the row go `uploading → processing → ready`.
+      Webhook auth (`TRANSCODE_INGEST_SECRET`) still applies over the tunnel —
+      it carries the same authenticated callbacks, it does not bypass them.
+      Stop the tunnel when done testing: it exposes the local API to the
       internet while it runs.
 
 ## Development workflow (TDD)

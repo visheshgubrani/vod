@@ -17,7 +17,7 @@ provider, dispatch transport, rate-limit store; delivery and storage are
 
 | File | Purpose | Configuration |
 | --- | --- | --- |
-| `docker-compose.dev.yml` (project `openvod-dev`) | Local development infrastructure only: `postgres` (:5433) and `redis` (:6379). No API or web service — application code runs on the host. | `server/.dev.vars` |
+| `docker-compose.dev.yml` (project `openvod-dev`) | Local development infrastructure only: `postgres` (:5433) and `redis` (:6382). No API or web service — application code runs on the host. | `server/.dev.vars` |
 | `docker-compose.yml` (project `openvod`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `maintenance`, `web`, plus the `migrate` (`tools`) and `transcoder` (`transcoder`) profiles. | `.env` at the repo root |
 
 `server/.dev.vars` is **development-only** (`pnpm dev`, `pnpm dev:workers`,

@@ -12,7 +12,16 @@
 # driver access), not build-time ones, which is what keeps `doctor` honest —
 # whatever it reports is about the machine it is running on right now.
 #
-# Build:
+# FFmpeg is NOT a distribution package here. It is built from source by the one
+# shared recipe (transcoding/toolchain/build_ffmpeg.sh) that the Modal runner
+# image uses too, so both halves of the system encode with the same bytes. The
+# distribution build could not do the job: its `scale_cuda` has no `format`
+# option, and the NVENC scaling path passes `scale_cuda=W:H:format=yuv420p`. The
+# recipe also pins every version and checksum in transcoding/toolchain/versions.env
+# and finishes by running verify_toolchain.sh, so an image that lost a codec
+# fails to BUILD instead of failing on a customer's job.
+#
+# Build (context = repository root; the recipe reads boto3/toolchain/ from it):
 #   docker build -f transcoding/Dockerfile.agent -t openvod-transcoder .
 #
 # Run (CPU):
@@ -27,52 +36,132 @@
 #   --gpus 'all,capabilities=compute,utility,video'
 # The `video` capability is the one that is easy to miss: without it the driver
 # is present but no NVENC session can be created, and an encode probe is the only
-# thing that reveals it.
+# thing that reveals it. The driver must also be >= 530.41.03 — that is the floor
+# of the NVENC headers this image was compiled against (see versions.env), and it
+# is a RUNTIME property, never asserted at build time.
 #
 # Run (AMD): add
 #   --device /dev/dri/renderD128 --group-add video
 # VAAPI is AMD's supported Linux path; the render device must be passed through
 # and the agent's user must be able to open it.
+#
+# Ubuntu 24.04 + Python 3.12 to match the managed Modal image (versions.env
+# TARGET_UBUNTU_VERSION / PYTHON_VERSION): the same engine, the same FFmpeg, the
+# same interpreter generation on both sides of the seam.
 
-FROM python:3.12-slim-bookworm
+FROM ubuntu:24.04
 
-ARG SHAKA_VERSION=v3.2.0
-# Pinned by checksum: a packager that silently changes version changes the bytes
-# every job produces, which is not something to discover from a diff.
-ARG SHAKA_SHA256=05af2e9ef5f12d58b9d615b7d31dc0eb61c32aee632c71965340b43c1556043e
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Every RUN below sources the shared recipe's bash arrays (package lists,
+# versions). /bin/sh on Ubuntu is dash, which cannot parse them — and failing
+# there is a build error that only shows up in the image build.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Toolchain inputs come from transcoding/toolchain/versions.env (copied below),
+# which is the single source of truth: this file names no version, URL or digest
+# of its own. build_ffmpeg.sh refuses to build if a hash is blank, and the
+# packager is checksum-verified against the same file.
+ARG FFMPEG_PREFIX=/usr/local
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     OPENVOD_SCRATCH_DIR=/var/lib/openvod-transcoder/scratch \
     OPENVOD_JOURNAL=/var/lib/openvod-transcoder/journal.sqlite \
-    OPENVOD_ROOTS_FILE=/etc/openvod-transcoder/roots.json
+    OPENVOD_ROOTS_FILE=/etc/openvod-transcoder/roots.json \
+    OPENVOD_FFMPEG=/usr/local/bin/ffmpeg \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 
-# ffmpeg from Debian is built with libx264 and, on x86-64, with VAAPI; NVENC
-# support comes from the host driver at runtime, not from this package.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ffmpeg \
-      ca-certificates \
-      curl \
-      tini \
- && rm -rf /var/lib/apt/lists/*
+# ── Shared toolchain recipe ──────────────────────────────────────────────────
+# The package lists live in the recipe directory so this image and the Modal
+# image cannot drift. Only the recipe files are copied here; /app arrives later.
+COPY transcoding/toolchain/ /tmp/openvod-toolchain/
 
-RUN curl -fsSL "https://github.com/shaka-project/shaka-packager/releases/download/${SHAKA_VERSION}/packager-linux-x64" \
-      -o /usr/local/bin/packager \
- && echo "${SHAKA_SHA256}  /usr/local/bin/packager" | sha256sum -c - \
- && chmod +x /usr/local/bin/packager
+# Build deps, the source build, then the checksum-pinned packager. All of this is
+# one layer so the build-only packages can be purged in the very next step
+# without leaving an intermediate layer behind.
+#
+# The CUDA toolkit is deliberately absent: FFmpeg 9.0.1 builds the CUDA filters
+# with clang to PTX (--enable-cuda-llvm), so nvcc and libcuda are not needed to
+# produce `scale_cuda` — see transcoding/toolchain/apt-packages.env. Modern clang
+# rejects FFmpeg's default `--cuda-gpu-arch=sm_30`, which is why the recipe
+# passes an explicit sm_75 baseline that newer drivers JIT forward.
+RUN set -eux; \
+    . /tmp/openvod-toolchain/versions.env; \
+    . /tmp/openvod-toolchain/apt-packages.env; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      "${OPENVOD_BUILD_PACKAGES[@]}" \
+      python3 \
+      tini curl ca-certificates; \
+    bash /tmp/openvod-toolchain/build_ffmpeg.sh "${FFMPEG_PREFIX}"; \
+    curl -fsSL "${SHAKA_URL}" -o /usr/local/bin/packager; \
+    echo "${SHAKA_SHA256}  /usr/local/bin/packager" | sha256sum -c -; \
+    chmod +x /usr/local/bin/packager; \
+    packager --version
 
+# ── Drop the build-only packages, keep what FFmpeg links against ─────────────
+# The runtime list is explicit rather than "whatever apt leaves behind": a purge
+# that quietly takes libzimg with it produces an image whose ffmpeg dies at the
+# first zscale, which is exactly the class of failure this stage exists to catch.
+# verify_toolchain.sh runs AFTER the purge, on the pruned image, so the build
+# cannot pass by accident.
+RUN set -eux; \
+    . /tmp/openvod-toolchain/apt-packages.env; \
+    apt-get purge -y "${OPENVOD_BUILD_PACKAGES[@]}" xz-utils; \
+    apt-get autoremove -y; \
+    apt-get install -y --no-install-recommends "${OPENVOD_RUNTIME_PACKAGES[@]}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    bash /tmp/openvod-toolchain/verify_toolchain.sh \
+      "${FFMPEG_PREFIX}/bin/ffmpeg" "${FFMPEG_PREFIX}/bin/ffprobe"
+
+# ── The engine ───────────────────────────────────────────────────────────────
 WORKDIR /app
 COPY transcoding/ /app/
 
+# The agent runs as uid 10001, so every module has to be readable by it. Git
+# only records the executable bit, which means a file created with a restrictive
+# umask on the build machine arrives here mode 600 and the CLI dies with
+# "Permission denied" the first time it imports that module. Normalise instead of
+# trusting the checkout.
+RUN chmod -R a+rX /app
+
+# A venv is the clean way to escape PEP 668 (Ubuntu 24.04 marks the system
+# interpreter externally managed), and it keeps the engine's console script on
+# PATH without touching the distribution's Python. `python3-venv` is installed
+# here rather than earlier on purpose: the build-dependency purge above removes
+# ensurepip with it, and the symptom is a venv error at this step.
+#
 # Runtime deps only: the agent never imports Modal, boto3 or Whisper. Installing
-# them would add hundreds of megabytes to an image whose whole job is FFmpeg.
-# `--no-deps` is deliberate: pyproject declares `requests`, which is installed
-# above, and nothing else. Pulling the optional extras (boto3, faster-whisper)
-# into this image would triple its size for features the agent does not use —
-# it holds no storage credentials and runs enrichment only if asked.
-RUN pip install --no-cache-dir requests \
- && pip install --no-cache-dir --no-deps -e /app
+# them would add hundreds of megabytes to an image whose whole job is FFmpeg, and
+# transcoding/toolchain/requirements-managed.lock is for the *managed* image, not
+# this one. `--no-deps` is deliberate: pyproject declares `requests`, installed
+# above, and nothing else — the engine must import with no optional packages
+# present (tests/test_engine_isolation.py enforces it).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3-venv \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/venv \
+ && /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
+ && /opt/venv/bin/pip install --no-cache-dir requests \
+ && /opt/venv/bin/pip install --no-cache-dir --no-deps --no-build-isolation -e /app \
+ && openvod-transcoder version
+
+# The recipe and its pins stay in the image: `openvod-transcoder doctor` reports
+# the FFmpeg it is actually running, and an operator debugging an old container
+# needs the configure line that produced it. A copy, not a dependency — nothing
+# at runtime reads /tmp.
+RUN mkdir -p /opt/openvod/toolchain \
+ && cp /tmp/openvod-toolchain/versions.env \
+       /tmp/openvod-toolchain/apt-packages.env \
+       /tmp/openvod-toolchain/build_ffmpeg.sh \
+       /tmp/openvod-toolchain/verify_toolchain.sh \
+       /opt/openvod/toolchain/ \
+ && rm -rf /tmp/openvod-toolchain \
+ && ffmpeg -version | head -n 1 \
+ && ffprobe -version | head -n 1 \
+ && cat "${FFMPEG_PREFIX}/share/openvod/toolchain.json" | head -n 5
 
 # The agent runs unprivileged. It only ever *reads* the media mounts, so there is
 # no reason for it to be able to write to them — and a container that cannot

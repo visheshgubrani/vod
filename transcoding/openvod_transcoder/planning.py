@@ -125,6 +125,9 @@ def plan_renditions(
         sized = source_sized_profile(metadata)
         profiles = [sized] if sized else []
 
+    # `metadata.width`/`height` are the *displayed* dimensions (the analyser has
+    # already applied any rotation side data), which is exactly what the filter
+    # graph will see — FFmpeg rotates automatically when decoding.
     return [
         RenderSpec.from_profile(
             profile,

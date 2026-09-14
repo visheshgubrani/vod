@@ -330,3 +330,54 @@ describe('loadConfig with a self-hosted provider', () => {
     expect(cfg.checks.transcoder).toBe(false)
   })
 })
+
+/**
+ * Where the transcoder sends its result callback.
+ *
+ * Modal runs in Cloudflare's cloud, so the callback URL has to be reachable from
+ * outside this machine. The dispatch path falls back to `http://localhost:8787`
+ * when `BACKEND_URL` is unset, and a local development setup that forgets the
+ * tunnel URL produces the worst kind of failure: every job runs to completion
+ * (GPU time spent), the callback fails, and the video sits in `processing` until
+ * the sweeper spends another GPU run on it. The advisory must say so without
+ * echoing a host into the public `GET /health/config` projection.
+ */
+describe('loadConfig transcode callback reachability', () => {
+  const MODAL_ENV = { ...FULL_ENV, TRANSCODE_PROVIDER: 'modal' }
+
+  it('warns when BACKEND_URL is unset', () => {
+    const cfg = loadConfig(MODAL_ENV)
+    expect(cfg.advisories.some((a) => a.includes('BACKEND_URL'))).toBe(true)
+  })
+
+  it('warns when BACKEND_URL is a loopback address', () => {
+    for (const backendUrl of [
+      'http://localhost:8787',
+      'http://127.0.0.1:8787',
+      'http://[::1]:8787',
+    ]) {
+      const cfg = loadConfig({ ...MODAL_ENV, BACKEND_URL: backendUrl })
+      expect(
+        cfg.advisories.some((a) => a.includes('BACKEND_URL')),
+        backendUrl,
+      ).toBe(true)
+    }
+  })
+
+  it('stays quiet when BACKEND_URL is publicly reachable', () => {
+    const cfg = loadConfig({ ...MODAL_ENV, BACKEND_URL: 'https://openvod-dev.ngrok-free.app' })
+    expect(cfg.advisories.some((a) => a.includes('BACKEND_URL'))).toBe(false)
+  })
+
+  it('does not say anything when no Modal worker will call back', () => {
+    const cfg = loadConfig({ ...MODAL_ENV, TRANSCODE_PROVIDER: 'self-hosted' })
+    expect(cfg.advisories.some((a) => a.includes('BACKEND_URL'))).toBe(false)
+  })
+
+  it('keeps the configured URL out of the public health projection', () => {
+    const cfg = loadConfig({ ...MODAL_ENV, BACKEND_URL: 'http://127.0.0.1:9999' })
+    const advisory = cfg.advisories.find((a) => a.includes('BACKEND_URL')) ?? ''
+    expect(advisory).not.toContain('127.0.0.1')
+    expect(advisory).not.toContain('9999')
+  })
+})

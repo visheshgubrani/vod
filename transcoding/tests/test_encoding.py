@@ -18,10 +18,12 @@ from openvod_transcoder.encoding.backends import (
     h264_level,
     keyframe_interval,
     software_filters,
+    source_gpu_path_supported,
     video_filter_chain,
 )
 from openvod_transcoder.encoding.probe import (
     CapabilityReport,
+    ChainProbe,
     EncoderProbe,
     classify_probe_failure,
     detect_capabilities,
@@ -33,6 +35,8 @@ from openvod_transcoder.encoding.probe import (
 from openvod_transcoder.encoding.selection import (
     BackendCandidate,
     FallbackState,
+    WorkerEncoderState,
+    build_attempt_chain,
     describe_chain,
     select_chain,
 )
@@ -129,14 +133,36 @@ class TestFilterChains:
             video_filter_chain(NVENC_BACKEND, SPEC_1080, SDR, gpu_decode=True)
             == "scale_cuda=1920:1080:format=yuv420p"
         )
-        assert video_filter_chain(NVENC_BACKEND, SPEC_1080, SDR, gpu_decode=False).startswith(
-            "hwupload,scale_cuda="
-        )
+
+    def test_nvenc_hybrid_never_touches_scale_cuda(self):
+        # The deployed build rejected `scale_cuda`'s `format` option, so a hybrid
+        # path that still ran the CUDA scaler could never recover from it. NVENC
+        # accepts system-memory frames and uploads them internally, so the hybrid
+        # chain is the plain software one.
+        chain = video_filter_chain(NVENC_BACKEND, SPEC_1080, SDR, gpu_decode=False)
+        assert "scale_cuda" not in chain
+        assert "hwupload" not in chain
+        assert chain == "scale=1920:1080:flags=bicubic,setsar=1,format=yuv420p"
+
+    def test_nvenc_hybrid_tonemaps_hdr_in_software(self):
+        chain = video_filter_chain(NVENC_BACKEND, SPEC_1080, HDR, gpu_decode=False)
+        assert "tonemap=tonemap=hable" in chain
+        assert "scale_cuda" not in chain
 
     def test_vaapi_uploads_before_scaling(self):
         assert video_filter_chain(VAAPI_BACKEND, SPEC_1080, SDR, gpu_decode=False) == (
-            "format=nv12,hwupload,scale_vaapi=w=1920:h=1080:format=nv12"
+            "scale=1920:1080:flags=bicubic,setsar=1,format=nv12,hwupload"
         )
+
+    def test_vaapi_full_gpu_path_still_scales_on_the_device(self):
+        assert video_filter_chain(VAAPI_BACKEND, SPEC_1080, SDR, gpu_decode=True) == (
+            "scale_vaapi=w=1920:h=1080:format=nv12"
+        )
+
+    def test_vaapi_hybrid_tonemaps_hdr_before_uploading(self):
+        chain = video_filter_chain(VAAPI_BACKEND, SPEC_1080, HDR, gpu_decode=False)
+        assert "tonemap=tonemap=hable" in chain
+        assert chain.endswith("format=nv12,hwupload")
 
     def test_hdr_on_hardware_routes_through_the_software_tonemap(self):
         # `tonemap_cuda` is not present in every build; a hard mid-job failure is
@@ -184,6 +210,47 @@ class TestBuildVideoCommand:
             gpu_decode=True,
         )
         assert cmd[cmd.index("-hwaccel_device") + 1] == "/dev/dri/renderD129"
+
+    def test_vaapi_hybrid_declares_the_device_for_the_upload(self):
+        # `hwupload` needs a VAAPI device to upload *to*; without
+        # `-vaapi_device` the hybrid chain has no device at all and fails at
+        # filter init — the hybrid path's version of the original defect.
+        cmd = build_video_command(
+            ffmpeg="ffmpeg",
+            input_path="/w/in.mp4",
+            output_path="/w/out.mp4",
+            backend=backend_named("vaapi:/dev/dri/renderD129"),
+            spec=SPEC_1080,
+            metadata=SDR,
+            segment_duration=4.0,
+            gpu_decode=False,
+        )
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD129"
+        assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
+        assert "-hwaccel" not in cmd
+
+    def test_nvenc_hybrid_passes_no_hwaccel_and_no_cuda_filter(self):
+        cmd = self._cmd(NVENC_BACKEND, gpu_decode=False)
+        assert "-hwaccel" not in cmd
+        assert "scale_cuda" not in cmd[cmd.index("-vf") + 1]
+        assert cmd[cmd.index("-c:v") + 1] == "h264_nvenc"
+
+    def test_nvenc_device_selection_reaches_the_encoder(self):
+        cmd = build_video_command(
+            ffmpeg="ffmpeg",
+            input_path="/w/in.mp4",
+            output_path="/w/out.mp4",
+            backend=backend_named("nvenc:1"),
+            spec=SPEC_1080,
+            metadata=SDR,
+            segment_duration=4.0,
+            gpu_decode=False,
+        )
+        assert cmd[cmd.index("-gpu") + 1] == "1"
+
+    def test_the_default_nvenc_device_is_left_to_ffmpeg(self):
+        cmd = self._cmd(NVENC_BACKEND, gpu_decode=False)
+        assert "-gpu" not in cmd
 
     def test_fragmented_mp4_flags_present(self):
         cmd = self._cmd(CPU_BACKEND, gpu_decode=False)
@@ -239,6 +306,237 @@ class TestClassifyProbeFailure:
 
     def test_anything_else_is_an_encode_failure(self):
         assert classify_probe_failure("Invalid data found when processing input") == "encode-failed"
+
+
+class TestSourceGpuPathSupport:
+    """Which sources may take the full GPU path (decode + GPU filter + encode)."""
+
+    def _meta(self, **overrides):
+        base = dict(
+            width=1920, height=1080, duration=30.0, fps=30.0, has_audio=True,
+            has_video=True, is_hdr=False, codec_name="h264",
+            pixel_format="yuv420p", bit_depth=8, rotation=0.0,
+        )
+        base.update(overrides)
+        return VideoMetadata(**base)
+
+    def test_eight_bit_420_h264_is_eligible(self):
+        assert source_gpu_path_supported(self._meta()) is True
+
+    def test_hevc_420_is_eligible(self):
+        assert source_gpu_path_supported(self._meta(codec_name="hevc")) is True
+
+    def test_ten_bit_is_not_eligible(self):
+        assert source_gpu_path_supported(
+            self._meta(codec_name="hevc", pixel_format="yuv420p10le", bit_depth=10)
+        ) is False
+
+    def test_four_two_two_and_four_four_four_are_not_eligible(self):
+        assert source_gpu_path_supported(self._meta(pixel_format="yuv422p")) is False
+        assert source_gpu_path_supported(self._meta(pixel_format="yuv444p")) is False
+
+    def test_hdr_is_not_eligible(self):
+        # Tone-mapping has no validated GPU filter; HDR always takes hybrid.
+        assert source_gpu_path_supported(self._meta(is_hdr=True)) is False
+
+    def test_rotated_video_is_not_eligible(self):
+        # Autorotation cannot be applied to hardware frames.
+        assert source_gpu_path_supported(self._meta(rotation=90.0)) is False
+
+    def test_a_codec_without_a_validated_gpu_decoder_is_not_eligible(self):
+        # AV1/VP9 WebM sources get software decode and GPU encode (hybrid).
+        assert source_gpu_path_supported(self._meta(codec_name="av1")) is False
+        assert source_gpu_path_supported(self._meta(codec_name="vp9")) is False
+
+
+class TestBuildAttemptChain:
+    """
+    Path selection: compiled capability, source traits and probe results together.
+
+    The chain the pipeline attempts is not simply "everything that is
+    available": a full-GPU candidate only survives when *this* source was
+    actually decoded and filtered on that device.
+    """
+
+    def _chain(self):
+        return select_chain("auto", report_with(cpu=True, nvenc=True))
+
+    def _probe(self, *, hardware_encode=True, hardware_decode=True, hardware_filters=True):
+        return ChainProbe(
+            backend="nvenc",
+            hardware_encode=hardware_encode,
+            hardware_decode=hardware_decode,
+            hardware_filters=hardware_filters,
+            reason="ok",
+        )
+
+    def test_a_verified_full_gpu_path_is_kept(self):
+        chain = build_attempt_chain(
+            self._chain(),
+            gpu_path_supported=True,
+            probes={"nvenc": self._probe()},
+            require_verification=True,
+        )
+        assert [candidate.label for candidate in chain] == [
+            "nvenc", "nvenc+software-decode", "cpu",
+        ]
+
+    def test_a_verified_hybrid_only_backend_drops_the_full_gpu_candidate(self):
+        chain = build_attempt_chain(
+            self._chain(),
+            gpu_path_supported=True,
+            probes={"nvenc": self._probe(hardware_decode=False, hardware_filters=False)},
+            require_verification=True,
+        )
+        assert [candidate.label for candidate in chain] == ["nvenc+software-decode", "cpu"]
+
+    def test_an_unsupported_source_never_gets_the_gpu_filter_path(self):
+        chain = build_attempt_chain(
+            self._chain(),
+            gpu_path_supported=False,
+            probes={"nvenc": self._probe()},
+            require_verification=True,
+        )
+        assert [candidate.label for candidate in chain] == ["nvenc+software-decode", "cpu"]
+
+    def test_unverified_hardware_is_excluded_from_auto(self):
+        # A backend that could not prove itself on this source is not used
+        # speculatively: that is how a job dies half way through the ladder.
+        chain = build_attempt_chain(
+            self._chain(), gpu_path_supported=True, probes={}, require_verification=True
+        )
+        assert [candidate.label for candidate in chain] == ["cpu"]
+
+    def test_a_backend_whose_encoder_failed_the_probe_is_excluded_entirely(self):
+        chain = build_attempt_chain(
+            self._chain(),
+            gpu_path_supported=True,
+            probes={"nvenc": self._probe(hardware_encode=False)},
+            require_verification=True,
+        )
+        assert [candidate.label for candidate in chain] == ["cpu"]
+
+    def test_explicit_gpu_selection_stays_strict_even_unverified(self):
+        chain = build_attempt_chain(
+            select_chain("nvenc", report_with(cpu=True, nvenc=True)),
+            gpu_path_supported=True,
+            probes={},
+            require_verification=False,
+        )
+        assert [candidate.label for candidate in chain] == ["nvenc", "nvenc+software-decode"]
+
+    def test_an_empty_result_still_attempts_cpu(self):
+        chain = build_attempt_chain(
+            [], gpu_path_supported=True, probes={}, require_verification=True
+        )
+        assert [candidate.label for candidate in chain] == ["cpu"]
+
+
+class TestPreflightUsesTheProductionCommand:
+    def _metadata(self):
+        return VideoMetadata(
+            width=3840, height=2160, duration=60.0, fps=30.0, has_audio=True,
+            has_video=True, is_hdr=False, codec_name="hevc",
+            pixel_format="yuv420p", bit_depth=8,
+        )
+
+    def test_commands_are_built_by_the_production_builder_at_planned_dimensions(self):
+        calls = []
+
+        def runner(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        spec = RenderSpec(
+            label="1080p", width=1920, height=1080, bitrate="5M",
+            maxrate="6M", bufsize="10M", fps=30.0,
+        )
+        preflight_source(
+            __import__("pathlib").Path("/media/in.mp4"),
+            self._metadata(),
+            NVENC_BACKEND,
+            spec=spec,
+            run=runner,
+        )
+
+        assert calls, "preflight must run a real encode"
+        full_gpu = calls[0]
+        assert full_gpu[full_gpu.index("-vf") + 1] == "scale_cuda=1920:1080:format=yuv420p"
+        assert full_gpu[full_gpu.index("-hwaccel") + 1] == "cuda"
+        # Bounded: a short sample, a handful of frames, nothing written to disk.
+        assert "-t" in full_gpu and "-frames:v" in full_gpu
+        assert full_gpu[-3:] == ["-f", "null", "-"]
+
+    def test_the_hybrid_attempt_avoids_the_cuda_filter(self):
+        calls = []
+
+        def runner(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0 if len(calls) > 1 else 1, "", "boom")
+
+        probe = preflight_source(
+            __import__("pathlib").Path("/media/in.mp4"),
+            self._metadata(),
+            NVENC_BACKEND,
+            spec=RenderSpec(
+                label="1080p", width=1920, height=1080, bitrate="5M",
+                maxrate="6M", bufsize="10M", fps=30.0,
+            ),
+            run=runner,
+        )
+        hybrid = calls[1]
+        assert "scale_cuda" not in hybrid[hybrid.index("-vf") + 1]
+        assert probe.hardware_encode is True
+        assert probe.hardware_decode is False
+
+    def test_an_unsupported_source_only_probes_the_hybrid_path(self):
+        calls = []
+
+        def runner(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        metadata = self._metadata()
+        metadata.pixel_format = "yuv444p"
+        preflight_source(
+            __import__("pathlib").Path("/media/in.mp4"),
+            metadata,
+            NVENC_BACKEND,
+            spec=RenderSpec(
+                label="1080p", width=1920, height=1080, bitrate="5M",
+                maxrate="6M", bufsize="10M", fps=30.0,
+            ),
+            run=runner,
+        )
+        assert len(calls) == 1
+        assert "scale_cuda" not in calls[0][calls[0].index("-vf") + 1]
+
+
+class TestWorkerEncoderState:
+    def test_proven_unavailability_is_shared_across_renditions(self):
+        health = WorkerEncoderState()
+        assert health.is_unusable("nvenc") is False
+        health.mark_unusable("nvenc", "no free encoding session")
+        assert health.is_unusable("nvenc") is True
+        assert health.reason("nvenc") == "no free encoding session"
+
+    def test_skipping_a_candidate_does_not_count_as_a_failure(self):
+        state = FallbackState(
+            chain=select_chain("auto", report_with(cpu=True, nvenc=True))
+        )
+        assert state.current.label == "nvenc"
+        assert state.skip("nvenc is unusable here").label == "nvenc+software-decode"
+        assert state.skip("nvenc is unusable here").label == "cpu"
+        assert state.skip("nothing left") is None
+        assert "unusable" in state.fallback_reasons[0]
+
+    def test_each_candidate_gets_one_attempt_unless_a_session_retry_was_allowed(self):
+        state = FallbackState(
+            chain=select_chain("auto", report_with(cpu=True, nvenc=True))
+        )
+        assert state.attempts_for("nvenc") == 0
+        assert state.record_attempt().label == "nvenc"
+        assert state.attempts_for("nvenc") == 1
 
 
 class TestInventoryParsing:
@@ -435,9 +733,13 @@ class TestFallbackState:
         state = self._state()
         assert state.advance(FileNotFoundError("gone")) is None
 
-    def test_packaging_failures_are_fallback_eligible(self):
+    def test_packaging_failures_do_not_re_enter_the_encoder_chain(self):
+        # Shaka runs after every rendition is encoded, so there is no encoder
+        # left to fall back from; retrying the chain would re-encode nothing and
+        # report the wrong cause.
         state = self._state()
-        assert state.advance(TranscodeError(ERROR_PACKAGING_FAILED, "shaka died")) is not None
+        assert state.advance(TranscodeError(ERROR_PACKAGING_FAILED, "shaka died")) is None
+        assert state.current.label == "nvenc"
 
     def test_reasons_are_recorded_for_support(self):
         state = self._state()

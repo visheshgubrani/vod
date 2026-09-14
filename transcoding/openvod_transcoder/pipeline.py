@@ -28,6 +28,7 @@ from __future__ import annotations
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -38,13 +39,28 @@ from openvod_transcoder.encoding.backends import (
     RenderSpec,
     build_audio_command,
     build_video_command,
+    source_gpu_path_supported,
 )
-from openvod_transcoder.encoding.probe import CapabilityReport, detect_capabilities
+from openvod_transcoder.encoding.failures import FAILURE_SESSION, marks_backend_unusable
+from openvod_transcoder.encoding.probe import (
+    CapabilityReport,
+    ChainProbe,
+    detect_capabilities,
+    preflight_source,
+    toolchain_identity,
+    toolchain_versions,
+)
 from openvod_transcoder.encoding.selection import (
     BackendCandidate,
     FallbackState,
+    WorkerEncoderState,
+    build_attempt_chain,
     describe_chain,
     select_chain,
+)
+from openvod_transcoder.encoding.validation import (
+    validate_encoded_rendition,
+    validate_manifest_references,
 )
 from openvod_transcoder.errors import (
     ERROR_AUDIO_ONLY_UNSUPPORTED,
@@ -55,6 +71,7 @@ from openvod_transcoder.errors import (
     ERROR_ENCODER_FAILED,
     CancelledError,
     TranscodeError,
+    is_fallback_eligible,
 )
 from openvod_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
 from openvod_transcoder.options import ProcessingOptions
@@ -207,8 +224,15 @@ def run_pipeline(
             print(f"[PIPELINE] poster generation failed (nonfatal): {exc}")
 
     # ── encode ───────────────────────────────────────────────────────────────
+    #
+    # The segment duration is resolved *once*, here, and then used for both the
+    # encoder's keyframe interval and Shaka's --segment_duration. Resolving it
+    # twice is how a short clip ends up with a GOP that disagrees with its
+    # segments: every boundary lands between two keyframes and playback stalls.
+    segment_duration = options.segment_duration or choose_segment_duration(metadata.duration)
+
     started = time.monotonic()
-    encoded, audio_path, backend_used, fallbacks = _encode_all(
+    outcome = _encode_all(
         source_path=source_path,
         fmp4_dir=fmp4_dir,
         output_dir=output_dir,
@@ -220,10 +244,15 @@ def run_pipeline(
         progress=progress,
         token=token,
         ffmpeg=ffmpeg,
+        segment_duration=segment_duration,
         reusable=reusable_renditions,
         on_rendition=on_rendition,
     )
     timings["transcode"] = time.monotonic() - started
+    encoded = {label: entry.path for label, entry in outcome.renditions.items()}
+    audio_path = outcome.audio_path
+    backend_used = outcome.backend_used
+    fallbacks = outcome.fallback_reasons
 
     # ── enrichment: subtitles and chapters (both opt-in, both nonfatal) ──────
     enrichments["subtitles"] = _run_transcription(
@@ -237,7 +266,6 @@ def run_pipeline(
     token.raise_if_cancelled()
     started = time.monotonic()
     progress.report(ProgressUpdate(stage=STAGE_PACKAGE, fraction=0.1))
-    segment_duration = options.segment_duration or choose_segment_duration(metadata.duration)
     streams: Dict[str, Path] = {spec.label: encoded[spec.label] for spec in specs if spec.label in encoded}
     if audio_path is not None:
         streams["audio"] = audio_path
@@ -260,7 +288,7 @@ def run_pipeline(
     # ── validate ─────────────────────────────────────────────────────────────
     progress.report(ProgressUpdate(stage=STAGE_VERIFY, fraction=0.1))
     artifacts = build_inventory(output_dir)
-    _validate_package(artifacts, specs, audio_path is not None)
+    _validate_package(output_dir, artifacts, specs, audio_path is not None)
 
     # ── transfer ─────────────────────────────────────────────────────────────
     transfer_stats = TransferStats(total=len(artifacts))
@@ -280,7 +308,7 @@ def run_pipeline(
         video_id=options.video_id,
         attempt_id=options.attempt_id,
         artifacts=artifacts,
-        renditions=_rendition_reports(specs, encoded, backend_used),
+        renditions=_rendition_reports(specs, outcome.renditions),
         enrichments=enrichments,
         playback_policy=options.playback_policy,
         metadata=ProcessingMetadata(
@@ -298,8 +326,14 @@ def run_pipeline(
             timings=timings,
             backend_used=backend_used,
             fallback_reasons=fallbacks,
-            plan_fingerprint=options.plan_fingerprint(),
+            plan_fingerprint=options.plan_fingerprint(
+                toolchain=toolchain_identity_of(report)
+            ),
             source_sha256=(snapshot.sha256 if snapshot else ""),
+            toolchain=toolchain_versions(report),
+            rendition_executions=[
+                entry.as_payload() for entry in _rendition_reports(specs, outcome.renditions)
+            ],
         ),
     )
 
@@ -359,6 +393,104 @@ def _probe_streams(source_path: Path) -> List[dict]:
         return []
 
 
+@dataclass
+class EncodedRendition:
+    """One finished rendition, and how it was actually produced."""
+    path: Path
+    backend: str
+    mode: str
+    attempts: int = 1
+    seconds: float = 0.0
+    fallback_reasons: List[str] = field(default_factory=list)
+
+
+@dataclass
+class EncodeOutcome:
+    """Everything the encode stage produced, including why it chose what it did."""
+    renditions: Dict[str, EncodedRendition] = field(default_factory=dict)
+    audio_path: Optional[Path] = None
+    backend_used: str = ""
+    fallback_reasons: List[str] = field(default_factory=list)
+
+
+def encode_threads_for(mode: str, options: ProcessingOptions) -> int:
+    """
+    Thread bound for one execution path. Pure, and checked with literals.
+
+    The three paths have genuinely different needs: a full-GPU encode needs
+    almost no CPU, a hybrid encode does all its decoding and scaling in software,
+    and a CPU encode is the whole job. Bounding them with one number is how a
+    GPU job starves itself of the threads that feed the encoder.
+    """
+    if mode == "cpu":
+        return options.cpu_ffmpeg_threads or options.ffmpeg_threads
+    if mode == "hybrid":
+        return options.hybrid_ffmpeg_threads or options.ffmpeg_threads
+    return options.ffmpeg_threads
+
+
+def video_worker_count(
+    candidates: Sequence[BackendCandidate],
+    options: ProcessingOptions,
+    spec_count: int,
+) -> int:
+    """
+    How many renditions to encode at once.
+
+    The operator's setting is the ceiling. The only extra rule is the CPU: a
+    CPU-only job that runs N x264 encodes in parallel finishes later than the
+    same job run one at a time, because N encoders contend for the same cores —
+    so an operator who configured a separate CPU bound gets it.
+    """
+    workers = max(1, min(options.rendition_concurrency, max(1, spec_count)))
+    if options.cpu_rendition_concurrency > 0 and not any(
+        candidate.backend.is_hardware for candidate in candidates
+    ):
+        workers = min(workers, max(1, options.cpu_rendition_concurrency))
+    return workers
+
+
+def run_preflight(
+    *,
+    source_path: Path,
+    metadata: VideoMetadata,
+    chain: Sequence[BackendCandidate],
+    specs: Sequence[RenderSpec],
+    ffmpeg: str,
+    token: CancellationToken,
+) -> Dict[str, ChainProbe]:
+    """
+    Verify each hardware backend against the real source, once, before encoding.
+
+    Run at the *largest planned rendition's* dimensions and bounded to a short
+    sample, so it exercises the scaler at a size the job will really use without
+    costing an encode. A preflight that raises unexpectedly is recorded as
+    "unverified" rather than propagating: an unverified GPU must exclude itself
+    under `auto`, not fail the job.
+    """
+    if not specs:
+        return {}
+
+    spec = max(specs, key=lambda entry: (entry.height, entry.width))
+    probes: Dict[str, ChainProbe] = {}
+    for candidate in chain:
+        backend = candidate.backend
+        if not backend.is_hardware or backend.name in probes:
+            continue
+        token.raise_if_cancelled()
+        try:
+            probe = preflight_source(
+                source_path, metadata, backend, spec=spec, ffmpeg=ffmpeg
+            )
+        except CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — an unverified backend is not a failed job
+            probe = ChainProbe(backend=backend.name, reason=f"preflight errored: {exc}")
+        probes[backend.name] = probe
+        print(f"🔎 Preflight {backend.name}: {probe.reason}")
+    return probes
+
+
 def _encode_all(
     *,
     source_path: Path,
@@ -372,28 +504,54 @@ def _encode_all(
     progress: ProgressSink,
     token: CancellationToken,
     ffmpeg: str,
+    segment_duration: float,
     reusable: Optional[Dict[str, str]] = None,
     on_rendition: Optional[Callable[[str, Path], None]] = None,
-) -> tuple[Dict[str, Path], Optional[Path], str, List[str]]:
+) -> EncodeOutcome:
     """
     Encode every rendition and the audio track under one bounded thread pool.
 
     Concurrency is bounded by the *operator's* setting, not by a heuristic tuned
     for one GPU model. A self-hosted machine is the owner's, and the old
     "3 workers if <4K else 2" rule assumed an L4 with nothing else running.
+
+    Each rendition gets its own attempt state; the *machine* knowledge ("this
+    encoder cannot open its device") is shared, because re-discovering it per
+    rendition is pure waste. A terminal failure stops the siblings instead of
+    waiting for them.
     """
     chain = select_chain(options.encoder_backend, report, device=options.encoder_device)
     print(f"🎞️ Encoder chain: {describe_chain(chain)}")
-    state = FallbackState(chain=chain)
+
+    requested = (options.encoder_backend or "auto").strip().lower()
+    require_verification = requested in ("", "auto")
+
+    probes: Dict[str, ChainProbe] = {}
+    if specs and metadata.has_video:
+        probes = run_preflight(
+            source_path=source_path,
+            metadata=metadata,
+            chain=chain,
+            specs=specs,
+            ffmpeg=ffmpeg,
+            token=token,
+        )
+
+    candidates = build_attempt_chain(
+        chain,
+        gpu_path_supported=source_gpu_path_supported(metadata),
+        probes=probes,
+        require_verification=require_verification,
+    )
+    print(f"🎯 Verified chain: {describe_chain(candidates)}")
 
     weights = {spec.label: max(1, spec.height) for spec in specs}
     tracker = RenditionProgress(progress, weights)
 
-    encoded: Dict[str, Path] = {}
-    audio_path: Optional[Path] = None
-    used_backend = state.current.backend.name
+    outcome = EncodeOutcome()
+    health = WorkerEncoderState(cpu_limit=options.cpu_rendition_concurrency)
 
-    video_workers = max(1, min(options.rendition_concurrency, max(1, len(specs))))
+    video_workers = video_worker_count(candidates, options, len(specs))
     audio_workers = 1 if metadata.has_audio else 0
 
     # Reuse first, and outside the pool: a resumed rendition costs a file copy,
@@ -404,7 +562,9 @@ def _encode_all(
         if existing and Path(existing).exists() and Path(existing).stat().st_size > 1000:
             target = fmp4_dir / f"video_{spec.label}.mp4"
             shutil.copyfile(existing, target)
-            encoded[spec.label] = target
+            outcome.renditions[spec.label] = EncodedRendition(
+                path=target, backend="reused", mode="reused"
+            )
             tracker.complete(spec.label)
             print(f"♻️ Reusing completed rendition {spec.label} from a previous attempt")
             if on_rendition is not None:
@@ -412,50 +572,47 @@ def _encode_all(
             continue
         pending_specs.append(spec)
 
-    with ThreadPoolExecutor(max_workers=max(video_workers, audio_workers, 1)) as pool:
-        futures = {}
-        if metadata.has_audio:
-            futures[pool.submit(
-                _encode_audio,
-                source_path=source_path,
-                output_path=fmp4_dir / "audio.mp4",
-                audio_stream=(getattr(audio_plan, "stream_index", None) if audio_plan else None),
-                token=token,
-                ffmpeg=ffmpeg,
-            )] = ("audio", None)
+    # Siblings are stopped through this token, never by waiting for them.
+    stage_token = token.child()
+    pool = ThreadPoolExecutor(max_workers=max(video_workers, audio_workers, 1))
+    futures = {}
+    if metadata.has_audio:
+        futures[pool.submit(
+            _encode_audio,
+            source_path=source_path,
+            output_path=fmp4_dir / "audio.mp4",
+            audio_stream=(getattr(audio_plan, "stream_index", None) if audio_plan else None),
+            token=stage_token,
+            ffmpeg=ffmpeg,
+            threads=options.audio_ffmpeg_threads,
+        )] = ("audio", None)
 
-        for spec in pending_specs:
-            futures[pool.submit(
-                _encode_rendition_with_fallback,
-                source_path=source_path,
-                output_path=fmp4_dir / f"video_{spec.label}.mp4",
-                spec=spec,
-                metadata=metadata,
-                options=options,
-                report=report,
-                state=state,
-                tracker=tracker,
-                token=token,
-                ffmpeg=ffmpeg,
-            )] = ("video", spec)
+    for spec in pending_specs:
+        futures[pool.submit(
+            _encode_rendition_with_fallback,
+            source_path=source_path,
+            output_path=fmp4_dir / f"video_{spec.label}.mp4",
+            spec=spec,
+            metadata=metadata,
+            options=options,
+            candidates=candidates,
+            health=health,
+            tracker=tracker,
+            token=stage_token,
+            ffmpeg=ffmpeg,
+            segment_duration=segment_duration,
+        )] = ("video", spec)
 
+    try:
         for future in as_completed(futures):
             kind, spec = futures[future]
             token.raise_if_cancelled()
             if kind == "audio":
-                audio_path = future.result()
+                outcome.audio_path = future.result()
                 tracker.complete("audio")
                 continue
             try:
-                encoded[spec.label] = future.result()
-                tracker.complete(spec.label)
-                used_backend = state.current.backend.name
-                print(f"✅ Completed: {spec.label} ({spec.resolution})")
-                # Recorded now, not after upload: a job that fails during
-                # transfer must be resumable without re-encoding, and the whole
-                # value of the journal is that it holds work already done.
-                if on_rendition is not None:
-                    on_rendition(spec.label, encoded[spec.label])
+                encoded = future.result()
             except CancelledError:
                 raise
             except Exception as exc:
@@ -465,14 +622,72 @@ def _encode_all(
                 # are worse than none: the master playlist would advertise
                 # rungs that are not there.
                 raise
+            outcome.renditions[spec.label] = encoded
+            outcome.fallback_reasons.extend(encoded.fallback_reasons)
+            tracker.complete(spec.label)
+            print(
+                f"✅ Completed: {spec.label} ({spec.resolution}) on "
+                f"{encoded.backend}/{encoded.mode}"
+            )
+            # Recorded now, not after upload: a job that fails during transfer
+            # must be resumable without re-encoding, and the whole value of the
+            # journal is that it holds work already done.
+            if on_rendition is not None:
+                on_rendition(spec.label, encoded.path)
+    except BaseException:
+        # Stop siblings, then reap them before the caller cleans the work tree
+        # or starts another attempt using the same device and filenames.
+        stage_token.cancel("a required rendition failed")
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
 
-    if not encoded and not audio_path:
+    if not outcome.renditions and outcome.audio_path is None:
         raise TranscodeError(
             ERROR_MISSING_RENDITION, "no rendition and no audio track were produced"
         )
 
-    _ = output_dir
-    return encoded, audio_path, used_backend, list(state.fallback_reasons)
+    backends = {entry.backend for entry in outcome.renditions.values()}
+    backends.discard("reused")
+    if len(backends) == 1:
+        outcome.backend_used = next(iter(backends))
+    elif backends:
+        # A ladder completed across two encoders is not "cpu" or "nvenc": the
+        # operator needs to know the job was split, and why.
+        outcome.backend_used = "mixed"
+    else:
+        outcome.backend_used = "cpu"  # audio-only jobs encode in software
+
+    return outcome
+
+
+def _remove_incomplete(path: Path) -> None:
+    """Delete a failed attempt's partial output; never mistake it for a good one."""
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:  # noqa: BLE001 — a stale file is not worth failing over
+        print(f"[PIPELINE] could not remove partial output {path}: {exc}")
+
+
+def _chain_exhausted(
+    spec: RenderSpec, state: FallbackState, exc: Optional[BaseException]
+) -> TranscodeError:
+    if isinstance(exc, TranscodeError) and not is_fallback_eligible(exc):
+        return exc
+    if state.fallback_reasons:
+        return TranscodeError(
+            ERROR_ENCODER_FAILED,
+            f"{spec.label} failed on every encoder path "
+            f"({'; '.join(state.fallback_reasons)}); last error: {exc}",
+        )
+    if isinstance(exc, TranscodeError):
+        return exc
+    return TranscodeError(
+        ERROR_ENCODER_FAILED, f"{spec.label}: no encoder path was available"
+    )
 
 
 def _encode_rendition_with_fallback(
@@ -482,56 +697,119 @@ def _encode_rendition_with_fallback(
     spec: RenderSpec,
     metadata: VideoMetadata,
     options: ProcessingOptions,
-    report: CapabilityReport,
-    state: FallbackState,
+    candidates: Sequence[BackendCandidate],
+    health: WorkerEncoderState,
     tracker: RenditionProgress,
     token: CancellationToken,
     ffmpeg: str,
-) -> Path:
+    segment_duration: float,
+) -> EncodedRendition:
     """
-    Encode one rendition, walking the fallback chain on encoder-path failures.
+    Encode one rendition, walking *its own* fallback chain on encoder failures.
 
-    The chain is advanced *inside* the rendition rather than by restarting the
-    job, so an already-finished 720p rendition is not thrown away because the
-    1080p one hit a GPU limit.
+    The chain is per rendition, so a GPU limit hit by the 1080p rung does not
+    advance the 720p rung onto a backend it never tried — the defect that made a
+    job report a backend that produced none of its bytes.
+
+    The failure policy, in order:
+
+    - cancellation always propagates;
+    - a transient GPU session exhaustion is serialized against the other
+      renditions and retried **once** on the same candidate;
+    - a failure that proves the backend unusable (no device, no encoder) is
+      recorded on the shared state so *other* renditions skip it too;
+    - anything else eligible advances to the next candidate, deleting the
+      incomplete output first;
+    - ineligible failures (bad media, full disk, missing input) raise as they are.
     """
+    state = FallbackState(chain=candidates)
+    started = time.monotonic()
+
+    def _finish(path: Path, candidate: BackendCandidate) -> EncodedRendition:
+        return EncodedRendition(
+            path=path,
+            backend=candidate.backend.name,
+            mode=candidate.mode,
+            attempts=sum(state.attempt_counts.values()),
+            seconds=time.monotonic() - started,
+            fallback_reasons=list(state.fallback_reasons),
+        )
+
+    def _attempt(candidate: BackendCandidate, *, serialize: bool = False) -> Path:
+        slot = (health.cpu_slot(token) if candidate.mode == "cpu"
+                else health.gpu_slot(token, serialize=serialize))
+        with slot:
+            token.raise_if_cancelled()
+            return _run_attempt(candidate)
+
+    def _run_attempt(candidate: BackendCandidate) -> Path:
+        state.record_attempt()
+        return _encode_rendition(
+            source_path=source_path,
+            output_path=output_path,
+            spec=spec,
+            metadata=metadata,
+            options=options,
+            candidate=candidate,
+            tracker=tracker,
+            token=token,
+            ffmpeg=ffmpeg,
+            segment_duration=segment_duration,
+        )
+
     while True:
         candidate = state.current
-        token.raise_if_cancelled()
-        try:
-            return _encode_rendition(
-                source_path=source_path,
-                output_path=output_path,
-                spec=spec,
-                metadata=metadata,
-                options=options,
-                candidate=candidate,
-                tracker=tracker,
-                token=token,
-                ffmpeg=ffmpeg,
+
+        if health.is_unusable(candidate.backend.name):
+            reason = health.reason(candidate.backend.name)
+            print(
+                f"⏭️ {spec.label}: skipping {candidate.label} — "
+                f"{candidate.backend.name} is unusable here ({reason})"
             )
+            if state.skip(f"{candidate.backend.name} unusable: {reason}") is None:
+                raise _chain_exhausted(spec, state, None)
+            continue
+
+        token.raise_if_cancelled()
+        attempt_number = state.attempts_for(candidate.label)
+
+        try:
+            return _finish(_attempt(candidate), candidate)
         except CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — the policy decides what to do
+        except TranscodeError as exc:
+            failure_kind = getattr(exc, "failure_kind", "")
+
+            if failure_kind == FAILURE_SESSION and attempt_number == 0:
+                # Verified session exhaustion: serialize the GPU work and retry
+                # the same backend once. Falling back to the CPU here would
+                # throw away the GPU over a condition that clears by itself.
+                token.raise_if_cancelled()
+                print(
+                    f"🔒 {spec.label}: {candidate.label} hit a GPU session limit; "
+                    f"retrying once, serialized"
+                )
+                _remove_incomplete(output_path)
+                try:
+                    return _finish(_attempt(candidate, serialize=True), candidate)
+                except CancelledError:
+                    raise
+                except TranscodeError as retry_exc:
+                    exc = retry_exc
+                    failure_kind = getattr(retry_exc, "failure_kind", "")
+
+            if marks_backend_unusable(failure_kind):
+                health.mark_unusable(candidate.backend.name, str(exc))
+
             next_candidate = state.advance(exc)
             if next_candidate is None:
-                if state.fallback_reasons:
-                    raise TranscodeError(
-                        ERROR_ENCODER_FAILED,
-                        f"{spec.label} failed on every encoder "
-                        f"({'; '.join(state.fallback_reasons)}); last error: {exc}",
-                    ) from exc
-                raise
+                raise _chain_exhausted(spec, state, exc) from exc
+
             print(
                 f"↩️ {spec.label}: {candidate.label} failed, retrying with "
                 f"{next_candidate.label} — {exc}"
             )
-            # A failed partial file must not be mistaken for a finished one.
-            try:
-                Path(output_path).unlink()
-            except OSError:
-                pass
-    _ = report
+            _remove_incomplete(output_path)
 
 
 def _encode_rendition(
@@ -545,6 +823,7 @@ def _encode_rendition(
     tracker: RenditionProgress,
     token: CancellationToken,
     ffmpeg: str,
+    segment_duration: float,
 ) -> Path:
     backend: EncoderBackend = candidate.backend
     cmd = build_video_command(
@@ -554,11 +833,13 @@ def _encode_rendition(
         backend=backend,
         spec=spec,
         metadata=metadata,
-        segment_duration=options.segment_duration or 4.0,
+        segment_duration=segment_duration,
         gpu_decode=candidate.gpu_decode,
     )
-    if options.ffmpeg_threads > 0:
-        cmd = cmd[:2] + ["-threads", str(options.ffmpeg_threads)] + cmd[2:]
+    threads = encode_threads_for(candidate.mode, options)
+    if threads > 0:
+        cmd = cmd[:2] + ["-threads", str(threads), "-filter_threads", str(threads)] + cmd[2:]
+        cmd = cmd[:-1] + ["-threads:v", str(threads)] + cmd[-1:]
 
     run_ffmpeg(
         cmd,
@@ -579,6 +860,13 @@ def _encode_rendition(
             ERROR_ENCODER_FAILED,
             f"{backend.name} output for {spec.label} is {size} bytes — encoding failed",
         )
+
+    # The encoder's exit status is not evidence that the bytes are what we asked
+    # for; this is. It runs before packaging so a wrong rendition is retried
+    # instead of being published.
+    validate_encoded_rendition(
+        output_path, spec, duration=metadata.duration, ffmpeg=ffmpeg
+    )
     return output_path
 
 
@@ -589,14 +877,19 @@ def _encode_audio(
     audio_stream: Optional[int],
     token: CancellationToken,
     ffmpeg: str,
+    threads: int = 0,
 ) -> Path:
+    cmd = build_audio_command(
+        ffmpeg=ffmpeg,
+        input_path=str(source_path),
+        output_path=str(output_path),
+        audio_stream=audio_stream,
+    )
+    if threads > 0:
+        cmd = cmd[:2] + ["-threads", str(threads), "-filter_threads", str(threads)] + cmd[2:]
+        cmd = cmd[:-1] + ["-threads:a", str(threads)] + cmd[-1:]
     run_ffmpeg(
-        build_audio_command(
-            ffmpeg=ffmpeg,
-            input_path=str(source_path),
-            output_path=str(output_path),
-            audio_stream=audio_stream,
-        ),
+        cmd,
         label="encode-audio",
         on_progress=None,
         cancellation=token,
@@ -679,6 +972,7 @@ def _run_chapters(
 
 
 def _validate_package(
+    output_dir: Path,
     artifacts: Sequence[Artifact],
     specs: Sequence[RenderSpec],
     has_audio: bool,
@@ -715,6 +1009,10 @@ def _validate_package(
             ERROR_MISSING_RENDITION, "audio track was encoded but is missing from the package"
         )
 
+    # A manifest that points at files nobody uploaded is a package that plays
+    # until the first switch or the first segment, then fails in the player.
+    validate_manifest_references(output_dir, artifacts)
+
 
 def _raise_on_transfer_failure(stats: TransferStats) -> None:
     from openvod_transcoder.errors import ERROR_PARTIAL_UPLOAD
@@ -731,23 +1029,38 @@ def _raise_on_transfer_failure(stats: TransferStats) -> None:
 
 def _rendition_reports(
     specs: Sequence[RenderSpec],
-    encoded: Dict[str, Path],
-    backend_used: str,
+    encoded: Dict[str, EncodedRendition],
 ) -> List[RenditionReport]:
+    """
+    Per-rendition execution details, from what actually produced each one.
+
+    The backend is the rendition's own, not the job's: reporting one backend for
+    the whole ladder is how a job claimed to have encoded on NVENC while three of
+    its four renditions were produced on the CPU.
+    """
     reports = []
     for spec in specs:
-        path = encoded.get(spec.label)
+        entry = encoded.get(spec.label)
+        path = entry.path if entry else None
         reports.append(
             RenditionReport(
                 label=spec.label,
                 width=spec.width,
                 height=spec.height,
                 bitrate=spec.bitrate,
-                backend=backend_used,
+                backend=entry.backend if entry else "",
+                mode=entry.mode if entry else "",
+                attempts=entry.attempts if entry else 0,
+                seconds=round(entry.seconds, 2) if entry else 0.0,
                 bytes=(path.stat().st_size if path and path.exists() else 0),
             )
         )
     return reports
+
+
+def toolchain_identity_of(report: CapabilityReport) -> str:
+    """Compact toolchain identity for reuse fingerprints (see options)."""
+    return toolchain_identity(report)
 
 
 def output_prefix(video_id: str, attempt_id: str, prefix: str = R2_PREFIX) -> str:
@@ -783,8 +1096,11 @@ def parse_ffprobe_passthrough(metadata: VideoMetadata) -> dict:
 # Re-exported so callers can probe once and reuse the report without importing
 # the encoding package directly.
 __all__ = [
+    "EncodeOutcome",
+    "EncodedRendition",
     "NON_FALLBACK_CODES",
     "detect_capabilities",
+    "encode_threads_for",
     "output_prefix",
     "package_exports",
     "parse_ffprobe",

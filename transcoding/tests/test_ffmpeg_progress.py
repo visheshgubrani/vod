@@ -1,13 +1,16 @@
 """FFmpeg progress decoding, stall classification and publication ordering."""
 import subprocess
+import threading
+import time
 
 import pytest
 
-from openvod_transcoder.errors import CancelledError
+from openvod_transcoder.errors import CancelledError, FFmpegProcessError
 from openvod_transcoder.cancellation import CancellationToken
 from openvod_transcoder.ffmpeg_progress import (
     FfmpegProgress,
     StallPolicy,
+    advance_progress,
     parse_progress_kv,
     parse_timestamp,
     progress_fraction,
@@ -88,6 +91,49 @@ class TestProgressFraction:
         assert progress_fraction(30.0, 0) == 0.0
 
 
+class TestAdvanceProgress:
+    """
+    What counts as forward progress.
+
+    The watchdog resets only on *movement*. A wedged encoder that keeps
+    re-emitting its last position — or an audio muxer whose frame counter is
+    stuck — would otherwise hold the stall detector open forever, which is the
+    defect this helper exists to close.
+    """
+
+    def test_a_larger_timestamp_moves(self):
+        moved, best_time, best_frame = advance_progress(-1.0, None, FfmpegProgress(out_time_seconds=5.0))
+        assert moved is True
+        assert best_time == 5.0
+
+    def test_the_same_timestamp_does_not_move(self):
+        moved, best_time, _ = advance_progress(5.0, None, FfmpegProgress(out_time_seconds=5.0))
+        assert moved is False
+        assert best_time == 5.0
+
+    def test_a_smaller_timestamp_does_not_move(self):
+        # Filters that reorder frames legitimately report backwards positions.
+        moved, best_time, _ = advance_progress(9.0, None, FfmpegProgress(out_time_seconds=4.0))
+        assert moved is False
+        assert best_time == 9.0
+
+    def test_a_moving_frame_counter_moves_when_time_does_not(self):
+        # Audio-only encodes never advance out_time but do advance frames.
+        moved, _, best_frame = advance_progress(None, 120, FfmpegProgress(frame=121))
+        assert moved is True
+        assert best_frame == 121
+
+    def test_a_repeated_frame_counter_does_not_move(self):
+        moved, _, best_frame = advance_progress(None, 120, FfmpegProgress(frame=120))
+        assert moved is False
+        assert best_frame == 120
+
+    def test_a_block_with_neither_field_does_not_move(self):
+        moved, best_time, best_frame = advance_progress(3.0, 30, FfmpegProgress(speed=1.2))
+        assert moved is False
+        assert (best_time, best_frame) == (3.0, 30)
+
+
 class TestPublicationOrder:
     def test_playlists_are_published_last(self):
         ordered = order_for_publication(
@@ -131,10 +177,10 @@ class TestContentTypes:
 class FakeProcess:
     """Minimal Popen stand-in over a fixed list of progress lines."""
 
-    def __init__(self, lines, returncode=0, stderr=""):
+    def __init__(self, lines, returncode=0, stderr="", *, exit_on_eof=True):
         self.returncode = returncode
         self.stderr = _Iterable(stderr.splitlines(keepends=True))
-        self.stdout = _Iterable([f"{line}\n" for line in lines])
+        self.stdout = _Iterable([f"{line}\n" for line in lines], on_eof=lambda: setattr(self, "exited", exit_on_eof))
         self.terminated = False
         # A real process is running until it exits, so `poll()` is None until
         # something terminates it. `run_ffmpeg` checks exactly that before
@@ -155,15 +201,17 @@ class FakeProcess:
 
 
 class _Iterable:
-    def __init__(self, items):
+    def __init__(self, items, on_eof=lambda: None):
         self._items = items
         self._index = 0
+        self._on_eof = on_eof
 
     def __iter__(self):
         return self
 
     def __next__(self):
         if self._index >= len(self._items):
+            self._on_eof()
             raise StopIteration
         item = self._items[self._index]
         self._index += 1
@@ -213,13 +261,53 @@ class TestRunFfmpeg:
     def test_non_zero_exit_raises_with_stderr_tail(self, monkeypatch):
         process = FakeProcess(["progress=end"], returncode=1, stderr="boom: bad codec")
         _patch_popen(monkeypatch, process)
-        with pytest.raises(RuntimeError, match="boom: bad codec"):
+        with pytest.raises(FFmpegProcessError, match="boom: bad codec") as caught:
             run_ffmpeg(["ffmpeg"], label="encode-720p")
+        assert caught.value.returncode == 1
+        assert caught.value.operation == "encode-720p"
+
+    def test_the_reported_scale_cuda_rejection_is_classified_at_the_process_boundary(
+        self, monkeypatch
+    ):
+        """
+        The regression that started this work.
+
+        A build whose `scale_cuda` rejects the `format` option exits non-zero
+        with this stderr. Raised as a plain RuntimeError it bypassed the
+        fallback policy entirely; classified as a filter failure it advances to
+        the hybrid path, which does not use that filter.
+        """
+        from openvod_transcoder.encoding.failures import FAILURE_FILTER
+        from openvod_transcoder.errors import is_fallback_eligible
+
+        stderr = (
+            "[AVFilterGraph @ 0x55d1] Error initializing filter 'scale_cuda' with args "
+            "'1920:1080:format=yuv420p'\n"
+            "Error reinitializing filters!\n"
+            "Failed to inject frame into filter network: Invalid argument\n"
+        )
+        process = FakeProcess(["progress=end"], returncode=1, stderr=stderr)
+        _patch_popen(monkeypatch, process)
+        with pytest.raises(FFmpegProcessError) as caught:
+            run_ffmpeg(["ffmpeg"], label="encode-1080p-nvenc")
+        assert caught.value.failure_kind == FAILURE_FILTER
+        assert is_fallback_eligible(caught.value) is True
+
+    def test_corrupt_media_is_not_fallback_eligible(self, monkeypatch):
+        from openvod_transcoder.errors import is_fallback_eligible
+
+        process = FakeProcess(
+            ["progress=end"], returncode=1, stderr="Invalid data found when processing input"
+        )
+        _patch_popen(monkeypatch, process)
+        with pytest.raises(FFmpegProcessError) as caught:
+            run_ffmpeg(["ffmpeg"], label="encode-720p")
+        assert is_fallback_eligible(caught.value) is False
 
     def test_cancellation_terminates_before_returning(self, monkeypatch):
         token = CancellationToken()
         token.cancel("owner cancelled")
-        process = FakeProcess(["out_time_us=1000000", "progress=continue"])
+        process = FakeProcess(["out_time_us=1000000", "progress=continue"], exit_on_eof=False)
         _patch_popen(monkeypatch, process)
         with pytest.raises(CancelledError):
             run_ffmpeg(["ffmpeg"], label="x", cancellation=token)
@@ -235,24 +323,118 @@ class TestStallError:
         from openvod_transcoder.errors import ERROR_STALLED
         from openvod_transcoder.ffmpeg_progress import StallError
 
-        process = FakeProcess(["out_time_us=1000000", "progress=continue"])
+        process = FakeProcess(["out_time_us=1000000", "progress=continue"], exit_on_eof=False)
         _patch_popen(monkeypatch, process)
-        # Monotonic calls in order: `started`, `last_activity`, then one per
-        # progress line. The encoder's own position never advances, so the
-        # second check sees a 4000s gap against a 900s window.
-        clock = iter([0.0, 0.0, 0.0, 4000.0, 4000.0, 4000.0])
-        monkeypatch.setattr(
-            "openvod_transcoder.ffmpeg_progress.time.monotonic",
-            lambda: next(clock, 4000.0),
-        )
+        # Injected clock: cheap and deterministic, unlike patching the global
+        # `time` module that every other thread in the process also reads.
+        ticks = iter([0.0, 0.0, 4000.0, 4000.0, 4000.0])
         with pytest.raises(StallError) as caught:
             run_ffmpeg(
                 ["ffmpeg"],
                 label="encode-1080p",
                 stall=StallPolicy(timeout_seconds=900.0),
+                clock=lambda: next(ticks, 4000.0),
             )
         assert caught.value.code == ERROR_STALLED
         assert process.terminated is True
+
+
+class SilentProcess:
+    """
+    A subprocess stand-in that never emits progress.
+
+    ``stdout`` blocks until something terminates the process, which is exactly
+    the shape that defeated the old implementation: its progress loop waited on
+    stdout forever, so cancellation and the stall detector were only evaluated
+    when FFmpeg happened to say something.
+    """
+
+    def __init__(self, returncode=0):
+        self.returncode = returncode
+        self.stderr = _Iterable([])
+        self.stdout = _BlockingIterable(self)
+        self.terminated = False
+        self.killed = False
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode if self.terminated else None
+
+    def terminate(self):
+        self.terminated = True
+        self.stdout.release.set()
+
+    def kill(self):
+        self.killed = True
+        self.terminated = True
+        self.stdout.release.set()
+
+
+class _BlockingIterable:
+    def __init__(self, process):
+        self.process = process
+        self.release = threading.Event()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        # Bounded so a bug in the watchdog fails the test instead of hanging it.
+        self.release.wait(timeout=10)
+        raise StopIteration
+
+    def read(self, *_args):
+        return ""
+
+
+class TestWatchdogIsIndependentOfStdout:
+    def test_a_silent_process_is_terminated_by_the_stall_watchdog(self, monkeypatch):
+        from openvod_transcoder.ffmpeg_progress import StallError
+
+        process = SilentProcess()
+        _patch_popen(monkeypatch, process)
+        started = time.monotonic()
+        with pytest.raises(StallError):
+            run_ffmpeg(
+                ["ffmpeg"],
+                label="encode-silent",
+                stall=StallPolicy(timeout_seconds=0.2),
+            )
+        assert time.monotonic() - started < 5
+        assert process.terminated is True
+
+    def test_a_silent_process_is_terminated_when_cancelled(self, monkeypatch):
+        process = SilentProcess()
+        _patch_popen(monkeypatch, process)
+        token = CancellationToken()
+
+        outcome = {}
+
+        def _run():
+            try:
+                run_ffmpeg(
+                    ["ffmpeg"],
+                    label="encode-silent",
+                    cancellation=token,
+                    stall=StallPolicy(timeout_seconds=0),
+                )
+            except BaseException as exc:  # noqa: BLE001 — recorded for the assertion
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        # Cancel *after* the process is running: a pre-cancelled token only
+        # proves the entry check works, not that a live process is interrupted.
+        time.sleep(0.3)
+        token.cancel("owner cancelled")
+        worker.join(timeout=10)
+
+        assert not worker.is_alive(), "cancellation did not interrupt a silent process"
+        assert isinstance(outcome.get("error"), CancelledError)
+        assert process.terminated is True
+        assert process.killed is False, "a cooperative terminate must be tried first"
 
 
 class TestFfmpegProgressShape:

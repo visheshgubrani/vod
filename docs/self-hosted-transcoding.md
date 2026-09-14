@@ -148,13 +148,37 @@ encoding and what the encoder is doing.
 FFmpeg lists what it was *compiled* with, which is not the same as what works.
 Every backend below is verified with a real encode of two synthetic frames
 before it is offered, and the chosen backend is re-verified against your actual
-source before a job commits to it.
+source with a short preflight encode at the planned rendition size before a job
+commits to it. The preflight is what turns "the encoder works" into "the encoder
+works for *this file*": pixel format, bit depth, rotation and HDR handling are
+properties of the source, and a synthetic frame cannot see any of them.
 
 | Backend | Encoder | Requirements |
 | --- | --- | --- |
 | CPU | `libx264` | none beyond the image |
-| NVIDIA | `h264_nvenc` | host driver + NVIDIA Container Toolkit |
+| NVIDIA | `h264_nvenc` | host driver >= 530.41.03 + NVIDIA Container Toolkit |
 | AMD | `h264_vaapi` | `/dev/dri/renderD128` + Mesa VAAPI |
+
+The image ships a source-built FFmpeg pinned in
+`transcoding/toolchain/versions.env` (see `docs/transcoding-toolchain.md`). It is
+not the distribution's package: that build's `scale_cuda` lacked the `format`
+option the NVIDIA scaling path passes, which is a build-time property of
+FFmpeg's CUDA filters and therefore only fixable by building them.
+
+### The three execution paths
+
+| Path | Decode | Transform and scale | Encode |
+| --- | --- | --- | --- |
+| Full GPU | GPU | GPU | GPU |
+| Hybrid | CPU | CPU | GPU |
+| CPU | CPU | CPU | `libx264` |
+
+The full-GPU path is only used when the source's own properties allow it —
+H.264/HEVC, 8-bit, 4:2:0, no rotation, no HDR — *and* the preflight proved this
+source decodes and filters on the device. Everything else takes the hybrid path,
+which is the same hardware encoder without the hardware filter graph. HDR is
+deliberately always hybrid: there is no GPU tone-mapping filter we are willing to
+depend on, and a slower correct picture beats a fast wrong one.
 
 **NVIDIA.** Pass the `video` driver capability *in addition to* compute and
 utility. Omitting it is the common failure: the driver is visible, but no encode
@@ -188,12 +212,25 @@ decode/filter and the *same* hardware encoder; only if that fails does it reach
 the CPU. Every fallback is recorded on the job, so "why was this slow?" has an
 answer.
 
+Each rendition keeps its **own** attempt state. A GPU limit hit by the 1080p rung
+does not move the 720p rung onto a backend it never tried, and the job reports
+`mixed` as its backend when a ladder finishes across more than one encoder —
+per-rendition detail says which rung was which. A backend that is *proven*
+unusable (no device node, no encoder session) is skipped by every remaining
+rendition instead of being re-discovered four times. Verified GPU session
+exhaustion is serialized and retried once on the same backend before any
+fallback.
+
 With an explicit backend (`nvenc`, `vaapi`), there is **no** silent fallback: if
 the GPU is unusable the job fails with the reason and the remedy. Choosing a GPU
 and quietly getting a CPU encode is the outcome an operator least wants.
 
-Fallback never happens for bad media, a missing file, a full disk or a failed
-upload — re-running those elsewhere changes nothing.
+Fallback never happens for bad media, a missing file, a full disk, a failed
+packaging run or a cancelled job — re-running those elsewhere changes nothing.
+The distinction is made by classifying FFmpeg's own stderr at the encoding
+boundary, so the failure that motivated all of this (`scale_cuda` rejecting its
+`format` option) is recognised as a *filter* failure and retried on the hybrid
+path, while `moov atom not found` fails immediately.
 
 ---
 

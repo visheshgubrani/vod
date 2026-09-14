@@ -37,57 +37,16 @@ from openvod_transcoder.encoding.backends import (
     EncoderBackend,
     RenderSpec,
     SourceTraits,
+    build_video_command,
+    even,
     h264_level,
     input_args,
+    source_gpu_path_supported,
 )
-
-# Failure signatures that mean "this accelerator is not usable here", as opposed
-# to "the media is bad". Matched case-insensitively against FFmpeg's stderr.
-#
-# The distinction drives the fallback decision: a missing device must fall back,
-# a corrupt frame must not.
-DEVICE_UNAVAILABLE_PATTERNS: Sequence[str] = (
-    "cannot open device",
-    "no va display",
-    "device creation failed",
-    "failed to set value",
-    "no such file or directory",
-    "no device available",
-    "failed to initialise vaapi",
-    "failed to initialise nvenc",
-    "cannot load libcuda",
-    "cannot load nvcuda",
-    "cuda_error_no_device",
-    "no capable devices found",
-    "device not found",
-    "permission denied",
-    "operation not permitted",
-    "invalid device",
-    "unknown device",
-    "function not implemented",
-    "no usable encoding profile",
-    "unsupported device",
+from openvod_transcoder.encoding.failures import (
+    classify_ffmpeg_stderr,
+    probe_verdict_for_kind,
 )
-
-# Session exhaustion is transient, not permanent: the right response is to wait
-# and retry the same backend, not to re-encode the whole job on the CPU.
-SESSION_EXHAUSTED_PATTERNS: Sequence[str] = (
-    "out of memory",
-    "no free encoding session",
-    "too many concurrent sessions",
-    "insufficient resources",
-    "resource temporarily unavailable",
-)
-
-# A source whose pixel format the hardware path cannot ingest.
-UNSUPPORTED_FORMAT_PATTERNS: Sequence[str] = (
-    "unsupported pixel format",
-    "impossible to convert between the formats",
-    "pixel format",
-    "invalid pixel format",
-    "unsupported input format",
-)
-
 
 def classify_probe_failure(stderr: str) -> str:
     """
@@ -96,18 +55,14 @@ def classify_probe_failure(stderr: str) -> str:
     Pure, and checked against literals: the strings below are copied from real
     FFmpeg output rather than invented, because the whole point of the module is
     to stop guessing about hardware.
+
+    Delegates to the shared classifier in
+    :mod:`openvod_transcoder.encoding.failures`, so a message means the same
+    thing here as it does at the encoding boundary. Keeping two tables would be
+    how "the probe said the GPU was fine" and "the encode failed on the GPU"
+    drift apart.
     """
-    text = (stderr or "").lower()
-    for pattern in SESSION_EXHAUSTED_PATTERNS:
-        if pattern in text:
-            return "session-exhausted"
-    for pattern in DEVICE_UNAVAILABLE_PATTERNS:
-        if pattern in text:
-            return "device-unavailable"
-    for pattern in UNSUPPORTED_FORMAT_PATTERNS:
-        if pattern in text:
-            return "unsupported-format"
-    return "encode-failed"
+    return probe_verdict_for_kind(classify_ffmpeg_stderr(stderr))
 
 
 @dataclass
@@ -127,10 +82,14 @@ class ChainProbe:
 
     ``hardware_decode`` and ``hardware_filters`` are the *verified* answers: they
     are only true when a real decode-and-filter of this source succeeded on the
-    device. The pipeline uses them to decide between a full hardware path and a
-    hybrid (software decode → hardware encode) rather than assuming either.
+    device. ``hardware_encode`` is the weaker, more important claim — the
+    encoder itself accepted this source's frames — and it is what lets the
+    pipeline keep a hardware encoder while dropping the hardware filter path.
+    The pipeline uses these to decide between a full hardware path, a hybrid
+    (software decode → hardware encode) and the CPU, rather than assuming either.
     """
     backend: str
+    hardware_encode: bool = False
     hardware_decode: bool = False
     hardware_filters: bool = False
     reason: str = ""
@@ -216,6 +175,13 @@ SYNTHETIC_SOURCE_ARGS = [
 
 PROBE_TIMEOUT_SECONDS = 120
 
+# Preflight is per *job*, not once per machine, so it is bounded twice over:
+# a sample of a couple of seconds, and a hard timeout. A source on a slow
+# network mount must not be able to hold a worker hostage at startup.
+PREFLIGHT_SECONDS = 1.5
+PREFLIGHT_FRAMES = 8
+PREFLIGHT_TIMEOUT_SECONDS = 60.0
+
 
 def synthetic_command(ffmpeg: str, backend: EncoderBackend) -> List[str]:
     """Command that encodes two black frames with ``backend``."""
@@ -300,15 +266,57 @@ def probe_backend(
     )
 
 
+def preflight_command(
+    source_path: Path,
+    metadata: SourceTraits,
+    backend: EncoderBackend,
+    *,
+    spec: Optional[RenderSpec] = None,
+    ffmpeg: str = "ffmpeg",
+    gpu_decode: bool,
+    duration: float = PREFLIGHT_SECONDS,
+    frames: int = PREFLIGHT_FRAMES,
+) -> List[str]:
+    """
+    The preflight command for one path, built by the *production* builder.
+
+    Using :func:`build_video_command` rather than a hand-written probe command is
+    the point: the probe must exercise the encoder arguments, filter chain and
+    container flags the job will really use, or it verifies something else. The
+    only edits are the bound (``-t`` and ``-frames:v``) and the destination
+    (``-f null -``), both appended where the output file would have gone.
+    """
+    resolved = spec or _default_preflight_spec(metadata)
+    cmd = build_video_command(
+        ffmpeg=ffmpeg,
+        input_path=str(source_path),
+        output_path="-",
+        backend=backend,
+        spec=resolved,
+        metadata=metadata,
+        segment_duration=duration,
+        gpu_decode=gpu_decode,
+    )
+    # `cmd` ends with the output path; replace it with a bounded null sink so the
+    # probe writes nothing and cannot be mistaken for a rendition.
+    return [
+        *cmd[:-1],
+        "-t", f"{duration:.2f}",
+        "-frames:v", str(max(1, frames)),
+        "-f", "null", "-",
+    ]
+
+
 def preflight_source(
     source_path: Path,
     metadata: SourceTraits,
     backend: EncoderBackend,
     *,
+    spec: Optional[RenderSpec] = None,
     ffmpeg: str = "ffmpeg",
     run: Callable[..., subprocess.CompletedProcess] | None = None,
-    duration: float = 1.5,
-    timeout: float = PROBE_TIMEOUT_SECONDS,
+    duration: float = PREFLIGHT_SECONDS,
+    timeout: float = PREFLIGHT_TIMEOUT_SECONDS,
 ) -> ChainProbe:
     """
     Encode the first ``duration`` seconds of the real source on this backend.
@@ -317,48 +325,40 @@ def preflight_source(
     file*": pixel format, bit depth, chroma location and resolution limits are
     all properties of the source, and a synthetic probe cannot see any of them.
 
-    Decode and filter are reported separately so the caller can keep hardware
-    *encoding* while falling back to software decode — the common and useful
-    outcome on a machine whose decoder rejects the source's profile.
+    Two paths are tried, and both are built by the production command builder at
+    the *planned rendition dimensions* — the size the job will really scale to:
+
+    1. full GPU (GPU decode + GPU filter + GPU encode), skipped entirely when the
+       source's own properties rule it out (see
+       :func:`~openvod_transcoder.encoding.backends.source_gpu_path_supported`);
+    2. hybrid (software decode and filter, hardware encode) — the same NVENC
+       encode without ``scale_cuda``, which is the path that recovers from the
+       filter failure this module was extended for.
+
+    Decode, filter and encode are reported separately so the caller can keep
+    hardware *encoding* while falling back to software decode.
     """
     executor = run or subprocess.run
-    spec = RenderSpec(
-        label="preflight",
-        width=max(2, _even(min(320, metadata.width or 320))),
-        height=max(2, _even(min(240, metadata.height or 240))),
-        bitrate="500k",
-        maxrate="600k",
-        bufsize="1M",
-        fps=min(metadata.fps or 25.0, 30.0),
-    )
+    timeout = min(timeout, PREFLIGHT_TIMEOUT_SECONDS)
 
-    attempts = [
-        # Full hardware path: decode and filter on the device.
-        ("hardware", input_args(backend, metadata, gpu_decode=True), _hardware_filters(backend, spec)),
-        # Hybrid: software decode and filter, hardware encode only.
-        ("hybrid", [], _software_filters(spec)),
-    ]
+    attempts: List[tuple[str, bool]] = []
+    if source_gpu_path_supported(metadata):
+        attempts.append(("hardware", True))
+    attempts.append(("hybrid", False))
 
     last: ChainProbe = ChainProbe(backend=backend.name, reason="preflight did not run")
-    for mode, decode_args, filters in attempts:
-        cmd = [
-            ffmpeg, "-hide_banner", "-loglevel", "error",
-            *decode_args,
-            "-t", f"{duration:.2f}",
-            "-i", str(source_path),
-        ]
-        if filters:
-            cmd += ["-vf", filters]
-        cmd += [
-            "-c:v", backend.codec,
-            *_preflight_encoder_args(backend, spec),
-            "-frames:v", "1",
-            "-f", "null", "-",
-        ]
+    for mode, gpu_decode in attempts:
+        cmd = preflight_command(
+            source_path, metadata, backend,
+            spec=spec, ffmpeg=ffmpeg, gpu_decode=gpu_decode, duration=duration,
+        )
         try:
             completed = executor(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            last = ChainProbe(backend=backend.name, reason="preflight timed out")
+            last = ChainProbe(
+                backend=backend.name,
+                reason=f"{mode} path timed out after {timeout:.0f}s",
+            )
             continue
         except FileNotFoundError:
             return ChainProbe(backend=backend.name, reason=f"{ffmpeg} not found")
@@ -366,6 +366,7 @@ def preflight_source(
         if completed.returncode == 0:
             return ChainProbe(
                 backend=backend.name,
+                hardware_encode=True,
                 hardware_decode=(mode == "hardware"),
                 hardware_filters=(mode == "hardware"),
                 reason="ok" if mode == "hardware" else "hardware encode only (software decode)",
@@ -381,28 +382,17 @@ def preflight_source(
     return last
 
 
-def _preflight_encoder_args(backend: EncoderBackend, spec: RenderSpec) -> List[str]:
-    return [
-        "-b:v", spec.bitrate,
-        "-maxrate:v", spec.maxrate,
-        "-bufsize:v", spec.bufsize,
-        "-profile:v", "high",
-        "-level:v", h264_level(spec.height, spec.fps),
-    ]
-
-
-def _hardware_filters(backend: EncoderBackend, spec: RenderSpec) -> str:
-    if backend.name == BACKEND_NVENC:
-        return "scale_cuda=320:240:format=yuv420p"
-    return "format=nv12,hwupload,scale_vaapi=w=320:h=240:format=nv12"
-
-
-def _software_filters(spec: RenderSpec) -> str:
-    return f"scale={spec.width}:{spec.height},setsar=1"
-
-
-def _even(value: int) -> int:
-    return value - (value % 2)
+def _default_preflight_spec(metadata: SourceTraits) -> RenderSpec:
+    """A small stand-in spec for callers that have not planned renditions yet."""
+    return RenderSpec(
+        label="preflight",
+        width=max(2, even(min(320, getattr(metadata, "width", 0) or 320))),
+        height=max(2, even(min(240, getattr(metadata, "height", 0) or 240))),
+        bitrate="500k",
+        maxrate="600k",
+        bufsize="1M",
+        fps=min(getattr(metadata, "fps", 0.0) or 25.0, 30.0),
+    )
 
 
 def detect_capabilities(
@@ -502,3 +492,49 @@ def _free_bytes(path: Path) -> int:
 
 def probe_json(report: CapabilityReport) -> str:
     return json.dumps(report.to_payload(), sort_keys=True)
+
+
+_FFMPEG_VERSION = re.compile(r"ffmpeg version\s+(\S+)", re.IGNORECASE)
+_SHAKA_VERSION = re.compile(r"v?(\d+\.\d+\.\d+)")
+
+
+def toolchain_versions(report: CapabilityReport) -> Dict[str, str]:
+    """
+    The toolchain identity recorded with every job.
+
+    Version strings, not host paths: this travels into the completion payload and
+    into reuse fingerprints, and it has to be comparable between two machines
+    that never see each other.
+    """
+    from openvod_transcoder.config import ENGINE_VERSION, PROCESSING_PLAN_VERSION
+
+    versions = {
+        "engine": ENGINE_VERSION,
+        "planVersion": str(PROCESSING_PLAN_VERSION),
+        "ffmpeg": "",
+        "shaka": "",
+    }
+
+    match = _FFMPEG_VERSION.search(report.ffmpeg or "")
+    if match:
+        versions["ffmpeg"] = match.group(1)
+    elif report.ffmpeg:
+        versions["ffmpeg"] = report.ffmpeg.strip()[:64]
+
+    shaka = _SHAKA_VERSION.search(report.shaka or "")
+    versions["shaka"] = shaka.group(1) if shaka else (report.shaka or "").strip()[:64]
+
+    return versions
+
+
+def toolchain_identity(report: CapabilityReport) -> str:
+    """
+    Compact, comparable identity of the toolchain that produced (or would
+    produce) a job's bytes.
+
+    Used as part of the reuse fingerprint: two machines with different FFmpeg
+    builds do not produce byte-identical renditions, so cached work from the old
+    build must not be reused after an upgrade.
+    """
+    versions = toolchain_versions(report)
+    return ";".join(f"{key}={value}" for key, value in sorted(versions.items()))

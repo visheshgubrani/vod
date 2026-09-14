@@ -21,11 +21,20 @@ from typing import Set
 SEGMENT_DURATION = 4  # 4s segments = faster startup, better ABR
 R2_PREFIX = "videos"
 
-# Bumped whenever the rendition plan or packaging layout changes meaningfully.
-# Reusable work (snapshots, encoded renditions) is keyed by the source hash and
-# this value, so a plan change invalidates caches instead of mixing outputs
-# produced under two different rules.
-PROCESSING_PLAN_VERSION = 1
+# Bumped whenever the rendition plan, packaging layout or execution paths change
+# meaningfully. Reusable work (snapshots, encoded renditions) is keyed by the
+# source hash and this value, so a plan change invalidates caches instead of
+# mixing outputs produced under two different rules.
+#
+# v2: verified execution paths. Renditions are now selected per source from real
+#     preflight results, the hybrid NVENC path no longer runs `scale_cuda`, and
+#     each rendition records the backend and mode that produced it. Work encoded
+#     under v1 must not be reused inside a v2 job.
+PROCESSING_PLAN_VERSION = 2
+
+# Identity of the shared engine, recorded with every job so a completed video can
+# be traced back to the code that produced it.
+ENGINE_VERSION = "1.1.0"
 
 
 @dataclass

@@ -27,6 +27,12 @@ export function createR2Client(credentials: R2Credentials): S3Client {
       accessKeyId: credentials.accessKeyId,
       secretAccessKey: credentials.secretAccessKey,
     },
+    // AWS SDK v3 defaults to CRC32 checksums on PutObject. Presigning has no
+    // body yet, so those checksums land in the query string and the browser
+    // PUT of the real file is rejected by R2. Cloudflare's R2 JS v3 example
+    // requires WHEN_REQUIRED for this reason.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   })
 }
 

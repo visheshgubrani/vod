@@ -158,6 +158,21 @@ Error callbacks carry a stable `error_code` (server stores it in
 | `AUDIO_ONLY_UNSUPPORTED` | reserved legacy code (audio-only now packaged) |
 | `TRANSCODE_FAILED` | any other pipeline failure |
 
+Success callbacks carry `processing` alongside `outputs`/`metadata`/`inventory`.
+Three fields in it are **diagnostics**, added additively: an older API that
+ignores them still publishes correctly, an older engine that omits them still
+parses, and no existing key changed meaning:
+
+| field | shape | meaning |
+| --- | --- | --- |
+| `backend` | `cpu` \| `nvenc` \| `vaapi` \| `mixed` | which encoder produced the job. `mixed` means the ladder finished across more than one encoder — each rendition carries its own fallback state — so the per-rung answer is in `renditions`. |
+| `renditions[]` | `{label, width, height, bitrate, backend, mode, attempts, seconds, bytes}` | what actually produced each rung. `mode` is `cpu` \| `gpu` \| `hybrid` \| `reused`; `attempts` counts encoder attempts for that rung (a session-exhaustion retry is the second). |
+| `toolchain` | `{engine, planVersion, ffmpeg, shaka}` | version identity of the toolchain that produced the bytes. It is also part of the reuse fingerprint, so an image upgrade invalidates reusable intermediates instead of mixing two encoders' output. |
+
+`PACKAGING_FAILED` keeps its meaning and its job-level retryability, but it no
+longer re-enters the *engine's* encoder chain: Shaka runs after every rendition
+is encoded, so there is no encoder left to fall back from.
+
 Ingest guards (Modal env): `ALLOWED_SOURCE_BUCKETS` restricts payload
 `bucket` values when set; `input_url` sources require `ALLOWED_URL_HOSTS`;
 `ALLOWED_CALLBACK_HOSTS` must list your API host for callbacks/heartbeats

@@ -11,20 +11,16 @@
 # docker-compose.yml, which is the *deployment* file for end users (and how we
 # test a deployment). Do not add application services here.
 #
-# The one exception is `tunnel` (profile `tunnel`, never started by default):
-# a Cloudflare named tunnel that exposes the host-run API to the internet so
-# Modal transcode callbacks reach `localhost:8787` during local development.
-# It is infrastructure, not an application service — see CONTRIBUTING.md.
+# Public ingress is deliberately NOT part of this file. Receiving real Modal
+# callbacks locally means giving the host-run API a public URL, and that is a
+# per-developer tool (ngrok, tailscale funnel, cloudflared, …) started outside
+# this stack: see CONTRIBUTING.md. Point BACKEND_URL in server/.dev.vars at that
+# URL so new dispatches carry it.
 #
 # Usage (or `pnpm dev:infra`):
 #   docker compose -f docker-compose.dev.yml up -d --wait
 #   docker compose -f docker-compose.dev.yml down        # keep the data
 #   pnpm dev:infra:reset                                 # drop the data too
-#
-# Modal callback testing (or `pnpm dev:tunnel`):
-#   export CLOUDFLARE_TUNNEL_TOKEN=...  # Zero Trust tunnel token, never committed
-#   docker compose -f docker-compose.dev.yml --profile tunnel up -d --wait tunnel
-#   docker compose -f docker-compose.dev.yml logs -f tunnel
 #
 # The project name is pinned so this file can never share volumes or networks
 # with the deployment stack in docker-compose.yml.
@@ -62,7 +58,12 @@ services:
     container_name: openvod-dev-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Non-default host port, for the same reason as Postgres: 6379 is the most
+      # commonly occupied port on a developer machine, and the failure is not a
+      # clear "port taken" — Compose reports it after the old container is gone,
+      # and the API then hangs on every rate-limited route. REDIS_URL in
+      # server/.dev.vars must match this port.
+      - "6382:6379"
     # Deliberately in-memory: rate-limit windows are ephemeral, so a restart
     # clearing them is correct behaviour rather than data loss. That also means
     # no volume — there would be nothing in it.
@@ -72,37 +73,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  tunnel:
-    # Public ingress for Modal transcode callbacks during local development.
-    #
-    # Modal POSTs job results to `${BACKEND_URL}/api/webhook/transcode-complete`,
-    # and `localhost:8787` is unreachable from Modal's cloud. This named tunnel
-    # gives the host-run API a stable public hostname; point BACKEND_URL in
-    # server/.dev.vars at that hostname and restart `pnpm dev` (see
-    # CONTRIBUTING.md). Webhook auth (TRANSCODE_INGEST_SECRET) still applies —
-    # the tunnel carries the same authenticated callbacks, it does not bypass
-    # them.
-    #
-    # Opt-in via profile so the default `pnpm dev:infra` loop is unchanged:
-    #   pnpm dev:tunnel
-    # Setup (one time, Cloudflare Zero Trust dashboard): create a tunnel, add a
-    # Public Hostname (e.g. openvod-dev.example.com) with Service
-    # http://host.docker.internal:8787, copy the token into
-    # CLOUDFLARE_TUNNEL_TOKEN. The origin mapping lives in that dashboard
-    # hostname, not here — this container just runs the token.
-    #
-    # No published ports: inbound arrives via the Cloudflare edge, outbound
-    # only. No depends_on: the API runs on the host, not in this file.
-    # extra_hosts maps host.docker.internal on Linux Docker (macOS/Windows
-    # resolve it already) so the dashboard origin URL above works everywhere.
-    profiles: ["tunnel"]
-    image: cloudflare/cloudflared:latest
-    container_name: openvod-dev-tunnel
-    restart: unless-stopped
-    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
 volumes:
   openvod_dev_postgres:

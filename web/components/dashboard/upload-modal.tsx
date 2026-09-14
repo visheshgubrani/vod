@@ -326,6 +326,17 @@ export function UploadModal({
             },
             body: JSON.stringify({ fileId }),
           });
+
+          if (!result.ok) {
+            // The bytes are in R2 but no transcode job started, so this upload
+            // will sit unprocessed until the sweeper gives up on it. Say so
+            // instead of closing the modal as if nothing happened.
+            const body = await result.json().catch(() => null);
+            console.error(
+              `Transcode not started for ${fileId}: HTTP ${result.status}`,
+              body?.error ?? body
+            );
+          }
         } catch (err) {
           console.error("Failed to mark upload as complete:", err);
         }
@@ -356,18 +367,40 @@ export function UploadModal({
       const meta = file.meta as CustomMeta;
       const fileId = meta?.fileId;
 
+      if (!fileId) return;
+
+      // `file-removed` is not only a user cancel. The effect cleanup below calls
+      // `uppy.cancelAll()` when this modal closes — which the `complete` handler
+      // above triggers on every successful upload — and Uppy's `removeFiles()`
+      // emits `file-removed` for every file it drops. A file that finished
+      // uploading must never be cancelled: `/upload/complete` has already
+      // claimed the row and dispatched a transcode job against the object, so
+      // the DELETE this used to send destroyed both, and the worker then 404'd
+      // on a source that no longer existed. Uppy marks a finished upload in
+      // `progress.uploadComplete`, which survives into this event.
+      if (file.progress?.uploadComplete) return;
+
       // If file had a fileId, delete the record from backend
       // This handles both single-file and multipart uploads
-      if (fileId) {
-        try {
-          await fetch(`${API_BASE_URL}/upload/${fileId}`, {
-            method: "DELETE",
-            credentials: "include",
-          });
+      try {
+        const response = await fetch(`${API_BASE_URL}/upload/${fileId}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
+        const body = (await response.json().catch(() => null)) as {
+          deleted?: boolean;
+        } | null;
+
+        if (response.ok && body?.deleted) {
           console.log(`Deleted canceled upload: ${fileId}`);
-        } catch (err) {
-          console.error("Failed to delete upload:", err);
+        } else {
+          console.warn(
+            `Cancel not applied for ${fileId}: HTTP ${response.status}`,
+            body
+          );
         }
+      } catch (err) {
+        console.error("Failed to delete upload:", err);
       }
     });
 

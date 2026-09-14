@@ -19,6 +19,7 @@ Cancellation has two independent sources, and both are needed:
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Optional
 
 from openvod_transcoder.errors import CancelledError
@@ -30,6 +31,7 @@ class CancellationToken:
     def __init__(self) -> None:
         self._event = threading.Event()
         self._reason = ""
+        self._parent: Optional[CancellationToken] = None
 
     def cancel(self, reason: str = "cancelled") -> None:
         if not self._event.is_set():
@@ -38,32 +40,36 @@ class CancellationToken:
 
     @property
     def cancelled(self) -> bool:
-        return self._event.is_set()
+        return self._event.is_set() or bool(self._parent and self._parent.cancelled)
 
     @property
     def reason(self) -> str:
+        if not self._event.is_set() and self._parent and self._parent.cancelled:
+            return self._parent.reason
         return self._reason or "cancelled"
 
     def raise_if_cancelled(self) -> None:
-        if self._event.is_set():
+        if self.cancelled:
             raise CancelledError(self.reason)
 
     def wait(self, timeout: float) -> bool:
         """Sleep up to ``timeout`` seconds, waking early on cancellation."""
-        return self._event.wait(timeout)
+        if self._parent is None:
+            return self._event.wait(timeout)
+        deadline = time.monotonic() + timeout
+        while not self.cancelled:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._event.wait(min(remaining, 0.1))
+        return True
 
     def child(self) -> "CancellationToken":
         """A token cancelled whenever this one is (one-way, parent → child)."""
         child = CancellationToken()
-        if self.cancelled:
-            child.cancel(self.reason)
-            return child
-
-        def _watch() -> None:
-            self._event.wait()
-            child.cancel(self.reason)
-
-        threading.Thread(target=_watch, daemon=True, name="cancel-child").start()
+        # A parent link avoids leaking a forever-waiting daemon for every
+        # successful job on a long-running self-hosted agent.
+        child._parent = self
         return child
 
 

@@ -38,14 +38,37 @@ class Artifact:
 
 @dataclass
 class RenditionReport:
-    """What was actually encoded for one rung."""
+    """
+    What was actually encoded for one rung, and by which execution path.
+
+    ``backend`` and ``mode`` are per rendition because a ladder can genuinely be
+    split: the first rung may hit a session limit and finish on the CPU while the
+    rest stay on the GPU. The job-level ``backend`` is then ``mixed``, and these
+    are the entries that say which rung was which.
+    """
     label: str
     width: int
     height: int
     bitrate: str
     backend: str
+    mode: str = ""
+    attempts: int = 0
+    seconds: float = 0.0
     files: int = 0
     bytes: int = 0
+
+    def as_payload(self) -> dict:
+        return {
+            "label": self.label,
+            "width": self.width,
+            "height": self.height,
+            "bitrate": self.bitrate,
+            "backend": self.backend,
+            "mode": self.mode,
+            "attempts": self.attempts,
+            "seconds": self.seconds,
+            "bytes": self.bytes,
+        }
 
 
 @dataclass
@@ -91,6 +114,10 @@ class ProcessingMetadata:
     fallback_reasons: List[str] = field(default_factory=list)
     plan_fingerprint: str = ""
     source_sha256: str = ""
+    # Toolchain identity and per-rendition execution details. Additive: the API
+    # stores them as diagnostics, and older payloads simply have neither.
+    toolchain: Dict[str, str] = field(default_factory=dict)
+    rendition_executions: List[dict] = field(default_factory=list)
 
     @property
     def processing_speed(self) -> float:
@@ -111,6 +138,8 @@ class ProcessingMetadata:
             "backend": self.backend_used,
             "fallbacks": list(self.fallback_reasons),
             "plan_fingerprint": self.plan_fingerprint,
+            "toolchain": dict(self.toolchain),
+            "renditions": list(self.rendition_executions),
         }
 
 

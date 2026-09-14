@@ -263,7 +263,7 @@ function nextStepsText(answers: WizardAnswers): string {
   }
   return [
     'Develop (this machine):',
-    `  ${color.cmd('pnpm dev:infra')}                       ${color.muted('# Postgres :5433 + Redis :6379')}`,
+    `  ${color.cmd('pnpm dev:infra')}                       ${color.muted('# Postgres :5433 + Redis :6382')}`,
     `  ${color.cmd('pnpm db:migrate')}`,
     `  ${dashboard}`,
     '',

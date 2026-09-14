@@ -14,6 +14,7 @@ import { SERVER_KEY_ORDER } from './mapping'
 import { WizardError } from './errors'
 import {
   applyBucketCors,
+  browserUploadCorsOrigins,
   cfAccountId,
   dbMigrate,
   deployWorker,
@@ -181,7 +182,12 @@ export async function runDeployPhase(
       logSuccess(`R2 bucket ${answers.transcodedBucket} ready`)
 
       logStep(`Applying S3 CORS to ${answers.rawBucket} for browser uploads`)
-      await applyBucketCors(root, answers.rawBucket, [answers.frontendUrl], temp)
+      await applyBucketCors(
+        root,
+        answers.rawBucket,
+        browserUploadCorsOrigins(answers.frontendUrl),
+        temp,
+      )
       logSuccess('CORS policy applied (GET/PUT/HEAD, ETag exposed)')
     } else {
       logStep('Browser uploads are disabled — provisioning only the transcoded bucket')

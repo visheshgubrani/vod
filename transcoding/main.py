@@ -29,7 +29,11 @@ import threading
 from fastapi import HTTPException, Request
 
 # Keep build helpers independent of this module's pipeline imports.
-from image_build import download_whisper_weights
+from image_build import (
+    download_whisper_weights,
+    read_package_list,
+    resolve_toolchain_file,
+)
 
 # The shared engine. Imported here so `modal deploy` fails loudly if the
 # package does not hydrate, rather than at the first job.
@@ -87,29 +91,66 @@ attempts = modal.Dict.from_name("transcode-attempts", create_if_missing=True)
 ATTEMPT_MARKER_TTL_SECONDS = int(os.environ.get("ATTEMPT_MARKER_TTL_SECONDS", "300"))
 
 
-# Production-optimized container. CUDA devel image per Modal CUDA guide
-# (faster-whisper/CTranslate2 need toolkit libs, not just pip nvidia-* wheels).
-# Whisper weights use run_function so the 1.6GB fetch is not bound by
-# run_commands' short layer timeout.
+# ── the shared media toolchain ───────────────────────────────────────────────
+#
+# One recipe, two images. `transcoding/toolchain/build_ffmpeg.sh` builds the
+# pinned FFmpeg 9.0.1 here and in the self-hosted agent image
+# (`Dockerfile.agent`), so the bytes a Modal worker produces and the bytes an
+# agent produces come from the same binary. `versions.env` is the only place a
+# version, URL or digest is written down.
+#
+# Why not the distribution's FFmpeg: the deployed build's `scale_cuda` rejects
+# the `format` option the NVIDIA scaling path passes, which is a build-time
+# property of FFmpeg's CUDA filters. The recipe builds them with clang
+# (`--enable-cuda-llvm`), so the option exists — and the engine no longer depends
+# on it for the hybrid path either.
+_TOOLCHAIN_DIR = _root / "toolchain"
+# Where the *container* finds the same directory. `main.py` and `image_build.py`
+# are mounted as loose files at /root, so `_TOOLCHAIN_DIR` above is empty inside
+# a container; the `add_local_dir(copy=True)` below bakes the recipe here
+# instead. Reading the checkout path unconditionally is what made the deployed
+# app fail hydration with '/root/toolchain/apt-packages.env' — so the two paths
+# are named, and `resolve_toolchain_file` picks the one that exists.
+_TOOLCHAIN_IN_IMAGE = "/opt/openvod/toolchain"
+_CUDA_BASE_REF = (
+    "nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04"
+    "@sha256:070f8f2672df1b05b84c0409a5fd1d54ddfd646e5b9d8dee7878131271b563fc"
+)
+
+# The build-time and runtime package lists are shared with Dockerfile.agent.
+# Read through the resolver, not `_TOOLCHAIN_DIR`: this module executes at
+# container start too, not only on the deploy machine.
+_APT_PACKAGES = resolve_toolchain_file("apt-packages.env")
+_BUILD_PACKAGES = read_package_list(_APT_PACKAGES, "OPENVOD_BUILD_PACKAGES")
+_RUNTIME_PACKAGES = read_package_list(_APT_PACKAGES, "OPENVOD_RUNTIME_PACKAGES")
+
+# CUDA 12.9 + cuDNN 9 runtime base, pinned by manifest digest: faster-whisper's
+# CTranslate2 backend wants CUDA 12 and cuDNN 9, and a floating tag is a silent
+# toolchain change on the next build. The toolkit is deliberately absent — the
+# CUDA *filters* are compiled to PTX by clang, and the driver is reached by
+# dlopen at runtime, which is why hardware usability is probed at runtime.
 image = (
-    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
+    modal.Image.from_registry(_CUDA_BASE_REF, add_python="3.12")
     .entrypoint([])
-    .apt_install("ffmpeg", "wget", "curl", "mediainfo")
-    .pip_install(
-        "boto3",
-        "requests",
-        "fastapi[standard]",
-        "pillow",
-        "faster-whisper",
-        "groq",
-        "huggingface_hub",
-    )
-    .env({"HF_HOME": "/root/.cache/huggingface"})
+    .apt_install(*_BUILD_PACKAGES, *_RUNTIME_PACKAGES, "mediainfo")
+    .add_local_dir(str(_TOOLCHAIN_DIR), remote_path=_TOOLCHAIN_IN_IMAGE, copy=True)
     .run_commands(
-        "wget -q https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -O /usr/local/bin/packager"
+        # Build, then prove: version, codecs, filters, the `format` option of
+        # `scale_cuda`, and a real CPU encode. A broken toolchain fails the
+        # image build instead of the first job after a deploy. The path comes
+        # from `_TOOLCHAIN_IN_IMAGE` so the build, the verification and the
+        # container's reader cannot disagree about where the recipe landed.
+        f"bash {_TOOLCHAIN_IN_IMAGE}/build_ffmpeg.sh /usr/local",
+        f"bash {_TOOLCHAIN_IN_IMAGE}/verify_toolchain.sh"
+        " /usr/local/bin/ffmpeg /usr/local/bin/ffprobe",
+        # Shaka Packager, checksum-pinned: a packager that changes version
+        # changes the bytes every job produces.
+        "curl -fsSL https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -o /usr/local/bin/packager"
         " && chmod +x /usr/local/bin/packager"
         " && printf '%s  /usr/local/bin/packager\\n' 05af2e9ef5f12d58b9d615b7d31dc0eb61c32aee632c71965340b43c1556043e | sha256sum -c -",
     )
+    .pip_install_from_requirements(str(_TOOLCHAIN_DIR / "requirements-managed.lock"))
+    .env({"HF_HOME": "/root/.cache/huggingface"})
     .run_function(download_whisper_weights, timeout=60 * 60)
     # The engine package is mounted as a package, not as loose modules: that is
     # what lets `openvod_transcoder.encoding.backends` resolve inside the
@@ -317,6 +358,10 @@ def transcode_video(request: Request, payload: dict):
     secrets=[modal.Secret.from_name("r2-creds"), modal.Secret.from_name("groq-creds")],
     timeout=3600,  # 1 hour max
     memory=16384,  # 16GB RAM
+    # Four cores are enough for three GPU renditions plus a software fallback;
+    # the eight-core limit stops a CPU-only job from starving the container it
+    # shares with the GPU paths.
+    cpu=(4, 8),
 )
 def transcode_worker(payload: dict):
     """GPU worker - executes the shared pipeline and reports the outcome."""
@@ -538,6 +583,16 @@ def _options_from_payload(payload: dict, video_id: str, attempt_id: str) -> Proc
         # The engine no longer hard-codes L4-sized concurrency; the Modal
         # worker asks for what it actually has.
         "rendition_concurrency": int(os.environ.get("TRANSCODE_RENDITION_CONCURRENCY", "3")),
+        # Three GPU renditions stay the default. A CPU-only job (or one that fell
+        # back to the CPU) runs one rendition at a time with four threads: N x264
+        # encodes in parallel contend for the same four cores and finish later
+        # than the same work run in sequence. Hybrid encodes decode and scale in
+        # software, so they get a smaller bound of their own; audio gets one
+        # thread, because it is never the bottleneck.
+        "cpu_rendition_concurrency": int(os.environ.get("TRANSCODE_CPU_RENDITION_CONCURRENCY", "1")),
+        "cpu_ffmpeg_threads": int(os.environ.get("TRANSCODE_CPU_THREADS", "4")),
+        "hybrid_ffmpeg_threads": int(os.environ.get("TRANSCODE_HYBRID_THREADS", "2")),
+        "audio_ffmpeg_threads": int(os.environ.get("TRANSCODE_AUDIO_THREADS", "1")),
         "audio_concurrency": 1,
         "upload_concurrency": 10,
     })

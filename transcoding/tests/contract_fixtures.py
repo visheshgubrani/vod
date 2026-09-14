@@ -45,18 +45,37 @@ def _artifacts() -> List[Artifact]:
     ]
 
 
-def build_result() -> PipelineResult:
-    """A result with every optional output present, so nothing is untested."""
+def build_result(*, mixed: bool = False) -> PipelineResult:
+    """
+    A result with every optional output present, so nothing is untested.
+
+    ``mixed=True`` produces the *split-ladder* case: one rung finished on the GPU
+    and another on the CPU, so the job-level backend is ``mixed`` and the
+    per-rendition execution details are the only place that says which was which.
+    """
+    renditions = [
+        RenditionReport(
+            label="1080p", width=1920, height=1080, bitrate="5M",
+            backend="nvenc" if mixed else "cpu",
+            mode="hybrid" if mixed else "cpu",
+            attempts=2 if mixed else 1,
+            seconds=41.5 if mixed else 90.2,
+            files=2, bytes=66560,
+        ),
+    ]
+    if mixed:
+        renditions.append(
+            RenditionReport(
+                label="720p", width=1280, height=720, bitrate="3M",
+                backend="cpu", mode="cpu", attempts=1, seconds=22.75,
+                files=2, bytes=30720,
+            )
+        )
     return PipelineResult(
         video_id=VIDEO_ID,
         attempt_id=ATTEMPT_ID,
         artifacts=_artifacts(),
-        renditions=[
-            RenditionReport(
-                label="1080p", width=1920, height=1080, bitrate="5M",
-                backend="cpu", files=2, bytes=66560,
-            ),
-        ],
+        renditions=renditions,
         enrichments={
             "subtitles": EnrichmentStatus(
                 name="subtitles", requested=True, generated=True,
@@ -81,10 +100,23 @@ def build_result() -> PipelineResult:
             is_vertical=False,
             aspect_ratio="1.78:1",
             timings={"analyze": 0.4, "transcode": 90.2, "package": 3.1, "upload": 6.0},
-            backend_used="cpu",
-            fallback_reasons=[],
+            backend_used="mixed" if mixed else "cpu",
+            fallback_reasons=(
+                ["1080p: nvenc -> nvenc+software-decode: FFmpegProcessError: filter"]
+                if mixed
+                else []
+            ),
             plan_fingerprint="fingerprint-contract",
             source_sha256="deadbeef",
+            # Additive diagnostics: which toolchain produced the bytes, and how
+            # each rung was actually encoded.
+            toolchain={
+                "engine": "1.1.0",
+                "planVersion": "2",
+                "ffmpeg": "9.0.1",
+                "shaka": "3.2.0",
+            },
+            rendition_executions=[rendition.as_payload() for rendition in renditions],
         ),
         playback_policy="public",
     )
@@ -100,6 +132,7 @@ def fixtures() -> Dict[str, Any]:
     re-bases them against the recorded attempt prefix.
     """
     result = build_result()
+    mixed = build_result(mixed=True)
     return {
         "meta": {
             "videoId": VIDEO_ID,
@@ -109,6 +142,9 @@ def fixtures() -> Dict[str, Any]:
         },
         "modal": result.as_payload(key_prefix=f"{R2_PREFIX}/{VIDEO_ID}"),
         "agent": result.as_payload(),
+        # A ladder completed across two encoders. Additive: an older API that
+        # ignores these keys still publishes the video correctly.
+        "mixedAgent": mixed.as_payload(),
     }
 
 

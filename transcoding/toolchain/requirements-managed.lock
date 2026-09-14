@@ -1,0 +1,71 @@
+# Managed-image Python lock — Modal runner image (transcoding/main.py).
+#
+# Every pin is exact (`==`) on purpose. The managed image is the "known good"
+# shape: a job that behaves differently on Tuesday than it did on Monday is a
+# bug report nobody can act on, and `faster-whisper` pulls a native inference
+# stack whose minor releases change GPU memory behaviour. Resolved from PyPI
+# metadata (https://pypi.org/pypi/<name>/json) against **Python 3.12** — the
+# managed images are Python 3.12 (see versions.env PYTHON_VERSION).
+#
+# This file is NOT the engine's dependency set. transcoding/pyproject.toml
+# declares exactly one runtime dependency, `requests`; the engine and the
+# self-hosted agent must import without Modal, boto3 or Whisper
+# (transcoding/tests/test_engine_isolation.py enforces that in a subprocess with
+# the optional packages blocked). This lock is installed only into the managed
+# image, which is the one place that owns a GPU, storage credentials and the
+# Whisper weights.
+#
+# Co-installability — validated constraints
+# -----------------------------------------
+# The set was checked against `requires_dist` from PyPI, not eyeballed:
+#
+#   faster-whisper 1.2.1 requires:
+#       ctranslate2<5,>=4.0        -> ctranslate2==4.8.2   OK
+#       huggingface-hub>=0.21      -> huggingface-hub==1.31.0 OK
+#       tokenizers<1,>=0.13        -> tokenizers==0.23.2  OK (upper bound <1 respected)
+#       onnxruntime<2,>=1.14       -> onnxruntime==1.30.0 OK
+#       av>=11                     -> av==18.1.0          OK
+#       tqdm                       -> tqdm (transitively, unpinned here)
+#   (requires_python >=3.9 for faster-whisper and ctranslate2; onnxruntime 1.30.0
+#    needs >=3.11 and av 18.1.0 needs >=3.11, both satisfied by 3.12.)
+#
+#   tokenizers 0.23.2 requires huggingface-hub<2.0,>=0.16.4   -> 1.31.0 OK
+#   ctranslate2 4.8.2 requires numpy (unbounded), pyyaml<7,>=5.3
+#   onnxruntime 1.30.0 requires numpy>=1.21.6                  -> numpy==2.5.3 OK
+#   modal 1.5.5 requires protobuf<7,>=3.19 (unrelated to the Whisper stack)
+#
+# Verified wheels for Python 3.12 exist on PyPI for every pin below
+# (cp312 wheels, or py3-none-any / abi3 where the package is pure Python).
+#
+# Hardware/runtime prerequisites these wheels do NOT carry
+# -------------------------------------------------------
+#   * ctranslate2 4.8.2's CUDA-12 wheels bundle the CUDA runtime pieces they
+#     need but still link **cuDNN 9** from the base image. The managed image is
+#     therefore based on nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04 (see
+#     versions.env CUDA_BASE_IMAGE_REF), not the plain CUDA runtime image.
+#     A CPU-only install of the same pin works, it is just slow.
+#   * The bundled NVENC headers (nv-codec-headers n12.1.14.0, used to build
+#     FFmpeg's nvenc/nvdec/cuvid and the CUDA filters) document a minimum
+#     NVIDIA Linux driver of **530.41.03**. Below that the driver is too old for
+#     the API the binary was compiled against, and NVENC/NVDEC fail at RUNTIME.
+#     The build asserts nothing about a GPU; `openvod-transcoder doctor` does.
+#
+# Refresh procedure: bump a pin, re-check the constraints above against PyPI,
+# rebuild the image, and let `verify_toolchain.sh` + the real-media suites decide.
+
+# ── Build/runtime (registry clients, HTTP API, image thumbnails, chapters) ────
+boto3==1.43.93
+requests==2.34.2
+fastapi[standard]==0.141.1
+pillow==12.3.0
+groq==1.7.0
+modal==1.5.5
+
+# ── Whisper stack (CUDA 12 / cuDNN 9) ───────────────────────────────────────
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+huggingface-hub==1.31.0
+tokenizers==0.23.2
+onnxruntime==1.30.0
+av==18.1.0
+numpy==2.5.3

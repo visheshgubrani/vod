@@ -51,6 +51,10 @@ WIRE_ALIASES: Dict[str, str] = {
     "audioConcurrency": "audio_concurrency",
     "uploadConcurrency": "upload_concurrency",
     "ffmpegThreads": "ffmpeg_threads",
+    "cpuRenditionConcurrency": "cpu_rendition_concurrency",
+    "cpuFfmpegThreads": "cpu_ffmpeg_threads",
+    "hybridFfmpegThreads": "hybrid_ffmpeg_threads",
+    "audioFfmpegThreads": "audio_ffmpeg_threads",
     "stallTimeoutSeconds": "stall_timeout_seconds",
     "scratchQuotaBytes": "scratch_quota_bytes",
     "segmentDuration": "segment_duration",
@@ -86,6 +90,15 @@ class ProcessingOptions:
     upload_concurrency: int = 4
     ffmpeg_threads: int = 0  # 0 = let FFmpeg decide from its own CPU budget
 
+    # Per-path bounds. Each execution path has different CPU needs — a full-GPU
+    # encode needs almost none, a hybrid encode decodes and scales in software,
+    # and a CPU encode is all software — so bounding them with one number starves
+    # the GPU paths that still depend on the CPU. 0 means "no separate bound".
+    cpu_rendition_concurrency: int = 0
+    cpu_ffmpeg_threads: int = 0
+    hybrid_ffmpeg_threads: int = 0
+    audio_ffmpeg_threads: int = 0
+
     stall_timeout_seconds: float = 900.0
     scratch_quota_bytes: Optional[int] = None
 
@@ -101,7 +114,7 @@ class ProcessingOptions:
         payload["include_heights"] = list(self.include_heights)
         return payload
 
-    def plan_fingerprint(self) -> str:
+    def plan_fingerprint(self, *, toolchain: str = "") -> str:
         """
         Stable hash of everything that changes the produced bytes.
 
@@ -110,6 +123,14 @@ class ProcessingOptions:
         including them would defeat reuse across a retry — the case reuse exists
         for. `playback_policy` and `organization_id` *are* included because they
         are written into object metadata at upload time.
+
+        ``toolchain`` is the identity of the FFmpeg/Shaka build that would do the
+        work (see ``encoding.probe.toolchain_versions``). Two machines with
+        different FFmpeg versions do not produce byte-identical renditions, so a
+        cached rendition from the old toolchain must not be reused after an
+        image upgrade — which is exactly what including it prevents. Thread
+        bounds are in the material for the same reason: x264's output depends on
+        how many threads it was given.
         """
         material = {
             "planVersion": PROCESSING_PLAN_VERSION,
@@ -125,6 +146,11 @@ class ProcessingOptions:
             "encoderBackend": self.encoder_backend,
             "segmentDuration": self.segment_duration,
             "audioOnly": self.extract_audio_only,
+            "cpuThreads": self.cpu_ffmpeg_threads,
+            "ffmpegThreads": self.ffmpeg_threads,
+            "hybridThreads": self.hybrid_ffmpeg_threads,
+            "audioThreads": self.audio_ffmpeg_threads,
+            "toolchain": toolchain or None,
         }
         blob = json.dumps(material, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -194,6 +220,11 @@ class ProcessingOptions:
         updates["rendition_concurrency"] = max(
             1, min(self.rendition_concurrency, config.capacity_renditions)
         )
+        if self.cpu_rendition_concurrency:
+            # The operator's capacity is the ceiling for this path too.
+            updates["cpu_rendition_concurrency"] = max(
+                1, min(self.cpu_rendition_concurrency, config.capacity_renditions)
+            )
         updates["upload_concurrency"] = max(
             1, min(self.upload_concurrency, config.upload_concurrency)
         )

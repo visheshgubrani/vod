@@ -109,6 +109,33 @@ export type OpenVodConfig = {
 
 const isHttpUrl = (value: string): boolean => /^https?:\/\/\S+$/i.test(value)
 
+/**
+ * Loopback and unspecified hosts, as `URL#hostname` reports them — bracketed for
+ * IPv6.
+ *
+ * Hosts that only resolve on this machine are the failure mode behind the
+ * BACKEND_URL advisory: a URL that looks configured and is unreachable to every
+ * other machine, including the transcoder.
+ */
+const LOOPBACK_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '0.0.0.0',
+  '::1',
+  '[::1]',
+  '[::ffff:127.0.0.1]',
+])
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(value).hostname.toLowerCase())
+  } catch {
+    // Not a URL at all. The URL-shape problem is reported where that value is
+    // validated; this helper only answers "is it loopback".
+    return false
+  }
+}
+
 function hasSecret(env: EnvLike, key: string): boolean {
   const value = env[key]
   return typeof value === 'string' && value.trim().length > 0
@@ -293,6 +320,32 @@ export function loadConfig(env: EnvLike): OpenVodConfig {
         + 'new jobs run on the owner’s machines. Modal remains available as an '
         + 'explicit per-job choice.',
     )
+  }
+
+  // ---- transcode callbacks ----------------------------------------------------
+  // Where the worker reports results. Modal runs in Cloudflare's cloud, so the
+  // callback URL has to be reachable from outside this machine, and the dispatch
+  // path falls back to `http://localhost:8787` when BACKEND_URL is unset. The
+  // failure that produces is silent and expensive: the job runs to completion,
+  // the callback is refused, and the video stays `processing` until the sweeper
+  // pays for the transcode a second time. The value itself is never echoed —
+  // `GET /health/config` is public.
+  if (modalRequired) {
+    const backendUrl = secretValue(env, 'BACKEND_URL')
+    if (!backendUrl) {
+      advisories.push(
+        'BACKEND_URL is not set: transcode-complete callbacks fall back to '
+          + 'localhost, which a Modal worker cannot reach, so finished jobs will '
+          + 'never update their video (set it to this API’s public URL).',
+      )
+    } else if (isLoopbackUrl(backendUrl)) {
+      advisories.push(
+        'BACKEND_URL points at a loopback address: a Modal worker cannot reach '
+          + 'it, so finished jobs will never update their video (set it to this '
+          + 'API’s public URL — for local development, the forwarding URL of a '
+          + 'tunnel you run yourself, e.g. ngrok).',
+      )
+    }
   }
 
   // ---- auth (sessions + playback signing) -------------------------------------

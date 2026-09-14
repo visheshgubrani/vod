@@ -15,8 +15,6 @@
     "dev:infra": "docker compose -f docker-compose.dev.yml up -d --wait",
     "dev:infra:down": "docker compose -f docker-compose.dev.yml down",
     "dev:infra:reset": "docker compose -f docker-compose.dev.yml down -v",
-    "dev:tunnel": "docker compose -f docker-compose.dev.yml --profile tunnel up -d --wait tunnel",
-    "dev:tunnel:logs": "docker compose -f docker-compose.dev.yml logs -f tunnel",
     "start": "pnpm start:prepare && node scripts/dev.mjs start",
     "start:prepare": "pnpm --filter vod-api build:node && pnpm --filter web build",
     "build": "pnpm -r --if-present build",

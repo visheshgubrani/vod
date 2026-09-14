@@ -11,9 +11,16 @@ Two families, and the distinction is load-bearing:
   fallback retry. A GPU session running out is not evidence that the media is
   bad, and retrying on the CPU is the right answer.
 - **Media and environment failures** (``INVALID_*``, ``EMPTY_FILE``,
-  ``SOURCE_*``, ``INSUFFICIENT_DISK``, ``PARTIAL_UPLOAD``) must never trigger a
-  fallback: re-running an undecodable file on a different encoder wastes the
-  owner's time and produces the same failure, and a full disk gets no fuller.
+  ``SOURCE_*``, ``INSUFFICIENT_DISK``, ``PARTIAL_UPLOAD``, ``PACKAGING_FAILED``)
+  must never trigger a fallback: re-running an undecodable file on a different
+  encoder wastes the owner's time and produces the same failure, a full disk
+  gets no fuller, and a packager that rejected the package has already been told
+  what the encoder produced.
+
+``FFmpegProcessError`` is how a non-zero FFmpeg exit enters this taxonomy. It is
+built by :func:`openvod_transcoder.encoding.failures.build_process_error`, which
+classifies the process's stderr into the kind that decides both the code and
+whether the fallback policy may act on it.
 """
 
 # ── error codes (stable contract with the API) ──────────────────────────────
@@ -53,6 +60,40 @@ class TranscodeError(Exception):
         self.message = message
 
 
+class FFmpegProcessError(TranscodeError):
+    """
+    A subprocess exited non-zero, described well enough to act on.
+
+    Before this existed, FFmpeg failures surfaced as a bare ``RuntimeError``.
+    ``is_fallback_eligible`` only recognises :class:`TranscodeError`, so the
+    fallback chain was skipped for *every* FFmpeg failure — including the
+    ``scale_cuda`` filter rejection that a hybrid retry fixes immediately. The
+    exit status, a bounded stderr tail and the operation that failed are carried
+    so the callback payload, the logs and the retry decision all describe the
+    same event.
+
+    ``stderr`` is truncated (see ``failures.bounded_stderr``): a raw FFmpeg
+    stderr can run to thousands of lines, and it travels into the completion
+    payload.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        returncode: int,
+        stderr: str = "",
+        operation: str = "",
+        failure_kind: str = "unknown",
+        code: str = ERROR_TRANSCODE_FAILED,
+    ) -> None:
+        super().__init__(code, message)
+        self.returncode = returncode
+        self.stderr = stderr
+        self.operation = operation
+        self.failure_kind = failure_kind
+
+
 class CancelledError(TranscodeError):
     """Raised when cancellation is observed. Never reported as a failure."""
 
@@ -62,10 +103,14 @@ class CancelledError(TranscodeError):
 
 # Codes where retrying on a different encoder backend is a sensible response.
 # Everything else is deterministic given the same media and same machine.
+#
+# PACKAGING_FAILED is deliberately *not* here. Shaka runs after every rendition
+# is already encoded, so a packaging failure has no encoder left to fall back
+# from; retrying it through the chain re-encodes nothing and reports the wrong
+# cause. Packaging errors carry their own code for exactly that reason.
 FALLBACK_ELIGIBLE_CODES = frozenset({
     ERROR_ENCODER_UNAVAILABLE,
     ERROR_ENCODER_FAILED,
-    ERROR_PACKAGING_FAILED,
 })
 
 

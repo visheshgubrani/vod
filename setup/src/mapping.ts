@@ -27,7 +27,7 @@ export const DEV_LOCAL_DATABASE_URL = 'postgresql://postgres:postgres@localhost:
 export const COMPOSE_LOCAL_DATABASE_URL = DEV_LOCAL_DATABASE_URL
 
 /** The dev Redis `pnpm dev:infra` publishes, for the `redis` rate-limit choice. */
-export const DEV_LOCAL_REDIS_URL = 'redis://localhost:6379'
+export const DEV_LOCAL_REDIS_URL = 'redis://localhost:6382'
 
 /** Canonical key order for server/.dev.vars (mirrors .dev.vars.example). */
 export const SERVER_KEY_ORDER = [

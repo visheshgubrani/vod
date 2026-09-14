@@ -32,7 +32,11 @@ from openvod_transcoder.agent.client import AgentApiError, LeaseLost, Transcoder
 from openvod_transcoder.agent.config import AgentConfig
 from openvod_transcoder.agent.journal import RecoveryJournal
 from openvod_transcoder.cancellation import CancellationToken, LeaseGuard
-from openvod_transcoder.encoding.probe import CapabilityReport, detect_capabilities
+from openvod_transcoder.encoding.probe import (
+    CapabilityReport,
+    detect_capabilities,
+    toolchain_identity,
+)
 from openvod_transcoder.errors import (
     ERROR_CANCELLED,
     ERROR_SOURCE_CHANGED,
@@ -196,7 +200,11 @@ class JobRunner:
                 policy=SnapshotPolicy(),
                 expected_identity=str((job.source or {}).get("identity") or ""),
             )
-            fingerprint = options.plan_fingerprint()
+            # The toolchain is part of the plan identity: work encoded by an
+            # FFmpeg build that is no longer installed must not be reused after
+            # an agent image upgrade, because the bytes would differ.
+            toolchain = toolchain_identity(self._capabilities or self._detect_capabilities())
+            fingerprint = options.plan_fingerprint(toolchain=toolchain)
             self.journal.start_job(
                 job.video_id,
                 job.attempt_id,
@@ -776,14 +784,19 @@ class _GrantedTransfer:
 
 
 def reusable_renditions(
-    journal: RecoveryJournal, job: ClaimedJob, options: ProcessingOptions
+    journal: RecoveryJournal,
+    job: ClaimedJob,
+    options: ProcessingOptions,
+    *,
+    toolchain: str = "",
 ) -> Dict[str, str]:
     """
     Encoded work that a retried attempt may reuse.
 
-    Keyed on the source hash and the plan fingerprint so a changed ladder or a
-    changed source invalidates it, which is the difference between "resume" and
-    "mix two different encodes together".
+    Keyed on the source hash, the plan fingerprint and the toolchain identity, so
+    a changed ladder, a changed source or an upgraded FFmpeg invalidates it.
+    That is the difference between "resume" and "mix two different encodes
+    together".
     """
     job_row = journal.get_job(job.video_id, job.attempt_id)
     if not job_row:
@@ -792,7 +805,7 @@ def reusable_renditions(
         job.video_id,
         job.attempt_id,
         job_row.source_sha256,
-        options.plan_fingerprint(),
+        options.plan_fingerprint(toolchain=toolchain),
     )
 
 

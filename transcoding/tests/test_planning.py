@@ -261,3 +261,49 @@ class TestAgentLimits:
         options = ProcessingOptions(whisper_model="").with_agent_limits(self._Config())
         assert options.whisper_model == "small"
         assert options.transcribe_language == "en"
+
+
+class TestRotatedSources:
+    """
+    A display matrix is part of the picture, not a detail.
+
+    A clip coded 1920x1080 with a 90° rotation *displays* as 1080x1920. The
+    analyser applies the rotation when it reads the metadata, so planning sees
+    the dimensions FFmpeg's filter graph will see — planning from the coded size
+    would fit a portrait video into a landscape rendition and the scaler would
+    then stretch the upright frame into it.
+    """
+
+    def test_a_quarter_turn_is_reported_as_such(self):
+        assert meta(1080, 1920, rotation=90).is_quarter_turned is True
+        assert meta(1080, 1920, rotation=270).is_quarter_turned is True
+        assert meta(1920, 1080, rotation=180).is_quarter_turned is False
+        assert meta(1920, 1080).is_quarter_turned is False
+
+    def test_a_rotated_source_is_planned_at_its_displayed_dimensions(self):
+        # What `parse_ffprobe` produces for a 1920x1080 source rotated 90°.
+        specs = plan_renditions(meta(1080, 1920, rotation=90), policy=POLICY_CAPPED)
+        assert specs, "a rotated 1080p source must still plan renditions"
+        for spec in specs:
+            assert spec.width < spec.height, spec
+
+    def test_a_rotated_source_uses_the_displayed_height_for_the_cap(self):
+        specs = plan_renditions(meta(1080, 1920, rotation=90), policy=POLICY_CAPPED)
+        assert max(spec.height for spec in specs) == 1080
+
+    def test_a_rotated_sub_rung_source_is_sized_by_its_display(self):
+        # Displayed 180x320: below the 360p rung, so it gets one source-sized
+        # rendition at its displayed size rather than an upscaled rung.
+        specs = plan_renditions(meta(180, 320, rotation=90), policy=POLICY_CAPPED)
+        assert len(specs) == 1
+        assert (specs[0].width, specs[0].height) == (180, 320)
+
+    def test_a_rotated_source_never_takes_the_gpu_filter_path(self):
+        from openvod_transcoder.encoding.backends import source_gpu_path_supported
+
+        # Hardware frames cannot be rotated, so every rotation — a quarter turn
+        # or a half turn — takes the software path; the filter chain has to run
+        # the autorotation, and the CUDA/VAAPI scalers cannot consume its output.
+        assert source_gpu_path_supported(meta(1080, 1920, rotation=90)) is False
+        assert source_gpu_path_supported(meta(1920, 1080, rotation=180)) is False
+        assert source_gpu_path_supported(meta(1920, 1080, rotation=0)) is True

@@ -28,8 +28,32 @@ export function makeTempDir(): TempDir {
 }
 
 function trimTail(text: string | undefined, max = 600): string {
-  const value = (text ?? '').trim()
-  return value.length > max ? `${value.slice(-max)}…` : value
+  const t = (text ?? '').trim()
+  return t.length <= max ? t : t.slice(-max)
+}
+
+/**
+ * Origins the raw-bucket CORS policy must allow for browser PUTs.
+ *
+ * The API already allows these via `LOCAL_DEV_ORIGINS` (server/src/app.ts).
+ * R2 CORS is a separate allowlist: Next silently moves to :3001 when :3000 is
+ * taken, and create then succeeds while the PUT is blocked.
+ */
+const LOCAL_UPLOAD_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+]
+
+export function browserUploadCorsOrigins(frontendUrl: string): string[] {
+  const origins: string[] = []
+  const seen = new Set<string>()
+  for (const origin of [frontendUrl.trim(), ...LOCAL_UPLOAD_ORIGINS]) {
+    if (!origin || seen.has(origin)) continue
+    seen.add(origin)
+    origins.push(origin)
+  }
+  return origins.length > 0 ? origins : [...LOCAL_UPLOAD_ORIGINS]
 }
 
 /** Parse the account id from `wrangler whoami`, or null when not logged in. */
@@ -96,7 +120,7 @@ export async function applyBucketCors(
     rules: [
       {
         allowed: {
-          origins: origins.length > 0 ? origins : ['http://localhost:3000'],
+          origins: origins.length > 0 ? origins : LOCAL_UPLOAD_ORIGINS,
           methods: ['GET', 'PUT', 'HEAD'],
           headers: ['*'],
         },
