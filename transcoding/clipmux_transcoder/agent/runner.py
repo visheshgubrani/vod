@@ -28,16 +28,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from openvod_transcoder.agent.client import AgentApiError, LeaseLost, TranscoderApiClient
-from openvod_transcoder.agent.config import AgentConfig
-from openvod_transcoder.agent.journal import RecoveryJournal
-from openvod_transcoder.cancellation import CancellationToken, LeaseGuard
-from openvod_transcoder.encoding.probe import (
+from clipmux_transcoder.agent.client import AgentApiError, LeaseLost, TranscoderApiClient
+from clipmux_transcoder.agent.config import AgentConfig
+from clipmux_transcoder.agent.journal import RecoveryJournal
+from clipmux_transcoder.cancellation import CancellationToken, LeaseGuard
+from clipmux_transcoder.encoding.probe import (
     CapabilityReport,
     detect_capabilities,
     toolchain_identity,
 )
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_CANCELLED,
     ERROR_SOURCE_CHANGED,
     ERROR_SOURCE_MISSING,
@@ -47,12 +47,12 @@ from openvod_transcoder.errors import (
     TranscodeError,
     classify_error,
 )
-from openvod_transcoder.options import ProcessingOptions
-from openvod_transcoder.paths import PathPolicy, PathRejected
-from openvod_transcoder.pipeline import run_pipeline
-from openvod_transcoder.progress import ProgressSink, ProgressUpdate
-from openvod_transcoder.result import PipelineResult
-from openvod_transcoder.snapshot import (
+from clipmux_transcoder.options import ProcessingOptions
+from clipmux_transcoder.paths import PathPolicy, PathRejected
+from clipmux_transcoder.pipeline import run_pipeline
+from clipmux_transcoder.progress import ProgressSink, ProgressUpdate
+from clipmux_transcoder.result import PipelineResult
+from clipmux_transcoder.snapshot import (
     SnapshotPolicy,
     SourceSnapshot,
     cleanup_snapshot,
@@ -60,8 +60,8 @@ from openvod_transcoder.snapshot import (
     ensure_scratch,
     estimate_scratch_bytes,
 )
-from openvod_transcoder.transfer.base import TransferError, TransferStats
-from openvod_transcoder.transfer.signed import SignedHttpTransfer
+from clipmux_transcoder.transfer.base import TransferError, TransferStats
+from clipmux_transcoder.transfer.signed import SignedHttpTransfer
 
 MISSING_SOURCE_CODES = (ERROR_SOURCE_MISSING, ERROR_SOURCE_CHANGED, ERROR_SOURCE_UNREADABLE)
 
@@ -379,7 +379,7 @@ class JobRunner:
         target = download_dir / (str(source.get("fileName") or "source.bin"))
 
         if grant.get("kind") == "url":
-            from openvod_transcoder.utils.network import download_public_url
+            from clipmux_transcoder.utils.network import download_public_url
 
             download_public_url(str(grant.get("url") or ""), str(target))
         else:
@@ -624,7 +624,7 @@ class _GrantedTransfer:
         that fetches the master manifest the instant it appears finds every
         segment it names already present.
         """
-        from openvod_transcoder.result import build_inventory
+        from clipmux_transcoder.result import build_inventory
 
         client = self.runner.client
         journal = self.runner.journal

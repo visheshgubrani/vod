@@ -1,5 +1,5 @@
 """
-`openvod-transcoder` — the operator's command surface.
+`clipmux-transcoder` — the operator's command surface.
 
 The commands are the ones an owner actually reaches for, including the two that
 matter most on a machine nobody is watching:
@@ -28,27 +28,27 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from openvod_transcoder.agent.client import (
+from clipmux_transcoder.agent.client import (
     AgentApiError,
     ApiConfig,
     AuthenticationFailed,
     TranscoderApiClient,
 )
-from openvod_transcoder.agent.config import AgentConfig
-from openvod_transcoder.agent.journal import RecoveryJournal
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.encoding.backends import CPU_BACKEND, backend_named
-from openvod_transcoder.encoding.probe import detect_capabilities, preflight_source
-from openvod_transcoder.errors import TranscodeError, classify_error
-from openvod_transcoder.options import ProcessingOptions
-from openvod_transcoder.paths import PathPolicy, PathRejected, file_identity
-from openvod_transcoder.snapshot import estimate_scratch_bytes
+from clipmux_transcoder.agent.config import AgentConfig
+from clipmux_transcoder.agent.journal import RecoveryJournal
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.encoding.backends import CPU_BACKEND, backend_named
+from clipmux_transcoder.encoding.probe import detect_capabilities, preflight_source
+from clipmux_transcoder.errors import TranscodeError, classify_error
+from clipmux_transcoder.options import ProcessingOptions
+from clipmux_transcoder.paths import PathPolicy, PathRejected, file_identity
+from clipmux_transcoder.snapshot import estimate_scratch_bytes
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_USAGE = 2
 
-DEFAULT_STATE_DIR = Path(os.environ.get("OPENVOD_STATE_DIR", "/var/lib/openvod-transcoder"))
+DEFAULT_STATE_DIR = Path(os.environ.get("CLIPMUX_STATE_DIR", "/var/lib/clipmux-transcoder"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -57,11 +57,11 @@ DEFAULT_STATE_DIR = Path(os.environ.get("OPENVOD_STATE_DIR", "/var/lib/openvod-t
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="openvod-transcoder",
-        description="Self-hosted OpenVOD transcoding agent.",
+        prog="clipmux-transcoder",
+        description="Self-hosted ClipMux transcoding agent.",
     )
-    parser.add_argument("--api", help="OpenVOD API base URL (default: $OPENVOD_API_URL)")
-    parser.add_argument("--token", help="agent token (default: $OPENVOD_AGENT_TOKEN)")
+    parser.add_argument("--api", help="ClipMux API base URL (default: $CLIPMUX_API_URL)")
+    parser.add_argument("--token", help="agent token (default: $CLIPMUX_AGENT_TOKEN)")
     parser.add_argument("--token-file", help="read the agent token from a file")
     parser.add_argument(
         "--root",
@@ -123,7 +123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "version":
-        from openvod_transcoder import __version__
+        from clipmux_transcoder import __version__
 
         print(__version__)
         return EXIT_OK
@@ -174,7 +174,7 @@ def load_config(args) -> AgentConfig:
     if args.scratch_dir:
         config.scratch_dir = Path(args.scratch_dir)
     if args.root:
-        from openvod_transcoder.paths import Root
+        from clipmux_transcoder.paths import Root
 
         roots = []
         for entry in args.root:
@@ -196,7 +196,7 @@ def load_config(args) -> AgentConfig:
 
 
 def token_path(config: AgentConfig) -> Path:
-    return Path(os.environ.get("OPENVOD_TOKEN_FILE", DEFAULT_STATE_DIR / "token"))
+    return Path(os.environ.get("CLIPMUX_TOKEN_FILE", DEFAULT_STATE_DIR / "token"))
 
 
 def read_stored_token(config: AgentConfig) -> str:
@@ -251,7 +251,7 @@ def cmd_pair(args) -> int:
     print(f"Credential stored at {path} (mode 0600).")
     print()
     print("Run the agent with:")
-    print(f"  openvod-transcoder --api {api} run")
+    print(f"  clipmux-transcoder --api {api} run")
     return EXIT_OK
 
 
@@ -339,7 +339,7 @@ def cmd_doctor(args) -> int:
     # 4) scratch: writable, and on a filesystem with room
     try:
         config.scratch_dir.mkdir(parents=True, exist_ok=True)
-        probe_file = config.scratch_dir / ".openvod-doctor"
+        probe_file = config.scratch_dir / ".clipmux-doctor"
         probe_file.write_text("ok")
         probe_file.unlink()
         free_gb = shutil.disk_usage(str(config.scratch_dir)).free / 1024**3
@@ -377,7 +377,7 @@ def cmd_doctor(args) -> int:
         except AgentApiError as exc:
             record("api credential", False, f"could not reach the API: {exc}")
     else:
-        record("api credential", False, "no token — run `openvod-transcoder pair`")
+        record("api credential", False, "no token — run `clipmux-transcoder pair`")
 
     # 7) a real source, when one was named
     if getattr(args, "file", None):
@@ -386,7 +386,7 @@ def cmd_doctor(args) -> int:
             target = Path(args.file)
             if policy is not None:
                 target = policy.resolve(target)
-            from openvod_transcoder.video.analysis import get_video_metadata
+            from clipmux_transcoder.video.analysis import get_video_metadata
 
             metadata = get_video_metadata(str(target))
             backend = backend_named(config.encoder_backend)
@@ -429,10 +429,10 @@ def _full_cycle(config: AgentConfig) -> tuple[bool, str]:
     import subprocess
     import tempfile
 
-    from openvod_transcoder.packaging import validate_package
-    from openvod_transcoder.pipeline import run_pipeline
+    from clipmux_transcoder.packaging import validate_package
+    from clipmux_transcoder.pipeline import run_pipeline
 
-    with tempfile.TemporaryDirectory(prefix="openvod-doctor-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="clipmux-doctor-") as tmp:
         tmp_path = Path(tmp)
         source = tmp_path / "probe.mp4"
         gen = subprocess.run(
@@ -489,7 +489,7 @@ def cmd_run(args, config: AgentConfig) -> int:
             print(f"error: {problem}", file=sys.stderr)
         return EXIT_FAILURE
 
-    from openvod_transcoder.agent.daemon import TranscoderAgent
+    from clipmux_transcoder.agent.daemon import TranscoderAgent
 
     config.scratch_dir.mkdir(parents=True, exist_ok=True)
     journal = RecoveryJournal(config.journal_path)
@@ -641,7 +641,7 @@ def _find_job(client: TranscoderApiClient, video_id: str) -> Optional[Dict[str, 
 
 
 def _version() -> str:
-    from openvod_transcoder import __version__
+    from clipmux_transcoder import __version__
 
     return __version__
 

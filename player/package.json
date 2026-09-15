@@ -1,7 +1,7 @@
 {
-  "name": "@openvod/player",
+  "name": "@clipmux/player",
   "version": "0.2.0",
-  "description": "OpenVOD video player — drop-in React component with HLS, signed tokens, chapters and opt-in analytics",
+  "description": "ClipMux video player — drop-in React component with HLS, signed tokens, chapters and opt-in analytics",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -47,7 +47,7 @@
     "video",
     "player",
     "hls",
-    "openvod",
+    "clipmux",
     "vidstack",
     "react",
     "analytics",

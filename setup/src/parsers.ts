@@ -1,6 +1,6 @@
 /**
  * Pure text parsers for CLI tool output (ported from the retired
- * scripts/lib/openvod_setup.py). No I/O, no secret handling.
+ * scripts/lib/clipmux_setup.py). No I/O, no secret handling.
  */
 
 const ACCOUNT_ID_RE = /\b[0-9a-f]{32}\b/i
@@ -9,7 +9,7 @@ const MODAL_URL_RE = /https:\/\/[^\s]+modal\.run[^\s]*/gi
 
 /** Cloudflare's pre-filled token form for the optional analytics read token. */
 export function analyticsTokenTemplateUrl(): string {
-  return 'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22account_analytics%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=OpenVOD%20Analytics'
+  return 'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22account_analytics%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=ClipMux%20Analytics'
 }
 
 /** First 32-hex id in `wrangler whoami` output, or null. */

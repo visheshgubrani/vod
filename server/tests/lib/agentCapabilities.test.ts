@@ -30,8 +30,8 @@ function input(overrides: Record<string, unknown> = {}) {
   return {
     modalWebhookUrl: 'https://modal.example.com/transcode',
     ingestSecret: 'secret',
-    rawBucket: 'openvod-raw',
-    transcodedBucket: 'openvod-transcoded',
+    rawBucket: 'clipmux-raw',
+    transcodedBucket: 'clipmux-transcoded',
     hasStorageCredentials: true,
     agents: [agent()],
     defaultProvider: 'modal',

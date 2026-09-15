@@ -20,7 +20,7 @@ export const dbDriverFromEnv = dbTransportFromEnv
 function postgresOptions(url: string): postgres.Options<{}> {
   const options: postgres.Options<{}> = {
     max: 10,
-    connection: { application_name: 'openvod-api' },
+    connection: { application_name: 'clipmux-api' },
   }
   const host = (url.split('@').pop() || '').split('/')[0] || ''
   const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1')

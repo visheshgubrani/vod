@@ -3,7 +3,10 @@ import { sql } from 'drizzle-orm'
 import {
   claimTranscodeAttempt,
   decideAttemptOwnership,
+  decideHeartbeatThrottle,
   classifyClaimFailure,
+  DEFAULT_TRANSCODE_LEASE_MS,
+  HEARTBEAT_WRITE_MIN_INTERVAL_MS,
   type ClaimRejection,
 } from '../../src/lib/transcodeClaim'
 import { normalizeRows } from '../../src/lib/atomicWrite'
@@ -79,7 +82,7 @@ describe.skipIf(!hasTestDatabase)('claimTranscodeAttempt (real Postgres)', () =>
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = await createTestDb({ database: 'openvod_t_claim' })
+    handle = await createTestDb({ database: 'clipmux_t_claim' })
     await handle.exec(DDL)
   })
 
@@ -245,7 +248,7 @@ describe.skipIf(!hasTestDatabase)('claimTranscodeAttempt (real Postgres)', () =>
   it('lets exactly one of two concurrent claims win', async () => {
     await newVideo(VIDEO_5, 'org-claim-a')
     // Racer needs its own connection: a single-connection handle serializes.
-    const racer = await connectTestDb({ database: 'openvod_t_claim' })
+    const racer = await connectTestDb({ database: 'clipmux_t_claim' })
 
     try {
       const results = await Promise.allSettled([
@@ -287,7 +290,7 @@ describe.skipIf(!hasTestDatabase)('claimTranscodeAttempt (real Postgres)', () =>
     await newVideo(VIDEO_6, 'org-claim-cap')
     await newVideo(VIDEO_7, 'org-claim-cap')
 
-    const racer = await connectTestDb({ database: 'openvod_t_claim' })
+    const racer = await connectTestDb({ database: 'clipmux_t_claim' })
     try {
       const [a, b] = await Promise.all([
         claimTranscodeAttempt(handle.db, {
@@ -346,5 +349,51 @@ describe('decideAttemptOwnership', () => {
     // Legacy in-flight job dispatched before attempt ownership existed.
     expect(decideAttemptOwnership(null, undefined)).toEqual({ apply: true })
     expect(decideAttemptOwnership(undefined, undefined)).toEqual({ apply: true })
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// Heartbeat write coalescing — pure, so it is checked with literals.
+// ────────────────────────────────────────────────────────────────────────────
+describe('decideHeartbeatThrottle', () => {
+  const NOW = Date.parse('2026-01-01T00:00:00.000Z')
+
+  it('applies the first beat a row ever receives', () => {
+    expect(decideHeartbeatThrottle(null, NOW).skip).toBe(false)
+    expect(decideHeartbeatThrottle(undefined, NOW).skip).toBe(false)
+  })
+
+  it('applies a beat that arrives after the interval', () => {
+    const last = new Date(NOW - HEARTBEAT_WRITE_MIN_INTERVAL_MS)
+    expect(decideHeartbeatThrottle(last, NOW).skip).toBe(false)
+  })
+
+  it('coalesces a beat that arrives inside the interval', () => {
+    // The defect this guards: 1 Hz progress beats, one UPDATE each.
+    const last = new Date(NOW - 1_000)
+    const decision = decideHeartbeatThrottle(last, NOW)
+    expect(decision.skip).toBe(true)
+    expect(decision.elapsedMs).toBe(1_000)
+  })
+
+  it('treats the interval itself as expired, not as still inside it', () => {
+    const last = new Date(NOW - HEARTBEAT_WRITE_MIN_INTERVAL_MS + 1)
+    expect(decideHeartbeatThrottle(last, NOW).skip).toBe(true)
+  })
+
+  it('never skips a beat from a row whose clock went backwards', () => {
+    // A `last_heartbeat_at` in the future is nonsense; extending the lease is the
+    // safe response, and skipping is the one that loses a live attempt.
+    const future = new Date(NOW + 60_000)
+    expect(decideHeartbeatThrottle(future, NOW).skip).toBe(false)
+  })
+
+  it('does not skip an unparseable timestamp', () => {
+    expect(decideHeartbeatThrottle(new Date(Number.NaN), NOW).skip).toBe(false)
+  })
+
+  it('stays far below the lease it is renewing', () => {
+    // The guard may only coalesce writes that the lease can afford to lose.
+    expect(HEARTBEAT_WRITE_MIN_INTERVAL_MS).toBeLessThan(DEFAULT_TRANSCODE_LEASE_MS / 100)
   })
 })

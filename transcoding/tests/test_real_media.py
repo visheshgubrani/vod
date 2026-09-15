@@ -10,7 +10,7 @@ They are skipped when the binaries are absent, so `pytest` still runs on a bare
 machine. `packager` (Shaka) has no fallback: a full HLS/DASH assertion genuinely
 requires it.
 
-CI sets ``OPENVOD_REQUIRE_MEDIA_TOOLS=1`` after installing both, which turns a
+CI sets ``CLIPMUX_REQUIRE_MEDIA_TOOLS=1`` after installing both, which turns a
 missing binary into a *failure* rather than a skip. Without that, a CI job that
 lost its ffmpeg install would report a green run while testing none of this —
 the silent-skip failure mode, which is the one this suite exists to prevent.
@@ -27,36 +27,36 @@ from pathlib import Path
 
 import pytest
 
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.encoding.backends import (
     CPU_BACKEND,
     RenderSpec,
     build_audio_command,
     build_video_command,
     fit_dimensions,
 )
-from openvod_transcoder.encoding.probe import detect_capabilities, probe_backend
-from openvod_transcoder.errors import CancelledError
-from openvod_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
-from openvod_transcoder.options import ProcessingOptions
-from openvod_transcoder.planning import POLICY_CAPPED, plan_renditions
-from openvod_transcoder.snapshot import create_snapshot, original_untouched
-from openvod_transcoder.video.analysis import get_video_metadata
+from clipmux_transcoder.encoding.probe import detect_capabilities, probe_backend
+from clipmux_transcoder.errors import CancelledError
+from clipmux_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
+from clipmux_transcoder.options import ProcessingOptions
+from clipmux_transcoder.planning import POLICY_CAPPED, plan_renditions
+from clipmux_transcoder.snapshot import create_snapshot, original_untouched
+from clipmux_transcoder.video.analysis import get_video_metadata
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 HAS_PACKAGER = shutil.which("packager") is not None
 
 # CI opts into "a missing binary is a broken build, not a skipped test".
-REQUIRE_MEDIA_TOOLS = os.environ.get("OPENVOD_REQUIRE_MEDIA_TOOLS") == "1"
+REQUIRE_MEDIA_TOOLS = os.environ.get("CLIPMUX_REQUIRE_MEDIA_TOOLS") == "1"
 
 if REQUIRE_MEDIA_TOOLS and not HAS_FFMPEG:
     raise RuntimeError(
-        "OPENVOD_REQUIRE_MEDIA_TOOLS=1 but ffmpeg/ffprobe are not on PATH — "
+        "CLIPMUX_REQUIRE_MEDIA_TOOLS=1 but ffmpeg/ffprobe are not on PATH — "
         "CI must install them, or these suites silently stop testing anything"
     )
 if REQUIRE_MEDIA_TOOLS and not HAS_PACKAGER:
     raise RuntimeError(
-        "OPENVOD_REQUIRE_MEDIA_TOOLS=1 but shaka packager is not on PATH — "
+        "CLIPMUX_REQUIRE_MEDIA_TOOLS=1 but shaka packager is not on PATH — "
         "packaging would be skipped and no playable output would ever be asserted"
     )
 
@@ -379,7 +379,7 @@ class TestRealEncode:
         metadata = get_video_metadata(str(clips["short"]))
         # A 1s clip at a 4s GOP would emit a single keyframe and no usable
         # segment boundary, so the GOP is derived from the segment duration.
-        from openvod_transcoder.config import EncodingProfile
+        from clipmux_transcoder.config import EncodingProfile
 
         planned = plan_renditions(metadata, policy=POLICY_CAPPED)[0]
         spec = RenderSpec.from_profile(
@@ -464,8 +464,8 @@ class TestRealProgress:
         that the mechanism terminates a live process, which the deterministic
         unit test cannot show.
         """
-        from openvod_transcoder.errors import ERROR_STALLED
-        from openvod_transcoder.ffmpeg_progress import StallError
+        from clipmux_transcoder.errors import ERROR_STALLED
+        from clipmux_transcoder.ffmpeg_progress import StallError
 
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -511,7 +511,7 @@ class TestRealProbing:
 @requires_packager
 class TestRealPipeline:
     def test_full_cpu_run_produces_playable_hls_and_dash(self, clips, tmp_path):
-        from openvod_transcoder.pipeline import run_pipeline
+        from clipmux_transcoder.pipeline import run_pipeline
 
         options = ProcessingOptions(
             video_id="real-test",
@@ -565,7 +565,7 @@ class TestRealPipeline:
 
         # Every URI in every manifest resolves to a packaged file. The pipeline
         # asserts this itself; doing it here too names the check that failed.
-        from openvod_transcoder.pipeline import validate_manifest_references
+        from clipmux_transcoder.pipeline import validate_manifest_references
 
         validate_manifest_references(output_dir)
 
@@ -610,7 +610,7 @@ def encode_one(clip: Path, tmp_path: Path, *, max_height: int = 360, fps: float 
     Returns the metadata of the produced file. `validate_encoded_rendition` runs
     against the real output, which is what makes this more than "ffmpeg exited 0".
     """
-    from openvod_transcoder.encoding.validation import validate_encoded_rendition
+    from clipmux_transcoder.encoding.validation import validate_encoded_rendition
 
     metadata = get_video_metadata(str(clip))
     specs = plan_renditions(metadata, policy=POLICY_CAPPED, max_height=max_height)
@@ -697,7 +697,7 @@ class TestMediaMatrix:
         assert encoded.fps == pytest.approx(spec.fps, rel=0.02)
 
     def test_gpu_path_eligibility_follows_the_source_not_the_container(self, clips):
-        from openvod_transcoder.encoding.backends import source_gpu_path_supported
+        from clipmux_transcoder.encoding.backends import source_gpu_path_supported
 
         if "av1_opus" in clips:
             av1 = get_video_metadata(str(clips["av1_opus"]))
@@ -714,7 +714,7 @@ class TestMediaMatrix:
 @requires_packager
 class TestMatrixPackaging:
     def _run(self, clip: Path, tmp_path: Path, *, segment_duration: float = 1.0):
-        from openvod_transcoder.pipeline import run_pipeline
+        from clipmux_transcoder.pipeline import run_pipeline
 
         options = ProcessingOptions(
             video_id="matrix",
@@ -753,7 +753,7 @@ class TestMatrixPackaging:
         assert "playlist.m3u8" in paths
 
     def test_segments_align_with_the_encoder_keyframes(self, clips, tmp_path):
-        from openvod_transcoder.pipeline import validate_manifest_references
+        from clipmux_transcoder.pipeline import validate_manifest_references
 
         result = self._run(clips["landscape_1080"], tmp_path, segment_duration=1.0)
         output_dir = tmp_path / "work" / "output"
@@ -805,7 +805,7 @@ class TestThreadBoundsWithRealFfmpeg:
     """
 
     def _run(self, clip: Path, tmp_path: Path, **overrides):
-        from openvod_transcoder.pipeline import run_pipeline
+        from clipmux_transcoder.pipeline import run_pipeline
 
         options = ProcessingOptions(
             video_id="threads",
@@ -820,8 +820,8 @@ class TestThreadBoundsWithRealFfmpeg:
         )
 
     def test_a_bounded_cpu_run_encodes_and_packages(self, clips, tmp_path, monkeypatch):
-        from openvod_transcoder import pipeline as pipeline_module
-        from openvod_transcoder.pipeline import validate_manifest_references
+        from clipmux_transcoder import pipeline as pipeline_module
+        from clipmux_transcoder.pipeline import validate_manifest_references
 
         # Capture the command the engine really runs, while still running it.
         seen: dict[str, list] = {}
@@ -914,12 +914,12 @@ class TestThreadBoundsWithRealFfmpeg:
         `0` means "let FFmpeg decide", so the flags must be absent — otherwise a
         machine that never configured a bound silently inherits one.
         """
-        from openvod_transcoder.encoding.backends import (
+        from clipmux_transcoder.encoding.backends import (
             CPU_BACKEND,
             RenderSpec,
             build_video_command,
         )
-        from openvod_transcoder.pipeline import encode_threads_for
+        from clipmux_transcoder.pipeline import encode_threads_for
 
         metadata = get_video_metadata(str(clips["sub_360"]))
         spec = RenderSpec(

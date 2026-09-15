@@ -21,16 +21,16 @@ export default function TranscodersPage() {
   const { data: activeOrg, isPending } = useActiveOrganization();
 
   return (
-    <div className="flex flex-1 flex-col gap-6 p-4 md:p-6">
+    <div className="w-full space-y-8">
       <DashboardPageHeader
         title="Transcoders"
         description="Encode on your own hardware and import files that never leave your network."
       />
 
       {isPending ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="dash-body text-muted-foreground">Loading…</p>
       ) : !activeOrg ? (
-        <p className="text-sm text-muted-foreground">
+        <p className="dash-body text-muted-foreground">
           Select an organization to manage its transcoders.
         </p>
       ) : (

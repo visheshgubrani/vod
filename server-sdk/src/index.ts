@@ -1,16 +1,16 @@
 /**
- * OpenVOD server SDK
+ * ClipMux server SDK
  *
- * The server-side half of an OpenVOD integration: mint upload tokens for the
+ * The server-side half of an ClipMux integration: mint upload tokens for the
  * browser, mint playback tokens for viewers, manage videos, and verify
  * webhooks. Your API key stays here — never in a browser.
  *
  * ```ts
- * import { OpenVod, constructWebhookEvent } from '@openvod/server'
+ * import { ClipMux, constructWebhookEvent } from '@clipmux/server'
  *
- * const vod = new OpenVod({
- *   apiKey: process.env.OPENVOD_API_KEY!,
- *   baseUrl: process.env.OPENVOD_API_URL!, // https://api.example.com
+ * const vod = new ClipMux({
+ *   apiKey: process.env.CLIPMUX_API_KEY!,
+ *   baseUrl: process.env.CLIPMUX_API_URL!, // https://api.example.com
  * })
  *
  * // Browser upload
@@ -24,7 +24,7 @@
  *
  * // `video.ready`
  * const event = await constructWebhookEvent({
- *   secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+ *   secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
  *   rawBody: rawBodyString,
  *   signature: headers['x-webhook-signature'],
  *   timestamp: headers['x-webhook-timestamp'],
@@ -32,19 +32,19 @@
  * ```
  */
 
-export { OpenVod } from './client'
-export type { OpenVodConfig } from './client'
+export { ClipMux } from './client'
+export type { ClipMuxConfig } from './client'
 
 export {
-    OpenVodError,
+    ClipMuxError,
     WebhookSignatureError,
     codeForStatus,
     isRetryableCode,
     parseRetryAfter,
 } from './errors'
 export type {
-    OpenVodErrorCode,
-    OpenVodErrorOptions,
+    ClipMuxErrorCode,
+    ClipMuxErrorOptions,
     WebhookSignatureFailure,
 } from './errors'
 

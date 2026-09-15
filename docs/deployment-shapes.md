@@ -1,6 +1,6 @@
 # Deployment shapes
 
-OpenVOD is one codebase with a small number of axes that are chosen per
+ClipMux is one codebase with a small number of axes that are chosen per
 deployment, and everything else fixed on purpose. This page is the canonical
 reference for both: what you can choose, which environment variable or
 entrypoint chooses it, what cannot be combined, and what `GET /health/config`

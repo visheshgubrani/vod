@@ -1,15 +1,15 @@
-# openvod-docs
+# clipmux-docs
 
-The OpenVOD documentation site — a Next.js 16 app built on
+The ClipMux documentation site — a Next.js 16 app built on
 [Fumadocs](https://fumadocs.dev). Content is licensed
 [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/); the site software is
 Apache-2.0 like the rest of the repository.
 
 ```bash
-pnpm --filter openvod-docs dev        # :3000, or :3001 when the dashboard has it
-pnpm --filter openvod-docs build      # the authoritative check — run this before you push
-pnpm --filter openvod-docs typecheck  # fumadocs-mdx + next typegen + tsc
-pnpm --filter openvod-docs lint
+pnpm --filter clipmux-docs dev        # :3000, or :3001 when the dashboard has it
+pnpm --filter clipmux-docs build      # the authoritative check — run this before you push
+pnpm --filter clipmux-docs typecheck  # fumadocs-mdx + next typegen + tsc
+pnpm --filter clipmux-docs lint
 ```
 
 `next dev` quietly moves to `:3001` (and onward) when `:3000` is taken, which it
@@ -47,7 +47,7 @@ link working, keep the filename.
 2. **Add the slug to the nearest `meta.json`.** A page that is not listed falls
    to the `...` catch-all at the bottom of the sidebar — still reachable, but
    unordered and probably in the wrong section.
-3. Run `pnpm --filter openvod-docs build`.
+3. Run `pnpm --filter clipmux-docs build`.
 
 ### `meta.json` ordering
 

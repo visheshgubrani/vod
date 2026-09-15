@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_INSUFFICIENT_DISK,
     ERROR_SOURCE_CHANGED,
     ERROR_SOURCE_MISSING,
     TranscodeError,
 )
-from openvod_transcoder.result import sha256_file
-from openvod_transcoder.snapshot import (
+from clipmux_transcoder.result import sha256_file
+from clipmux_transcoder.snapshot import (
     SnapshotPolicy,
     cleanup_snapshot,
     create_snapshot,
@@ -27,7 +27,7 @@ from openvod_transcoder.snapshot import (
 def media(tmp_path: Path) -> Path:
     source = tmp_path / "originals" / "lesson-01.mp4"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"openvod" * 4096)
+    source.write_bytes(b"clipmux" * 4096)
     return source
 
 
@@ -80,7 +80,7 @@ class TestCreateSnapshot:
         assert caught.value.code == ERROR_SOURCE_MISSING
 
     def test_changed_source_identity_is_refused_before_copying(self, media: Path, tmp_path: Path):
-        from openvod_transcoder.paths import file_identity
+        from clipmux_transcoder.paths import file_identity
 
         stale = file_identity(media)
         media.write_bytes(b"different content now")
@@ -89,7 +89,7 @@ class TestCreateSnapshot:
         assert caught.value.code == ERROR_SOURCE_CHANGED
 
     def test_unchanged_identity_is_accepted(self, media: Path, tmp_path: Path):
-        from openvod_transcoder.paths import file_identity
+        from clipmux_transcoder.paths import file_identity
 
         identity = file_identity(media)
         snapshot = create_snapshot(media, tmp_path / "snap.mp4", expected_identity=identity)
@@ -142,14 +142,14 @@ class TestCreateSnapshot:
 
 class TestFileIdentity:
     def test_identity_changes_when_size_changes(self, media: Path):
-        from openvod_transcoder.paths import file_identity
+        from clipmux_transcoder.paths import file_identity
 
         before = file_identity(media)
         media.write_bytes(b"x" * 10)
         assert file_identity(media) != before
 
     def test_missing_file_has_no_identity(self, tmp_path: Path):
-        from openvod_transcoder.paths import file_identity
+        from clipmux_transcoder.paths import file_identity
 
         assert file_identity(tmp_path / "nope.mp4") == ""
 

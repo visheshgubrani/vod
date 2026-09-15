@@ -114,7 +114,7 @@ describe.skipIf(!hasTestDatabase)('runObjectCleanup (real Postgres)', () => {
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = await createTestDb({ database: 'openvod_t_cleanup' })
+    handle = await createTestDb({ database: 'clipmux_t_cleanup' })
     await handle.exec(`
       DELETE FROM storage_cleanup_job;
       DELETE FROM video WHERE organization_id = '${ORG}';
@@ -284,7 +284,7 @@ describe.skipIf(!hasTestDatabase)('runObjectCleanup (real Postgres)', () => {
 
   it('lets only one of two concurrent runners claim the same job', async () => {
     await seedJob(VIDEO_1, null)
-    const racer = await connectTestDb({ database: 'openvod_t_cleanup' })
+    const racer = await connectTestDb({ database: 'clipmux_t_cleanup' })
     const fake = fakeStore({ [TRANSCODED_BUCKET]: [] })
 
     try {

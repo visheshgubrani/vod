@@ -1,7 +1,7 @@
 /**
  * POST /api/play-token/[id]
  *
- * The endpoint `<OpenVodPlayer tokenRefreshEndpoint="/api/play-token/<id>">`
+ * The endpoint `<ClipMuxPlayer tokenRefreshEndpoint="/api/play-token/<id>">`
  * calls before the current playback token expires.
  *
  * Why a same-origin route works here: the player fetches a `tokenRefreshEndpoint`
@@ -22,8 +22,8 @@
  * The player accepts `{ token }`, `{ playback_token }` or `{ playback_url }`.
  */
 
-import { OpenVodError } from '@openvod/server'
-import { getOpenVod } from '@/lib/openvod'
+import { ClipMuxError } from '@clipmux/server'
+import { getClipMux } from '@/lib/clipmux'
 
 export const dynamic = 'force-dynamic'
 
@@ -40,7 +40,7 @@ export async function POST(
   // if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const vod = getOpenVod()
+    const vod = getClipMux()
     const session = await vod.playback.createToken(id, {
       expiresIn: '30m',
       // Bound to the viewer's UA — forward it, exactly as in video-status.
@@ -49,7 +49,7 @@ export async function POST(
 
     return Response.json({ token: session.token, expiresAt: session.expires_at })
   } catch (error) {
-    if (error instanceof OpenVodError && error.code === 'NOT_FOUND') {
+    if (error instanceof ClipMuxError && error.code === 'NOT_FOUND') {
       return Response.json({ error: 'Unknown video id' }, { status: 404 })
     }
     if (error instanceof Error) {

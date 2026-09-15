@@ -34,7 +34,7 @@ class TestImportIsolation:
     def test_importing_the_package_does_not_import_optional_extras(self):
         completed = run_python(f"""
             import sys
-            import openvod_transcoder
+            import clipmux_transcoder
             banned = [m for m in {OPTIONAL_MODULES!r} if m in sys.modules]
             assert banned == [], f"engine pulled in optional modules: {{banned}}"
             print("ok")
@@ -45,7 +45,7 @@ class TestImportIsolation:
     def test_importing_the_pipeline_module_stays_clean(self):
         completed = run_python(f"""
             import sys
-            import openvod_transcoder.pipeline  # noqa: F401
+            import clipmux_transcoder.pipeline  # noqa: F401
             banned = [m for m in {OPTIONAL_MODULES!r} if m in sys.modules]
             assert banned == [], f"pipeline pulled in optional modules: {{banned}}"
             print("ok")
@@ -70,11 +70,11 @@ class TestImportIsolation:
 
             sys.meta_path.insert(0, Blocker())
 
-            from openvod_transcoder import ProcessingOptions, plan_renditions
-            from openvod_transcoder.encoding.backends import (
+            from clipmux_transcoder import ProcessingOptions, plan_renditions
+            from clipmux_transcoder.encoding.backends import (
                 CPU_BACKEND, RenderSpec, build_video_command,
             )
-            from openvod_transcoder.video.analysis import VideoMetadata
+            from clipmux_transcoder.video.analysis import VideoMetadata
 
             metadata = VideoMetadata(
                 width=1920, height=1080, duration=60.0, fps=30.0,
@@ -96,10 +96,10 @@ class TestImportIsolation:
 
     def test_probing_without_ffmpeg_installed_reports_rather_than_raises(self):
         completed = run_python("""
-            from openvod_transcoder.encoding.probe import (
+            from clipmux_transcoder.encoding.probe import (
                 probe_backend, synthetic_command,
             )
-            from openvod_transcoder.encoding.backends import CPU_BACKEND
+            from clipmux_transcoder.encoding.backends import CPU_BACKEND
 
             def runner(cmd, **kwargs):
                 raise FileNotFoundError("ffmpeg")
@@ -114,7 +114,7 @@ class TestImportIsolation:
     def test_transfer_backends_are_not_imported_eagerly(self):
         completed = run_python(f"""
             import sys
-            import openvod_transcoder.transfer  # noqa: F401
+            import clipmux_transcoder.transfer  # noqa: F401
             banned = [m for m in {OPTIONAL_MODULES!r} if m in sys.modules]
             assert banned == [], f"transfer package pulled in: {{banned}}"
             print("ok")
@@ -125,7 +125,7 @@ class TestImportIsolation:
 class TestConfigurationSurface:
     def test_config_module_has_no_storage_credentials_at_import(self):
         completed = run_python("""
-            import openvod_transcoder.config as config
+            import clipmux_transcoder.config as config
             # The engine's config is policy, not credentials: S3 client config
             # lives in the transfer backend that actually needs it.
             assert not hasattr(config, "S3_CONFIG")

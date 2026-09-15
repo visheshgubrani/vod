@@ -107,7 +107,7 @@ const BASE: Record<string, string> = {
   ACCOUNT_ID: 'acct',
   R2_ACCESS_KEY_ID: 'key',
   R2_SECRET_ACCESS_KEY: 'secret',
-  TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+  TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
   JWT_SECRET: 'j'.repeat(40),
   BETTER_AUTH_SECRET: 'b'.repeat(40),
 }

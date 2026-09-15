@@ -1,6 +1,6 @@
 # Known gaps and deferred work
 
-Standing record of what OpenVOD deliberately does **not** do yet, and what is
+Standing record of what ClipMux deliberately does **not** do yet, and what is
 known to be weaker than it looks. This is maintainer-facing: the docs site
 (`docs-site/`) describes what the platform does, and this file describes where it
 stops.
@@ -47,8 +47,29 @@ file is only useful if it is current.
   timing-dependent and forcing a shared name in two parallel runs did not
   reproduce a failure. The fix removes a structural hazard; it is not
   empirically demonstrated.
-- **No React 18 matrix in CI**, despite `@openvod/player` declaring a `>=18` peer
+- **No React 18 matrix in CI**, despite `@clipmux/player` declaring a `>=18` peer
   range. CI exercises React 19 only.
+- **The authenticated browser specs are not run in CI.** `e2e/specs/dashboard.spec.ts`
+  needs a signed-in session, so it skips unless `E2E_STORAGE_STATE` is set, and
+  CI deliberately does not set it. The unauthenticated marketing and web specs
+  do run. See `e2e/README.md`.
+- **A long serial run can lose its session.** The dashboard guard redirects to
+  `/login` whenever a session lookup does not succeed — including a transient
+  failure while the session cookie is being refreshed. Each browser spec passes
+  on its own, but a long serial run against a development API can drop the
+  session part-way and skip the rest. This guard is pre-existing behaviour that
+  the redesign left alone; retrying once before redirecting would fix it.
+
+## Marketing assets
+
+- **`marketing/public/media/` ships empty.** The page references the clips and
+  stills by path (`marketing/lib/media.ts`) and renders the poster state until
+  they are added; a clip that fails to load falls back to a retry affordance.
+  `marketing/public/media/README.md` lists the filenames, dimensions, encoding
+  notes, and the provenance table (source URL, creator, download date, licence)
+  each one needs before launch. The page is reviewed and correct in the
+  placeholder state, but the 24-second hero recording and the four supporting
+  clips are still outstanding.
 
 ## Missing UI
 
@@ -66,9 +87,9 @@ file is only useful if it is current.
 - **AI subtitles/chapters do not work with the self-hosted transcoder yet.** The
   agent image (`transcoding/Dockerfile.agent`) installs `requests` and the engine
   only: neither `faster-whisper` (subtitles) nor the `groq` client (chapters), both
-  of which `transcoding/openvod_transcoder/pipeline.py` reaches for when the job
+  of which `transcoding/clipmux_transcoder/pipeline.py` reaches for when the job
   asks for them. Making it real is three changes that must land together: an
-  opt-in `OPENVOD_AGENT_EXTRAS=1` build arg installing `.[transcription,chapters]`
+  opt-in `CLIPMUX_AGENT_EXTRAS=1` build arg installing `.[transcription,chapters]`
   (CI keeps building the extras-free image, which is what keeps the image small),
   the Whisper model pre-baked the way the Modal image does it, and
   `GROQ_API_KEY` passed through to the `transcoder` compose service. The wizard
@@ -91,9 +112,9 @@ file is only useful if it is current.
 Per the agreed roadmap these were explicitly deferred, not forgotten.
 
 - **Release 2 — integration (built, not published).** Three packages exist —
-  `@openvod/uploader` (resumable browser uploads, typed errors),
-  `@openvod/player` (React, token auto-refresh with backoff) and
-  `@openvod/server` (upload/playback tokens, video CRUD, webhook verification).
+  `@clipmux/uploader` (resumable browser uploads, typed errors),
+  `@clipmux/player` (React, token auto-refresh with backoff) and
+  `@clipmux/server` (upload/playback tokens, video CRUD, webhook verification).
   The dashboard uploads and plays through them (its duplicate player component
   and Uppy-based uploader are gone), and `examples/nextjs-integration` compiles
   the documented flow in CI. Publishing is a `packages-v*` tag away; `NPM_TOKEN`

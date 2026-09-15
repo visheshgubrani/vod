@@ -1,16 +1,16 @@
 /**
- * Errors raised by the OpenVOD server SDK.
+ * Errors raised by the ClipMux server SDK.
  *
  * Two families live here because they fail in different places:
  *
- *  - `OpenVodError` — an API call failed. Carries the HTTP status, the API's
+ *  - `ClipMuxError` — an API call failed. Carries the HTTP status, the API's
  *    message, and the request id, so a caller can branch on `code` instead of
  *    parsing prose.
  *  - `WebhookSignatureError` — an inbound webhook could not be trusted. This is
  *    a security decision, so it always reasons explicitly and never fails open.
  */
 
-export type OpenVodErrorCode =
+export type ClipMuxErrorCode =
     /** Missing, malformed, or unknown API key. */
     | 'UNAUTHORIZED'
     /** The key is valid but this resource belongs to another organization. */
@@ -32,8 +32,8 @@ export type OpenVodErrorCode =
     /** Any other non-2xx. */
     | 'HTTP'
 
-export interface OpenVodErrorOptions {
-    code: OpenVodErrorCode
+export interface ClipMuxErrorOptions {
+    code: ClipMuxErrorCode
     status?: number
     requestId?: string
     retryable?: boolean
@@ -41,15 +41,15 @@ export interface OpenVodErrorOptions {
     cause?: unknown
 }
 
-export class OpenVodError extends Error {
-    override readonly name = 'OpenVodError'
-    readonly code: OpenVodErrorCode
+export class ClipMuxError extends Error {
+    override readonly name = 'ClipMuxError'
+    readonly code: ClipMuxErrorCode
     readonly status?: number
     readonly requestId?: string
     readonly retryable: boolean
     readonly retryAfterMs?: number
 
-    constructor(message: string, options: OpenVodErrorOptions) {
+    constructor(message: string, options: ClipMuxErrorOptions) {
         super(message, options.cause !== undefined ? { cause: options.cause } : undefined)
         this.code = options.code
         this.status = options.status
@@ -86,7 +86,7 @@ export class WebhookSignatureError extends Error {
 }
 
 /** Map an HTTP status (and the API's message) onto a code. */
-export function codeForStatus(status: number, message: string): OpenVodErrorCode {
+export function codeForStatus(status: number, message: string): ClipMuxErrorCode {
     if (status === 401) return 'UNAUTHORIZED'
     if (status === 403) return 'FORBIDDEN'
     if (status === 404) return 'NOT_FOUND'
@@ -102,7 +102,7 @@ export function codeForStatus(status: number, message: string): OpenVodErrorCode
 }
 
 /** Codes where retrying the same request can succeed. */
-export function isRetryableCode(code: OpenVodErrorCode): boolean {
+export function isRetryableCode(code: ClipMuxErrorCode): boolean {
     return code === 'RATE_LIMITED' || code === 'NETWORK' || code === 'TIMEOUT' ||
         code === 'SERVER_ERROR'
 }

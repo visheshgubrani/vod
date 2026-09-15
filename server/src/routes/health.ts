@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { OpenVodConfig } from '../lib/config'
+import type { ClipMuxConfig } from '../lib/config'
 import { db } from '../lib/database'
 import { transcoderAgent } from '../db/schema'
 import {
@@ -57,7 +57,7 @@ healthApp.get('/config', async (c) => {
   }
 
   return c.json({
-    service: 'openvod',
+    service: 'clipmux',
     time: new Date().toISOString(),
     ready: cfg.ready,
     checks: cfg.checks,
@@ -84,7 +84,7 @@ healthApp.get('/config', async (c) => {
 })
 
 async function buildTranscodeCapabilities(
-  cfg: OpenVodConfig,
+  cfg: ClipMuxConfig,
   uploadsEnabled: boolean,
 ) {
   // Agent rows are counted by state, not listed: the query selects only what the

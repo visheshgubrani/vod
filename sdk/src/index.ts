@@ -1,23 +1,23 @@
 /**
- * OpenVOD Uploader SDK
+ * ClipMux Uploader SDK
  *
- * Uploads videos to a self-hosted OpenVOD deployment with:
+ * Uploads videos to a self-hosted ClipMux deployment with:
  * - Automatic multipart chunking for large files
  * - Windowed presigned-URL fetching (URLs never expire mid-upload)
  * - Parallel uploads for maximum speed
  * - Progress tracking, pause/resume, and resumable sessions
  * - Automatic retry with exponential backoff (honours `Retry-After`)
  * - AbortSignal support for cancellation
- * - Typed errors (`OpenVodError.code`) instead of message matching
+ * - Typed errors (`ClipMuxError.code`) instead of message matching
  *
  * @example
  * ```typescript
- * import { OpenVodUploader } from '@openvod/uploader'
+ * import { ClipMuxUploader } from '@clipmux/uploader'
  *
- * // Your backend mints this with an API key — see @openvod/server.
+ * // Your backend mints this with an API key — see @clipmux/server.
  * const { uploadToken } = await fetch('/api/upload-token').then((r) => r.json())
  *
- * const uploader = new OpenVodUploader({
+ * const uploader = new ClipMuxUploader({
  *   baseUrl: 'https://api.yourvod.com',
  *   uploadToken,
  * })
@@ -45,26 +45,26 @@
  */
 
 export {
-    OpenVodUploader,
+    ClipMuxUploader,
     UploadSession,
     computePartPlan,
     resolveContentType,
     resolveFilename,
 } from './uploader'
-export type { OpenVodUploaderInternals } from './uploader'
+export type { ClipMuxUploaderInternals } from './uploader'
 
 export {
-    OpenVodError,
+    ClipMuxError,
     UploadAbortedError,
     isUploadAbortedError,
     isRetryableCode,
     codeForResponse,
     parseRetryAfter,
 } from './errors'
-export type { OpenVodErrorCode, OpenVodErrorOptions } from './errors'
+export type { ClipMuxErrorCode, ClipMuxErrorOptions } from './errors'
 
 export type {
-    OpenVodUploaderConfig,
+    ClipMuxUploaderConfig,
     UploadOptions,
     UploadProgress,
     UploadResult,

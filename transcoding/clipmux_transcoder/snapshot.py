@@ -24,15 +24,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_INSUFFICIENT_DISK,
     ERROR_SOURCE_CHANGED,
     ERROR_SOURCE_MISSING,
     ERROR_SOURCE_UNREADABLE,
     TranscodeError,
 )
-from openvod_transcoder.paths import PathRejected, file_identity
-from openvod_transcoder.result import sha256_file
+from clipmux_transcoder.paths import PathRejected, file_identity
+from clipmux_transcoder.result import sha256_file
 
 SNAPSHOT_REFLINK = "reflink"
 SNAPSHOT_COPY = "copy"

@@ -13,7 +13,7 @@
  */
 
 import {
-    OpenVodError,
+    ClipMuxError,
     codeForStatus,
     isRetryableCode,
     parseRetryAfter,
@@ -31,11 +31,11 @@ import {
     createPlaybackToken,
 } from './resources'
 
-export interface OpenVodConfig {
+export interface ClipMuxConfig {
     /** `sk_live_…` — server-side only. Never ship this to a browser. */
     apiKey: string
     /**
-     * Origin of your OpenVOD API, without the `/v1` suffix
+     * Origin of your ClipMux API, without the `/v1` suffix
      * (`https://api.yourvod.com`). Required: there is no hosted default.
      */
     baseUrl: string
@@ -57,14 +57,14 @@ interface RequestOptions {
 }
 
 /**
- * The OpenVOD API client.
+ * The ClipMux API client.
  *
  * ```ts
- * const vod = new OpenVod({ apiKey: process.env.OPENVOD_API_KEY!, baseUrl: 'https://api.example.com' })
+ * const vod = new ClipMux({ apiKey: process.env.CLIPMUX_API_KEY!, baseUrl: 'https://api.example.com' })
  * const { upload_token } = await vod.uploads.createToken({ expiresIn: '1h' })
  * ```
  */
-export class OpenVod {
+export class ClipMux {
     private readonly apiKey: string
     private readonly baseUrl: string
     private readonly timeoutMs: number
@@ -75,12 +75,12 @@ export class OpenVod {
     readonly videos: VideosResource
     readonly playback: PlaybackResource
 
-    constructor(config: OpenVodConfig) {
+    constructor(config: ClipMuxConfig) {
         if (!config?.apiKey) {
-            throw new OpenVodError('apiKey is required', { code: 'UNAUTHORIZED' })
+            throw new ClipMuxError('apiKey is required', { code: 'UNAUTHORIZED' })
         }
         if (!config?.baseUrl) {
-            throw new OpenVodError(
+            throw new ClipMuxError(
                 'baseUrl is required — pass your deployment origin, e.g. https://api.example.com',
                 { code: 'INVALID_REQUEST' },
             )
@@ -116,7 +116,7 @@ export class OpenVod {
     async request<T>(options: RequestOptions): Promise<T> {
         const url = this.buildUrl(options.path, options.query)
         const isIdempotent = options.method === 'GET' || options.retryable === true
-        let lastError: OpenVodError | null = null
+        let lastError: ClipMuxError | null = null
 
         for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
             if (attempt > 0 && lastError) {
@@ -140,7 +140,7 @@ export class OpenVod {
                 })
             } catch (cause) {
                 const timedOut = controller.signal.aborted
-                lastError = new OpenVodError(
+                lastError = new ClipMuxError(
                     timedOut
                         ? `Request timed out after ${this.timeoutMs}ms: ${options.method} ${options.path}`
                         : `Request failed: ${options.method} ${options.path} (${describe(cause)})`,
@@ -155,7 +155,7 @@ export class OpenVod {
             if (!response.ok) {
                 const message = await readErrorMessage(response)
                 const code = codeForStatus(response.status, message)
-                lastError = new OpenVodError(message, {
+                lastError = new ClipMuxError(message, {
                     code,
                     status: response.status,
                     requestId: response.headers.get('x-request-id') ?? undefined,
@@ -169,14 +169,14 @@ export class OpenVod {
             try {
                 return (await response.json()) as T
             } catch (cause) {
-                throw new OpenVodError(
+                throw new ClipMuxError(
                     `Expected JSON from ${options.method} ${options.path}`,
                     { code: 'HTTP', status: response.status, cause },
                 )
             }
         }
 
-        throw lastError ?? new OpenVodError(`${options.method} ${options.path} failed`, {
+        throw lastError ?? new ClipMuxError(`${options.method} ${options.path} failed`, {
             code: 'HTTP',
         })
     }
@@ -191,7 +191,7 @@ export class OpenVod {
 }
 
 /** Wait before the next attempt, honouring `Retry-After` when present. */
-function backoffMs(error: OpenVodError, attempt: number): number {
+function backoffMs(error: ClipMuxError, attempt: number): number {
     if (error.retryAfterMs !== undefined) return error.retryAfterMs
     const base = 250 * 2 ** (attempt - 1)
     // Jitter: a fleet of workers retrying the same 5xx must not re-collide.

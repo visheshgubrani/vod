@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { OpenVodUploader, computePartPlan, resolveContentType } from '../src/uploader'
-import { OpenVodError, UploadAbortedError } from '../src/errors'
+import { ClipMuxUploader, computePartPlan, resolveContentType } from '../src/uploader'
+import { ClipMuxError, UploadAbortedError } from '../src/errors'
 
 /**
  * Protocol-level fake server: exercises the exact API surface the SDK talks to
@@ -126,8 +126,8 @@ function makeUploader(
     server: typeof fetch,
     delays: number[],
     overrides: Record<string, unknown> = {},
-): OpenVodUploader {
-    return new OpenVodUploader({
+): ClipMuxUploader {
+    return new ClipMuxUploader({
         baseUrl: BASE,
         uploadToken: 'ut_token',
         fetchImpl: server,
@@ -189,7 +189,7 @@ describe('uploader windowing', () => {
         state.alwaysFailPut.set(1, 403)
 
         await expect(uploader.upload(makeFile(2 * 1024 * 1024))).rejects.toMatchObject({
-            name: 'OpenVodError',
+            name: 'ClipMuxError',
             code: 'PART_URL_REJECTED',
             status: 403,
         })
@@ -267,7 +267,7 @@ describe('uploader retries and typed errors', () => {
 
         const error = await uploader.upload(makeFile(2 * 1024 * 1024)).catch((e) => e)
 
-        expect(error).toBeInstanceOf(OpenVodError)
+        expect(error).toBeInstanceOf(ClipMuxError)
         expect(error.code).toBe('UPLOAD_TOKEN_EXPIRED')
         expect(error.status).toBe(401)
         expect(error.requestId).toBe('req_123')
@@ -362,7 +362,7 @@ describe('uploader progress, pause and resume', () => {
             playbackPolicy: 'signed',
         })
 
-        await expect(session.run()).rejects.toBeInstanceOf(OpenVodError)
+        await expect(session.run()).rejects.toBeInstanceOf(ClipMuxError)
 
         const state = session.toJSON()
         expect(state.version).toBe(1)

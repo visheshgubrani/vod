@@ -18,23 +18,31 @@ interface StatCardProps {
   icon: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  footnote?: React.ReactNode;
 }
 
-function StatCard({ title, icon, children, className }: StatCardProps) {
+function StatCard({
+  title,
+  icon,
+  children,
+  className,
+  footnote,
+}: StatCardProps) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-3 rounded-sm border border-border bg-card/65 p-4 md:p-6 backdrop-blur-sm transition-colors hover:bg-card/70",
-        className
+        "dash-panel flex flex-col gap-4 p-5 md:p-6",
+        className,
       )}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-muted-foreground">
-          {title}
+      <div className="flex items-center justify-between gap-3">
+        <span className="dash-label">{title}</span>
+        <span className="flex size-9 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+          {icon}
         </span>
-        <div className="p-2 rounded-sm bg-accent/20 shadow-lg">{icon}</div>
       </div>
       {children}
+      {footnote ? <div className="dash-meta">{footnote}</div> : null}
     </div>
   );
 }
@@ -54,76 +62,74 @@ export function StatsCards({
     storagePercentage > 90
       ? "danger"
       : storagePercentage > 70
-      ? "warning"
-      : "default";
+        ? "warning"
+        : "default";
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-      {/* Storage */}
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       <StatCard
-        title="Storage Used"
-        icon={<HardDrive className="size-4.5 text-teal-400" />}
+        title="Storage billed"
+        icon={<HardDrive className="size-4.5" />}
+        footnote={
+          hasStorageLimit ? undefined : "Measured from transcoded output"
+        }
       >
-        <div className="flex flex-col items-start justify-between gap-6">
-          <div className="flex items-baseline gap-1">
-            <span className="text-2xl md:text-3xl font-semibold text-foreground">
+        <div className="flex flex-col gap-4">
+          <p className="flex items-baseline gap-1.5">
+            <span className="font-mono text-3xl font-semibold tracking-tight text-foreground">
               {storageUsed.toFixed(2)}
             </span>
-            <span className="text-sm text-foreground/80">
-              {hasStorageLimit ? `/ ${storageTotal} GB` : "GB billed"}
+            <span className="text-sm text-muted-foreground">
+              {hasStorageLimit ? `/ ${storageTotal} GB` : "GB"}
             </span>
-          </div>
+          </p>
           {hasStorageLimit ? (
             <Progress
               value={storageUsed}
               max={storageTotal}
               variant={storageVariant}
             />
-          ) : (
-            <div className="text-xs font-light text-muted-foreground">
-              Based on transcoded output
-            </div>
-          )}
+          ) : null}
         </div>
       </StatCard>
 
-      {/* Bandwidth */}
       <StatCard
-        title="Bandwidth (Last 30 Days)"
-        icon={<Wifi className="size-4.5 text-purple-300" />}
+        title="Bandwidth, last 30 days"
+        icon={<Wifi className="size-4.5" />}
+        footnote="Delivery worker egress"
       >
-        <div className="flex items-baseline gap-1">
-          <span className="text-2xl md:text-3xl font-semibold text-foreground">
+        <p className="flex items-baseline gap-1.5">
+          <span className="font-mono text-3xl font-semibold tracking-tight text-foreground">
             {bandwidth === null ? "—" : bandwidth.toFixed(2)}
           </span>
           {bandwidth !== null && (
-            <span className="text-sm text-foreground/80">GB</span>
+            <span className="text-sm text-muted-foreground">GB</span>
           )}
-        </div>
-        <div className="text-xs font-light text-muted-foreground">
-          Updated just now
-        </div>
+        </p>
       </StatCard>
 
-      {/* Videos */}
       <StatCard
-        title="Total Videos"
-        icon={<Film className="size-4.5 text-lime-600" />}
+        title="Ready videos"
+        icon={<Film className="size-4.5" />}
+        footnote={
+          processingVideos > 0 ? (
+            <span className="inline-flex items-center gap-2">
+              <span className="dash-dot status-processing" aria-hidden="true" />
+              <span className="text-processing">
+                {processingVideos} still processing
+              </span>
+            </span>
+          ) : (
+            "Nothing in the queue"
+          )
+        }
       >
-        <div className="flex items-baseline gap-2">
-          <span className="text-2xl md:text-3xl font-semibold text-foreground">
+        <p className="flex items-baseline gap-1.5">
+          <span className="font-mono text-3xl font-semibold tracking-tight text-foreground">
             {totalVideos}
           </span>
-          <span className="text-sm text-foreground/80">Active</span>
-        </div>
-        {processingVideos > 0 && (
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-            <span className="text-amber-300">
-              {processingVideos} processing
-            </span>
-          </div>
-        )}
+          <span className="text-sm text-muted-foreground">assets</span>
+        </p>
       </StatCard>
     </div>
   );

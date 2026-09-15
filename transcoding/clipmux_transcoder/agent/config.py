@@ -24,11 +24,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from openvod_transcoder.paths import Root
+from clipmux_transcoder.paths import Root
 
-DEFAULT_SCRATCH = "/var/lib/openvod-transcoder/scratch"
-DEFAULT_JOURNAL = "/var/lib/openvod-transcoder/journal.sqlite"
-DEFAULT_ROOTS_FILE = "/etc/openvod-transcoder/roots.json"
+DEFAULT_SCRATCH = "/var/lib/clipmux-transcoder/scratch"
+DEFAULT_JOURNAL = "/var/lib/clipmux-transcoder/journal.sqlite"
+DEFAULT_ROOTS_FILE = "/etc/clipmux-transcoder/roots.json"
 
 
 @dataclass
@@ -47,6 +47,11 @@ class AgentConfig:
     # stays at one rendition unless the operator says otherwise.
     upload_concurrency: int = 4
     heartbeat_seconds: float = 30.0
+    # Progress beats are coalesced to this cadence. The engine emits one update
+    # per second per encoder, and a ladder encodes concurrently, so forwarding
+    # each one would post (and store) several requests a second for a job whose
+    # lease is measured in minutes. Stage changes still go out immediately.
+    progress_beat_seconds: float = 15.0
     poll_seconds: float = 5.0
     stall_timeout_seconds: float = 900.0
     # Failed work is kept for a week by default: long enough to investigate, short
@@ -60,12 +65,12 @@ class AgentConfig:
         """Human-readable problems. `doctor` prints these; `run` refuses to start."""
         problems: List[str] = []
         if not self.api_url:
-            problems.append('api_url is not set (pass --api or set OPENVOD_API_URL)')
+            problems.append('api_url is not set (pass --api or set CLIPMUX_API_URL)')
         if not self.token:
-            problems.append('no agent token (run "openvod-transcoder pair" first)')
+            problems.append('no agent token (run "clipmux-transcoder pair" first)')
         if not self.roots:
             problems.append(
-                'no readable folders are configured: set OPENVOD_ROOTS to a '
+                'no readable folders are configured: set CLIPMUX_ROOTS to a '
                 'comma-separated list, or provide a roots file. The agent will '
                 'not read anything outside these.'
             )
@@ -85,25 +90,28 @@ class AgentConfig:
 
         return cls(
             api_url=(
-                values.get("OPENVOD_API_URL")
-                or values.get("OPENVOD_API")
+                values.get("CLIPMUX_API_URL")
+                or values.get("CLIPMUX_API")
                 or "http://localhost:8787"
             ).rstrip("/"),
-            token=values.get("OPENVOD_AGENT_TOKEN", ""),
-            name=values.get("OPENVOD_AGENT_NAME", ""),
+            token=values.get("CLIPMUX_AGENT_TOKEN", ""),
+            name=values.get("CLIPMUX_AGENT_NAME", ""),
             roots=roots,
-            scratch_dir=Path(values.get("OPENVOD_SCRATCH_DIR") or DEFAULT_SCRATCH),
-            journal_path=Path(values.get("OPENVOD_JOURNAL") or DEFAULT_JOURNAL),
-            encoder_backend=values.get("OPENVOD_ENCODER", "auto"),
-            encoder_device=values.get("OPENVOD_ENCODER_DEVICE") or None,
-            capacity_jobs=_int(values.get("OPENVOD_CAPACITY_JOBS"), 1),
-            capacity_renditions=_int(values.get("OPENVOD_CAPACITY_RENDITIONS"), 1),
-            upload_concurrency=_int(values.get("OPENVOD_UPLOAD_CONCURRENCY"), 4),
-            heartbeat_seconds=_float(values.get("OPENVOD_HEARTBEAT_SECONDS"), 30.0),
-            poll_seconds=_float(values.get("OPENVOD_POLL_SECONDS"), 5.0),
-            stall_timeout_seconds=_float(values.get("OPENVOD_STALL_TIMEOUT_SECONDS"), 900.0),
-            failed_retention_days=_int(values.get("OPENVOD_FAILED_RETENTION_DAYS"), 7),
-            scratch_quota_bytes=_optional_int(values.get("OPENVOD_SCRATCH_QUOTA_BYTES")),
+            scratch_dir=Path(values.get("CLIPMUX_SCRATCH_DIR") or DEFAULT_SCRATCH),
+            journal_path=Path(values.get("CLIPMUX_JOURNAL") or DEFAULT_JOURNAL),
+            encoder_backend=values.get("CLIPMUX_ENCODER", "auto"),
+            encoder_device=values.get("CLIPMUX_ENCODER_DEVICE") or None,
+            capacity_jobs=_int(values.get("CLIPMUX_CAPACITY_JOBS"), 1),
+            capacity_renditions=_int(values.get("CLIPMUX_CAPACITY_RENDITIONS"), 1),
+            upload_concurrency=_int(values.get("CLIPMUX_UPLOAD_CONCURRENCY"), 4),
+            heartbeat_seconds=_float(values.get("CLIPMUX_HEARTBEAT_SECONDS"), 30.0),
+            progress_beat_seconds=_float(
+                values.get("CLIPMUX_PROGRESS_BEAT_SECONDS"), 15.0
+            ),
+            poll_seconds=_float(values.get("CLIPMUX_POLL_SECONDS"), 5.0),
+            stall_timeout_seconds=_float(values.get("CLIPMUX_STALL_TIMEOUT_SECONDS"), 900.0),
+            failed_retention_days=_int(values.get("CLIPMUX_FAILED_RETENTION_DAYS"), 7),
+            scratch_quota_bytes=_optional_int(values.get("CLIPMUX_SCRATCH_QUOTA_BYTES")),
             whisper_model=values.get("WHISPER_MODEL", "large-v3-turbo"),
             transcribe_language=values.get("TRANSCRIBE_LANGUAGE") or None,
         )
@@ -113,11 +121,11 @@ def _parse_roots(values: dict) -> List[Root]:
     """
     Read the readable-folder list.
 
-    Accepts `name:path` pairs from `OPENVOD_ROOTS` (comma-separated) or a JSON
-    file at `OPENVOD_ROOTS_FILE`. The name is what the dashboard shows; the path
+    Accepts `name:path` pairs from `CLIPMUX_ROOTS` (comma-separated) or a JSON
+    file at `CLIPMUX_ROOTS_FILE`. The name is what the dashboard shows; the path
     is what the policy enforces against, and it never leaves this machine.
     """
-    raw = values.get("OPENVOD_ROOTS", "")
+    raw = values.get("CLIPMUX_ROOTS", "")
     roots: List[Root] = []
     for entry in str(raw).split(","):
         item = entry.strip()
@@ -132,7 +140,7 @@ def _parse_roots(values: dict) -> List[Root]:
     if roots:
         return roots
 
-    roots_file = values.get("OPENVOD_ROOTS_FILE", DEFAULT_ROOTS_FILE)
+    roots_file = values.get("CLIPMUX_ROOTS_FILE", DEFAULT_ROOTS_FILE)
     if roots_file and Path(roots_file).exists():
         try:
             payload = json.loads(Path(roots_file).read_text())

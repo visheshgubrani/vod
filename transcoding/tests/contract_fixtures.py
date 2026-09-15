@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from openvod_transcoder.result import Artifact, EnrichmentStatus, PipelineResult, ProcessingMetadata, RenditionReport
+from clipmux_transcoder.result import Artifact, EnrichmentStatus, PipelineResult, ProcessingMetadata, RenditionReport
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 

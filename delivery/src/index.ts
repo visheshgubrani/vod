@@ -1,5 +1,5 @@
 /**
- * OpenVOD Delivery Worker
+ * ClipMux Delivery Worker
  *
  * SECURITY MODEL FOR SIGNED VIDEOS:
  * ─────────────────────────────────
@@ -34,7 +34,7 @@ interface Env {
 	CAST_UA_KEYWORDS?: string;
 }
 
-const JWT_ISSUER = 'openvod';
+const JWT_ISSUER = 'clipmux';
 const JWT_AUDIENCE = 'playback';
 const UNKNOWN_USER_AGENT = 'unknown';
 const ANY_DOMAIN_PATTERN = '*';

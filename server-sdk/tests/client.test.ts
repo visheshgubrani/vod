@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { OpenVod } from '../src/client'
-import { OpenVodError } from '../src/errors'
+import { ClipMux } from '../src/client'
+import { ClipMuxError } from '../src/errors'
 
 interface Recorded {
     url: string
@@ -48,7 +48,7 @@ function makeApi(handlers: Array<{ match: string; status?: number; body?: unknow
 const BASE = 'https://api.example.com'
 
 function makeClient(fetchImpl: typeof fetch, overrides: Record<string, unknown> = {}) {
-    return new OpenVod({
+    return new ClipMux({
         apiKey: 'sk_live_test',
         baseUrl: BASE,
         fetchImpl,
@@ -57,10 +57,10 @@ function makeClient(fetchImpl: typeof fetch, overrides: Record<string, unknown> 
     })
 }
 
-describe('OpenVod client', () => {
+describe('ClipMux client', () => {
     it('requires an api key and a base url', () => {
-        expect(() => new OpenVod({ apiKey: '', baseUrl: BASE })).toThrowError(/apiKey is required/)
-        expect(() => new OpenVod({ apiKey: 'sk_live_x', baseUrl: '' })).toThrowError(
+        expect(() => new ClipMux({ apiKey: '', baseUrl: BASE })).toThrowError(/apiKey is required/)
+        expect(() => new ClipMux({ apiKey: 'sk_live_x', baseUrl: '' })).toThrowError(
             /baseUrl is required/,
         )
     })
@@ -282,7 +282,7 @@ describe('error mapping', () => {
             .videos.list()
             .catch((e) => e)
 
-        expect(error).toBeInstanceOf(OpenVodError)
+        expect(error).toBeInstanceOf(ClipMuxError)
         expect(error.code).toBe('UNAUTHORIZED')
         expect(error.message).toBe('Invalid API key')
         expect(error.requestId).toBe('req_9')

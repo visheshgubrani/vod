@@ -4,8 +4,8 @@ Shaka Packager integration for HLS/DASH output.
 from pathlib import Path
 from typing import Dict, List, Sequence
 
-from openvod_transcoder.config import SEGMENT_DURATION
-from openvod_transcoder.utils.cmd import run_cmd
+from clipmux_transcoder.config import SEGMENT_DURATION
+from clipmux_transcoder.utils.cmd import run_cmd
 
 
 def choose_segment_duration(duration: float) -> float:

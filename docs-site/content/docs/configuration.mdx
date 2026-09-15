@@ -1,9 +1,9 @@
 ---
 title: Configuration
-description: Every environment variable OpenVOD reads — which file it belongs in for development versus a deployment, which ones are secret, and the combinations that refuse to boot.
+description: Every environment variable ClipMux reads — which file it belongs in for development versus a deployment, which ones are secret, and the combinations that refuse to boot.
 ---
 
-OpenVOD has exactly two server-side environment files, and using the wrong one is
+ClipMux has exactly two server-side environment files, and using the wrong one is
 the most common configuration mistake.
 
 | | Development | Deployment |
@@ -31,7 +31,7 @@ the most common configuration mistake.
 | --- | --- | --- |
 | `DATABASE_URL` | — | Postgres connection string. Required. |
 | `DB_DRIVER` | `pg` | `pg` (postgres.js over TCP) or `neon-http`. |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `postgres` / — / `openvod` | Compose only; used to build the internal Postgres service. |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `postgres` / — / `clipmux` | Compose only; used to build the internal Postgres service. |
 
 `DB_DRIVER=pg` **cannot run on Cloudflare Workers**: the Workers runtime cannot
 hold a Postgres TCP connection across requests, so the first query succeeds and
@@ -144,7 +144,7 @@ URL. It is **secret-free by construction**, so it is safe to hit from anywhere,
 and it is the fastest way to answer "which shape is this thing actually running".
 
 ```bash
-curl "$OPENVOD_API_URL/health/config"
+curl "$CLIPMUX_API_URL/health/config"
 ```
 
 <Cards>

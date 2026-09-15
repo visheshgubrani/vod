@@ -1,5 +1,5 @@
 """Encoding seam: backends, capability probes and the fallback policy."""
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.encoding.backends import (
     ALL_BACKENDS,
     BACKEND_CPU,
     BACKEND_NVENC,
@@ -15,7 +15,7 @@ from openvod_transcoder.encoding.backends import (
     h264_level,
     keyframe_interval,
 )
-from openvod_transcoder.encoding.probe import (
+from clipmux_transcoder.encoding.probe import (
     CapabilityReport,
     ChainProbe,
     EncoderProbe,
@@ -26,7 +26,7 @@ from openvod_transcoder.encoding.probe import (
     preflight_source,
     probe_backend,
 )
-from openvod_transcoder.encoding.selection import (
+from clipmux_transcoder.encoding.selection import (
     BackendCandidate,
     FallbackState,
     describe_chain,

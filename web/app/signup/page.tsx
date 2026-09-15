@@ -107,10 +107,7 @@ export default function SignupPage() {
       topLink={
         <>
           Already have an account?{" "}
-          <Link
-            href="/login"
-            className="text-primary hover:underline font-medium"
-          >
+          <Link href="/login" className="font-medium text-ember hover:underline">
             Sign in
           </Link>
         </>
@@ -122,7 +119,10 @@ export default function SignupPage() {
 
         {/* Error Banner */}
         {error && (
-          <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+          <div
+            role="alert"
+            className="rounded-xl border border-failed/30 bg-failed/10 px-4 py-3 text-sm text-danger"
+          >
             {error}
           </div>
         )}
@@ -141,7 +141,6 @@ export default function SignupPage() {
             error={errors.fullName}
             disabled={isLoading}
             autoComplete="name"
-            className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
           />
         </div>
 
@@ -159,7 +158,6 @@ export default function SignupPage() {
             error={errors.email}
             disabled={isLoading}
             autoComplete="email"
-            className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
           />
         </div>
 
@@ -174,7 +172,6 @@ export default function SignupPage() {
             onChange={(e) => updateField("companyName", e.target.value)}
             disabled={isLoading}
             autoComplete="organization"
-            className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
           />
         </div>
 
@@ -193,18 +190,19 @@ export default function SignupPage() {
               error={errors.password}
               disabled={isLoading}
               autoComplete="new-password"
-              className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
+              className="pr-14"
             />
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-mauve-400 hover:text-mauve-300 transition-colors"
-              tabIndex={-1}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              className="absolute right-1 top-6 flex size-11 -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {showPassword ? (
-                <EyeOff className="w-5 h-5" />
+                <EyeOff className="size-5" aria-hidden="true" />
               ) : (
-                <Eye className="w-5 h-5" />
+                <Eye className="size-5" aria-hidden="true" />
               )}
             </button>
           </div>
@@ -226,18 +224,23 @@ export default function SignupPage() {
               error={errors.confirmPassword}
               disabled={isLoading}
               autoComplete="new-password"
-              className="pr-12 bg-mauve-500/40 mt-1 rounded-sm placeholder:text-mauve-400"
+              className="pr-14"
             />
             <button
               type="button"
               onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-mauve-400 hover:text-mauve-300 transition-colors"
-              tabIndex={-1}
+              aria-label={
+                showConfirmPassword
+                  ? "Hide confirmed password"
+                  : "Show confirmed password"
+              }
+              aria-pressed={showConfirmPassword}
+              className="absolute right-1 top-6 flex size-11 -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {showConfirmPassword ? (
-                <EyeOff className="w-5 h-5" />
+                <EyeOff className="size-5" aria-hidden="true" />
               ) : (
-                <Eye className="w-5 h-5" />
+                <Eye className="size-5" aria-hidden="true" />
               )}
             </button>
           </div>
@@ -249,33 +252,32 @@ export default function SignupPage() {
             id="acceptTerms"
             checked={formData.acceptTerms}
             onChange={(e) => updateField("acceptTerms", e.target.checked)}
+            className="min-h-11"
             label={
               <span>
                 I agree to the{" "}
-                <Link href="/terms" className="text-accent hover:underline">
+                <Link href="/terms" className="text-ember hover:underline">
                   Terms of Service
                 </Link>{" "}
                 and{" "}
-                <Link href="/privacy" className="text-accent hover:underline">
+                <Link href="/privacy" className="text-ember hover:underline">
                   Privacy Policy
                 </Link>
               </span>
             }
           />
           {errors.acceptTerms && (
-            <p className="text-sm text-destructive">{errors.acceptTerms}</p>
+            <p role="alert" className="text-sm text-danger">
+              {errors.acceptTerms}
+            </p>
           )}
         </div>
 
         {/* Submit Button */}
-        <Button
-          type="submit"
-          className="w-full h-auto py-2 md:py-3"
-          disabled={isLoading}
-        >
+        <Button type="submit" size="lg" className="w-full" disabled={isLoading}>
           {isLoading ? (
             <>
-              <Loader2 className="w-5 h-5 animate-spin" />
+              <Loader2 className="size-5 animate-spin" aria-hidden="true" />
               Creating account...
             </>
           ) : (

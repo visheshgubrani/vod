@@ -26,7 +26,7 @@ describe('createR2Client', () => {
     const url = await getSignedUrl(
       client,
       new PutObjectCommand({
-        Bucket: 'openvod-raw',
+        Bucket: 'clipmux-raw',
         Key: 'org/raw/id/clip.webm',
         ContentType: 'video/webm',
         ContentLength: 22903955,

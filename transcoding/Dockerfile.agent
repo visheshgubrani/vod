@@ -22,15 +22,15 @@
 # fails to BUILD instead of failing on a customer's job.
 #
 # Build (context = repository root; the recipe reads boto3/toolchain/ from it):
-#   docker build -f transcoding/Dockerfile.agent -t openvod-transcoder .
+#   docker build -f transcoding/Dockerfile.agent -t clipmux-transcoder .
 #
 # Run (CPU):
 #   docker run --rm -it \
 #     -v /srv/media:/media:ro \
-#     -v openvod-scratch:/var/lib/openvod-transcoder \
-#     -e OPENVOD_API_URL=https://api.example.com \
-#     -e OPENVOD_ROOTS=media:/media \
-#     openvod-transcoder doctor --full
+#     -v clipmux-scratch:/var/lib/clipmux-transcoder \
+#     -e CLIPMUX_API_URL=https://api.example.com \
+#     -e CLIPMUX_ROOTS=media:/media \
+#     clipmux-transcoder doctor --full
 #
 # Run (NVIDIA): add
 #   --gpus 'all,capabilities=compute,utility,video'
@@ -66,17 +66,17 @@ ARG FFMPEG_PREFIX=/usr/local
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    OPENVOD_SCRATCH_DIR=/var/lib/openvod-transcoder/scratch \
-    OPENVOD_JOURNAL=/var/lib/openvod-transcoder/journal.sqlite \
-    OPENVOD_ROOTS_FILE=/etc/openvod-transcoder/roots.json \
-    OPENVOD_FFMPEG=/usr/local/bin/ffmpeg \
+    CLIPMUX_SCRATCH_DIR=/var/lib/clipmux-transcoder/scratch \
+    CLIPMUX_JOURNAL=/var/lib/clipmux-transcoder/journal.sqlite \
+    CLIPMUX_ROOTS_FILE=/etc/clipmux-transcoder/roots.json \
+    CLIPMUX_FFMPEG=/usr/local/bin/ffmpeg \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH
 
 # ── Shared toolchain recipe ──────────────────────────────────────────────────
 # The package lists live in the recipe directory so this image and the Modal
 # image cannot drift. Only the recipe files are copied here; /app arrives later.
-COPY transcoding/toolchain/ /tmp/openvod-toolchain/
+COPY transcoding/toolchain/ /tmp/clipmux-toolchain/
 
 # Build deps, the source build, then the checksum-pinned packager. All of this is
 # one layer so the build-only packages can be purged in the very next step
@@ -88,14 +88,14 @@ COPY transcoding/toolchain/ /tmp/openvod-toolchain/
 # rejects FFmpeg's default `--cuda-gpu-arch=sm_30`, which is why the recipe
 # passes an explicit sm_75 baseline that newer drivers JIT forward.
 RUN set -eux; \
-    . /tmp/openvod-toolchain/versions.env; \
-    . /tmp/openvod-toolchain/apt-packages.env; \
+    . /tmp/clipmux-toolchain/versions.env; \
+    . /tmp/clipmux-toolchain/apt-packages.env; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      "${OPENVOD_BUILD_PACKAGES[@]}" \
+      "${CLIPMUX_BUILD_PACKAGES[@]}" \
       python3 \
       tini curl ca-certificates; \
-    bash /tmp/openvod-toolchain/build_ffmpeg.sh "${FFMPEG_PREFIX}"; \
+    bash /tmp/clipmux-toolchain/build_ffmpeg.sh "${FFMPEG_PREFIX}"; \
     curl -fsSL "${SHAKA_URL}" -o /usr/local/bin/packager; \
     echo "${SHAKA_SHA256}  /usr/local/bin/packager" | sha256sum -c -; \
     chmod +x /usr/local/bin/packager; \
@@ -108,12 +108,12 @@ RUN set -eux; \
 # verify_toolchain.sh runs AFTER the purge, on the pruned image, so the build
 # cannot pass by accident.
 RUN set -eux; \
-    . /tmp/openvod-toolchain/apt-packages.env; \
-    apt-get purge -y "${OPENVOD_BUILD_PACKAGES[@]}" xz-utils; \
+    . /tmp/clipmux-toolchain/apt-packages.env; \
+    apt-get purge -y "${CLIPMUX_BUILD_PACKAGES[@]}" xz-utils; \
     apt-get autoremove -y; \
-    apt-get install -y --no-install-recommends "${OPENVOD_RUNTIME_PACKAGES[@]}"; \
+    apt-get install -y --no-install-recommends "${CLIPMUX_RUNTIME_PACKAGES[@]}"; \
     rm -rf /var/lib/apt/lists/*; \
-    bash /tmp/openvod-toolchain/verify_toolchain.sh \
+    bash /tmp/clipmux-toolchain/verify_toolchain.sh \
       "${FFMPEG_PREFIX}/bin/ffmpeg" "${FFMPEG_PREFIX}/bin/ffprobe"
 
 # ── The engine ───────────────────────────────────────────────────────────────
@@ -146,46 +146,46 @@ RUN apt-get update \
  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
  && /opt/venv/bin/pip install --no-cache-dir requests \
  && /opt/venv/bin/pip install --no-cache-dir --no-deps --no-build-isolation -e /app \
- && openvod-transcoder version
+ && clipmux-transcoder version
 
-# The recipe and its pins stay in the image: `openvod-transcoder doctor` reports
+# The recipe and its pins stay in the image: `clipmux-transcoder doctor` reports
 # the FFmpeg it is actually running, and an operator debugging an old container
 # needs the configure line that produced it. A copy, not a dependency — nothing
 # at runtime reads /tmp.
-RUN mkdir -p /opt/openvod/toolchain \
- && cp /tmp/openvod-toolchain/versions.env \
-       /tmp/openvod-toolchain/apt-packages.env \
-       /tmp/openvod-toolchain/build_ffmpeg.sh \
-       /tmp/openvod-toolchain/verify_toolchain.sh \
-       /opt/openvod/toolchain/ \
- && rm -rf /tmp/openvod-toolchain \
+RUN mkdir -p /opt/clipmux/toolchain \
+ && cp /tmp/clipmux-toolchain/versions.env \
+       /tmp/clipmux-toolchain/apt-packages.env \
+       /tmp/clipmux-toolchain/build_ffmpeg.sh \
+       /tmp/clipmux-toolchain/verify_toolchain.sh \
+       /opt/clipmux/toolchain/ \
+ && rm -rf /tmp/clipmux-toolchain \
  && ffmpeg -version | head -n 1 \
  && ffprobe -version | head -n 1 \
- && cat "${FFMPEG_PREFIX}/share/openvod/toolchain.json" | head -n 5
+ && cat "${FFMPEG_PREFIX}/share/clipmux/toolchain.json" | head -n 5
 
 # The agent runs unprivileged. It only ever *reads* the media mounts, so there is
 # no reason for it to be able to write to them — and a container that cannot
 # write to the owner's library cannot damage it.
-RUN groupadd --gid 10001 openvod \
- && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin openvod \
- && mkdir -p /var/lib/openvod-transcoder/scratch /etc/openvod-transcoder \
- && chown -R openvod:openvod /var/lib/openvod-transcoder
+RUN groupadd --gid 10001 clipmux \
+ && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin clipmux \
+ && mkdir -p /var/lib/clipmux-transcoder/scratch /etc/clipmux-transcoder \
+ && chown -R clipmux:clipmux /var/lib/clipmux-transcoder
 
 # `video` covers both /dev/dri (AMD/Intel) and the NVIDIA device nodes, so a
 # container that needs either can be started with --group-add video.
 RUN groupadd --gid 44 video || true \
- && usermod -aG video openvod
+ && usermod -aG video clipmux
 
-USER openvod
-VOLUME ["/var/lib/openvod-transcoder"]
+USER clipmux
+VOLUME ["/var/lib/clipmux-transcoder"]
 
 # tini reaps the FFmpeg processes the pipeline spawns. Without it a terminated
 # encode can leave children holding the GPU session, which then makes the *next*
 # job fail with a confusing "no free encoding session".
-ENTRYPOINT ["/usr/bin/tini", "--", "openvod-transcoder"]
+ENTRYPOINT ["/usr/bin/tini", "--", "clipmux-transcoder"]
 CMD ["run"]
 
 # Diagnostics are the default health check because "the container is up" says
 # nothing about whether it can encode or reach the API.
 HEALTHCHECK --interval=5m --timeout=2m --start-period=1m \
-  CMD openvod-transcoder --json doctor || exit 1
+  CMD clipmux-transcoder --json doctor || exit 1

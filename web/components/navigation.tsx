@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
+import { usePathname } from "next/navigation";
 import { Menu, X, LayoutDashboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +14,6 @@ import {
 } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 import { useSession } from "@/lib/auth-client";
-import Image from "next/image";
 import { APP_NAME, GITHUB_URL } from "@/lib/site";
 
 interface NavLink {
@@ -30,6 +31,7 @@ export function Navigation() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { data: session, isPending } = useSession();
+  const pathname = usePathname();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -44,78 +46,76 @@ export function Navigation() {
   return (
     <header
       className={cn(
-        "fixed top-0 left-0 right-0 z-50 transition-all duration-300",
-        isScrolled ? "py-2 bg-accent/10 backdrop-blur-xl" : "py-4"
+        "fixed top-0 left-0 right-0 z-50 border-b transition-all duration-300",
+        isScrolled
+          ? "border-border-soft bg-background/85 py-2 backdrop-blur-xl"
+          : "border-transparent py-4"
       )}
     >
-      <nav className="max-w-7xl mx-auto px-4 flex items-center justify-between">
+      <nav className="mx-auto flex max-w-7xl items-center justify-between px-4">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2 justify-start group">
+        <Link
+          href="/"
+          className="group flex items-center gap-2.5 justify-start rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
           <Image
             src="/logo.svg"
-            alt="OpenVOD logo"
+            alt="ClipMux logo"
             width={50}
             height={50}
             className="size-7.5 w-auto shrink-0"
             priority
           />
-          <span className="mt-1 text-lg md:text-[1.27rem] font-dashboard-heading font-semibold tracking-wider text-foreground">
+          <span className="text-[17px] font-semibold tracking-[-0.02em] text-foreground">
             {APP_NAME}
           </span>
         </Link>
 
         {/* Desktop Navigation */}
-        <div className="hidden lg:ml-12 md:flex items-center gap-12 xl:gap-14">
+        <div className="hidden items-center gap-8 md:flex lg:ml-12 xl:gap-10">
           {navLinks.map((link) => {
-            const linkClassName =
-              "text-foreground/75 hover:text-foreground transition-colors relative group font-medium";
-            const underline = (
-              <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-gradient-to-r from-primary to-accent group-hover:w-full transition-all duration-300" />
+            const isActive = !link.external && pathname === link.href;
+            const linkClassName = cn(
+              "text-[15px] font-medium transition-colors",
+              isActive
+                ? "text-ember"
+                : "text-muted-foreground hover:text-foreground"
             );
             return link.external ? (
               <a key={link.href} href={link.href} className={linkClassName}>
                 {link.label}
-                {underline}
               </a>
             ) : (
-              <Link key={link.href} href={link.href} className={linkClassName}>
+              <Link
+                key={link.href}
+                href={link.href}
+                className={linkClassName}
+                aria-current={isActive ? "page" : undefined}
+              >
                 {link.label}
-                {underline}
               </Link>
             );
           })}
         </div>
 
         {/* CTA Buttons */}
-        <div className="hidden md:flex items-center gap-4">
+        <div className="hidden items-center gap-3 md:flex">
           {isLoggedIn ? (
             <Link href="/dashboard">
-              <Button
-                size="sm"
-                className="h-auto py-2.5 px-6 rounded-full bg-[#704fd5] text-white hover:bg-[#704fd5]/90"
-              >
-                <LayoutDashboard className="w-4 h-4 fill-foreground" />
+              <Button size="sm">
+                <LayoutDashboard className="size-4" aria-hidden="true" />
                 Dashboard
               </Button>
             </Link>
           ) : (
             <>
               <Link href="/login">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-auto cursor-pointer py-5 bg-transparent font-semibold hover:bg-transparent"
-                >
+                <Button variant="ghost" size="sm">
                   Login
                 </Button>
               </Link>
               <Link href="/signup">
-                <Button
-                  size="sm"
-                  className="h-auto cursor-pointer py-2 px-6 rounded-full bg-[#704fd5] text-white hover:bg-[#704fd5]/90"
-                >
-                  Get Started
-                </Button>
+                <Button size="sm">Get Started</Button>
               </Link>
             </>
           )}
@@ -129,30 +129,34 @@ export function Navigation() {
         >
           <DrawerTrigger asChild>
             <button
-              className="md:hidden p-2 text-foreground"
+              className="flex size-11 items-center justify-center rounded-[10px] text-foreground transition-colors hover:bg-panel-strong md:hidden"
               aria-label="Toggle menu"
             >
-              {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+              {isMobileMenuOpen ? (
+                <X size={24} aria-hidden="true" />
+              ) : (
+                <Menu size={24} aria-hidden="true" />
+              )}
             </button>
           </DrawerTrigger>
 
-          <DrawerContent className="md:hidden border-b-0 border-none pb-2 bg-card/60 backdrop-blur-xl">
+          <DrawerContent className="border-none border-b-0 bg-background/95 pb-2 backdrop-blur-xl md:hidden">
             <div className="mx-auto w-full max-w-7xl px-6 pt-4 pb-6">
-              <div className="mb-4 border-b border-card pb-2 rounded-xl flex items-center justify-between">
+              <div className="mb-4 flex items-center justify-between rounded-xl border-b border-border-soft pb-2">
                 {/* Logo */}
                 <Link
                   href="/"
-                  className="flex items-center justify-start gap-2 group"
+                  className="group flex items-center justify-start gap-2"
                 >
                   <Image
                     src="/logo.svg"
-                    alt="OpenVOD logo"
+                    alt="ClipMux logo"
                     width={34}
                     height={34}
                     className="size-7 w-auto shrink-0"
                     priority
                   />
-                  <span className="mt-0.5 text-lg md:text-xl font-semibold tracking-wider font-dashboard-heading text-foreground">
+                  <span className="text-[17px] font-semibold tracking-[-0.02em] text-foreground">
                     {APP_NAME}
                   </span>
                 </Link>
@@ -160,17 +164,22 @@ export function Navigation() {
                 <DrawerClose asChild>
                   <button
                     aria-label="Close menu"
-                    className="p-2 text-foreground"
+                    className="flex size-11 items-center justify-center rounded-[10px] text-foreground transition-colors hover:bg-panel-strong"
                   >
-                    <X size={22} />
+                    <X size={22} aria-hidden="true" />
                   </button>
                 </DrawerClose>
               </div>
 
               <div className="flex flex-col items-center gap-4">
                 {navLinks.map((link) => {
-                  const linkClassName =
-                    "text-foreground/80 hover:text-foreground transition-colors py-2 font-semibold";
+                  const isActive = !link.external && pathname === link.href;
+                  const linkClassName = cn(
+                    "py-2 text-[15px] font-semibold transition-colors",
+                    isActive
+                      ? "text-ember"
+                      : "text-foreground/80 hover:text-foreground"
+                  );
                   const handleClick = () => setIsMobileMenuOpen(false);
                   return link.external ? (
                     <a
@@ -187,19 +196,20 @@ export function Navigation() {
                       href={link.href}
                       className={linkClassName}
                       onClick={handleClick}
+                      aria-current={isActive ? "page" : undefined}
                     >
                       {link.label}
                     </Link>
                   );
                 })}
-                <div className="flex flex-col gap-3 w-full pt-4 border-t border-border">
+                <div className="flex w-full flex-col gap-3 border-t border-border pt-4">
                   {isLoggedIn ? (
                     <Link
                       href="/dashboard"
                       onClick={() => setIsMobileMenuOpen(false)}
                     >
-                      <Button className="w-full cursor-pointer h-auto py-2.5 px-8 rounded-full bg-[#704fd5] text-white hover:bg-[#704fd5]/90">
-                        <LayoutDashboard className="w-4 h-4 mr-1 fill-foreground" />
+                      <Button className="w-full">
+                        <LayoutDashboard className="size-4" aria-hidden="true" />
                         Dashboard
                       </Button>
                     </Link>
@@ -209,10 +219,7 @@ export function Navigation() {
                         href="/login"
                         onClick={() => setIsMobileMenuOpen(false)}
                       >
-                        <Button
-                          variant="ghost"
-                          className="w-full cursor-pointer h-auto py-5 bg-transparent font-semibold hover:bg-transparent"
-                        >
+                        <Button variant="ghost" className="w-full">
                           Login
                         </Button>
                       </Link>
@@ -220,9 +227,7 @@ export function Navigation() {
                         href="/signup"
                         onClick={() => setIsMobileMenuOpen(false)}
                       >
-                        <Button className="w-full cursor-pointer h-auto py-3 rounded-full bg-[#704fd5] text-white font-semibold hover:bg-[#704fd5]/90">
-                          Get Started
-                        </Button>
+                        <Button className="w-full">Get Started</Button>
                       </Link>
                     </>
                   )}

@@ -1,26 +1,26 @@
-# openvod_transcoder
+# clipmux_transcoder
 
-The shared OpenVOD processing engine, plus the self-hosted transcoding agent.
+The shared ClipMux processing engine, plus the self-hosted transcoding agent.
 
 Two entry points over one implementation:
 
-- **`openvod_transcoder.run_pipeline(...)`** — probe, plan, encode, package,
+- **`clipmux_transcoder.run_pipeline(...)`** — probe, plan, encode, package,
   validate and inventory a source. Used by the Modal GPU runner
   (`transcoding/main.py`) and by the self-hosted agent.
-- **`openvod-transcoder`** — the agent CLI: `pair`, `doctor`, `run`, `import`,
+- **`clipmux-transcoder`** — the agent CLI: `pair`, `doctor`, `run`, `import`,
   `jobs`, `retry`, `cancel`, `capabilities`, `rotate`.
 
 ```bash
 pip install -e .            # engine + agent (needs only `requests`)
 pip install -e '.[s3]'      # ...plus the Modal S3 transfer path
-openvod-transcoder doctor --full
+clipmux-transcoder doctor --full
 ```
 
 ## Design rules
 
 1. **Importing it costs nothing.** No Modal, no CUDA, no boto3, no Whisper, no R2
    credentials at import time. Optional dependencies load inside the feature that
-   needs them, so `import openvod_transcoder` works on a bare machine.
+   needs them, so `import clipmux_transcoder` works on a bare machine.
    `tests/test_engine_isolation.py` enforces this in a subprocess with the
    optional packages blocked outright.
 2. **The engine never authenticates to anything.** Transfers arrive as a
@@ -63,5 +63,5 @@ The real-media suite runs real FFmpeg encodes for every required media shape
 (AV1/Opus WebM, VP9, H.264, HEVC 10-bit, HDR10, rotated, 4:2:2/4:4:4, variable
 frame rate, short, silent, audio-only) and packages them with Shaka when it is
 installed; it is what found the 4:4:4 / `-profile:v high` incompatibility
-documented in `encoding/backends.py`. Set `OPENVOD_REQUIRE_MEDIA_TOOLS=1` — as CI
+documented in `encoding/backends.py`. Set `CLIPMUX_REQUIRE_MEDIA_TOOLS=1` — as CI
 does — to make a missing binary a failure instead of a skip.

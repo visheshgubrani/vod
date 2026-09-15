@@ -13,7 +13,7 @@
 # What this deliberately does NOT do: assert anything about real hardware. A
 # build machine has no GPU, and a build-time "nvenc works" claim would be a lie
 # that hides a missing driver or a container started without the `video`
-# capability. Hardware usability is a RUNTIME probe — `openvod-transcoder doctor`
+# capability. Hardware usability is a RUNTIME probe — `clipmux-transcoder doctor`
 # — and this script stops at "the binary contains the feature".
 #
 # Why the `scale_cuda` `format` check is here at all: the distribution FFmpeg
@@ -161,7 +161,7 @@ fi
 # Everything above reads FFmpeg's self-description. This is the only check that
 # runs the pipeline: decode a synthetic source, filter it, encode with libx264,
 # mux it, and read the result back with ffprobe.
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/openvod-toolchain-check.XXXXXX")"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/clipmux-toolchain-check.XXXXXX")"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
 

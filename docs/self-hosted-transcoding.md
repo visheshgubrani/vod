@@ -1,6 +1,6 @@
 # Self-hosted transcoding
 
-OpenVOD can encode videos on your own machine instead of Modal. The processing
+ClipMux can encode videos on your own machine instead of Modal. The processing
 engine is identical — same FFmpeg commands, same ladder, same packaging, same
 video lifecycle — so switching providers changes *where* work runs, not what it
 produces or how the API reports it.
@@ -41,7 +41,7 @@ UPLOADS_ENABLED=false          # omit RAW_BUCKET_NAME entirely
 ACCOUNT_ID=...                 # R2 credentials are still needed to deliver
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
-TRANSCODED_BUCKET_NAME=openvod-transcoded
+TRANSCODED_BUCKET_NAME=clipmux-transcoded
 DELIVERY_URL=https://delivery.example.com
 ```
 
@@ -74,7 +74,7 @@ API you are pairing with *is* the Compose `api` service.
 
 Pairing runs a real encode probe first, so a machine that cannot encode fails
 here rather than on your first import. The credential is written to
-`/var/lib/openvod-transcoder/token` with mode `0600`.
+`/var/lib/clipmux-transcoder/token` with mode `0600`.
 
 ---
 
@@ -84,18 +84,26 @@ The agent can read **only** the folders you mount and list. Everything else is
 refused by path policy, including symlinks that point outside a root.
 
 ```bash
-OPENVOD_ROOTS=media:/media,course-archive:/mnt/archive
+CLIPMUX_ROOTS=media:/media,course-archive:/mnt/archive
 ```
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `OPENVOD_ROOTS` | none | `NAME:PATH` pairs; the name is what the dashboard shows |
-| `OPENVOD_SCRATCH_DIR` | `/var/lib/openvod-transcoder/scratch` | needs roughly 2× the source size |
-| `OPENVOD_CAPACITY_JOBS` | `1` | parallel jobs on this machine |
-| `OPENVOD_CAPACITY_RENDITIONS` | `1` | parallel rendition encodes within a job |
-| `OPENVOD_ENCODER` | `auto` | `auto`, `cpu`, `nvenc`, `vaapi` (optionally `nvenc:1`) |
-| `OPENVOD_STALL_TIMEOUT_SECONDS` | `900` | kill a wedged encoder; no wall-clock job limit |
-| `OPENVOD_FAILED_RETENTION_DAYS` | `7` | failed work directories are kept for inspection |
+| `CLIPMUX_ROOTS` | none | `NAME:PATH` pairs; the name is what the dashboard shows |
+| `CLIPMUX_SCRATCH_DIR` | `/var/lib/clipmux-transcoder/scratch` | needs roughly 2× the source size |
+| `CLIPMUX_CAPACITY_JOBS` | `1` | parallel jobs on this machine |
+| `CLIPMUX_CAPACITY_RENDITIONS` | `1` | parallel rendition encodes within a job |
+| `CLIPMUX_ENCODER` | `auto` | `auto`, `cpu`, `nvenc`, `vaapi` (optionally `nvenc:1`) |
+| `CLIPMUX_STALL_TIMEOUT_SECONDS` | `900` | kill a wedged encoder; no wall-clock job limit |
+| `CLIPMUX_PROGRESS_BEAT_SECONDS` | `15` | how often progress is reported to the API; a stage change is always sent at once |
+| `CLIPMUX_HEARTBEAT_SECONDS` | `30` | how often the agent tells the API it is alive; unrelated to job progress |
+| `CLIPMUX_FAILED_RETENTION_DAYS` | `7` | failed work directories are kept for inspection |
+
+Progress beats are coalesced because the engine reports once a second *per
+encoder*: a four-rendition job would otherwise post four requests a second, each
+one a write on the API side. Raising `CLIPMUX_PROGRESS_BEAT_SECONDS` costs
+dashboard freshness, not correctness — the lease is renewed for 20 minutes per
+accepted beat, and stage changes are never delayed.
 
 Mount the media read-only. The agent snapshots the file it encodes; it never
 needs write access, and a container that cannot write to your library cannot
@@ -105,10 +113,10 @@ damage it.
 
 ### What the agent container must be able to reach
 
-The agent polls the API, so `OPENVOD_API_URL` has to work **from inside the
+The agent polls the API, so `CLIPMUX_API_URL` has to work **from inside the
 container**, which is a different address per case:
 
-| API runs… | `OPENVOD_API_URL` |
+| API runs… | `CLIPMUX_API_URL` |
 | --- | --- |
 | in this Compose stack | `http://api:4080` (the default) |
 | on Cloudflare Workers | its public URL, e.g. `https://api.example.com` |
@@ -122,9 +130,9 @@ service name and got nothing.
 ## 4. Check it, then run it
 
 ```bash
-docker run --rm -v /srv/media:/media:ro -v openvod-scratch:/var/lib/openvod-transcoder \
-  -e OPENVOD_ROOTS=media:/media -e OPENVOD_API_URL=https://api.example.com \
-  openvod-transcoder doctor --full
+docker run --rm -v /srv/media:/media:ro -v clipmux-scratch:/var/lib/clipmux-transcoder \
+  -e CLIPMUX_ROOTS=media:/media -e CLIPMUX_API_URL=https://api.example.com \
+  clipmux-transcoder doctor --full
 ```
 
 `doctor` checks, in the order a job would hit them: configuration, FFmpeg,
@@ -147,7 +155,7 @@ The self-hosted agent image installs the engine and nothing heavy: no
 `faster-whisper` (subtitles) and no `groq` client (chapters), so an import asking
 for either fails at the enrichment step. The Modal provider does ship both. See
 [docs/known-gaps.md](./known-gaps.md) for the three changes that make local AI
-real (an opt-in `OPENVOD_AGENT_EXTRAS=1` build arg, the pre-baked model, and the
+real (an opt-in `CLIPMUX_AGENT_EXTRAS=1` build arg, the pre-baked model, and the
 `GROQ_API_KEY` passthrough) — until they land, the bootstrap wizard asks about
 Groq only for Modal and warns if a headless answers file sets it here.
 
@@ -161,7 +169,7 @@ the agent's next poll.
 **CLI, from the machine holding the files:**
 
 ```bash
-openvod-transcoder import /srv/media/course/lesson-01.mp4 \
+clipmux-transcoder import /srv/media/course/lesson-01.mp4 \
   --policy signed --subtitle
 ```
 
@@ -234,7 +242,7 @@ group_add:
 
 ### Fallback, and when it does not happen
 
-With `OPENVOD_ENCODER=auto`: verified NVENC → verified VAAPI → CPU. A hardware
+With `CLIPMUX_ENCODER=auto`: verified NVENC → verified VAAPI → CPU. A hardware
 path that fails on your specific source first retries with software
 decode/filter and the *same* hardware encoder; only if that fails does it reach
 the CPU. Every fallback is recorded on the job, so "why was this slow?" has an
@@ -290,7 +298,7 @@ moved to Modal automatically.
 | --- | --- |
 | `encoder backend 'nvenc' ... is not usable` | missing `video` capability, or the host driver is older than the codec |
 | `encoder backend 'vaapi' ... is not usable` | render device not passed through, or the user is not in the `video` group |
-| Job stuck at *waiting for agent* | no heartbeat within 90 s — check the container is running and `OPENVOD_API_URL` is reachable from it |
+| Job stuck at *waiting for agent* | no heartbeat within 90 s — check the container is running and `CLIPMUX_API_URL` is reachable from it |
 | Job stuck at *source-changed* | the file was edited after registration; re-select it |
 | `SOURCE_UNREADABLE` | permissions on the mount, or the file is not a regular file |
 | Upload fails repeatedly | the transcoded bucket or its credentials are wrong; `doctor` does not cover object storage, by design — the agent holds no storage credentials |

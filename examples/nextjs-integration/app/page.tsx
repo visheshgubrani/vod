@@ -5,22 +5,22 @@
  *
  * 1. `POST /api/upload-token` mints a short-lived upload token on the server
  *    (the API key stays there).
- * 2. `@openvod/uploader` uploads the file straight to storage with it.
+ * 2. `@clipmux/uploader` uploads the file straight to storage with it.
  * 3. While the video is `processing` we poll `GET /api/video-status/[id]` every
  *    5 seconds.
  * 4. Once it is `ready`, the same route hands back a playback token / URL and
- *    `<OpenVodPlayer>` takes over.
+ *    `<ClipMuxPlayer>` takes over.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  OpenVodUploader,
-  OpenVodError,
+  ClipMuxUploader,
+  ClipMuxError,
   isUploadAbortedError,
   type UploadProgress,
   type UploadSession,
-} from '@openvod/uploader'
-import { OpenVodPlayer, type Chapter } from '@openvod/player'
+} from '@clipmux/uploader'
+import { ClipMuxPlayer, type Chapter } from '@clipmux/player'
 
 type Phase = UploadProgress['phase'] | 'processing' | 'ready' | 'failed'
 type VideoStatus = 'pending' | 'uploading' | 'processing' | 'ready' | 'failed'
@@ -149,12 +149,12 @@ export default function Home() {
 
       // 2. Upload straight to storage. `baseUrl` is the API origin only — the
       //    SDK appends `/v1`.
-      const baseUrl = process.env.NEXT_PUBLIC_OPENVOD_API_URL
+      const baseUrl = process.env.NEXT_PUBLIC_CLIPMUX_API_URL
       if (!baseUrl) {
-        throw new Error('NEXT_PUBLIC_OPENVOD_API_URL is not set')
+        throw new Error('NEXT_PUBLIC_CLIPMUX_API_URL is not set')
       }
 
-      const uploader = new OpenVodUploader({
+      const uploader = new ClipMuxUploader({
         baseUrl,
         uploadToken: tokenBody.uploadToken,
       })
@@ -206,7 +206,7 @@ export default function Home() {
 
   return (
     <main>
-      <h1>OpenVOD · Next.js integration example</h1>
+      <h1>ClipMux · Next.js integration example</h1>
       <p className="lede">
         Upload a video through the browser SDK, watch it transcode, then play it back
         with a signed token.
@@ -283,14 +283,14 @@ export default function Home() {
       {playback && videoId && (
         <section className="card">
           <h2>2 · Playback</h2>
-          <OpenVodPlayer
+          <ClipMuxPlayer
             playbackId={videoId}
             src={playback.url}
             token={playback.token ?? undefined}
             subtitles={playback.subtitles ?? undefined}
             chapters={playback.chapters}
             tokenRefreshEndpoint={`/api/play-token/${videoId}`}
-            analyticsEndpoint={`${process.env.NEXT_PUBLIC_OPENVOD_API_URL ?? ''}/api/playback/journal`}
+            analyticsEndpoint={`${process.env.NEXT_PUBLIC_CLIPMUX_API_URL ?? ''}/api/playback/journal`}
           />
           <p className="meta">
             Signed URLs expire, so the player refreshes through{' '}
@@ -310,11 +310,11 @@ function percentFor(progress: UploadProgress | null, phase: Phase): number {
 }
 
 /**
- * Errors from `@openvod/uploader` are typed: match on `error.code` (stable),
+ * Errors from `@clipmux/uploader` are typed: match on `error.code` (stable),
  * never on the message. `UploadAbortedError` is handled by the caller.
  */
 function describeError(error: unknown): string {
-  if (error instanceof OpenVodError) {
+  if (error instanceof ClipMuxError) {
     const retry = error.retryable
       ? ` Retry${error.retryAfterMs ? ` after ${Math.ceil(error.retryAfterMs / 1000)}s` : ''}.`
       : ''

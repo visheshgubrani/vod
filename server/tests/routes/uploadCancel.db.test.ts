@@ -41,7 +41,7 @@ import { fullyConfiguredEnv } from '../helpers/runtime'
 const ORG = 'org-upload-cancel'
 const OTHER_ORG = 'org-upload-cancel-other'
 const USER = 'user-upload-cancel'
-const RAW_BUCKET = 'openvod-raw'
+const RAW_BUCKET = 'clipmux-raw'
 
 /** Signed in as this user in this organization: the session is not under test. */
 function signedInAs(runtime: RuntimeCapabilities): RuntimeCapabilities {
@@ -168,7 +168,7 @@ describe.skipIf(!hasTestDatabase)(
           DB_DRIVER: 'pg',
           UPLOADS_ENABLED: 'true',
           RAW_BUCKET_NAME: RAW_BUCKET,
-          TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+          TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
         }),
       )
       if (row.interleave) {

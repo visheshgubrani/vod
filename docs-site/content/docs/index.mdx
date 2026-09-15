@@ -1,9 +1,9 @@
 ---
-title: OpenVOD Documentation
+title: ClipMux Documentation
 description: Build video upload, encoding, playback and delivery into your own product — with your own Cloudflare R2 and Modal accounts.
 ---
 
-OpenVOD is open-source video infrastructure you run on your own accounts. Paste
+ClipMux is open-source video infrastructure you run on your own accounts. Paste
 Cloudflare R2 credentials and a Modal API key, and you get Mux-style HLS/DASH
 ingestion: multipart uploads, GPU transcoding with adaptive-bitrate ladders,
 signed playback URLs, AI subtitles and chapters, tenant webhooks and analytics.
@@ -26,9 +26,9 @@ Three packages, split by where the code runs:
 
 | Package | Runs in | What it is for |
 | --- | --- | --- |
-| [`@openvod/server`](https://www.npmjs.com/package/@openvod/server) | Your backend only | Mints upload and playback tokens, manages videos, verifies webhooks. Holds the API key. |
-| [`@openvod/uploader`](https://www.npmjs.com/package/@openvod/uploader) | The browser | Windowed multipart uploads with progress, pause/resume and typed errors. |
-| [`@openvod/player`](https://www.npmjs.com/package/@openvod/player) | React 18/19 in the browser | HLS/DASH playback with signed-token auto-refresh, chapters and subtitles. |
+| [`@clipmux/server`](https://www.npmjs.com/package/@clipmux/server) | Your backend only | Mints upload and playback tokens, manages videos, verifies webhooks. Holds the API key. |
+| [`@clipmux/uploader`](https://www.npmjs.com/package/@clipmux/uploader) | The browser | Windowed multipart uploads with progress, pause/resume and typed errors. |
+| [`@clipmux/player`](https://www.npmjs.com/package/@clipmux/player) | React 18/19 in the browser | HLS/DASH playback with signed-token auto-refresh, chapters and subtitles. |
 
 The API key never reaches a browser. The browser gets short-lived tokens and
 talks to **your** R2 bucket directly — video bytes never pass through the API.
@@ -40,21 +40,21 @@ const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
 
 ```ts
 // The browser — uploads straight to your storage.
-const result = await new OpenVodUploader({ baseUrl, uploadToken }).upload(file, {
+const result = await new ClipMuxUploader({ baseUrl, uploadToken }).upload(file, {
   onProgress: (p) => setProgress(p.percentage),
 })
 ```
 
 ## What you are responsible for
 
-OpenVOD is infrastructure, not a service. Three things are yours to run, and the
+ClipMux is infrastructure, not a service. Three things are yours to run, and the
 docs say so plainly rather than burying them:
 
 - **Delivery is always a Cloudflare Worker in front of R2.** It is not a default
   that a flag changes — there is no Node delivery path.
 - **Object storage is always Cloudflare R2.** Generic S3 and MinIO are not
   implemented.
-- **`@openvod/player` is React-only.** The same manifests play anywhere with
+- **`@clipmux/player` is React-only.** The same manifests play anywhere with
   hls.js or a native `<video>` tag; see the
   [integrations matrix](/integrations#the-matrix).
 
@@ -62,7 +62,7 @@ Everything else — API runtime, Postgres transport, transcode provider, dispatc
 rate-limit store — is a documented choice. See
 [Configuration](/configuration) and [Deployment](/deploy).
 
-## Why OpenVOD
+## Why ClipMux
 
 - **Bring your own keys.** Storage, compute and database are yours. Nothing is
   metered by us because there is no us.
@@ -75,7 +75,7 @@ rate-limit store — is a documented choice. See
 ## Coming from another platform?
 
 <Cards>
-  <Card title="Coming from Mux" href="/migration-from-mux" description="A concept map from Mux primitives to the OpenVOD equivalent you run yourself." />
+  <Card title="Coming from Mux" href="/migration-from-mux" description="A concept map from Mux primitives to the ClipMux equivalent you run yourself." />
   <Card title="Concepts" href="/overview" description="Assets, processing, playback and delivery — the product model." />
   <Card title="Errors & status codes" href="/errors" description="Every error the API and SDKs can produce, in one place." />
   <Card title="Webhooks" href="/webhooks" description="Every event, the payload shape, and the delivery guarantees." />

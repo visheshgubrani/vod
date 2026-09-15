@@ -1,34 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import {
-  Chivo,
-  Commissioner,
-  Geist_Mono,
-  Inter,
-  PT_Serif,
-} from "next/font/google";
+import { Geist_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  display: "swap",
-});
-
-const commissioner = Commissioner({
-  variable: "--font-commissioner",
-  subsets: ["latin"],
-  display: "swap",
-});
-
-const ptSerif = PT_Serif({
-  variable: "--font-pt-serif",
-  subsets: ["latin"],
-  weight: ["400", "700"],
-  display: "swap",
-});
-
-const chivo = Chivo({
-  variable: "--font-chivo",
+const manrope = Manrope({
+  variable: "--font-manrope",
   subsets: ["latin"],
   display: "swap",
 });
@@ -36,17 +11,18 @@ const chivo = Chivo({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "OpenVOD",
+  title: "ClipMux",
   icons: {
     icon: "/logo.svg",
     shortcut: "/logo.svg",
     apple: "/logo.svg",
   },
   description:
-    "OpenVOD is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
+    "ClipMux is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
   keywords: [
     "video streaming",
     "VOD platform",
@@ -56,29 +32,29 @@ export const metadata: Metadata = {
     "Mux alternative",
     "affordable video hosting",
   ],
-  authors: [{ name: "OpenVOD" }],
+  authors: [{ name: "ClipMux" }],
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://openvod.dev",
-    siteName: "OpenVOD",
-    title: "OpenVOD | Open-source video infrastructure (bring your own keys)",
+    url: "https://clipmux.com",
+    siteName: "ClipMux",
+    title: "ClipMux | Open-source video infrastructure (bring your own keys)",
     description:
-      "OpenVOD is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
+      "ClipMux is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
     images: [
       {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "OpenVOD - Open-source video platform",
+        alt: "ClipMux - Open-source video platform",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "OpenVOD | Open-source video infrastructure (bring your own keys)",
+    title: "ClipMux | Open-source video infrastructure (bring your own keys)",
     description:
-      "OpenVOD is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
+      "ClipMux is the open-source, self-hosted video platform: bring your own Cloudflare R2 and Modal keys to get Mux-style HLS/DASH ingestion, transcoding, signed playback and analytics.",
     images: ["/og-image.png"],
   },
   robots: {
@@ -88,7 +64,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#7c3aed",
+  themeColor: "#171715",
   width: "device-width",
   initialScale: 1,
 };
@@ -101,7 +77,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="scroll-smooth">
       <body
-        className={`${inter.variable} ${commissioner.variable} ${ptSerif.variable} ${chivo.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${manrope.variable} ${geistMono.variable} antialiased`}
       >
         {children}
       </body>

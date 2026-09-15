@@ -2,7 +2,15 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Building2, Trash2, Save, AlertTriangle } from "lucide-react";
+import {
+  Loader2,
+  Building2,
+  Trash2,
+  Save,
+  AlertTriangle,
+  CheckCircle2,
+  Fingerprint,
+} from "lucide-react";
 import {
   useSession,
   useActiveOrganization,
@@ -14,6 +22,64 @@ import { DashboardSettingsSkeleton } from "@/components/dashboard/page-skeletons
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
+
+/**
+ * One settings group: a heading, a one-line description of what the group is
+ * for, its fields, and the control that saves them. Fields and their save button
+ * stay together so there is never a question of what a button will submit.
+ */
+function SettingsSection({
+  title,
+  description,
+  icon,
+  children,
+  footer,
+  tone = "default",
+  headingId,
+}: {
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+  children?: React.ReactNode;
+  footer?: React.ReactNode;
+  tone?: "default" | "danger";
+  headingId: string;
+}) {
+  return (
+    <section
+      aria-labelledby={headingId}
+      className={cn(
+        "dash-panel p-5 md:p-6",
+        tone === "danger" && "border-failed/35",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={cn(
+            "flex size-10 shrink-0 items-center justify-center rounded-xl border",
+            tone === "danger"
+              ? "border-failed/35 bg-failed/10 text-danger"
+              : "border-border bg-panel-strong text-muted-foreground",
+          )}
+        >
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <h2 id={headingId} className="dash-section-title text-foreground">
+            {title}
+          </h2>
+          <p className="dash-body mt-1 max-w-[62ch] text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </div>
+
+      {children ? <div className="mt-5">{children}</div> : null}
+      {footer ? <div className="mt-6">{footer}</div> : null}
+    </section>
+  );
+}
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -127,136 +193,140 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="w-full max-w-2xl space-y-8">
       {/* Page Header */}
       <DashboardPageHeader
         title="Settings"
-        description="Manage your organization settings"
+        description="Manage the name and address of this organization, and the workspace itself."
       />
 
-      {/* Organization Settings Card */}
-      <div className="glass rounded-sm p-4 md:p-6">
-        <div className="flex items-start gap-3 mb-6">
-          <div className="w-10 h-10 rounded-sm bg-gradient-to-br from-primary/40 to-accent/40 flex items-center justify-center">
-            <Building2 className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">
-              Organization
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Update your organization details
-            </p>
-          </div>
+      {/* Save and delete feedback share one region so a result is never missed */}
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-xl border border-failed/35 bg-failed/10 p-4 text-sm text-danger"
+        >
+          <AlertTriangle
+            className="mt-0.5 size-4 shrink-0"
+            aria-hidden="true"
+          />
+          <p>{error}</p>
         </div>
-
-        <form onSubmit={handleUpdate} className="space-y-5">
-          {/* Error Banner */}
-          {error && (
-            <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
-              {error}
-            </div>
-          )}
-
-          {/* Success Banner */}
-          {success && (
-            <div className="p-3 rounded-sm bg-lime-500/10 border border-lime-500/20 text-lime-400 text-sm">
-              {success}
-            </div>
-          )}
-
-          {/* Organization ID (readonly) */}
-          <div className="space-y-2">
-            <Label>Organization ID</Label>
-            <Input
-              value={activeOrg.id}
-              disabled
-              className="mt-1.5 rounded-sm bg-foreground/30 font-mono text-sm opacity-60"
-            />
-          </div>
-
-          {/* Organization Name */}
-          <div className="space-y-2">
-            <Label htmlFor="name">Name</Label>
-            <Input
-              id="name"
-              type="text"
-              placeholder="Acme Inc"
-              value={formData.name}
-              onChange={(e) =>
-                setFormData({ ...formData, name: e.target.value })
-              }
-              disabled={isUpdating}
-              className="mt-1.5 rounded-sm bg-foreground/30"
-            />
-          </div>
-
-          {/* URL Slug */}
-          <div className="space-y-2">
-            <Label htmlFor="slug">URL Slug</Label>
-            <Input
-              id="slug"
-              type="text"
-              placeholder="acme"
-              value={formData.slug}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                })
-              }
-              disabled={isUpdating}
-              className="mt-1.5 rounded-sm bg-foreground/30"
-            />
-          </div>
-
-          {/* Submit Button */}
-          <Button
-            type="submit"
-            disabled={isUpdating}
-            className="mt-4 rounded-sm"
-          >
-            {isUpdating ? (
-              <>
-                <Loader2 className="size-[18px] animate-spin" />
-                Saving...
-              </>
-            ) : (
-              <>
-                <Save className="size-[18px]" />
-                Save Changes
-              </>
-            )}
-          </Button>
-        </form>
-      </div>
-
-      {/* Danger Zone */}
-      <div className="rounded-sm border border-destructive/20 bg-red-500/5 p-4 md:p-6">
-        <div className="flex items-start gap-3 mb-10">
-          <div className="size-11 p-1 rounded-sm bg-destructive/15 flex items-center justify-center">
-            <AlertTriangle className="w-5 h-5 text-red-400" />
-          </div>
-          <div>
-            <h2 className="text-lg font-medium text-foreground">Danger Zone</h2>
-            <p className="text-sm text-muted-foreground">
-              Proceed carefully. These actions cannot be undone.
-            </p>
-          </div>
+      )}
+      {success && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-xl border border-ready/35 bg-ready/10 p-4 text-sm text-ready"
+        >
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <p>{success}</p>
         </div>
+      )}
 
+      {/* Profile */}
+      <form onSubmit={handleUpdate}>
+        <SettingsSection
+          headingId="settings-profile-title"
+          title="Organization profile"
+          description="How this workspace is named and addressed. Both values appear across the dashboard."
+          icon={<Building2 className="size-5" aria-hidden="true" />}
+          footer={
+            <Button type="submit" disabled={isUpdating}>
+              {isUpdating ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                <>
+                  <Save className="size-4" aria-hidden="true" />
+                  Save changes
+                </>
+              )}
+            </Button>
+          }
+        >
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="name">Name</Label>
+              <Input
+                id="name"
+                type="text"
+                placeholder="Acme Inc"
+                value={formData.name}
+                onChange={(e) =>
+                  setFormData({ ...formData, name: e.target.value })
+                }
+                disabled={isUpdating}
+              />
+              <p className="dash-meta">
+                Shown in the workspace switcher and on every invitation.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="slug">URL slug</Label>
+              <Input
+                id="slug"
+                type="text"
+                placeholder="acme"
+                value={formData.slug}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                  })
+                }
+                disabled={isUpdating}
+              />
+              <p className="dash-meta">
+                Lowercase letters, numbers and hyphens only.
+              </p>
+            </div>
+          </div>
+        </SettingsSection>
+      </form>
+
+      {/* Identifiers */}
+      <SettingsSection
+        headingId="settings-identifier-title"
+        title="Identifiers"
+        description="Stable values you can paste into support requests and API calls."
+        icon={<Fingerprint className="size-5" aria-hidden="true" />}
+      >
+        <div className="space-y-2">
+          <span className="dash-label block">Organization ID</span>
+          <p className="dash-code-block px-4 py-3">
+            <code className="dash-code break-all text-muted-foreground">
+              {activeOrg.id}
+            </code>
+          </p>
+          <p className="dash-meta">
+            This ID never changes, even if the name or slug does.
+          </p>
+        </div>
+      </SettingsSection>
+
+      {/* Danger zone */}
+      <SettingsSection
+        headingId="settings-danger-title"
+        title="Danger zone"
+        description="Deleting the organization removes every video and key it owns. This cannot be undone."
+        icon={<AlertTriangle className="size-5" aria-hidden="true" />}
+        tone="danger"
+      >
         {!showDeleteConfirm ? (
           <Button
             variant="outline"
             onClick={() => setShowDeleteConfirm(true)}
-            className="rounded-sm border-destructive/50 hover:border-red-800 text-red-400 font-medium hover:bg-destructive/10"
+            className="border-failed/45 text-danger hover:border-failed/70 hover:bg-failed/10"
           >
-            <Trash2 className="size-[16px]" />
-            Delete Organization
+            <Trash2 className="size-4" aria-hidden="true" />
+            Delete organization
           </Button>
         ) : (
-          <div className="space-y-4 rounded-sm border border-destructive/20 bg-destructive/5 p-4">
-            <p className="text-sm text-foreground">
+          <div className="dash-panel-quiet space-y-4 border-failed/30 p-4">
+            <p className="dash-body text-foreground">
               This action <strong>cannot be undone</strong>. This will
               permanently delete the <strong>{activeOrg.name}</strong>{" "}
               organization and all associated data including videos.
@@ -272,10 +342,9 @@ export default function SettingsPage() {
                 value={deleteConfirmText}
                 onChange={(e) => setDeleteConfirmText(e.target.value)}
                 disabled={isDeleting}
-                className="mt-1.5 rounded-sm bg-foreground/30"
               />
             </div>
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Button
                 variant="outline"
                 onClick={() => {
@@ -284,31 +353,30 @@ export default function SettingsPage() {
                   setError(null);
                 }}
                 disabled={isDeleting}
-                className="rounded-sm"
               >
                 Cancel
               </Button>
               <Button
+                variant="destructive"
                 onClick={handleDelete}
                 disabled={isDeleting || deleteConfirmText !== activeOrg.name}
-                className="rounded-sm bg-destructive hover:bg-destructive/90"
               >
                 {isDeleting ? (
                   <>
-                    <Loader2 className="size-[18px] animate-spin" />
-                    Deleting...
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                    Deleting…
                   </>
                 ) : (
                   <>
-                    <Trash2 className="size-[18px]" />
-                    Delete Forever
+                    <Trash2 className="size-4" aria-hidden="true" />
+                    Delete forever
                   </>
                 )}
               </Button>
             </div>
           </div>
         )}
-      </div>
+      </SettingsSection>
     </div>
   );
 }

@@ -4,7 +4,7 @@
  *
  * This is NOT part of `next build` and is not a test: it talks to a real server,
  * writes real bytes into your storage, and spends a real transcode job. Run it
- * by hand against a **running local OpenVOD stack**.
+ * by hand against a **running local ClipMux stack**.
  *
  * It does exactly what `app/api/upload-token/route.ts` + `app/page.tsx` do, but
  * from Node, so a failing upload can be told apart from a failing browser:
@@ -16,8 +16,8 @@
  *
  * Usage (from anywhere in the repo):
  *
- *   OPENVOD_API_KEY=sk_live_… \
- *   OPENVOD_API_URL=http://localhost:8787 \
+ *   CLIPMUX_API_KEY=sk_live_… \
+ *   CLIPMUX_API_URL=http://localhost:8787 \
  *   node examples/nextjs-integration/scripts/e2e-upload.mjs ./clip.mp4
  *
  * Options:
@@ -30,15 +30,15 @@
  * Prerequisites:
  *   - `pnpm --filter ./sdk build && pnpm --filter ./server-sdk build`
  *     (this script imports both packages from their `dist/`)
- *   - a running API (`pnpm dev`) with uploads enabled and `OPENVOD_API_KEY` set
+ *   - a running API (`pnpm dev`) with uploads enabled and `CLIPMUX_API_KEY` set
  */
 
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 
-import { OpenVod, OpenVodError } from '@openvod/server'
-import { OpenVodUploader, OpenVodError as UploaderError, isUploadAbortedError } from '@openvod/uploader'
+import { ClipMux, ClipMuxError } from '@clipmux/server'
+import { ClipMuxUploader, ClipMuxError as UploaderError, isUploadAbortedError } from '@clipmux/uploader'
 
 /** How long to wait between status polls while transcoding. */
 const POLL_INTERVAL_MS = 5_000
@@ -49,7 +49,7 @@ const MAX_POLLS = 60
  * browser here, so use a fixed, obviously-fake one — it must match whatever
  * plays the returned URL.
  */
-const VIDEO_READY_USER_AGENT = 'openvod-e2e-script/1.0'
+const VIDEO_READY_USER_AGENT = 'clipmux-e2e-script/1.0'
 
 const USAGE = `usage: node scripts/e2e-upload.mjs <file> [--title <t>] [--signed] [--subtitles] [--no-wait]
        node scripts/e2e-upload.mjs --watch <videoId>`
@@ -57,15 +57,15 @@ const USAGE = `usage: node scripts/e2e-upload.mjs <file> [--title <t>] [--signed
 async function main() {
   const { values, flags } = parseArgs(process.argv.slice(2))
 
-  const apiKey = process.env.OPENVOD_API_KEY
+  const apiKey = process.env.CLIPMUX_API_KEY
   if (!apiKey) {
-    fail('OPENVOD_API_KEY is not set (use a sk_live_… key from your deployment)')
+    fail('CLIPMUX_API_KEY is not set (use a sk_live_… key from your deployment)')
   }
 
   // No `/v1` suffix — both SDKs append it.
-  const baseUrl = process.env.OPENVOD_API_URL ?? 'http://localhost:8787'
+  const baseUrl = process.env.CLIPMUX_API_URL ?? 'http://localhost:8787'
 
-  const vod = new OpenVod({ apiKey, baseUrl })
+  const vod = new ClipMux({ apiKey, baseUrl })
 
   if (values.watch) {
     await waitForReady(vod, values.watch)
@@ -96,7 +96,7 @@ async function main() {
   console.log(`  token ${token.upload_token.slice(0, 12)}…  expires ${token.expires_at}`)
 
   // 2/3. Upload. Node has no `File`, so pass a `Blob` plus an explicit filename.
-  const uploader = new OpenVodUploader({ baseUrl, uploadToken: token.upload_token })
+  const uploader = new ClipMuxUploader({ baseUrl, uploadToken: token.upload_token })
   const blob = new Blob([contents])
 
   console.log(`→ uploading ${filePath} (${(info.size / 1024 / 1024).toFixed(1)} MiB) as "${title}"`)
@@ -208,7 +208,7 @@ async function waitForReady(vod, videoId, { polls = MAX_POLLS } = {}) {
 }
 
 function describeError(error) {
-  if (error instanceof UploaderError || error instanceof OpenVodError) {
+  if (error instanceof UploaderError || error instanceof ClipMuxError) {
     const retry = error.retryable ? ' (retryable)' : ''
     return `${error.code}: ${error.message}${retry}`
   }

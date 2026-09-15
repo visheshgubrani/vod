@@ -19,7 +19,7 @@ describe('matchOrigin', () => {
 
   it('matches subdomains of a *.wildcard pattern but not the apex', () => {
     const patterns = ['*.vercel.app']
-    expect(matchOrigin('https://openvod-preview-123.vercel.app', patterns)).toBe(true)
+    expect(matchOrigin('https://clipmux-preview-123.vercel.app', patterns)).toBe(true)
     expect(matchOrigin('https://vercel.app', patterns)).toBe(false)
   })
 

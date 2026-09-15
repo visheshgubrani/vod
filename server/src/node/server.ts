@@ -25,12 +25,12 @@ const env = process.env as unknown as EnvLike
 const runtime = createNodeRuntime(env)
 
 for (const advisory of runtime.advisories) {
-  console.warn(`[openvod-api] advisory: ${advisory}`)
+  console.warn(`[clipmux-api] advisory: ${advisory}`)
 }
 if (runtime.problems.length > 0) {
-  console.warn('[openvod-api] configuration problems:')
+  console.warn('[clipmux-api] configuration problems:')
   for (const problem of runtime.problems) {
-    console.warn(`[openvod-api]   - ${problem.message}`)
+    console.warn(`[clipmux-api]   - ${problem.message}`)
   }
 }
 
@@ -40,9 +40,9 @@ if (runtime.problems.length > 0) {
 // able to answer /health/config and say what is missing.
 const fatal = runtime.problems.filter((problem) => problem.fatal)
 if (fatal.length > 0) {
-  console.error('[openvod-api] refusing to start:')
+  console.error('[clipmux-api] refusing to start:')
   for (const problem of fatal) {
-    console.error(`[openvod-api]   - ${problem.message}`)
+    console.error(`[clipmux-api]   - ${problem.message}`)
   }
   process.exit(1)
 }
@@ -67,7 +67,7 @@ const server = serve(
   },
   (info) => {
     console.log(
-      `[openvod-api] listening on http://${info.address}:${info.port} ` +
+      `[clipmux-api] listening on http://${info.address}:${info.port} ` +
         `(runtime=${runtime.shape.runtime}, db=${runtime.shape.dbTransport}, ` +
         `rate-limit=${runtime.shape.rateLimitStore}, ` +
         `transcode=${runtime.shape.transcodeProvider}, ` +
@@ -78,7 +78,7 @@ const server = serve(
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
-    console.log(`[openvod-api] ${signal} received, shutting down`)
+    console.log(`[clipmux-api] ${signal} received, shutting down`)
     server.close(() => process.exit(0))
     // Hard stop if close hangs (in-flight streams).
     setTimeout(() => process.exit(0), 10_000).unref()

@@ -8,10 +8,14 @@ import {
     useActiveOrganization,
     setActiveOrganization,
 } from "@/lib/auth-client";
-import { DashboardSidebar } from "@/components/dashboard/dashboard-sidebar";
+import {
+    DashboardSidebar,
+    DashboardMobileNav,
+} from "@/components/dashboard/dashboard-sidebar";
 import { DashboardHeader } from "@/components/dashboard/dashboard-header";
 import { DashboardLayoutSkeleton } from "@/components/dashboard/page-skeletons";
 import { UploadModal } from "@/components/dashboard/upload-modal";
+import { Sheet } from "@/components/ui/sheet";
 
 interface DashboardLayoutProps {
     children: React.ReactNode;
@@ -23,6 +27,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     const { data: organizations, isPending: orgsPending } = useListOrganizations();
     const { data: activeOrg } = useActiveOrganization();
     const [uploadModalOpen, setUploadModalOpen] = React.useState(false);
+    const [navOpen, setNavOpen] = React.useState(false);
     const [hasResolvedActiveOrg, setHasResolvedActiveOrg] = React.useState(false);
 
     React.useEffect(() => {
@@ -59,8 +64,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     }, [organizations, orgsPending, activeOrg, hasResolvedActiveOrg]);
 
     // Handle upload completion
-    const handleUploadComplete = React.useCallback((fileId: string, key: string) => {
-        console.log("Upload complete:", { fileId, key });
+    const handleUploadComplete = React.useCallback(() => {
         // Refresh the page to show new video
         router.refresh();
     }, [router]);
@@ -87,7 +91,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         return null;
     }
 
-    // Map organizations to the format expected by sidebar
+    // Map organizations to the format expected by the sidebar
     const sidebarOrgs = organizations.map((org) => ({
         id: org.id,
         name: org.name,
@@ -95,26 +99,47 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         logo: org.logo ?? undefined,
     }));
 
+    const activeOrgId = activeOrg?.id ?? organizations[0]?.id ?? null;
+
     return (
-        <div className="flex h-screen bg-background overflow-hidden">
-            {/* Sidebar */}
+        <div className="flex h-screen overflow-hidden bg-background">
+            {/* 248px rail on desktop */}
             <DashboardSidebar
                 userName={session.user?.name}
                 organizations={sidebarOrgs}
-                activeOrgId={activeOrg?.id ?? null}
+                activeOrgId={activeOrgId}
                 onOrgChange={handleOrgChange}
                 onUploadClick={() => setUploadModalOpen(true)}
             />
 
-            {/* Main Content */}
-            <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Drawer on small screens */}
+            <Sheet
+                open={navOpen}
+                onClose={() => setNavOpen(false)}
+                side="left"
+                className="w-[min(19rem,calc(100vw-3rem))] max-w-none border-r border-border bg-panel-quiet"
+            >
+                <DashboardMobileNav
+                    organizations={sidebarOrgs}
+                    activeOrgId={activeOrgId}
+                    onOrgChange={handleOrgChange}
+                    onUploadClick={() => setUploadModalOpen(true)}
+                    onNavigate={() => setNavOpen(false)}
+                />
+            </Sheet>
+
+            {/* Main content */}
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 <DashboardHeader
                     userName={session.user?.name}
                     userEmail={session.user?.email}
                     userImage={session.user?.image}
-                    organizationName={activeOrg?.name ?? organizations[0]?.name ?? "Organization"}
+                    organizationName={
+                        activeOrg?.name ?? organizations[0]?.name ?? "Organization"
+                    }
+                    onOpenNav={() => setNavOpen(true)}
                 />
-                <main className="relative z-0 flex-1 overflow-auto p-4 md:p-6">
+                <main className="relative z-0 flex-1 overflow-auto p-4 md:p-8">
                     {children}
                 </main>
             </div>

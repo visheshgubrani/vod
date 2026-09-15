@@ -1,13 +1,13 @@
 """Tests for pure ffprobe JSON parsing and typed validation."""
 import pytest
 
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_EMPTY_FILE,
     ERROR_INVALID_CONTAINER,
     ERROR_INVALID_METADATA,
     TranscodeError,
 )
-from openvod_transcoder.video.analysis import parse_ffprobe, select_optimal_ladder, VideoMetadata
+from clipmux_transcoder.video.analysis import parse_ffprobe, select_optimal_ladder, VideoMetadata
 
 H264_SAMPLE = {
     "streams": [

@@ -73,7 +73,7 @@ LADDER_MIN_HEIGHT_GAP = 0.15
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Read from the *current* environment at call time. Snapshotting at import
-# makes `modal deploy` warn on the laptop (no openvod-creds in that process) and
+# makes `modal deploy` warn on the laptop (no clipmux-creds in that process) and
 # can freeze an empty allowlist into a running container.
 
 def _csv_set(value: str) -> Set[str]:
@@ -117,7 +117,7 @@ def config_warnings(env: Mapping[str, str] | None = None) -> list[str]:
     Non-fatal misconfigurations worth saying out loud, once, at container start.
 
     Returned rather than printed: importing a configuration module must not write
-    to stdout. Call this from the Modal function body (where openvod-creds is
+    to stdout. Call this from the Modal function body (where clipmux-creds is
     injected), not at module import during `modal deploy` on the laptop.
     """
     warnings: list[str] = []

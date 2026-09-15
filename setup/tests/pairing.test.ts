@@ -40,7 +40,7 @@ describe('agentApiUrlNote', () => {
 
   it('tells a Worker/deployed API that the container needs a reachable address', () => {
     const note = agentApiUrlNote('https://api.example.com', false)
-    expect(note).toContain('OPENVOD_API_URL=https://api.example.com')
+    expect(note).toContain('CLIPMUX_API_URL=https://api.example.com')
     expect(note).toContain('host.docker.internal')
   })
 })

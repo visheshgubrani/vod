@@ -1,6 +1,6 @@
 # Security Policy
 
-OpenVOD processes video on infrastructure you control, but a vulnerability in
+ClipMux processes video on infrastructure you control, but a vulnerability in
 the code can still put your keys, media, or tenants at risk. Please report
 issues responsibly.
 
@@ -8,7 +8,7 @@ issues responsibly.
 
 **Do not open a public GitHub issue for security problems.**
 
-- Report privately by emailing **maintainers@openvod.dev** (PGP key published
+- Report privately by emailing **maintainers@clipmux.com** (PGP key published
   here when available), or
 - If you have access, use GitHub's private vulnerability reporting
   (Security → Report a vulnerability).
@@ -46,7 +46,7 @@ history and the key rotated. Lessons codified below:
 
 ## Threat model (summary)
 
-OpenVOD is a BYOK platform: deployments hold Cloudflare R2 credentials and a
+ClipMux is a BYOK platform: deployments hold Cloudflare R2 credentials and a
 Modal webhook secret server-side, plus a shared playback `JWT_SECRET` used by
 the API and the delivery worker.
 

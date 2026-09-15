@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping
 
-from openvod_transcoder.transfer.base import (
+from clipmux_transcoder.transfer.base import (
     TransferError,
     TransferStats,
     content_type_for,

@@ -48,7 +48,7 @@
 #     FFmpeg's nvenc/nvdec/cuvid and the CUDA filters) document a minimum
 #     NVIDIA Linux driver of **530.41.03**. Below that the driver is too old for
 #     the API the binary was compiled against, and NVENC/NVDEC fail at RUNTIME.
-#     The build asserts nothing about a GPU; `openvod-transcoder doctor` does.
+#     The build asserts nothing about a GPU; `clipmux-transcoder doctor` does.
 #
 # Refresh procedure: bump a pin, re-check the constraints above against PyPI,
 # rebuild the image, and let `verify_toolchain.sh` + the real-media suites decide.

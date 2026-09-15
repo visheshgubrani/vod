@@ -193,6 +193,20 @@ describe('blockers', () => {
     ]
     expect(blockers(statuses).map((entry) => entry.requirement.id)).toEqual(['docker'])
   })
+
+  it('does not block on a missing python3 when uv is present', () => {
+    // uv provisions its own interpreter and installs without pip, so the Modal
+    // deploy environment is buildable without a system Python.
+    const withUv = [
+      status('uv', 'advisory', true),
+      status('python3', 'required', false, 'python3'),
+    ]
+    expect(blockers(withUv)).toEqual([])
+    // Without uv it is a real blocker.
+    expect(
+      blockers([status('uv', 'advisory', false), status('python3', 'required', false, 'python3')]),
+    ).toHaveLength(1)
+  })
 })
 
 describe('installPlanFor', () => {
@@ -277,7 +291,7 @@ describe('shell detector ↔ TypeScript planner', () => {
         env: {
           PATH: process.env.PATH ?? '',
           HOME: process.env.HOME ?? '',
-          OPENVOD_OS_RELEASE_FILE: '/dev/stdin',
+          CLIPMUX_OS_RELEASE_FILE: '/dev/stdin',
         },
         input: content,
       })

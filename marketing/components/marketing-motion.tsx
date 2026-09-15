@@ -3,12 +3,29 @@
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import Lenis from "lenis";
 import type { ReactNode } from "react";
 import { useRef } from "react";
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
 
+/**
+ * Page-level motion. Two effects only: a short hero entrance, and one reveal per
+ * section, played once.
+ *
+ * Three deliberate constraints:
+ *
+ * 1. **Opacity, never `autoAlpha`.** `autoAlpha` toggles `visibility: hidden`,
+ *    which removes an element from the accessibility tree — a section that has
+ *    not been scrolled to yet would be invisible to a screen reader, to
+ *    find-in-page, and to anything else that reads the DOM. Opacity fades the
+ *    same way without any of that.
+ * 2. **Sections already on screen are skipped.** `gsap.from` writes its start
+ *    state immediately, so applying it to something already in view would blank
+ *    it and then animate it back. Above-the-fold content is never touched.
+ * 3. **The rendered markup is the end state.** If this component never runs —
+ *    no JavaScript, a failed chunk, reduced motion — every section is simply
+ *    visible.
+ */
 export function MarketingMotion({ children }: { children: ReactNode }) {
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -16,109 +33,38 @@ export function MarketingMotion({ children }: { children: ReactNode }) {
     () => {
       const media = gsap.matchMedia();
 
-      media.add(
-        {
-          desktop: "(min-width: 1024px)",
-          reduceMotion: "(prefers-reduced-motion: reduce)",
-        },
-        (context) => {
-          const { desktop, reduceMotion } = context.conditions as {
-            desktop: boolean;
-            reduceMotion: boolean;
-          };
+      media.add({ ok: "(prefers-reduced-motion: no-preference)" }, (context) => {
+        const { ok } = context.conditions as { ok: boolean };
+        if (!ok) return;
 
-          if (reduceMotion) {
+        gsap.from("[data-hero-item]", {
+          opacity: 0,
+          y: 10,
+          duration: 0.5,
+          ease: "power2.out",
+          stagger: 0.07,
+          clearProps: "opacity,transform",
+        });
+
+        gsap.utils.toArray<HTMLElement>("[data-reveal]").forEach((element) => {
+          if (element.getBoundingClientRect().top < window.innerHeight) {
             return;
           }
 
-          const intro = gsap.timeline({ defaults: { ease: "power3.out" } });
-          intro.from("[data-hero-item]", {
-            autoAlpha: 0,
-            y: 12,
-            duration: 0.6,
-            stagger: 0.08,
-          });
-
-          gsap.utils.toArray<HTMLElement>("[data-reveal]").forEach((element) => {
-            gsap.from(element, {
-              autoAlpha: 0,
-              y: 20,
-              duration: 0.45,
-              ease: "power2.out",
-              scrollTrigger: {
-                trigger: element,
-                start: "top 88%",
-                once: true,
-              },
-            });
-          });
-
-          if (!desktop) {
-            return;
-          }
-
-          gsap.fromTo(
-            ".hero-frame",
-            { scale: 0.92 },
-            {
-              scale: 1,
-              ease: "none",
-              scrollTrigger: {
-                trigger: ".hero-frame-wrap",
-                start: "top bottom",
-                end: "+=400",
-                scrub: 1,
-              },
-            },
-          );
-
-          const workflowTimeline = gsap.timeline({
+          gsap.from(element, {
+            opacity: 0,
+            y: 16,
+            duration: 0.4,
+            ease: "power2.out",
+            clearProps: "opacity,transform",
             scrollTrigger: {
-              trigger: ".workflow-section",
-              start: "top top",
-              end: "+=120%",
-              pin: ".workflow-sticky",
-              scrub: 1,
-              anticipatePin: 1,
+              trigger: element,
+              start: "top 88%",
+              once: true,
             },
           });
-
-          workflowTimeline.to(".workflow-progress", { scaleY: 1, ease: "none" }, 0);
-          const scenes = gsap.utils.toArray<HTMLElement>("[data-workflow-scene]");
-          scenes.forEach((scene, index) => {
-            workflowTimeline.to(
-              scene,
-              { autoAlpha: 1, y: 0, duration: 0.28, ease: "power2.out" },
-              index * 0.62,
-            );
-            if (index < scenes.length - 1) {
-              workflowTimeline.to(
-                scene,
-                { autoAlpha: 0, y: -18, duration: 0.2, ease: "power2.in" },
-                index * 0.62 + 0.42,
-              );
-            }
-          });
-
-          const lenis = new Lenis({
-            duration: 1.1,
-            smoothWheel: true,
-            syncTouch: false,
-          });
-          const onScroll = () => ScrollTrigger.update();
-          const onTick = (time: number) => lenis.raf(time * 1000);
-          lenis.on("scroll", onScroll);
-          gsap.ticker.add(onTick);
-          gsap.ticker.lagSmoothing(0);
-
-          return () => {
-            lenis.off("scroll", onScroll);
-            gsap.ticker.remove(onTick);
-            lenis.destroy();
-            gsap.ticker.lagSmoothing(1000, 33);
-          };
-        },
-      );
+        });
+      });
 
       return () => media.revert();
     },

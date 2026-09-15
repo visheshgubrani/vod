@@ -3,16 +3,16 @@
 Expected values are worked examples, not re-derived: the fits below are the ones
 a person would compute by hand from the stated source and rung.
 """
-from openvod_transcoder.config import ENCODING_PROFILES, EncodingProfile
-from openvod_transcoder.encoding.backends import even, fit_dimensions
-from openvod_transcoder.options import ProcessingOptions
-from openvod_transcoder.planning import (
+from clipmux_transcoder.config import ENCODING_PROFILES, EncodingProfile
+from clipmux_transcoder.encoding.backends import even, fit_dimensions
+from clipmux_transcoder.options import ProcessingOptions
+from clipmux_transcoder.planning import (
     POLICY_CAPPED,
     POLICY_LEGACY,
     plan_audio,
     plan_renditions,
 )
-from openvod_transcoder.video.analysis import VideoMetadata
+from clipmux_transcoder.video.analysis import VideoMetadata
 
 
 def meta(width, height, **overrides):
@@ -218,7 +218,7 @@ class TestAgentLimits:
         scratch_quota_bytes = 10 * 1024**3
 
     def test_an_auto_backend_is_replaced_by_the_operators_choice(self):
-        from openvod_transcoder.options import ProcessingOptions
+        from clipmux_transcoder.options import ProcessingOptions
 
         options = ProcessingOptions(encoder_backend="auto").with_agent_limits(self._Config())
         assert options.encoder_backend == "vaapi"
@@ -227,13 +227,13 @@ class TestAgentLimits:
     def test_an_explicit_job_backend_is_not_rewritten(self):
         # A job that asked for NVENC on a CPU-configured machine is a mismatch
         # for encoder selection to report, not something to silently change.
-        from openvod_transcoder.options import ProcessingOptions
+        from clipmux_transcoder.options import ProcessingOptions
 
         options = ProcessingOptions(encoder_backend="nvenc").with_agent_limits(self._Config())
         assert options.encoder_backend == "nvenc"
 
     def test_machine_resource_bounds_win(self):
-        from openvod_transcoder.options import ProcessingOptions
+        from clipmux_transcoder.options import ProcessingOptions
 
         options = ProcessingOptions(
             rendition_concurrency=8, upload_concurrency=32
@@ -243,7 +243,7 @@ class TestAgentLimits:
         assert options.stall_timeout_seconds == 300.0
 
     def test_a_machines_own_capacity_raises_a_smaller_job_request(self):
-        from openvod_transcoder.options import ProcessingOptions
+        from clipmux_transcoder.options import ProcessingOptions
 
         class Wide(self._Config):
             capacity_renditions = 4
@@ -256,7 +256,7 @@ class TestAgentLimits:
         assert options.upload_concurrency == 4
 
     def test_transcription_settings_come_from_the_machine(self):
-        from openvod_transcoder.options import ProcessingOptions
+        from clipmux_transcoder.options import ProcessingOptions
 
         options = ProcessingOptions(whisper_model="").with_agent_limits(self._Config())
         assert options.whisper_model == "small"
@@ -299,7 +299,7 @@ class TestRotatedSources:
         assert (specs[0].width, specs[0].height) == (180, 320)
 
     def test_a_rotated_source_never_takes_the_gpu_filter_path(self):
-        from openvod_transcoder.encoding.backends import source_gpu_path_supported
+        from clipmux_transcoder.encoding.backends import source_gpu_path_supported
 
         # Hardware frames cannot be rotated, so every rotation — a quarter turn
         # or a half turn — takes the software path; the filter chain has to run

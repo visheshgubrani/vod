@@ -2,7 +2,7 @@
 
 These run at *image build* time, on the Modal side, where the engine package may
 not be importable yet — which is why they live in their own module and import
-nothing from `openvod_transcoder`.
+nothing from `clipmux_transcoder`.
 
 They also run at *container start* time: `main.py` imports this module, and the
 image's package lists are read from the recipe as the image is constructed. That
@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import List, Sequence
 
-TOOLCHAIN_IN_IMAGE = Path("/opt/openvod/toolchain")
+TOOLCHAIN_IN_IMAGE = Path("/opt/clipmux/toolchain")
 
 
 def toolchain_root(module_file: str) -> Path:
@@ -52,7 +52,7 @@ def resolve_toolchain_file(
           _BUILD_PACKAGES = read_package_list(_TOOLCHAIN_DIR / "apt-packages.env", ...)
         FileNotFoundError: [Errno 2] '/root/toolchain/apt-packages.env'
 
-    Resolution order: `OPENVOD_TOOLCHAIN_DIR` (a relocated copy, explicit), then
+    Resolution order: `CLIPMUX_TOOLCHAIN_DIR` (a relocated copy, explicit), then
     the checkout beside this module (deploy time, `modal run`, tests), then the
     path the image baked (`TOOLCHAIN_IN_IMAGE`). `module_file` and `roots` exist
     so tests can reproduce the container's layout; production callers pass only
@@ -60,7 +60,7 @@ def resolve_toolchain_file(
     """
     source = module_file or __file__
     candidates: List[Path] = []
-    override = os.environ.get("OPENVOD_TOOLCHAIN_DIR")
+    override = os.environ.get("CLIPMUX_TOOLCHAIN_DIR")
     if override:
         # An explicit destination wins over the checkout — that is what an
         # override is for. It is *not* a hard failure when it is stale: falling

@@ -23,7 +23,7 @@ export interface TempDir {
 
 /** Create a private temp dir for secret bulk JSON / CORS files. */
 export function makeTempDir(): TempDir {
-  const path = mkdtempSync(join(tmpdir(), 'openvod-setup-'))
+  const path = mkdtempSync(join(tmpdir(), 'clipmux-setup-'))
   return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) }
 }
 

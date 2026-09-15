@@ -22,8 +22,8 @@ both policies, so it can be your only source of playback URLs.
 | `allow_no_referrer` | boolean | `true` | Whether a request with no `Referer` at all is allowed. |
 
 ```bash
-curl -X POST "$OPENVOD_API_URL/v1/video/$VIDEO_ID/playback-token" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+curl -X POST "$CLIPMUX_API_URL/v1/video/$VIDEO_ID/playback-token" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
   -H "Content-Type: application/json" \
   -H "x-viewer-user-agent: $VIEWER_USER_AGENT" \
   -d '{
@@ -96,7 +96,7 @@ A video must be `ready`. Asking earlier is a `400`, not a retryable error:
 
 The `status` field tells you the current state. Wait for `video.ready` (or keep
 polling `GET /v1/video/:id`) and call again. In the SDK this surfaces as
-`OpenVodError` with `code: 'VIDEO_NOT_READY'`.
+`ClipMuxError` with `code: 'VIDEO_NOT_READY'`.
 
 ## The viewer binding
 
@@ -146,7 +146,7 @@ update does not break playback mid-session.
 `expires_in` defaults to 4 hours. A token that expires mid-playback stops
 playback, so:
 
-- **With `@openvod/player` (React)**, set `tokenRefreshEndpoint` and the player
+- **With `@clipmux/player` (React)**, set `tokenRefreshEndpoint` and the player
   refreshes ~60 seconds before expiry without interrupting the stream. See
   [Token auto-refresh](/playback#token-auto-refresh).
 - **With hls.js or a native `<video>`**, either mint a token longer than any
@@ -163,11 +163,11 @@ playback, so:
 ## Raw HTTP and the SDK
 
 ```ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!, // no /v1 suffix
 })
 
 const session = await vod.playback.createToken(videoId, {

@@ -11,17 +11,16 @@ import {
   RefreshCw,
   Users,
 } from "lucide-react";
-import { format, parseISO, subDays } from "date-fns";
+import { format, parseISO } from "date-fns";
 import {
   Area,
-  AreaChart,
   CartesianGrid,
+  ComposedChart,
   Label,
+  Line,
   PolarRadiusAxis,
   RadialBar,
   RadialBarChart,
-  ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
@@ -29,8 +28,11 @@ import { cn } from "@/lib/utils";
 import { DashboardPageHeader } from "@/components/dashboard/page-header";
 import { DashboardAnalyticsSkeleton } from "@/components/dashboard/page-skeletons";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import {
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
@@ -92,32 +94,72 @@ type CountryChartRow = {
   country: string;
   viewers: number;
   sessions: number;
-  fill: string;
 };
 
+type GrowthChartPoint = GrowthPoint & { label: string };
+
 const RANGE_OPTIONS: Array<{ label: string; value: DateRangeDays }> = [
-  { label: "7d", value: 7 },
-  { label: "30d", value: 30 },
-  { label: "90d", value: 90 },
+  { label: "7 days", value: 7 },
+  { label: "30 days", value: 30 },
+  { label: "90 days", value: 90 },
 ];
+
 const compactNumber = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
 });
+const countNumber = new Intl.NumberFormat("en-US");
 
 function formatCompact(value: number): string {
   return compactNumber.format(value || 0);
 }
 
-function formatHours(hours: number): string {
-  if (!Number.isFinite(hours) || hours <= 0) return "0h";
-  if (hours < 1) return `${Math.round(hours * 60)}m`;
-  return `${hours.toFixed(hours >= 10 ? 0 : 1)}h`;
+function formatCount(value: number): string {
+  return countNumber.format(value || 0);
+}
+
+/** Coerce a recharts value (number, string or tuple) to a finite number. */
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (Array.isArray(value)) return toNumber(value[0] as unknown);
+  return 0;
+}
+
+/** Split watch time into a numeral and an explicit unit. */
+function formatWatchTime(hours: number): { value: string; unit: string } {
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return { value: "0", unit: "minutes" };
+  }
+  if (hours < 1) {
+    return { value: String(Math.round(hours * 60)), unit: "minutes" };
+  }
+  return {
+    value: hours >= 10 ? hours.toFixed(0) : hours.toFixed(1),
+    unit: "hours",
+  };
+}
+
+/** The same value and unit as a single inline label. */
+function formatWatchTimeLabel(hours: number): string {
+  const watchTime = formatWatchTime(hours);
+  return `${watchTime.value} ${watchTime.unit}`;
 }
 
 function safeDateLabel(value: string): string {
   try {
     return format(parseISO(value), "MMM d");
+  } catch {
+    return value;
+  }
+}
+
+function safeLongDateLabel(value: string): string {
+  try {
+    return format(parseISO(value), "MMM d, yyyy");
   } catch {
     return value;
   }
@@ -140,25 +182,99 @@ function normalizeCountryLabel(country: string): string {
   return country.trim();
 }
 
-function createFallbackGrowthPoint(date: Date): GrowthPoint {
-  return {
-    date: date.toISOString(),
-    views: 0,
-    uniqueViewers: 0,
-    watchTimeSeconds: 0,
-    watchTimeHours: 0,
-  };
+const growthChartConfig = {
+  views: {
+    label: "Views",
+    color: "var(--chart-1)",
+  },
+  uniqueViewers: {
+    label: "Unique viewers",
+    color: "var(--chart-2)",
+  },
+} satisfies ChartConfig;
+
+const devicesChartConfig = {
+  desktop: {
+    label: "Desktop",
+    color: "var(--chart-2)",
+  },
+  mobile: {
+    label: "Mobile",
+    color: "var(--chart-1)",
+  },
+} satisfies ChartConfig;
+
+/** One tooltip row: series name on the left, numbered value with unit right. */
+function TooltipRow({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex w-full items-center justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono font-medium tabular-nums text-foreground">
+        {value}
+      </span>
+    </span>
+  );
 }
 
-function createFallbackGrowthTimeline(rangeDays: DateRangeDays): GrowthPoint[] {
-  const endDate = new Date();
-  const pointCount = Math.min(7, rangeDays);
-  const step = Math.max(1, Math.floor((rangeDays - 1) / Math.max(pointCount - 1, 1)));
+function StatPanel({
+  label,
+  icon,
+  value,
+  unit,
+  footnote,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  value: string;
+  unit: string;
+  footnote: string;
+}) {
+  return (
+    <div className="dash-panel flex flex-col gap-4 p-5 md:p-6">
+      <div className="flex items-center justify-between gap-3">
+        <span className="dash-label">{label}</span>
+        <span className="flex size-9 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+          {icon}
+        </span>
+      </div>
+      <p className="flex items-baseline gap-2">
+        <span className="font-mono text-3xl font-semibold tracking-tight tabular-nums text-foreground">
+          {value}
+        </span>
+        <span className="text-sm text-muted-foreground">{unit}</span>
+      </p>
+      <p className="dash-meta">{footnote}</p>
+    </div>
+  );
+}
 
-  return Array.from({ length: pointCount }, (_, index) => {
-    const daysBack = Math.max(rangeDays - 1 - index * step, 0);
-    return createFallbackGrowthPoint(subDays(endDate, daysBack));
-  });
+function EmptyState({
+  icon,
+  title,
+  description,
+  className,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-panel-quiet px-6 py-10 text-center",
+        className
+      )}
+    >
+      <span className="flex size-12 items-center justify-center rounded-full border border-border bg-panel-strong text-muted-foreground">
+        {icon}
+      </span>
+      <p className="mt-4 text-[15px] font-semibold text-foreground">{title}</p>
+      <p className="dash-body mt-1.5 max-w-md text-muted-foreground">
+        {description}
+      </p>
+    </div>
+  );
 }
 
 export default function AnalyticsPage() {
@@ -243,30 +359,15 @@ export default function AnalyticsPage() {
     fetchAnalytics();
   }, [fetchAnalytics]);
 
-  const growthChartData = React.useMemo(() => {
-    if (growth.length === 0) {
-      return createFallbackGrowthTimeline(rangeDays).map((point) => ({
+  // Only real timeline points are plotted — no synthetic zero-filled days.
+  const growthChartData: GrowthChartPoint[] = React.useMemo(
+    () =>
+      growth.map((point) => ({
         ...point,
         label: safeDateLabel(point.date),
-      }));
-    }
-
-    if (growth.length === 1) {
-      const [singlePoint] = growth;
-      const fallbackTimeline = createFallbackGrowthTimeline(rangeDays);
-      const mergedTimeline = [...fallbackTimeline.slice(0, -1), singlePoint];
-
-      return mergedTimeline.map((point) => ({
-          ...point,
-          label: safeDateLabel(point.date),
-      }));
-    }
-
-    return growth.map((point) => ({
-      ...point,
-      label: safeDateLabel(point.date),
-    }));
-  }, [growth, rangeDays]);
+      })),
+    [growth]
+  );
   const normalizedCountries = Array.from(
     countries
       .reduce((map, item) => {
@@ -286,13 +387,7 @@ export default function AnalyticsPage() {
 
   const countryRows: CountryChartRow[] = normalizedCountries
     .filter((item) => item.viewers > 0)
-    .slice(0, 5)
-    .map((item) => ({
-      country: item.country,
-      viewers: item.viewers,
-      sessions: item.sessions,
-      fill: "hsl(var(--accent))",
-    }));
+    .slice(0, 5);
   const maxCountryViewers = Math.max(
     ...countryRows.map((item) => item.viewers),
     1
@@ -317,24 +412,24 @@ export default function AnalyticsPage() {
     },
   ];
   const totalDeviceViewers = desktopViewers + mobileViewers;
+  const desktopShare =
+    totalDeviceViewers > 0
+      ? Math.round((desktopViewers / totalDeviceViewers) * 100)
+      : 0;
+  const mobileShare =
+    totalDeviceViewers > 0
+      ? Math.round((mobileViewers / totalDeviceViewers) * 100)
+      : 0;
   const sortedTopVideos = [...topVideos]
     .sort((a, b) => b.views - a.views)
     .slice(0, 3);
   const topVideoPeakViews = sortedTopVideos[0]?.views ?? 0;
 
-  const devicesChartConfig = {
-    viewers: {
-      label: "Viewers",
-    },
-    desktop: {
-      label: "Desktop",
-      color: "hsl(var(--accent))",
-    },
-    mobile: {
-      label: "Mobile",
-      color: "rgb(251 207 232)",
-    },
-  } satisfies ChartConfig;
+  const watchTime = formatWatchTime(hero?.watchTimeHours || 0);
+  const isGrowthChartEmpty = growthChartData.length === 0;
+  const hasCountryData = countryRows.length > 0;
+  const hasDeviceData = devices.length > 0;
+  const hasTopVideos = sortedTopVideos.length > 0;
 
   if (loading) {
     return <DashboardAnalyticsSkeleton />;
@@ -342,225 +437,251 @@ export default function AnalyticsPage() {
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
-        <div className="flex items-center gap-2 text-red-400">
-          <AlertTriangle className="w-5 h-5" />
-          <span>{error}</span>
+      <div className="w-full space-y-8">
+        <DashboardPageHeader
+          title="Analytics"
+          description={`Views, watch time and audience breakdown for the last ${rangeDays} days.`}
+        />
+        <div
+          role="alert"
+          className="flex flex-col gap-4 rounded-xl border border-failed/35 bg-failed/10 p-4 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p className="flex items-start gap-2 text-sm text-danger">
+            <AlertTriangle
+              className="mt-0.5 size-4 shrink-0"
+              aria-hidden="true"
+            />
+            {error}
+          </p>
+          <Button onClick={fetchAnalytics} variant="outline" size="sm">
+            <RefreshCw className="size-4" aria-hidden="true" />
+            Retry
+          </Button>
         </div>
-        <Button onClick={fetchAnalytics} variant="outline" size="sm">
-          <RefreshCw className="size-4.5 mr-2" />
-          Retry
-        </Button>
       </div>
     );
   }
 
   return (
-    <div className="space-y-8 w-full">
-      <div className="relative overflow-hidden rounded-sm border border-border bg-card/70 px-4 py-4 md:px-6 md:py-6">
-        <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_20%_10%,hsl(var(--primary)/0.22),transparent_48%),radial-gradient(circle_at_88%_30%,hsl(var(--accent)/0.20),transparent_42%)]" />
-        <DashboardPageHeader
-          title="Analytics"
-          description="Real-time health view across your entire video catalog."
-          eyebrow="Organization Pulse"
-          className="relative"
-          actions={
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              {RANGE_OPTIONS.map((option) => (
+    <div className="w-full space-y-8">
+      <DashboardPageHeader
+        title="Analytics"
+        description={`Views, watch time and audience breakdown for the last ${rangeDays} days.`}
+        actions={
+          <div
+            role="group"
+            aria-label="Analytics period"
+            className="flex w-full gap-1 rounded-xl border border-border bg-panel p-1 sm:w-auto"
+          >
+            {RANGE_OPTIONS.map((option) => {
+              const isActive = rangeDays === option.value;
+
+              return (
                 <button
                   key={option.value}
+                  type="button"
                   onClick={() => setRangeDays(option.value)}
+                  aria-pressed={isActive}
                   className={cn(
-                    "w-full rounded-full border px-6 py-1.5 text-sm font-medium transition-all sm:w-auto",
-                    rangeDays === option.value
-                      ? "border-primary/60 bg-primary/20 text-purple-200"
-                      : "border-muted-foreground/30 border bg-background/30 text-muted-foreground hover:text-foreground hover:border-primary/30"
+                    "inline-flex h-11 flex-1 items-center justify-center rounded-lg px-4 text-sm font-semibold transition-colors sm:flex-none",
+                    isActive
+                      ? "bg-brand text-brand-foreground"
+                      : "text-muted-foreground hover:bg-panel-strong hover:text-foreground"
                   )}
                 >
-                  Last {option.label}
+                  {option.label}
                 </button>
-              ))}
-            </div>
-          }
+              );
+            })}
+          </div>
+        }
+      />
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatPanel
+          label="Total views"
+          icon={<PlayCircle className="size-4.5" aria-hidden="true" />}
+          value={formatCount(hero?.totalViews || 0)}
+          unit="views"
+          footnote={`Playback sessions recorded in the last ${rangeDays} days.`}
+        />
+        <StatPanel
+          label="Watch time"
+          icon={<BarChart3 className="size-4.5" aria-hidden="true" />}
+          value={watchTime.value}
+          unit={watchTime.unit}
+          footnote={`Total playback time in the last ${rangeDays} days.`}
+        />
+        <StatPanel
+          label="Unique viewers"
+          icon={<Users className="size-4.5" aria-hidden="true" />}
+          value={formatCount(hero?.uniqueViewers || 0)}
+          unit="viewers"
+          footnote={`Distinct viewers seen in the last ${rangeDays} days.`}
+        />
+        <StatPanel
+          label="Playback error rate"
+          icon={<AlertTriangle className="size-4.5" aria-hidden="true" />}
+          value={(hero?.errorRatePercent || 0).toFixed(2)}
+          unit="% of events"
+          footnote={`Share of playback events that failed in the last ${rangeDays} days.`}
         />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-muted-foreground">
-              Total Views
+      <section className="dash-panel p-5 md:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="dash-section-title text-foreground">
+              Views over time
+            </h2>
+            <p className="dash-meta mt-1.5">
+              Daily view counts and unique viewers for the last {rangeDays}{" "}
+              days.
             </p>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <PlayCircle className="size-4.5 text-purple-300" />
-            </div>
           </div>
-          <p className="mt-3 text-3xl font-semibold text-foreground">
-            {formatCompact(hero?.totalViews || 0)}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Sessions across all videos
-          </p>
         </div>
 
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-muted-foreground">
-              Watch Time
-            </p>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <BarChart3 className="size-4.5 text-cyan-400" />
-            </div>
-          </div>
-          <p className="mt-3 text-3xl font-semibold text-foreground">
-            {formatHours(hero?.watchTimeHours || 0)}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Total hours consumed
-          </p>
-        </div>
-
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-muted-foreground">
-              Unique Viewers
-            </p>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <Users className="size-4.5 text-lime-500" />
-            </div>
-          </div>
-          <p className="mt-3 text-3xl font-semibold text-foreground">
-            {formatCompact(hero?.uniqueViewers || 0)}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Distinct users and sessions
-          </p>
-        </div>
-
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-muted-foreground">
-              Error Rate
-            </p>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <AlertTriangle className="size-4.5 text-amber-400" />
-            </div>
-          </div>
-          <p className="mt-3 text-3xl font-semibold text-foreground">
-            {(hero?.errorRatePercent || 0).toFixed(2)}%
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Playback quality signal
-          </p>
-        </div>
-      </div>
-
-      <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold text-foreground">
-            Views Over Time
-          </h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Daily growth trend for the last {rangeDays} days.
-          </p>
-        </div>
-
-        <div className="relative h-64 sm:h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart
-              data={growthChartData}
-              margin={{ top: 8, right: 8, bottom: 8, left: -18 }}
+        <div className="mt-6">
+          {isGrowthChartEmpty ? (
+            <EmptyState
+              className="h-80 sm:h-96"
+              icon={<BarChart3 className="size-5" aria-hidden="true" />}
+              title="No views recorded yet"
+              description="Views and unique viewers appear here once your videos are played. Publish a video and open its playback link to start collecting events."
+            />
+          ) : (
+            <ChartContainer
+              config={growthChartConfig}
+              className="h-80 w-full sm:h-96"
             >
-              <defs>
-                <linearGradient id="viewsFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop
-                    offset="5%"
-                    stopColor="hsl(var(--primary))"
-                    stopOpacity={0.4}
-                  />
-                  <stop
-                    offset="95%"
-                    stopColor="hsl(var(--primary))"
-                    stopOpacity={0.03}
-                  />
-                </linearGradient>
-              </defs>
-              <CartesianGrid
-                stroke="hsl(var(--border))"
-                strokeOpacity={0.8}
-                strokeDasharray="4 4"
-              />
-              <XAxis
-                dataKey="label"
-                stroke="hsl(var(--muted-foreground))"
-                style={{ fontSize: "12px" }}
-                minTickGap={20}
-                tickMargin={10}
-              />
-              <YAxis
-                stroke="hsl(var(--muted-foreground))"
-                style={{ fontSize: "12px" }}
-                allowDecimals={false}
-                width={45}
-                tickMargin={8}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "12px",
-                }}
-                formatter={(value, name) => {
-                  const rawValue = Array.isArray(value) ? value[0] : value;
-                  const safeValue =
-                    typeof rawValue === "number"
-                      ? rawValue
-                      : Number(rawValue ?? 0);
-                  const safeName = String(name ?? "value");
-                  if (safeName === "views")
-                    return [safeValue.toLocaleString(), "Views"];
-                  if (safeName === "uniqueViewers")
-                    return [safeValue.toLocaleString(), "Unique Viewers"];
-                  return [safeValue.toLocaleString(), safeName];
-                }}
-                labelFormatter={(label) => `Date: ${label}`}
-              />
-              <Area
-                type="monotone"
-                dataKey="views"
-                stroke="hsl(var(--primary))"
-                fill="url(#viewsFill)"
-                strokeWidth={2.5}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-          {/* {growth.length === 0 && (
-            <div className="pointer-events-none md:block hidden absolute inset-x-0 top-0 flex justify-center items-center pb-2 text-sm text-muted-foreground">
-              No analytics events yet for this range.
-            </div>
-          )} */}
-        </div>
-      </div>
+              <ComposedChart
+                accessibilityLayer
+                data={growthChartData}
+                margin={{ top: 8, right: 12, bottom: 4, left: 4 }}
+              >
+                <defs>
+                  <linearGradient
+                    id="analyticsViewsFill"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="5%"
+                      stopColor="var(--chart-1)"
+                      stopOpacity={0.35}
+                    />
+                    <stop
+                      offset="95%"
+                      stopColor="var(--chart-1)"
+                      stopOpacity={0.02}
+                    />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid
+                  stroke="var(--border-soft)"
+                  strokeDasharray="4 4"
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={24}
+                  tickMargin={10}
+                  tick={{ fontSize: 13, fill: "var(--muted-foreground)" }}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  width={56}
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={8}
+                  tick={{ fontSize: 13, fill: "var(--muted-foreground)" }}
+                  tickFormatter={(value: number) => formatCompact(value)}
+                />
+                <ChartTooltip
+                  cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
+                  content={
+                    <ChartTooltipContent
+                      className="text-[13px]"
+                      labelFormatter={(label, payload) => {
+                        const first = payload?.[0] as
+                          | { payload?: { date?: unknown } }
+                          | undefined;
+                        const rawDate = first?.payload?.date;
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6 xl:min-h-[24rem]">
-          <div className="mb-6 flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-foreground">Top Countries</h3>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Where your audience watches
+                        return typeof rawDate === "string"
+                          ? safeLongDateLabel(rawDate)
+                          : String(label);
+                      }}
+                      formatter={(value, name) => {
+                        const isUniqueViewers =
+                          String(name) === "uniqueViewers";
+
+                        return (
+                          <TooltipRow
+                            label={
+                              isUniqueViewers ? "Unique viewers" : "Views"
+                            }
+                            value={`${formatCount(toNumber(value))} ${
+                              isUniqueViewers ? "viewers" : "views"
+                            }`}
+                          />
+                        );
+                      }}
+                    />
+                  }
+                />
+                <Area
+                  type="monotone"
+                  dataKey="views"
+                  stroke="var(--chart-1)"
+                  strokeWidth={2.5}
+                  fill="url(#analyticsViewsFill)"
+                  dot={
+                    growthChartData.length <= 2
+                      ? { r: 4, fill: "var(--chart-1)", strokeWidth: 0 }
+                      : false
+                  }
+                  activeDot={{ r: 5, strokeWidth: 0 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="uniqueViewers"
+                  stroke="var(--chart-2)"
+                  strokeWidth={2.5}
+                  dot={false}
+                  activeDot={{ r: 5, strokeWidth: 0 }}
+                />
+                <ChartLegend
+                  content={<ChartLegendContent className="text-[13px]" />}
+                />
+              </ComposedChart>
+            </ChartContainer>
+          )}
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <section className="dash-panel p-5 md:p-6 xl:min-h-[24rem]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="dash-section-title text-foreground">
+                Top countries
+              </h3>
+              <p className="dash-meta mt-1.5">
+                Viewers by country, last {rangeDays} days.
               </p>
             </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <Globe className="size-4.5 text-purple-300" />
-            </div>
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+              <Globe className="size-4.5" aria-hidden="true" />
+            </span>
           </div>
-          {countryRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground/90 px-4 py-12 text-center">
-              No country data yet
-            </p>
-          ) : (
-            <div className="space-y-6 pt-2">
+
+          {hasCountryData ? (
+            <ul className="mt-6 space-y-5">
               {countryRows.map((country) => {
                 const width = `${Math.max(
                   (country.viewers / maxCountryViewers) * 100,
@@ -568,202 +689,280 @@ export default function AnalyticsPage() {
                 )}%`;
 
                 return (
-                  <div
+                  <li
                     key={country.country}
-                    className="grid grid-cols-[72px_minmax(0,1fr)_56px] items-center gap-4"
+                    className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)_auto] items-center gap-4"
                   >
-                    <p className="text-xs font-medium text-foreground/80">
-                      {country.country}
-                    </p>
-                    <div className="h-6 overflow-hidden rounded-xs bg-accent/10">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {country.country}
+                      </p>
+                      <p className="dash-meta truncate">
+                        {formatCount(country.sessions)} sessions
+                      </p>
+                    </div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-panel-strong">
                       <div
-                        className="h-full rounded-xs"
+                        className="h-full rounded-full bg-chart-2"
                         style={{
                           width,
                           minWidth: country.viewers > 0 ? "0.75rem" : "0",
-                          backgroundColor: country.fill,
                         }}
                       />
                     </div>
-                    <p className="text-right text-sm text-foreground/80">
-                      {formatCompact(country.viewers)}
+                    <p className="text-right">
+                      <span className="font-mono text-sm font-medium tabular-nums text-foreground">
+                        {formatCount(country.viewers)}
+                      </span>
+                      <span className="ml-1.5 text-[13px] text-muted-foreground">
+                        viewers
+                      </span>
                     </p>
-                  </div>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
+          ) : (
+            <EmptyState
+              className="mt-6 py-12"
+              icon={<Globe className="size-5" aria-hidden="true" />}
+              title="No country data yet"
+              description="Country comes from the viewer's request. It appears here after the first playback event from a public network."
+            />
           )}
-        </div>
+        </section>
 
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6 xl:min-h-[25rem]">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-foreground">Device Types</h3>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Desktop vs mobile split
+        <section className="dash-panel p-5 md:p-6 xl:min-h-[24rem]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="dash-section-title text-foreground">
+                Device types
+              </h3>
+              <p className="dash-meta mt-1.5">
+                Desktop and mobile viewers, last {rangeDays} days.
               </p>
             </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <MonitorSmartphone className="size-4.5 text-cyan-500" />
-            </div>
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+              <MonitorSmartphone className="size-4.5" aria-hidden="true" />
+            </span>
           </div>
 
-          {devices.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">
-              No device data yet
-            </p>
-          ) : (
-            <div className="space-y-5">
-              <div className="h-[250px]">
-                <ChartContainer
-                  config={devicesChartConfig}
-                  className="mx-auto h-full w-full max-w-[210px] aspect-square"
+          {hasDeviceData ? (
+            <div className="mt-4">
+              <ChartContainer
+                config={devicesChartConfig}
+                className="mx-auto h-[260px] w-full max-w-[230px]"
+              >
+                <RadialBarChart
+                  accessibilityLayer
+                  data={deviceChartData}
+                  endAngle={180}
+                  innerRadius="58%"
+                  outerRadius="96%"
                 >
-                  <RadialBarChart
-                    accessibilityLayer
-                    data={deviceChartData}
-                    endAngle={180}
-                    innerRadius={80}
-                    outerRadius={130}
-                  >
-                    <ChartTooltip
-                      cursor={false}
-                      content={<ChartTooltipContent hideLabel />}
-                    />
-                    <PolarRadiusAxis
-                      tick={false}
-                      tickLine={false}
-                      axisLine={false}
-                    >
-                      <Label
-                        content={({ viewBox }) => {
-                          if (viewBox && "cx" in viewBox && "cy" in viewBox) {
-                            return (
-                              <text
-                                x={viewBox.cx}
-                                y={viewBox.cy}
-                                textAnchor="middle"
-                              >
-                                <tspan
-                                  x={viewBox.cx}
-                                  y={(viewBox.cy || 0) - 16}
-                                  className="fill-foreground text-2xl font-bold"
-                                >
-                                  {formatCompact(totalDeviceViewers)}
-                                </tspan>
-                                <tspan
-                                  x={viewBox.cx}
-                                  y={(viewBox.cy || 0) + 4}
-                                  className="fill-muted-foreground"
-                                >
-                                  Views
-                                </tspan>
-                              </text>
-                            );
-                          }
+                  <ChartTooltip
+                    cursor={false}
+                    content={
+                      <ChartTooltipContent
+                        className="text-[13px]"
+                        hideLabel
+                        formatter={(value, name) => {
+                          const isDesktop = String(name) === "desktop";
 
-                          return null;
+                          return (
+                            <TooltipRow
+                              label={isDesktop ? "Desktop" : "Mobile"}
+                              value={`${formatCount(toNumber(value))} viewers`}
+                            />
+                          );
                         }}
                       />
-                    </PolarRadiusAxis>
-                    <RadialBar
-                      dataKey="desktop"
-                      stackId="a"
-                      cornerRadius={4}
-                      fill={
-                        desktopViewers > 0
-                          ? "var(--color-desktop)"
-                          : "hsl(var(--accent) / 0.1)"
-                      }
-                      className="stroke-transparent stroke-2"
-                    />
-                    <RadialBar
-                      dataKey="mobile"
-                      stackId="a"
-                      cornerRadius={5}
-                      fill={
-                        mobileViewers > 0
-                          ? "var(--color-mobile)"
-                          : "rgb(251 207 232 / 0.25)"
-                      }
-                      className="stroke-transparent stroke-2"
-                    />
-                  </RadialBarChart>
-                </ChartContainer>
-              </div>
-              <div className="flex -mt-2 flex-col items-center justify-center gap-3 text-sm sm:-mt-4 sm:flex-row sm:gap-6 md:gap-10">
-                <div className="flex items-center gap-2 text-foreground">
-                  <span className="h-2.5 w-2.5 rounded-full bg-accent" />
-                  <span>Desktop</span>
-                  <span className="text-muted-foreground">
-                    {formatCompact(desktopViewers)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-foreground">
-                  <span className="h-2.5 w-2.5 rounded-full bg-pink-200" />
-                  <span>Mobile</span>
-                  <span className="text-muted-foreground">
-                    {formatCompact(mobileViewers)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+                    }
+                  />
+                  <PolarRadiusAxis
+                    tick={false}
+                    tickLine={false}
+                    axisLine={false}
+                  >
+                    <Label
+                      content={({ viewBox }) => {
+                        if (viewBox && "cx" in viewBox && "cy" in viewBox) {
+                          return (
+                            <text
+                              x={viewBox.cx}
+                              y={viewBox.cy}
+                              textAnchor="middle"
+                            >
+                              <tspan
+                                x={viewBox.cx}
+                                y={(viewBox.cy || 0) - 14}
+                                className="fill-foreground font-mono text-2xl font-semibold"
+                              >
+                                {formatCount(totalDeviceViewers)}
+                              </tspan>
+                              <tspan
+                                x={viewBox.cx}
+                                y={(viewBox.cy || 0) + 8}
+                                className="fill-muted-foreground text-[13px]"
+                              >
+                                viewers
+                              </tspan>
+                            </text>
+                          );
+                        }
 
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6 xl:min-h-[25rem]">
-          <div className="mb-6 flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-foreground">Top Videos</h3>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Highest view count content
+                        return null;
+                      }}
+                    />
+                  </PolarRadiusAxis>
+                  <RadialBar
+                    dataKey="desktop"
+                    stackId="a"
+                    cornerRadius={4}
+                    fill={
+                      desktopViewers > 0
+                        ? "var(--color-desktop)"
+                        : "var(--panel-strong)"
+                    }
+                    className="stroke-transparent stroke-2"
+                  />
+                  <RadialBar
+                    dataKey="mobile"
+                    stackId="a"
+                    cornerRadius={5}
+                    fill={
+                      mobileViewers > 0
+                        ? "var(--color-mobile)"
+                        : "var(--panel-strong)"
+                    }
+                    className="stroke-transparent stroke-2"
+                  />
+                </RadialBarChart>
+              </ChartContainer>
+              <ul className="-mt-24 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-[13px]">
+                <li className="flex items-center gap-2">
+                  <span
+                    className="size-2.5 rounded-full bg-chart-2"
+                    aria-hidden="true"
+                  />
+                  <span className="text-muted-foreground">Desktop</span>
+                  <span className="font-mono font-medium tabular-nums text-foreground">
+                    {formatCount(desktopViewers)}
+                  </span>
+                  <span className="text-faint-foreground">
+                    ({desktopShare}%)
+                  </span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <span
+                    className="size-2.5 rounded-full bg-chart-1"
+                    aria-hidden="true"
+                  />
+                  <span className="text-muted-foreground">Mobile</span>
+                  <span className="font-mono font-medium tabular-nums text-foreground">
+                    {formatCount(mobileViewers)}
+                  </span>
+                  <span className="text-muted-foreground">({mobileShare}%)</span>
+                </li>
+              </ul>
+            </div>
+          ) : (
+            <EmptyState
+              className="mt-6 py-12"
+              icon={<MonitorSmartphone className="size-5" aria-hidden="true" />}
+              title="No device data yet"
+              description="Device type arrives with the first playback event, split into desktop and mobile viewers."
+            />
+          )}
+        </section>
+
+        <section className="dash-panel p-5 md:p-6 xl:min-h-[24rem]">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="dash-section-title text-foreground">
+                Top videos
+              </h3>
+              <p className="dash-meta mt-1.5">
+                Most viewed assets, last {rangeDays} days.
               </p>
             </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-accent/10">
-              <Clapperboard className="size-4.5 text-lime-500" />
-            </div>
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+              <Clapperboard className="size-4.5" aria-hidden="true" />
+            </span>
           </div>
 
-          {sortedTopVideos.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">
-              No videos ranked yet
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {sortedTopVideos.map((video) => {
-                const share =
-                  topVideoPeakViews > 0
-                    ? (video.views / topVideoPeakViews) * 100
-                    : 0;
-                return (
-                  <div
-                    key={video.videoId}
-                    className="rounded-sm border border-border/60 bg-background/30 p-3 md:p-4"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className=" text-sm font-semibold text-foreground">
+          {hasTopVideos ? (
+            <div className="mt-6">
+              <ul className="space-y-3">
+                {sortedTopVideos.map((video) => {
+                  const share =
+                    topVideoPeakViews > 0
+                      ? (video.views / topVideoPeakViews) * 100
+                      : 0;
+
+                  return (
+                    <li
+                      key={video.videoId}
+                      className="rounded-xl border border-border-soft bg-panel-quiet p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <p className="min-w-0 break-words text-[15px] font-semibold text-foreground">
                           {video.title}
                         </p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-base font-semibold text-foreground">
-                          {formatCompact(video.views)} views
+                        <p className="shrink-0 text-right">
+                          <span className="font-mono text-[15px] font-semibold tabular-nums text-foreground">
+                            {formatCount(video.views)}
+                          </span>
+                          <span className="ml-1.5 text-[13px] text-muted-foreground">
+                            views
+                          </span>
                         </p>
                       </div>
-                    </div>
-                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-muted/70">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-lime-300/65 to-cyan-300/65"
-                        style={{ width: `${Math.max(share, 6)}%` }}
+                      <dl className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[13px]">
+                        <div className="flex items-center gap-1.5">
+                          <dt className="text-muted-foreground">
+                            Unique viewers
+                          </dt>
+                          <dd className="font-mono font-medium tabular-nums text-foreground">
+                            {formatCount(video.uniqueViewers)}
+                          </dd>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <dt className="text-muted-foreground">Watch time</dt>
+                          <dd className="font-mono font-medium tabular-nums text-foreground">
+                            {formatWatchTimeLabel(video.totalWatchHours)}
+                          </dd>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <dt className="text-muted-foreground">Error rate</dt>
+                          <dd className="font-mono font-medium tabular-nums text-foreground">
+                            {(video.errorRatePercent || 0).toFixed(2)}%
+                          </dd>
+                        </div>
+                      </dl>
+                      <Progress
+                        className="mt-4"
+                        value={share}
+                        aria-hidden="true"
                       />
-                    </div>
-                  </div>
-                );
-              })}
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="dash-meta mt-4">
+                Bars show each video&apos;s views relative to the most viewed
+                asset in this period.
+              </p>
             </div>
+          ) : (
+            <EmptyState
+              className="mt-6 py-12"
+              icon={<Clapperboard className="size-5" aria-hidden="true" />}
+              title="No ranked videos yet"
+              description="Videos are ranked by views. Once an asset has been played in this period it appears here."
+            />
           )}
-        </div>
+        </section>
       </div>
     </div>
   );

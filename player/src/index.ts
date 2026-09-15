@@ -1,16 +1,16 @@
 export {
-    OpenVodPlayer,
+    ClipMuxPlayer,
     resolveSourceUrl,
     extractToken,
     chaptersToVtt,
     chaptersToVttUrl,
-} from './OpenVodPlayer'
+} from './ClipMuxPlayer'
 export type {
-    OpenVodPlayerProps,
+    ClipMuxPlayerProps,
     Chapter,
     TokenSource,
     TokenResponse,
-} from './OpenVodPlayer'
+} from './ClipMuxPlayer'
 
 export {
     decodeJwtExp,

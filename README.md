@@ -1,4 +1,4 @@
-# OpenVOD
+# ClipMux
 
 **Open-source, self-hosted video infrastructure. Bring your own keys.**
 
@@ -7,7 +7,7 @@ HLS/DASH ingestion: multipart uploads, GPU transcoding, signed playback URLs,
 optional AI subtitles & chapters, tenant webhooks and usage analytics — on
 accounts you control.
 
-## Why OpenVOD
+## Why ClipMux
 
 - **BYOK**: Cloudflare R2 for storage, Modal for GPU transcoding, your Postgres
   for metadata.
@@ -20,11 +20,11 @@ accounts you control.
 
 | I want to… | Start here |
 | --- | --- |
-| **Read the docs** — setup, integration guides, API reference | [docs site](docs-site) — `pnpm --filter openvod-docs dev`, or the built site |
-| **Run OpenVOD** on my own accounts | [Setup](#setup) below, then [docs/deploy.md](docs/deploy.md) |
+| **Read the docs** — setup, integration guides, API reference | [docs site](docs-site) — `pnpm --filter clipmux-docs dev`, or the built site |
+| **Run ClipMux** on my own accounts | [Setup](#setup) below, then [docs/deploy.md](docs/deploy.md) |
 | **Integrate it into my app** (Next.js, Vite, Nuxt, SvelteKit, Node) | [docs-site/content/docs/integrations](docs-site/content/docs/integrations) |
 | **See what differs per install** (API runtime, Postgres transport, transcoder, rate-limit store) | [docs/deployment-shapes.md](docs/deployment-shapes.md) |
-| **Develop OpenVOD** — change the code | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **Develop ClipMux** — change the code | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 The `docs-site/` Fumadocs app is the developer-facing reference: quickstart,
 framework integration guides, the full `/v1` API reference, an error-code
@@ -168,8 +168,8 @@ flow if you prefer to do it by hand.
 
 In [Cloudflare dashboard → R2](https://dash.cloudflare.com/?to=/:account/r2):
 
-1. Create a **raw** bucket (uploads). Example name: `openvod-raw`.
-2. Create a **transcoded** bucket (playback output). Example name: `openvod-transcoded`.
+1. Create a **raw** bucket (uploads). Example name: `clipmux-raw`.
+2. Create a **transcoded** bucket (playback output). Example name: `clipmux-transcoded`.
 
 On the **raw** bucket, add an [S3 CORS policy](https://developers.cloudflare.com/r2/buckets/cors/)
 so the browser can `PUT` presigned parts. Settings → CORS policy:
@@ -251,7 +251,7 @@ placeholder):
 
 ```jsonc
 "r2_buckets": [
-  { "binding": "TRANSCODED_BUCKET", "bucket_name": "openvod-transcoded" }
+  { "binding": "TRANSCODED_BUCKET", "bucket_name": "clipmux-transcoded" }
 ]
 ```
 
@@ -327,17 +327,17 @@ Create them by hand only if you are not using the wizard:
 ```bash
 cd transcoding
 
-modal secret create openvod-creds \
+modal secret create clipmux-creds \
   R2_ACCOUNT_ID=... \
   R2_ACCESS_KEY_ID=... \
   R2_SECRET_ACCESS_KEY=... \
-  R2_BUCKET_NAME=openvod-transcoded \
+  R2_BUCKET_NAME=clipmux-transcoded \
   TRANSCODE_INGEST_SECRET=... \
   ALLOWED_CALLBACK_HOSTS=localhost,your-api-host.example \
-  ALLOWED_SOURCE_BUCKETS=openvod-raw
+  ALLOWED_SOURCE_BUCKETS=clipmux-raw
 
 # Required to exist even if you skip AI (GPU function lists this secret):
-modal secret create openvod-groq-creds GROQ_API_KEY=unused
+modal secret create clipmux-groq-creds GROQ_API_KEY=unused
 
 modal deploy main.py
 ```
@@ -393,15 +393,15 @@ Compose deployment flow): [docs/deploy.md](docs/deploy.md). Architecture axes:
 server/        Hono API — control plane (Cloudflare Worker or Node/Docker)
 delivery/      Cloudflare Worker — media delivery (JWT, manifest rewriting, metering)
 web/           Next.js dashboard + Developer Welcome (Vercel or Docker standalone)
-sdk/           @openvod/uploader — browser upload SDK (windowed multipart, resumable)
-player/        @openvod/player — Vidstack-based React player (token auto-refresh)
-server-sdk/    @openvod/server — server SDK (upload/playback tokens, webhooks)
+sdk/           @clipmux/uploader — browser upload SDK (windowed multipart, resumable)
+player/        @clipmux/player — Vidstack-based React player (token auto-refresh)
+server-sdk/    @clipmux/server — server SDK (upload/playback tokens, webhooks)
 examples/      nextjs-integration — the documented upload → play → webhook flow
-transcoding/   openvod_transcoder — shared engine (FFmpeg + Shaka + Whisper),
+transcoding/   clipmux_transcoder — shared engine (FFmpeg + Shaka + Whisper),
                the Modal runner, and the self-hosted agent + CLI
 docs-site/     Fumadocs documentation site
 docs/          Long-form markdown (deployment shapes, delivery contract, integrations)
-setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
+setup/         clipmux-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
 scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 ```
 
@@ -415,7 +415,7 @@ pnpm dev                      # API on Node (:8787) + web (:3000)
 pnpm dev:workers              # same pair, API under wrangler dev (:8787) — needs DB_DRIVER=neon-http
 pnpm dev:all                  # dev + delivery worker (:8788) + sdk/player watch builds
 pnpm dev:example              # examples/nextjs-integration (:3000) — the documented flow
-                              #   (run `pnpm --filter @openvod/{uploader,player,server} build` first)
+                              #   (run `pnpm --filter @clipmux/{uploader,player,server} build` first)
 pnpm dev:infra:down           # stop dev infra, keep data
 pnpm dev:infra:reset          # stop dev infra and drop the dev database volume
 pnpm db:up / pnpm db:down     # dev Postgres only (compatibility aliases)
@@ -440,9 +440,9 @@ checks only verify the URL is configured) while real queries fail. Which
 database is used is `DATABASE_URL` in `server/.dev.vars`.
 
 `pnpm dev:infra` starts Postgres and Redis from `docker-compose.dev.yml`
-(project `openvod-dev`) and waits for both health checks; that file has no API
+(project `clipmux-dev`) and waits for both health checks; that file has no API
 or web service, because application code runs on the host. Rows live in the
-named volume `openvod_dev_postgres` and survive `dev:infra:down`; only
+named volume `clipmux_dev_postgres` and survive `dev:infra:down`; only
 `dev:infra:reset` drops them. If you ran the previous stack, a stale container
 named `vod-postgres-dev` may still hold port 5433 — `docker rm -f vod-postgres-dev`.
 The old dev database volume is not used by the new dev compose file.
@@ -460,7 +460,7 @@ are pinned in `server/wrangler.jsonc` (:8787) and `delivery/wrangler.jsonc`
 `NEXT_PUBLIC_*` values — Next inlines them at build time. The dev servers need
 the per-package env files from [step 4](#4-clone-and-write-env-files);
 `docs-site` is not part of any aggregate command (it also defaults to :3000):
-run it with `PORT=3002 pnpm --filter openvod-docs dev`.
+run it with `PORT=3002 pnpm --filter clipmux-docs dev`.
 
 CI runs the full suite against a Postgres service; the Redis rate-limit
 adapter's integration test runs when `TEST_REDIS_URL` is set and skips cleanly
@@ -471,7 +471,7 @@ The full contributor workflow (single-service commands, TDD, PR checks) is in
 ## Transcoding providers
 
 Videos can be encoded by **Modal** or by a **self-hosted agent** on your own
-machine. Both run the same processing engine (`transcoding/openvod_transcoder`),
+machine. Both run the same processing engine (`transcoding/clipmux_transcoder`),
 so the ladder, packaging, validation and video lifecycle are identical — only the
 execution environment differs.
 

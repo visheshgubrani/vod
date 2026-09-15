@@ -1,17 +1,17 @@
 /**
- * POST /api/webhooks/openvod
+ * POST /api/webhooks/clipmux
  *
- * Receives OpenVOD webhooks (`video.ready`, `video.failed`, …).
+ * Receives ClipMux webhooks (`video.ready`, `video.failed`, …).
  *
- * Configure the endpoint URL in your OpenVOD deployment and put the signing
- * secret in `OPENVOD_WEBHOOK_SECRET` (`whsec_…`).
+ * Configure the endpoint URL in your ClipMux deployment and put the signing
+ * secret in `CLIPMUX_WEBHOOK_SECRET` (`whsec_…`).
  */
 
 import {
   WebhookSignatureError,
   constructWebhookEvent,
   type WebhookEventPayload,
-} from '@openvod/server'
+} from '@clipmux/server'
 
 /**
  * The payloads the API actually sends. `video.ready` comes from
@@ -38,9 +38,9 @@ type VideoFailedData = {
 }
 
 export async function POST(req: Request) {
-  const secret = process.env.OPENVOD_WEBHOOK_SECRET
+  const secret = process.env.CLIPMUX_WEBHOOK_SECRET
   if (!secret) {
-    console.error('[webhook] OPENVOD_WEBHOOK_SECRET is not set')
+    console.error('[webhook] CLIPMUX_WEBHOOK_SECRET is not set')
     return Response.json({ error: 'Webhook secret is not configured' }, { status: 500 })
   }
 

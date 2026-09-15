@@ -26,19 +26,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from openvod_transcoder.agent.client import (
+from clipmux_transcoder.agent.client import (
     AgentApiError,
     AuthenticationFailed,
     LeaseLost,
     TranscoderApiClient,
 )
-from openvod_transcoder.agent.config import AgentConfig
-from openvod_transcoder.agent.journal import RecoveryJournal
-from openvod_transcoder.agent.runner import ClaimedJob, JobOutcome, JobRunner
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.encoding.probe import CapabilityReport, detect_capabilities
-from openvod_transcoder.paths import PathPolicy, PathRejected
-from openvod_transcoder.progress import CallbackProgress, NullProgress, ProgressUpdate
+from clipmux_transcoder.agent.config import AgentConfig
+from clipmux_transcoder.agent.journal import RecoveryJournal
+from clipmux_transcoder.agent.runner import ClaimedJob, JobOutcome, JobRunner
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.encoding.probe import CapabilityReport, detect_capabilities
+from clipmux_transcoder.paths import PathPolicy, PathRejected
+from clipmux_transcoder.progress import (
+    CallbackProgress,
+    NullProgress,
+    ProgressBeat,
+    ProgressUpdate,
+)
 
 DEFAULT_BROWSE_LIMIT = 200
 
@@ -331,9 +336,23 @@ class TranscoderAgent:
         them in quiet mode would make `--quiet` a correctness bug rather than a
         preference — and a successful reply saying `stop: true` was previously
         discarded, so the agent kept encoding work that could never be published.
+
+        The cadence is coalesced (one `ProgressBeat` per job, so a second job on
+        this machine is not starved by the first) but never suppressed: stage
+        changes go out immediately, and every `progress_beat_seconds` after that.
+        One beat every interval instead of one per encoder-second is what keeps a
+        four-rendition job from posting four requests a second.
+
+        The one cost: a `stop: true` reply is noticed up to one interval later
+        than before. It is not the only path — `LeaseGuard` probes the job on its
+        own thread and the liveness loop beats every `heartbeat_seconds` — so
+        cancellation is still delivered, just shortly rather than instantly.
         """
+        beat = ProgressBeat(interval=self.config.progress_beat_seconds)
 
         def report(update: ProgressUpdate) -> None:
+            if not beat.should_send(update.stage):
+                return
             reason = self._runner.heartbeat_progress(job, update)
             if reason:
                 self._log(f"stopping work: {reason}")
@@ -362,7 +381,7 @@ def _job_id_for(journal: RecoveryJournal, video_id: str, attempt_id: str) -> str
 
 def _agent_version() -> str:
     try:
-        from openvod_transcoder import __version__
+        from clipmux_transcoder import __version__
 
         return __version__
     except Exception:  # noqa: BLE001

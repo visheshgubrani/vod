@@ -124,7 +124,7 @@ dashboardApp.post('/pairings', async (c) => {
     pairingId,
     code,
     expiresAt: expiresAt.toISOString(),
-    command: `openvod-transcoder pair --api ${apiBaseUrl(c.req.url, c.var.runtime.env['BACKEND_URL'])} --code ${code}`,
+    command: `clipmux-transcoder pair --api ${apiBaseUrl(c.req.url, c.var.runtime.env['BACKEND_URL'])} --code ${code}`,
   })
 })
 
@@ -614,7 +614,7 @@ importLocalApp.post('/video/import-local', requireApiKey, async (c) => {
     return c.json(
       {
         error:
-          'sourceRef is required. Register the file first (agent `openvod-transcoder import`, or the dashboard) to obtain one.',
+          'sourceRef is required. Register the file first (agent `clipmux-transcoder import`, or the dashboard) to obtain one.',
       },
       400,
     )

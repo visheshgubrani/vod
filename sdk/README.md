@@ -1,27 +1,27 @@
-# @openvod/uploader
+# @clipmux/uploader
 
-Browser uploads for a self-hosted [OpenVOD](https://github.com/visheshgubrani/vod)
+Browser uploads for a self-hosted [ClipMux](https://github.com/visheshgubrani/vod)
 deployment. Large files are split into parts automatically, part URLs are
 fetched just in time, and uploads survive a refresh.
 
 Your API key never reaches the browser: your backend mints a short-lived
-**upload token** (with [`@openvod/server`](https://www.npmjs.com/package/@openvod/server))
+**upload token** (with [`@clipmux/server`](https://www.npmjs.com/package/@clipmux/server))
 and the SDK uploads straight to your storage with it.
 
 ```bash
-npm install @openvod/uploader
+npm install @clipmux/uploader
 ```
 
 ## Quick start
 
 ```ts
-import { OpenVodUploader } from '@openvod/uploader'
+import { ClipMuxUploader } from '@clipmux/uploader'
 
 // 1. Your backend returns { uploadToken } — see "Minting tokens" below.
 const { uploadToken } = await fetch('/api/upload-token').then((r) => r.json())
 
 // 2. Upload from the browser.
-const uploader = new OpenVodUploader({
+const uploader = new ClipMuxUploader({
   baseUrl: 'https://api.yourvod.com', // your API origin — no /v1 suffix
   uploadToken,
 })
@@ -37,14 +37,14 @@ console.log(result.fileId) // poll it, or wait for the video.ready webhook
 ## Minting tokens (server side)
 
 `POST /v1/upload/token` requires your API key, so it belongs on your server.
-With `@openvod/server` it is one call:
+With `@clipmux/server` it is one call:
 
 ```ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!, // your API origin, no /v1 suffix
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!, // your API origin, no /v1 suffix
 })
 const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
 
@@ -116,7 +116,7 @@ await uploader.abort(result.key, result.uploadId, result.fileId)
 
 ## Errors
 
-Every failure is an `OpenVodError` with a stable `code` — match on that, not on
+Every failure is an `ClipMuxError` with a stable `code` — match on that, not on
 the message:
 
 | `code` | Meaning | Retry? |
@@ -135,12 +135,12 @@ the message:
 | `HTTP` | Any other non-2xx | Depends on `retryable` |
 
 ```ts
-import { OpenVodError } from '@openvod/uploader'
+import { ClipMuxError } from '@clipmux/uploader'
 
 try {
   await uploader.upload(file)
 } catch (error) {
-  if (error instanceof OpenVodError && error.retryable) {
+  if (error instanceof ClipMuxError && error.retryable) {
     // error.retryAfterMs is set when the API sent Retry-After
   }
   console.error(error.message, error.requestId) // requestId helps support
@@ -153,7 +153,7 @@ Aborts are not errors: `cancel()` and an aborted `signal` reject with
 ## Configuration
 
 ```ts
-new OpenVodUploader({
+new ClipMuxUploader({
   baseUrl: 'https://api.yourvod.com', // required, no /v1 suffix
   uploadToken: 'ut_…',                // required
   concurrency: 3,                     // parallel parts (default 3)

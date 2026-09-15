@@ -45,39 +45,58 @@ interface NewKeyResponse {
   message: string;
 }
 
+/**
+ * The scope label attached to a key at creation time. Rendered at 13px so it is
+ * readable rather than legal boilerplate — it is the only thing distinguishing
+ * two keys with similar names.
+ */
+function KeyLabel({ label }: { label: string }) {
+  return (
+    <span className="mt-1.5 inline-flex max-w-full items-center truncate rounded-full border border-border-soft bg-panel-strong px-2.5 py-0.5 text-[13px] text-muted-foreground">
+      {label}
+    </span>
+  );
+}
+
 function ApiKeyActions({
+  keyName,
   onRegenerate,
   onRevoke,
 }: {
+  keyName: string;
   onRegenerate: () => void;
   onRevoke: () => void;
 }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="rounded-sm p-2 text-foreground/80 transition-colors hover:bg-muted/70 hover:text-foreground">
-          <MoreVertical className="size-5" />
+        <button
+          type="button"
+          aria-label={`Actions for ${keyName}`}
+          className="inline-flex size-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-panel-strong hover:text-foreground"
+        >
+          <MoreVertical className="size-5" aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="min-w-[220px] whitespace-nowrap rounded-sm bg-muted/80 p-1.5"
+        className="min-w-[210px] whitespace-nowrap"
       >
         <DropdownMenuItem
           onClick={onRegenerate}
-          className="whitespace-nowrap rounded-sm"
+          className="whitespace-nowrap"
         >
-          <RefreshCw className="w-4 h-4" />
-          Regenerate
+          <RefreshCw className="size-4" aria-hidden="true" />
+          Regenerate key
         </DropdownMenuItem>
-        <DropdownMenuSeparator className="my-1.5" />
+        <DropdownMenuSeparator />
         <DropdownMenuItem
           onClick={onRevoke}
           destructive
-          className="whitespace-nowrap rounded-sm"
+          className="whitespace-nowrap"
         >
-          <Trash2 className="w-4 h-4" />
-          Revoke
+          <Trash2 className="size-4" aria-hidden="true" />
+          Revoke key
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -244,218 +263,259 @@ export default function ApiKeysPage() {
   }
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="w-full max-w-5xl space-y-8">
       {/* Page Header */}
       <DashboardPageHeader
-        title="API Keys"
-        description="Manage your API keys for programmatic access"
+        title="API keys"
+        description="Keys authenticate your applications against the ClipMux API. Create one per service so a single key can be revoked on its own."
         actions={
-          <Button
-            onClick={() => setShowCreateModal(true)}
-            className="bg-primary/65 mt-4 hover:bg-primary/80"
-          >
-            <Plus className="size-5" />
-            Create Key
+          <Button onClick={() => setShowCreateModal(true)}>
+            <Plus className="size-4" aria-hidden="true" />
+            Create key
           </Button>
         }
       />
 
       {/* Error Banner */}
       {error && (
-        <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
-          {error}
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-xl border border-failed/35 bg-failed/10 p-4 text-sm text-danger"
+        >
+          <AlertTriangle
+            className="mt-0.5 size-4 shrink-0"
+            aria-hidden="true"
+          />
+          <p>{error}</p>
         </div>
       )}
 
-      {/* Newly Created Key Banner */}
+      {/* One-time secret: the only moment the full key exists in this UI. */}
       {newlyCreatedKey && (
-        <div className="rounded-sm border border-lime-500/30 bg-lime-500/10 p-4 md:p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-sm bg-lime-500/20">
-              <Key className="w-5 h-5 text-lime-400" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-lg font-semibold text-foreground mb-1">
-                API Key Created
-              </h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Make sure to copy your API key now. You won&apos;t be able to see it
-                again!
-              </p>
-              <div className="flex items-center gap-2 p-3 rounded-sm bg-background/50 border border-border font-mono text-sm">
-                <code className="flex-1 break-all text-foreground">
-                  {newlyCreatedKey.key}
-                </code>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => handleCopyKey(newlyCreatedKey.key)}
-                  className="flex-shrink-0"
+        <section
+          aria-labelledby="new-key-title"
+          className="dash-panel border-ember/45 p-5 md:p-6"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-ember/35 bg-ember/10">
+                <Key className="size-5 text-ember" aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                <h2
+                  id="new-key-title"
+                  className="dash-section-title text-foreground"
                 >
-                  {keyCopied ? (
-                    <Check className="w-4 h-4 text-lime-400" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
-                </Button>
+                  Copy this key now
+                </h2>
+                <p className="dash-body mt-1.5 max-w-[62ch] text-muted-foreground">
+                  This is the only time the full key is shown. Store it in your
+                  secret manager before you leave this page — it cannot be
+                  displayed again.
+                </p>
               </div>
             </div>
             <Button
-              size="sm"
               variant="ghost"
+              size="sm"
               onClick={() => setNewlyCreatedKey(null)}
-              className="flex-shrink-0"
             >
               Dismiss
             </Button>
           </div>
-        </div>
+
+          <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="dash-code-block min-w-0 flex-1 px-4 py-3">
+              <code className="dash-code break-all text-foreground">
+                {newlyCreatedKey.key}
+              </code>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => void handleCopyKey(newlyCreatedKey.key)}
+              aria-label={
+                keyCopied
+                  ? "API key copied to clipboard"
+                  : "Copy the full API key to the clipboard"
+              }
+              className="shrink-0"
+            >
+              {keyCopied ? (
+                <Check className="size-4" aria-hidden="true" />
+              ) : (
+                <Copy className="size-4" aria-hidden="true" />
+              )}
+              {keyCopied ? "Copied" : "Copy key"}
+            </Button>
+          </div>
+
+          <p className="dash-meta mt-3">
+            Key name:{" "}
+            <span className="font-mono text-foreground">
+              {newlyCreatedKey.name}
+            </span>
+          </p>
+          <span role="status" className="sr-only">
+            {keyCopied ? "API key copied to clipboard" : ""}
+          </span>
+        </section>
       )}
 
-      {/* API Keys Table */}
-      <div className="glass rounded-sm">
+      {/* API keys list */}
+      <section aria-labelledby="key-list-title" className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 id="key-list-title" className="dash-section-title text-foreground">
+            Active keys
+          </h2>
+          {keys.length > 0 && (
+            <p className="dash-meta">
+              {keys.length} {keys.length === 1 ? "key" : "keys"}
+            </p>
+          )}
+        </div>
+
         {keys.length === 0 ? (
-          <div className="md:px-6 px-4 py-12 text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-sm bg-muted/50">
-              <Key className="w-8 h-8 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold text-foreground mb-1">
-              No API Keys
+          <div className="dash-panel flex flex-col items-center px-6 py-14 text-center">
+            <span className="flex size-14 items-center justify-center rounded-full border border-border bg-panel-strong text-muted-foreground">
+              <Key className="size-6" aria-hidden="true" />
+            </span>
+            <h3 className="mt-5 text-lg font-semibold text-foreground">
+              No API keys yet
             </h3>
-            <p className="text-muted-foreground mb-4">
-              Create your first API key to start integrating
+            <p className="dash-body mt-2 max-w-sm text-muted-foreground">
+              Create a key for each application that calls the API. You will see
+              the full secret once, at creation.
             </p>
             <Button
               onClick={() => setShowCreateModal(true)}
-              className="bg-primary/65 px-6 hover:bg-primary/80"
+              className="mt-6"
             >
-              <Plus className="w-4 h-4" />
-              Create Key
+              <Plus className="size-4" aria-hidden="true" />
+              Create key
             </Button>
           </div>
         ) : (
-          <>
+          <div className="dash-panel overflow-hidden">
+            {/* Desktop */}
             <div className="hidden md:block">
-              <table className="w-full">
-                <thead className="border-b bg-card border-border">
-                  <tr className="text-left text-sm text-muted-foreground">
-                    <th className="px-6 py-4 font-semibold">Name</th>
-                    <th className="px-6 py-4 font-semibold">Key</th>
-                    <th className="px-6 py-4 font-semibold">Last Used</th>
-                    <th className="px-6 py-4 font-semibold">Created</th>
-                    <th className="w-12 px-6 py-4 font-semibold"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {keys.map((key) => (
-                    <tr
-                      key={key.id}
-                      className="transition-colors hover:bg-muted/30"
-                    >
-                      <td className="px-6 py-4">
-                        <div>
-                          <p className="font-medium text-foreground">{key.name}</p>
-                          {key.label && (
-                            <p className="text-xs text-muted-foreground">
-                              {key.label}
-                            </p>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <code className="rounded-sm bg-muted/50 px-2 py-1 font-mono text-sm text-muted-foreground">
-                          {key.key_preview}
-                        </code>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {formatDate(key.last_used_at)}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">
-                        {formatDate(key.created_at)}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex justify-end">
-                          <ApiKeyActions
-                            onRegenerate={() => setRegenerateKeyId(key.id)}
-                            onRevoke={() => setDeleteKeyId(key.id)}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="grid grid-cols-[minmax(0,1fr)_200px_120px_120px_56px] items-center gap-4 border-b border-border px-5 py-3 text-[13px] font-semibold text-muted-foreground">
+                <div>Name</div>
+                <div>Key</div>
+                <div>Last used</div>
+                <div>Created</div>
+                <div className="sr-only">Actions</div>
+              </div>
+              <ul className="divide-y divide-border-soft">
+                {keys.map((key) => (
+                  <li
+                    key={key.id}
+                    className="grid min-h-[76px] grid-cols-[minmax(0,1fr)_200px_120px_120px_56px] items-center gap-4 px-5 py-3 transition-colors hover:bg-panel-strong/40"
+                  >
+                    <div className="flex min-w-0 flex-col items-start">
+                      <p className="max-w-full truncate text-[15px] font-semibold text-foreground">
+                        {key.name}
+                      </p>
+                      {key.label && <KeyLabel label={key.label} />}
+                    </div>
+                    <div className="min-w-0">
+                      <code className="dash-code block truncate text-muted-foreground">
+                        {key.key_preview}
+                      </code>
+                    </div>
+                    <div className="text-[13px] text-muted-foreground">
+                      {formatDate(key.last_used_at)}
+                    </div>
+                    <div className="text-[13px] text-muted-foreground">
+                      {formatDate(key.created_at)}
+                    </div>
+                    <div className="flex justify-end">
+                      <ApiKeyActions
+                        keyName={key.name}
+                        onRegenerate={() => setRegenerateKeyId(key.id)}
+                        onRevoke={() => setDeleteKeyId(key.id)}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
             </div>
 
-            <div className="divide-y divide-muted-foreground/20 md:hidden">
+            {/* Mobile */}
+            <ul className="divide-y divide-border-soft md:hidden">
               {keys.map((key) => (
-                <div key={key.id} className="space-y-3 px-4 py-4">
+                <li key={key.id} className="p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium text-foreground">{key.name}</p>
-                      {key.label && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {key.label}
-                        </p>
-                      )}
+                    <div className="flex min-w-0 flex-col items-start">
+                      <p className="max-w-full truncate text-[15px] font-semibold text-foreground">
+                        {key.name}
+                      </p>
+                      {key.label && <KeyLabel label={key.label} />}
                     </div>
                     <ApiKeyActions
+                      keyName={key.name}
                       onRegenerate={() => setRegenerateKeyId(key.id)}
                       onRevoke={() => setDeleteKeyId(key.id)}
                     />
                   </div>
 
-                  <div className="rounded-sm bg-card p-3">
-                    <code className="break-all font-mono text-sm text-muted-foreground">
+                  <div className="dash-code-block mt-3 px-3 py-2">
+                    <code className="dash-code break-all text-muted-foreground">
                       {key.key_preview}
                     </code>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 rounded-sm bg-muted/20 p-3 text-xs">
+                  <dl className="mt-3 grid grid-cols-2 gap-3">
                     <div>
-                      <p className="text-muted-foreground">Last Used</p>
-                      <p className="mt-1 text-sm text-foreground">
+                      <dt className="dash-label">Last used</dt>
+                      <dd className="mt-1 text-[13px] text-foreground">
                         {formatDate(key.last_used_at)}
-                      </p>
+                      </dd>
                     </div>
                     <div>
-                      <p className="text-muted-foreground">Created</p>
-                      <p className="mt-1 text-sm text-foreground">
+                      <dt className="dash-label">Created</dt>
+                      <dd className="mt-1 text-[13px] text-foreground">
                         {formatDate(key.created_at)}
-                      </p>
+                      </dd>
                     </div>
-                  </div>
-                </div>
+                  </dl>
+                </li>
               ))}
-            </div>
-          </>
+            </ul>
+          </div>
         )}
-      </div>
+      </section>
 
-      {/* Usage Information */}
-      <div className="glass rounded-sm p-4 md:p-6">
-        <h3 className="text-lg font-semibold text-foreground mb-3">
-          Using Your API Key
-        </h3>
-        <p className="text-muted-foreground text-sm mb-4">
-          Include your API key in the Authorization header of your requests:
+      {/* Usage information */}
+      <section className="dash-panel p-5 md:p-6">
+        <h2 className="dash-section-title text-foreground">Using your key</h2>
+        <p className="dash-body mt-2 max-w-[62ch] text-muted-foreground">
+          Send the key in the Authorization header of every request:
         </p>
-        <div className="overflow-x-auto rounded-sm border border-border bg-muted-foreground/30 p-4 font-mono text-sm">
-          <code className="text-foreground">
-            curl -H &quot;Authorization: Bearer sk_live_xxxxx&quot; \<br />
-            &nbsp;&nbsp;{API_URL}/v1/videos
-          </code>
-        </div>
-      </div>
+        <pre className="dash-code-block mt-4 overflow-x-auto p-4">
+          <code className="text-foreground">{`curl -H "Authorization: Bearer sk_live_xxxxx" \\
+  ${API_URL}/v1/videos`}</code>
+        </pre>
+      </section>
 
-      {/* Create Key Modal */}
+      {/* Create key modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <h2 className="text-xl font-bold text-foreground mb-4">
-              Create API Key
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-key-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-panel p-6">
+            <h2
+              id="create-key-title"
+              className="text-lg font-semibold text-foreground"
+            >
+              Create API key
             </h2>
-            <form onSubmit={handleCreateKey} className="space-y-4">
+            <p className="dash-meta mt-1.5">
+              Name it after the service that will use it.
+            </p>
+            <form onSubmit={handleCreateKey} className="mt-5 space-y-5">
               <div className="space-y-2">
                 <Label htmlFor="keyName">Name</Label>
                 <Input
@@ -463,41 +523,49 @@ export default function ApiKeysPage() {
                   placeholder="Production Key"
                   value={newKeyName}
                   onChange={(e) => setNewKeyName(e.target.value)}
+                  disabled={isCreating}
                   autoFocus
-                  className="mt-1.5 rounded-sm bg-foreground/30"
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="keyLabel">Label (optional)</Label>
                 <Input
                   id="keyLabel"
-                  placeholder="Used for..."
+                  placeholder="Used by the billing worker"
                   value={newKeyLabel}
                   onChange={(e) => setNewKeyLabel(e.target.value)}
-                  className="mt-1.5 rounded-sm bg-foreground/30"
+                  disabled={isCreating}
                 />
+                <p className="dash-meta">
+                  A short note about where this key is used. It is shown beside
+                  the key in this list.
+                </p>
               </div>
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setShowCreateModal(false)}
-                  className="flex-1 rounded-sm"
+                  disabled={isCreating}
+                  className="flex-1"
                 >
                   Cancel
                 </Button>
                 <Button
                   type="submit"
                   disabled={isCreating || !newKeyName.trim()}
-                  className="flex-1 rounded-sm bg-primary/70 hover:bg-primary/80"
+                  className="flex-1"
                 >
                   {isCreating ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Creating...
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      Creating…
                     </>
                   ) : (
-                    <>Create</>
+                    <>Create key</>
                   )}
                 </Button>
               </div>
@@ -506,45 +574,60 @@ export default function ApiKeysPage() {
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Revoke confirmation */}
       {deleteKeyId && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-sm bg-destructive/20 flex items-center justify-center">
-                <AlertTriangle className="w-5 h-5 text-destructive" />
-              </div>
-              <h2 className="text-xl font-bold text-foreground">
-                Revoke API Key
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="revoke-key-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-panel p-6">
+            <div className="flex items-center gap-3">
+              <span className="flex size-10 items-center justify-center rounded-xl border border-failed/35 bg-failed/10">
+                <AlertTriangle
+                  className="size-5 text-danger"
+                  aria-hidden="true"
+                />
+              </span>
+              <h2
+                id="revoke-key-title"
+                className="text-lg font-semibold text-foreground"
+              >
+                Revoke this key?
               </h2>
             </div>
-            <p className="text-muted-foreground mb-6">
-              Are you sure you want to revoke this API key? Any applications
-              using this key will immediately lose access.
+            <p className="dash-body mt-4 text-muted-foreground">
+              Any application still using this key will immediately lose access.
+              This cannot be undone.
             </p>
-            <div className="flex gap-3">
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row">
               <Button
                 variant="outline"
                 onClick={() => setDeleteKeyId(null)}
-                className="flex-1 rounded-sm"
+                className="flex-1"
                 disabled={isDeleting}
               >
                 Cancel
               </Button>
               <Button
+                variant="destructive"
                 onClick={handleDeleteKey}
                 disabled={isDeleting}
-                className="flex-1 rounded-sm bg-destructive hover:bg-destructive/90"
+                className="flex-1"
               >
                 {isDeleting ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Revoking...
+                    <Loader2
+                      className="size-4 animate-spin"
+                      aria-hidden="true"
+                    />
+                    Revoking…
                   </>
                 ) : (
                   <>
-                    <Trash2 className="w-4 h-4" />
-                    Revoke Key
+                    <Trash2 className="size-4" aria-hidden="true" />
+                    Revoke key
                   </>
                 )}
               </Button>
@@ -553,27 +636,38 @@ export default function ApiKeysPage() {
         </div>
       )}
 
-      {/* Regenerate Confirmation Modal */}
+      {/* Regenerate confirmation */}
       {regenerateKeyId && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-sm bg-amber-500/20 flex items-center justify-center">
-                <RefreshCw className="w-5 h-5 text-amber-400" />
-              </div>
-              <h2 className="text-xl font-bold text-foreground">
-                Regenerate API Key
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="regenerate-key-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-panel p-6">
+            <div className="flex items-center gap-3">
+              <span className="flex size-10 items-center justify-center rounded-xl border border-processing/35 bg-processing/10">
+                <RefreshCw
+                  className="size-5 text-processing"
+                  aria-hidden="true"
+                />
+              </span>
+              <h2
+                id="regenerate-key-title"
+                className="text-lg font-semibold text-foreground"
+              >
+                Regenerate this key?
               </h2>
             </div>
-            <p className="text-muted-foreground mb-6">
-              This will generate a new key and invalidate the current one. Any
-              applications using the old key will need to be updated.
+            <p className="dash-body mt-4 text-muted-foreground">
+              A new secret is issued and the current one stops working
+              immediately. Any application using the old key must be updated.
             </p>
-            <div className="flex gap-3">
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row">
               <Button
                 variant="outline"
                 onClick={() => setRegenerateKeyId(null)}
-                className="flex-1 rounded-sm"
+                className="flex-1"
                 disabled={isRegenerating}
               >
                 Cancel
@@ -581,17 +675,20 @@ export default function ApiKeysPage() {
               <Button
                 onClick={handleRegenerateKey}
                 disabled={isRegenerating}
-                className="flex-1 rounded-sm bg-primary/70 hover:bg-primary/80"
+                className="flex-1"
               >
                 {isRegenerating ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Regenerating...
+                    <Loader2
+                      className="size-4 animate-spin"
+                      aria-hidden="true"
+                    />
+                    Regenerating…
                   </>
                 ) : (
                   <>
-                    <RefreshCw className="w-4 h-4" />
-                    Regenerate
+                    <RefreshCw className="size-4" aria-hidden="true" />
+                    Regenerate key
                   </>
                 )}
               </Button>

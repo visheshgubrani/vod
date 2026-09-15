@@ -1,5 +1,5 @@
 /**
- * Typed errors for the OpenVOD upload SDK.
+ * Typed errors for the ClipMux upload SDK.
  *
  * Before this existed every failure was a bare `Error` carrying the server's
  * prose, so callers had to `if (err.message.includes('expired'))` to tell a
@@ -9,7 +9,7 @@
  * `server/src/routes/upload-public.ts` and `server/src/middleware/uploadToken.ts`.
  */
 
-export type OpenVodErrorCode =
+export type ClipMuxErrorCode =
     /** The upload token expired (only enforced on `/create`). Mint a new one. */
     | 'UPLOAD_TOKEN_EXPIRED'
     /** The token's `max_files` budget is spent. Mint a new one. */
@@ -35,8 +35,8 @@ export type OpenVodErrorCode =
     /** Any other non-2xx response. */
     | 'HTTP'
 
-export interface OpenVodErrorOptions {
-    code: OpenVodErrorCode
+export interface ClipMuxErrorOptions {
+    code: ClipMuxErrorCode
     /** HTTP status, when there was a response. */
     status?: number
     /** `x-request-id` echoed by the API — quote it in support requests. */
@@ -49,15 +49,15 @@ export interface OpenVodErrorOptions {
 }
 
 /** Every failure raised by this SDK — HTTP, protocol, or transport. */
-export class OpenVodError extends Error {
-    override readonly name = 'OpenVodError'
-    readonly code: OpenVodErrorCode
+export class ClipMuxError extends Error {
+    override readonly name = 'ClipMuxError'
+    readonly code: ClipMuxErrorCode
     readonly status?: number
     readonly requestId?: string
     readonly retryable: boolean
     readonly retryAfterMs?: number
 
-    constructor(message: string, options: OpenVodErrorOptions) {
+    constructor(message: string, options: ClipMuxErrorOptions) {
         super(message, options.cause !== undefined ? { cause: options.cause } : undefined)
         this.code = options.code
         this.status = options.status
@@ -95,7 +95,7 @@ type ServerErrorBody = { error?: unknown; hint?: unknown }
  * alternative — matching on status alone — cannot separate "token expired"
  * from "token exhausted", and both messages are stable strings in the server.
  */
-export function codeForResponse(status: number, serverMessage: string): OpenVodErrorCode {
+export function codeForResponse(status: number, serverMessage: string): ClipMuxErrorCode {
     const message = serverMessage.toLowerCase()
 
     if (status === 429) return 'RATE_LIMITED'
@@ -117,7 +117,7 @@ export function codeForResponse(status: number, serverMessage: string): OpenVodE
 }
 
 /** Codes where retrying the same request can succeed. */
-export function isRetryableCode(code: OpenVodErrorCode): boolean {
+export function isRetryableCode(code: ClipMuxErrorCode): boolean {
     return code === 'RATE_LIMITED' || code === 'NETWORK'
 }
 

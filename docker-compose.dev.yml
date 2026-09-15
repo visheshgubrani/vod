@@ -1,4 +1,4 @@
-# OpenVOD — local development infrastructure ONLY.
+# ClipMux — local development infrastructure ONLY.
 #
 # This file exists so `pnpm dev` never touches the deployment stack. It starts
 # the two services the API needs to talk to and nothing else:
@@ -25,12 +25,12 @@
 # The project name is pinned so this file can never share volumes or networks
 # with the deployment stack in docker-compose.yml.
 
-name: openvod-dev
+name: clipmux-dev
 
 services:
   postgres:
     image: postgres:18-alpine
-    container_name: openvod-dev-postgres
+    container_name: clipmux-dev-postgres
     restart: unless-stopped
     ports:
       - "5433:5432" # Non-default host port so it cannot clash with a host install
@@ -43,7 +43,7 @@ services:
       # declares the volume at /var/lib/postgresql — mounting the named volume at
       # the pre-18 /var/lib/postgresql/data path leaves it empty and puts the real
       # data in an anonymous volume that is discarded on every recreate.
-      - openvod_dev_postgres:/var/lib/postgresql
+      - clipmux_dev_postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -55,7 +55,7 @@ services:
     # Workers runtime cannot open a TCP socket and uses Upstash REST or the
     # in-memory limiter instead, so it never talks to this container.
     image: redis:7-alpine
-    container_name: openvod-dev-redis
+    container_name: clipmux-dev-redis
     restart: unless-stopped
     ports:
       # Non-default host port, for the same reason as Postgres: 6379 is the most
@@ -75,4 +75,4 @@ services:
       retries: 5
 
 volumes:
-  openvod_dev_postgres:
+  clipmux_dev_postgres:

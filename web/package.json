@@ -15,8 +15,8 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@openvod/player": "workspace:*",
-    "@openvod/uploader": "workspace:*",
+    "@clipmux/player": "workspace:*",
+    "@clipmux/uploader": "workspace:*",
     "@tanstack/react-query": "^5.90.16",
     "better-auth": "~1.7.4",
     "class-variance-authority": "^0.7.1",

@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   // Standalone server output: supports both Vercel (auto-detected) and the
   // VPS Docker image (web/Dockerfile copies .next/standalone).
   output: "standalone",
-  // TODO(openvod): recharts 2.15 types drift against @types/react 19 on the
+  // TODO(clipmux): recharts 2.15 types drift against @types/react 19 on the
   // analytics pages; fix or bump recharts v3 rather than living with this.
   typescript: { ignoreBuildErrors: true },
 };

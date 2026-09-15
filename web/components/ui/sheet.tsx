@@ -10,6 +10,8 @@ interface SheetProps {
   children: React.ReactNode;
   side?: "left" | "right";
   className?: string;
+  /** Accessible name for the dialog. */
+  label?: string;
 }
 
 interface SheetHeaderProps {
@@ -22,26 +24,73 @@ interface SheetTitleProps {
   className?: string;
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
+
 export function Sheet({
   open,
   onClose,
   children,
   side = "right",
   className,
+  label,
 }: SheetProps) {
-  React.useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const restoreFocusRef = React.useRef<HTMLElement | null>(null);
 
-    if (open) {
-      document.addEventListener("keydown", handleEscape);
-      document.body.style.overflow = "hidden";
+  React.useEffect(() => {
+    if (!open) return;
+
+    // Remember what had focus so it can be restored when the sheet closes.
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    const panel = panelRef.current;
+    const firstFocusable = panel?.querySelector<HTMLElement>(FOCUSABLE);
+    if (firstFocusable) {
+      firstFocusable.focus();
+    } else {
+      panel?.focus({ preventScroll: true });
     }
 
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+
+      if (event.key !== "Tab" || !panel) return;
+
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ).filter((element) => element.offsetParent !== null);
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey && (active === first || !panel.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+
     return () => {
-      document.removeEventListener("keydown", handleEscape);
-      document.body.style.overflow = "";
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      restoreFocusRef.current?.focus?.();
     };
   }, [open, onClose]);
 
@@ -49,30 +98,31 @@ export function Sheet({
 
   return (
     <div className="fixed inset-0 z-50">
-      {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-background/80 backdrop-blur-sm animate-in fade-in-0"
+        className="fixed inset-0 bg-black/60"
         onClick={onClose}
+        aria-hidden="true"
       />
 
-      {/* Sheet */}
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
         className={cn(
-          "fixed top-0 bottom-0 w-full max-w-md border-border bg-card/95 backdrop-blur-xl shadow-2xl",
-          "flex flex-col",
-          side === "right"
-            ? "right-0 border-l animate-in slide-in-from-right"
-            : "left-0 border-r animate-in slide-in-from-left",
-          className
+          "fixed top-0 bottom-0 flex w-full max-w-md flex-col border-border bg-panel-quiet shadow-2xl outline-none",
+          side === "right" ? "right-0 border-l" : "left-0 border-r",
+          className,
         )}
       >
-        {/* Close Button */}
         <button
+          type="button"
           onClick={onClose}
-          className="absolute right-4 top-4 p-2 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          className="absolute top-3.5 right-3.5 z-10 inline-flex size-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-panel-strong hover:text-foreground"
           aria-label="Close"
         >
-          <X className="w-5 h-5" />
+          <X className="size-5" />
         </button>
 
         {children}
@@ -83,7 +133,7 @@ export function Sheet({
 
 export function SheetHeader({ children, className }: SheetHeaderProps) {
   return (
-    <div className={cn("px-6 pt-6 pb-4 border-b border-border", className)}>
+    <div className={cn("border-b border-border px-6 pt-6 pb-4", className)}>
       {children}
     </div>
   );

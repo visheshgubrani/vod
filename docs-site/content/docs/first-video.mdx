@@ -1,6 +1,6 @@
 ---
 title: Your first video
-description: The complete OpenVOD flow — mint a token, upload a file, wait for transcoding, play it back, and receive a webhook — with no framework involved.
+description: The complete ClipMux flow — mint a token, upload a file, wait for transcoding, play it back, and receive a webhook — with no framework involved.
 ---
 
 This is the whole platform in six steps. No framework, no SDK required: every
@@ -12,14 +12,14 @@ steps mapped onto a directory layout.
 
 **What you need first**
 
-- A running OpenVOD deployment. If you do not have one, [Quickstart](/quickstart)
+- A running ClipMux deployment. If you do not have one, [Quickstart](/quickstart)
   takes you from clone to a live API.
 - An API key (`sk_live_…`) from your dashboard.
 - Your delivery origin — the Cloudflare delivery worker URL.
 
 ```bash
-export OPENVOD_API_URL="https://api.yourvod.com"   # your API origin, no /v1 suffix
-export OPENVOD_API_KEY="sk_live_…"
+export CLIPMUX_API_URL="https://api.yourvod.com"   # your API origin, no /v1 suffix
+export CLIPMUX_API_KEY="sk_live_…"
 export DELIVERY_URL="https://media.yourvod.com"    # your delivery worker
 ```
 
@@ -31,7 +31,7 @@ export DELIVERY_URL="https://media.yourvod.com"    # your delivery worker
 ## Step 1 — Confirm the deployment is reachable
 
 ```bash
-curl "$OPENVOD_API_URL/health"
+curl "$CLIPMUX_API_URL/health"
 # ok
 ```
 
@@ -45,11 +45,11 @@ uploads are disabled here, step 3 answers `403`.
 The API key mints short-lived upload tokens. This call belongs on your server —
 the key must never reach a browser.
 
-<Tabs items={['curl', '@openvod/server']}>
+<Tabs items={['curl', '@clipmux/server']}>
   <Tab value="curl">
     ```bash
-    curl -X POST "$OPENVOD_API_URL/v1/upload/token" \
-      -H "Authorization: Bearer $OPENVOD_API_KEY" \
+    curl -X POST "$CLIPMUX_API_URL/v1/upload/token" \
+      -H "Authorization: Bearer $CLIPMUX_API_KEY" \
       -H "Content-Type: application/json" \
       -d '{ "expires_in": "1h", "max_files": 1 }'
     ```
@@ -63,13 +63,13 @@ the key must never reach a browser.
     }
     ```
   </Tab>
-  <Tab value="@openvod/server">
+  <Tab value="@clipmux/server">
     ```ts
-    import { OpenVod } from '@openvod/server'
+    import { ClipMux } from '@clipmux/server'
 
-    const vod = new OpenVod({
-      apiKey: process.env.OPENVOD_API_KEY!,
-      baseUrl: process.env.OPENVOD_API_URL!,
+    const vod = new ClipMux({
+      apiKey: process.env.CLIPMUX_API_KEY!,
+      baseUrl: process.env.CLIPMUX_API_URL!,
     })
 
     const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
@@ -87,16 +87,16 @@ Two properties matter operationally:
 
 ## Step 3 — Upload the file
 
-`@openvod/uploader` handles the whole multipart protocol: it splits the file,
+`@clipmux/uploader` handles the whole multipart protocol: it splits the file,
 fetches presigned URLs just before each window uploads, retries transient part
 failures, and completes the upload. Use it in a browser, or anywhere with
 `fetch` and `Blob`.
 
 ```ts
-import { OpenVodUploader } from '@openvod/uploader'
+import { ClipMuxUploader } from '@clipmux/uploader'
 
-const uploader = new OpenVodUploader({
-  baseUrl: process.env.OPENVOD_API_URL!, // your origin — no /v1 suffix
+const uploader = new ClipMuxUploader({
+  baseUrl: process.env.CLIPMUX_API_URL!, // your origin — no /v1 suffix
   uploadToken,
 })
 
@@ -133,7 +133,7 @@ own record.
     ([why](/upload#r2-cors-must-expose-etag)).
   </Accordion>
   <Accordion title="Uploading from Node, a Worker, or anywhere without a File">
-    `@openvod/uploader` runs outside a browser too. Pass a `Blob` plus an
+    `@clipmux/uploader` runs outside a browser too. Pass a `Blob` plus an
     explicit `filename`, because there is no `File` to read a name from:
 
     ```ts
@@ -150,8 +150,8 @@ playable until it flips to `ready`.
 <Tabs items={['Poll', 'Webhook']}>
   <Tab value="Poll">
     ```bash
-    curl "$OPENVOD_API_URL/v1/video/$VIDEO_ID" \
-      -H "Authorization: Bearer $OPENVOD_API_KEY"
+    curl "$CLIPMUX_API_URL/v1/video/$VIDEO_ID" \
+      -H "Authorization: Bearer $CLIPMUX_API_KEY"
     ```
 
     ```json
@@ -210,8 +210,8 @@ user-agent is required, because the delivery worker binds the token to the
 viewer's browser family and refuses a request that does not match.
 
 ```bash
-curl -X POST "$OPENVOD_API_URL/v1/video/$VIDEO_ID/playback-token" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+curl -X POST "$CLIPMUX_API_URL/v1/video/$VIDEO_ID/playback-token" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
   -H "Content-Type: application/json" \
   -H "x-viewer-user-agent: $VIEWER_UA" \
   -d '{ "expires_in": "2h", "allowed_domains": ["app.example.com"] }'
@@ -237,9 +237,9 @@ curl -X POST "$OPENVOD_API_URL/v1/video/$VIDEO_ID/playback-token" \
 Then play it. In React, use the player:
 
 ```tsx
-import { OpenVodPlayer } from '@openvod/player'
+import { ClipMuxPlayer } from '@clipmux/player'
 
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId={videoId}
   src={session.playbackUrl}
   token={session.token}
@@ -269,7 +269,7 @@ You now have a working loop. The last piece is doing the right thing when it
 breaks:
 
 - `video.failed` carries a stable `failureCode`. Branch on it.
-- API errors are `OpenVodError` with a stable `code`. Branch on it, not on the
+- API errors are `ClipMuxError` with a stable `code`. Branch on it, not on the
   message.
 - Honour `retryAfterMs` on `RATE_LIMITED` instead of a fixed backoff.
 

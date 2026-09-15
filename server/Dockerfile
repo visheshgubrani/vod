@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# OpenVOD API — Node runtime via tsx (no bundler binaries in image).
+# ClipMux API — Node runtime via tsx (no bundler binaries in image).
 # Zero-touch boot: migrations run before the server starts.
 # Build context MUST be the repo root (monorepo workspace).
 

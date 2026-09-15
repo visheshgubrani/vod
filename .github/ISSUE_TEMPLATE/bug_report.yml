@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a bug in OpenVOD (server, delivery, web, sdk, player, transcoding)
+description: Report a bug in ClipMux (server, delivery, web, sdk, player, transcoding)
 labels: [bug]
 body:
   - type: markdown

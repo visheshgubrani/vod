@@ -11,10 +11,14 @@ import {
   MODAL_CREDS_SECRET,
   MODAL_GROQ_SECRET,
   modalSecretWritePlan,
-  openvodCredsFromEnv,
+  clipmuxCredsFromEnv,
   secretCreateJsonArgs,
   transcodingDeployRequirements,
+  installArgs,
+  installStrategy,
+  planVenv,
   transcodingVenvModalBin,
+  type VenvProbe,
 } from '../src/modal'
 import { MODAL_MIN_VERSION } from '../src/parsers'
 
@@ -26,8 +30,8 @@ function serverEnv(overrides: Record<string, string> = {}): Record<string, strin
     ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     R2_ACCESS_KEY_ID: 'r2-access-key',
     R2_SECRET_ACCESS_KEY: 'r2-secret-key',
-    RAW_BUCKET_NAME: 'openvod-raw',
-    TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+    RAW_BUCKET_NAME: 'clipmux-raw',
+    TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
     TRANSCODE_INGEST_SECRET: 'ingest-from-dev-vars',
     BACKEND_URL: 'https://framing-canning-haphazard.ngrok-free.dev',
     ...overrides,
@@ -76,14 +80,14 @@ describe('the secret names the transcoder deploys with', () => {
 })
 
 describe('modalSecretWritePlan', () => {
-  it('overwrites openvod-creds from the current env even when the secret already exists', () => {
+  it('overwrites clipmux-creds from the current env even when the secret already exists', () => {
     const existing = [MODAL_CREDS_SECRET, MODAL_GROQ_SECRET]
     const force = forceOverwriteModalSecret(MODAL_CREDS_SECRET)
     expect(force).toBe(true)
     expect(modalSecretWritePlan(existing, MODAL_CREDS_SECRET, force)).toBe('overwrite')
   })
 
-  it('leaves openvod-groq-creds in place when it already exists', () => {
+  it('leaves clipmux-groq-creds in place when it already exists', () => {
     const force = forceOverwriteModalSecret(MODAL_GROQ_SECRET)
     expect(force).toBe(false)
     expect(modalSecretWritePlan([MODAL_GROQ_SECRET], MODAL_GROQ_SECRET, force)).toBe('skip')
@@ -93,28 +97,28 @@ describe('modalSecretWritePlan', () => {
 
 describe('secretCreateJsonArgs', () => {
   it('passes values through a file so they never reach the process table', () => {
-    expect(secretCreateJsonArgs('openvod-creds', '/tmp/x/openvod-creds.json', true)).toEqual([
+    expect(secretCreateJsonArgs('clipmux-creds', '/tmp/x/clipmux-creds.json', true)).toEqual([
       'secret',
       'create',
       '--force',
       '--from-json',
-      '/tmp/x/openvod-creds.json',
-      'openvod-creds',
+      '/tmp/x/clipmux-creds.json',
+      'clipmux-creds',
     ])
-    expect(secretCreateJsonArgs('openvod-groq-creds', '/tmp/x/g.json', false)).toEqual([
+    expect(secretCreateJsonArgs('clipmux-groq-creds', '/tmp/x/g.json', false)).toEqual([
       'secret',
       'create',
       '--from-json',
       '/tmp/x/g.json',
-      'openvod-groq-creds',
+      'clipmux-groq-creds',
     ])
   })
 })
 
 describe('legacySecretsPresent', () => {
   it('reports the pre-rename secrets that are still in the workspace', () => {
-    expect(legacySecretsPresent(['openvod-creds', 'r2-creds'])).toEqual(['r2-creds'])
-    expect(legacySecretsPresent(['openvod-creds', 'openvod-groq-creds'])).toEqual([])
+    expect(legacySecretsPresent(['clipmux-creds', 'r2-creds'])).toEqual(['r2-creds'])
+    expect(legacySecretsPresent(['clipmux-creds', 'clipmux-groq-creds'])).toEqual([])
   })
 })
 
@@ -163,26 +167,26 @@ describe('callbackHostsFromEnv', () => {
   })
 })
 
-describe('openvodCredsFromEnv', () => {
+describe('clipmuxCredsFromEnv', () => {
   it('maps the transcoded bucket to R2_BUCKET_NAME and the raw bucket to ALLOWED_SOURCE_BUCKETS', () => {
-    const { values, problems, advisories } = openvodCredsFromEnv(serverEnv())
+    const { values, problems, advisories } = clipmuxCredsFromEnv(serverEnv())
     expect(problems).toEqual([])
     expect(advisories).toEqual([])
     expect(values).toEqual({
       R2_ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
       R2_ACCESS_KEY_ID: 'r2-access-key',
       R2_SECRET_ACCESS_KEY: 'r2-secret-key',
-      R2_BUCKET_NAME: 'openvod-transcoded',
+      R2_BUCKET_NAME: 'clipmux-transcoded',
       TRANSCODE_INGEST_SECRET: 'ingest-from-dev-vars',
       ALLOWED_CALLBACK_HOSTS: 'localhost,127.0.0.1,framing-canning-haphazard.ngrok-free.dev',
-      ALLOWED_SOURCE_BUCKETS: 'openvod-raw',
+      ALLOWED_SOURCE_BUCKETS: 'clipmux-raw',
     })
   })
 
   it('reads the buckets from the env file, so a hand-edited name cannot drift', () => {
     // The old code took the transcoded bucket from the wizard's in-memory
     // answers: editing .dev.vars afterwards left Modal writing to the old bucket.
-    const { values } = openvodCredsFromEnv(
+    const { values } = clipmuxCredsFromEnv(
       serverEnv({ TRANSCODED_BUCKET_NAME: 'edited-output', RAW_BUCKET_NAME: 'edited-input' }),
     )
     expect(values.R2_BUCKET_NAME).toBe('edited-output')
@@ -190,7 +194,7 @@ describe('openvodCredsFromEnv', () => {
   })
 
   it('refuses to build a payload when a required key is missing', () => {
-    const { problems } = openvodCredsFromEnv(
+    const { problems } = clipmuxCredsFromEnv(
       serverEnv({ ACCOUNT_ID: '', TRANSCODE_INGEST_SECRET: '   ', TRANSCODED_BUCKET_NAME: '' }),
     )
     expect(problems).toHaveLength(3)
@@ -200,16 +204,113 @@ describe('openvodCredsFromEnv', () => {
   })
 
   it('omits ALLOWED_SOURCE_BUCKETS rather than writing an empty value, and says why', () => {
-    const { values, advisories } = openvodCredsFromEnv(serverEnv({ RAW_BUCKET_NAME: '' }))
+    const { values, advisories } = clipmuxCredsFromEnv(serverEnv({ RAW_BUCKET_NAME: '' }))
     expect(values).not.toHaveProperty('ALLOWED_SOURCE_BUCKETS')
     expect(advisories.join('\n')).toContain('ALLOWED_SOURCE_BUCKETS')
   })
 
   it('warns when BACKEND_URL cannot be reached from Modal', () => {
-    const loopback = openvodCredsFromEnv(serverEnv({ BACKEND_URL: 'http://localhost:8787' }))
+    const loopback = clipmuxCredsFromEnv(serverEnv({ BACKEND_URL: 'http://localhost:8787' }))
     expect(loopback.advisories.join('\n')).toContain('loopback')
 
-    const unset = openvodCredsFromEnv(serverEnv({ BACKEND_URL: '' }))
+    const unset = clipmuxCredsFromEnv(serverEnv({ BACKEND_URL: '' }))
     expect(unset.advisories.join('\n')).toContain('BACKEND_URL is not set')
+  })
+})
+
+/**
+ * The venv decision, and the installer that follows it.
+ *
+ * The failure these lock down: a uv-created venv has **no pip** (`uv venv`
+ * deliberately omits it), and the old code ran the venv's `pip` *after* uv had
+ * already installed the requirements. A leftover `bin/pip` script without its
+ * module — exactly what an upgraded interpreter leaves behind — turned a
+ * successful install into "pip install failed: No module named 'pip'", which
+ * read like a broken machine and was a broken sequence.
+ */
+describe('planVenv', () => {
+  const base: VenvProbe = {
+    venvExists: true,
+    interpreterOk: true,
+    hasUv: true,
+    hasPython3: true,
+  }
+
+  it('reuses a venv whose interpreter runs', () => {
+    expect(planVenv(base)).toEqual({ kind: 'reuse' })
+    // Nothing else matters when the venv is usable: not who created it, not
+    // whether pip is inside it.
+    expect(planVenv({ ...base, hasUv: false, hasPython3: false })).toEqual({ kind: 'reuse' })
+  })
+
+  it('rebuilds a venv whose interpreter does not run', () => {
+    expect(planVenv({ ...base, interpreterOk: false })).toEqual({ kind: 'rebuild', tool: 'uv' })
+    expect(planVenv({ ...base, interpreterOk: false, hasUv: false })).toEqual({
+      kind: 'rebuild',
+      tool: 'python3',
+    })
+  })
+
+  it('creates one when there is nothing there', () => {
+    expect(planVenv({ ...base, venvExists: false, interpreterOk: false })).toEqual({
+      kind: 'create',
+      tool: 'uv',
+    })
+    expect(
+      planVenv({ ...base, venvExists: false, interpreterOk: false, hasUv: false }),
+    ).toEqual({ kind: 'create', tool: 'python3' })
+  })
+
+  it('says what is missing instead of guessing', () => {
+    const plan = planVenv({
+      venvExists: false,
+      interpreterOk: false,
+      hasUv: false,
+      hasPython3: false,
+    })
+    expect(plan.kind).toBe('unavailable')
+    if (plan.kind === 'unavailable') expect(plan.reason).toContain('neither uv nor python3')
+  })
+})
+
+describe('installStrategy / installArgs', () => {
+  it('prefers uv whenever it exists', () => {
+    // Including over a python3-created venv: uv can install into one, and a
+    // uv-created venv has no pip to fall back to.
+    expect(installStrategy(true)).toBe('uv')
+    expect(installStrategy(false)).toBe('venv-pip')
+  })
+
+  it('never invokes the venv\'s bin/pip script directly', () => {
+    const uv = installArgs('uv', { uv: '/usr/local/bin/uv', venvPython: '/repo/.venv/bin/python' }, '/repo/req.txt')
+    expect(uv).toEqual([
+      '/usr/local/bin/uv',
+      'pip',
+      'install',
+      '--python',
+      '/repo/.venv/bin/python',
+      '-r',
+      '/repo/req.txt',
+    ])
+    // The pip path goes through the interpreter (`-m pip`), so a stale
+    // `bin/pip` left by an upgraded Python cannot be picked up.
+    const pipArgs = installArgs('venv-pip', { uv: 'uv', venvPython: '/repo/.venv/bin/python' }, '/repo/req.txt')
+    expect(pipArgs).toEqual([
+      '/repo/.venv/bin/python',
+      '-m',
+      'pip',
+      'install',
+      '-r',
+      '/repo/req.txt',
+    ])
+    expect(pipArgs.join(' ')).not.toContain('bin/pip ')
+  })
+
+  it('passes no secrets and no shell through either path', () => {
+    for (const kind of ['uv', 'venv-pip'] as const) {
+      const args = installArgs(kind, { uv: 'uv', venvPython: 'python' }, 'req.txt')
+      // execa-style argv: no `sh -c`, so nothing here can be word-split or expanded.
+      expect(args).not.toContain('-c')
+    }
   })
 })

@@ -25,7 +25,7 @@ function sign(
 	const key = new TextEncoder().encode(options.secret ?? SECRET)
 	const jwt = new jose.SignJWT(claims)
 		.setProtectedHeader({ alg: options.alg ?? 'HS256' })
-		.setIssuer('openvod')
+		.setIssuer('clipmux')
 		.setAudience('playback')
 	if (!options.noExp) {
 		jwt.setExpirationTime('1h')
@@ -59,7 +59,7 @@ describe('verifyToken', () => {
 		const key = new TextEncoder().encode(SECRET)
 		const token = await new jose.SignJWT({ sub: VIDEO_ID, org_id: ORG_ID })
 			.setProtectedHeader({ alg: 'HS256' })
-			.setIssuer('openvod')
+			.setIssuer('clipmux')
 			.setAudience('playback')
 			.setExpirationTime(Math.floor(Date.now() / 1000) - 60)
 			.sign(key)
@@ -83,7 +83,7 @@ describe('verifyToken', () => {
 		const key = new TextEncoder().encode(SECRET)
 		for (const [iss, aud] of [
 			['somebody-else', 'playback'],
-			['openvod', 'not-playback'],
+			['clipmux', 'not-playback'],
 		]) {
 			const token = await new jose.SignJWT({ sub: VIDEO_ID, org_id: ORG_ID })
 				.setProtectedHeader({ alg: 'HS256' })

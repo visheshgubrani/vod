@@ -1,5 +1,5 @@
 {
-  "name": "openvod",
+  "name": "clipmux",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
@@ -24,7 +24,7 @@
     "test:delivery": "pnpm --filter ./delivery test",
     "test:sdk": "pnpm --filter ./sdk test",
     "test:player": "pnpm --filter ./player test",
-    "test:setup": "pnpm --filter openvod-setup test",
+    "test:setup": "pnpm --filter clipmux-setup test",
     "test:python": "cd transcoding && .venv/bin/python -m pytest",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
@@ -40,6 +40,11 @@
     "docker:build": "docker compose build",
     "docker:migrate": "docker compose run --rm migrate",
     "docker:logs": "docker compose logs -f",
-    "docker:reset": "docker compose down -v"
+    "docker:reset": "docker compose down -v",
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:e2e:install": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2"
   }
 }

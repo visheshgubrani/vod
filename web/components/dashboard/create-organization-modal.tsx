@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRight, Building2, Loader2, X } from "lucide-react";
+import { ArrowRight, Building2, Loader2, AlertTriangle } from "lucide-react";
 import {
   createOrganization,
   setActiveOrganization,
@@ -96,41 +96,44 @@ export function CreateOrganizationModal({
   };
 
   return (
-    <Sheet open={open} onClose={onClose}>
-      <SheetContent className="w-full md:p-6 p-3 -mt-2 sm:max-w-xl border-l border-border bg-background/95 backdrop-blur-xl">
-        <SheetHeader className="border-b border-border px-2 pb-5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="flex h-12 w-11 items-center justify-center rounded-md bg-gradient-to-br from-primary to-accent p-2 shadow-md">
-                <Building2 className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <SheetTitle>Create Organization</SheetTitle>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Add another workspace without leaving the dashboard.
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-sm p-2 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-              aria-label="Close create organization modal"
-            >
-              <X className="h-5 w-5" />
-            </button>
+    <Sheet
+      open={open}
+      onClose={onClose}
+      label="Create organization"
+      className="w-full max-w-none border-l border-border bg-panel-quiet sm:w-[min(34rem,100vw)]"
+    >
+      <SheetHeader className="pr-16">
+        <div className="flex items-start gap-3">
+          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-brand/40 bg-brand text-brand-foreground">
+            <Building2 className="size-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <SheetTitle className="text-xl">Create organization</SheetTitle>
+            <p className="dash-body mt-1.5 max-w-[62ch] text-muted-foreground">
+              Add another workspace without leaving the dashboard. You will be
+              switched to it as soon as it exists.
+            </p>
           </div>
-        </SheetHeader>
+        </div>
+      </SheetHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-5 px-1 py-6">
+      <SheetContent className="p-6">
+        <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
-            <div className="rounded-sm border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-              {error}
+            <div
+              role="alert"
+              className="flex items-start gap-3 rounded-xl border border-failed/35 bg-failed/10 p-4 text-sm text-danger"
+            >
+              <AlertTriangle
+                className="mt-0.5 size-4 shrink-0"
+                aria-hidden="true"
+              />
+              <p>{error}</p>
             </div>
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="org-name">Organization Name</Label>
+            <Label htmlFor="org-name">Organization name</Label>
             <Input
               id="org-name"
               type="text"
@@ -139,57 +142,63 @@ export function CreateOrganizationModal({
               onChange={(event) => handleNameChange(event.target.value)}
               disabled={isLoading}
               autoFocus
-              className="mt-2 rounded-md bg-muted-foreground/20"
             />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="org-slug">URL Slug</Label>
-            <div className="flex items-center mt-2 gap-2">
-              <span className="text-sm text-accent font-medium">openvod.dev/</span>
-              <Input
-                id="org-slug"
-                type="text"
-                placeholder="acme"
-                value={formData.slug}
-                onChange={(event) =>
-                  setFormData((current) => ({
-                    ...current,
-                    slug: event.target.value
-                      .toLowerCase()
-                      .replace(/[^a-z0-9-]/g, ""),
-                  }))
-                }
-                disabled={isLoading}
-                className="flex-1 h-10 rounded-md bg-muted-foreground/20"
-
-              />
-            </div>
-            <p className="text-xs text-muted-foreground/80 mt-1">
-              This becomes the workspace URL slug.
+            <p className="dash-meta">
+              Shown in the workspace switcher. The URL slug is filled in from it.
             </p>
           </div>
 
-          <div className="flex pt-4 flex-col gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="org-slug">URL slug</Label>
+            <div className="flex items-center gap-2">
+              <span className="shrink-0 font-mono text-[15px] text-muted-foreground">
+                clipmux.com/
+              </span>
+              <div className="min-w-0 flex-1">
+                <Input
+                  id="org-slug"
+                  type="text"
+                  placeholder="acme"
+                  value={formData.slug}
+                  onChange={(event) =>
+                    setFormData((current) => ({
+                      ...current,
+                      slug: event.target.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, ""),
+                    }))
+                  }
+                  disabled={isLoading}
+                  className="font-mono"
+                />
+              </div>
+            </div>
+            <p className="dash-meta">
+              Lowercase letters, numbers and hyphens only. This becomes the
+              workspace URL slug.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2 pt-2 sm:flex-row">
             <Button
               type="button"
               variant="outline"
-              className="flex-1 py-3"
+              className="flex-1"
               onClick={onClose}
               disabled={isLoading}
             >
               Cancel
             </Button>
-            <Button type="submit" className="flex-1 py-3" disabled={isLoading}>
+            <Button type="submit" className="flex-1" disabled={isLoading}>
               {isLoading ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Creating...
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  Creating…
                 </>
               ) : (
                 <>
-                  Create Organization
-                  <ArrowRight className="h-4 w-4" />
+                  Create organization
+                  <ArrowRight className="size-4" aria-hidden="true" />
                 </>
               )}
             </Button>

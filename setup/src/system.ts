@@ -24,7 +24,7 @@ export interface PlatformDetection {
   isRoot: boolean
   hasSudo: boolean
   noSudo: boolean
-  /** Root or passwordless sudo, and not forbidden by OPENVOD_NO_SUDO. */
+  /** Root or passwordless sudo, and not forbidden by CLIPMUX_NO_SUDO. */
   canInstall: boolean
 }
 
@@ -221,7 +221,7 @@ export function requirementsFor(
     requirements.push({
       id: 'docker-compose',
       label: 'Docker Compose (v2 plugin)',
-      why: '`docker compose` drives every container OpenVOD starts',
+      why: '`docker compose` drives every container ClipMux starts',
       level,
       manual: dockerHint,
     })
@@ -305,9 +305,23 @@ export function requirementRows(statuses: readonly RequirementStatus[]): CheckRo
   })
 }
 
-/** Required requirements that are missing — the ones that must block a run. */
+/**
+ * Required requirements that are missing — the ones that must block a run.
+ *
+ * One deliberate exception: a missing `python3` is not a blocker when `uv` is
+ * present. uv provisions its own interpreter and installs packages without pip,
+ * so the Modal deploy environment is buildable on a machine with no system
+ * Python at all — and blocking there would refuse a configuration that works.
+ */
 export function blockers(statuses: readonly RequirementStatus[]): RequirementStatus[] {
-  return statuses.filter(({ requirement, found }) => requirement.level === 'required' && !found)
+  const hasUv = statuses.some(
+    ({ requirement, found }) => requirement.id === 'uv' && found,
+  )
+  return statuses.filter(({ requirement, found }) => {
+    if (found || requirement.level !== 'required') return false
+    if (requirement.id === 'python3' && hasUv) return false
+    return true
+  })
 }
 
 /** One line per requirement explaining what it is for. */

@@ -1,6 +1,6 @@
 """Tests for packager segment duration and upload stats."""
-from openvod_transcoder.packaging.shaka import choose_segment_duration
-from openvod_transcoder.transfer.base import TransferStats
+from clipmux_transcoder.packaging.shaka import choose_segment_duration
+from clipmux_transcoder.transfer.base import TransferStats
 
 
 class TestChooseSegmentDuration:

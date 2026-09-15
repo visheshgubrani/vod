@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# OpenVOD bootstrap — toolchain launcher (macOS / Linux).
+# ClipMux bootstrap — toolchain launcher (macOS / Linux).
 #
 # Node cannot install itself, and nvm is a shell function rather than a binary,
 # so this shim is the one piece that has to be shell:
@@ -31,9 +31,9 @@
 #     instead, which is what makes this safe to run on someone else's machine.
 #
 # Environment:
-#   OPENVOD_SKIP_INSTALL=1     skip every install step (dependencies must exist)
-#   OPENVOD_NO_SUDO=1          never escalate, even with passwordless sudo
-#   OPENVOD_STRICT_ENGINES=1   fail when node's major differs from engines.node
+#   CLIPMUX_SKIP_INSTALL=1     skip every install step (dependencies must exist)
+#   CLIPMUX_NO_SUDO=1          never escalate, even with passwordless sudo
+#   CLIPMUX_STRICT_ENGINES=1   fail when node's major differs from engines.node
 #   NO_COLOR=1                 plain, unbranded output
 #
 # This launcher never deploys and never runs wrangler — the wizard does, using
@@ -66,8 +66,8 @@ else
 fi
 
 ui_banner() {
-  printf '\n  %sOpenVOD%s %s· bootstrap %s%s\n\n' \
-    "${C_BRAND}" "${C_OFF}" "${C_DIM}" "${OPENVOD_VERSION}" "${C_OFF}"
+  printf '\n  %sClipMux%s %s· bootstrap %s%s\n\n' \
+    "${C_BRAND}" "${C_OFF}" "${C_DIM}" "${CLIPMUX_VERSION}" "${C_OFF}"
 }
 
 ui_step() { printf '  %s→%s %s\n' "${C_BRAND}" "${C_OFF}" "$1"; }
@@ -86,8 +86,8 @@ pkg_field() {
   sed -n "s/.*\"$1\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" package.json | head -n 1
 }
 
-OPENVOD_VERSION="$(pkg_field version)"
-[ -n "${OPENVOD_VERSION}" ] || OPENVOD_VERSION="0.0.0"
+CLIPMUX_VERSION="$(pkg_field version)"
+[ -n "${CLIPMUX_VERSION}" ] || CLIPMUX_VERSION="0.0.0"
 
 # `22.x` / `>=22` / `^22.11` all mean "major 22" for our purposes.
 NODE_ENGINE_SPEC="$(pkg_field node)"
@@ -182,9 +182,9 @@ ensure_node() {
       # here would break working installs. Say it once, loudly, and move on.
       ui_warn "node v${major} — this repo declares engines.node \"${NODE_ENGINE_SPEC}\""
       ui_detail "switch to it with:  nvm install ${REQUIRED_NODE_MAJOR} && nvm use ${REQUIRED_NODE_MAJOR}"
-      ui_detail "or re-run with OPENVOD_STRICT_ENGINES=1 to make this fatal"
-      if [ "${OPENVOD_STRICT_ENGINES:-0}" = "1" ]; then
-        die "OPENVOD_STRICT_ENGINES=1 and node ${major} != ${REQUIRED_NODE_MAJOR}"
+      ui_detail "or re-run with CLIPMUX_STRICT_ENGINES=1 to make this fatal"
+      if [ "${CLIPMUX_STRICT_ENGINES:-0}" = "1" ]; then
+        die "CLIPMUX_STRICT_ENGINES=1 and node ${major} != ${REQUIRED_NODE_MAJOR}"
       fi
     else
       ui_ok "node $(node -v)  ${C_DIM}(engines ${NODE_ENGINE_SPEC})${C_OFF}"
@@ -303,13 +303,13 @@ run_pnpm_install() {
 }
 
 install_deps() {
-  if [ "${OPENVOD_SKIP_INSTALL:-0}" = "1" ]; then
-    ui_warn "OPENVOD_SKIP_INSTALL=1 — skipping pnpm install"
+  if [ "${CLIPMUX_SKIP_INSTALL:-0}" = "1" ]; then
+    ui_warn "CLIPMUX_SKIP_INSTALL=1 — skipping pnpm install"
     return 0
   fi
 
   ui_step "installing workspace dependencies"
-  LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/openvod-bootstrap.XXXXXX")"
+  LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/clipmux-bootstrap.XXXXXX")"
 
   if run_pnpm_install ""; then
     ui_ok "dependencies ready"
@@ -365,7 +365,7 @@ report_environment() {
   elif [ "$OV_CAN_INSTALL" = "1" ]; then
     ui_detail "privileges: passwordless sudo (system packages can be installed)"
   elif [ "$OV_NO_SUDO" = "1" ]; then
-    ui_detail "privileges: none — OPENVOD_NO_SUDO=1, commands are printed instead"
+    ui_detail "privileges: none — CLIPMUX_NO_SUDO=1, commands are printed instead"
   else
     ui_detail "privileges: none — commands are printed instead of run"
   fi
@@ -416,7 +416,7 @@ exec_wizard() {
   if [ -x "${LOCAL_TSX}" ]; then
     exec "${LOCAL_TSX}" "${WIZARD_ENTRY}" "$@"
   fi
-  exec pnpm --filter openvod-setup exec tsx "${WIZARD_ENTRY}" "$@"
+  exec pnpm --filter clipmux-setup exec tsx "${WIZARD_ENTRY}" "$@"
 }
 
 # ── help ─────────────────────────────────────────────────────────────────────
@@ -424,7 +424,7 @@ exec_wizard() {
 # `--help` still answers on a fresh clone, before anything is installed.
 print_launcher_help() {
   cat <<EOF
-OpenVOD bootstrap — BYOK environment wizard
+ClipMux bootstrap — BYOK environment wizard
 
 Usage (run from anywhere inside the repo):
   ./scripts/bootstrap.sh                        interactive configure: choices, then
@@ -448,9 +448,9 @@ Prefill flags (interactive only):
   --queue direct|qstash    --ratelimit memory|redis|upstash   --uploads on|off
 
 Environment:
-  OPENVOD_SKIP_INSTALL=1     install nothing (dependencies must already exist)
-  OPENVOD_NO_SUDO=1          never escalate privileges; print the command instead
-  OPENVOD_STRICT_ENGINES=1   fail when node's major differs from engines.node
+  CLIPMUX_SKIP_INSTALL=1     install nothing (dependencies must already exist)
+  CLIPMUX_NO_SUDO=1          never escalate privileges; print the command instead
+  CLIPMUX_STRICT_ENGINES=1   fail when node's major differs from engines.node
   NO_COLOR=1                 plain output
 
 Installation policy: --help, --doctor, --check and --answers install nothing at
@@ -507,7 +507,7 @@ main() {
   if [ "${want_doctor}" = "1" ] || [ "${want_check}" = "1" ] || [ "${want_answers}" = "1" ]; then
     install_allowed=0
   fi
-  if [ "${OPENVOD_SKIP_INSTALL:-0}" = "1" ]; then
+  if [ "${CLIPMUX_SKIP_INSTALL:-0}" = "1" ]; then
     install_allowed=0
   fi
   if [ ! -t 0 ] || [ ! -t 1 ]; then

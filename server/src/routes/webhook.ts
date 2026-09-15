@@ -4,6 +4,7 @@ import { db } from '../lib/database'
 import { decideCallbackTransition, type VideoStatus } from '../lib/videoState'
 import {
   decideAttemptOwnership,
+  decideHeartbeatThrottle,
   DEFAULT_TRANSCODE_LEASE_MS,
 } from '../lib/transcodeClaim'
 import { video } from '../db/schema'
@@ -263,6 +264,7 @@ app.post('/heartbeat', async (c) => {
   const rows = await db
     .select({
       transcodeAttemptId: video.transcodeAttemptId,
+      lastHeartbeatAt: video.lastHeartbeatAt,
     })
     .from(video)
     .where(and(notDeleted, eq(video.id, videoId), isNull(video.deletedAt)))
@@ -288,7 +290,27 @@ app.post('/heartbeat', async (c) => {
 
   // Extending the lease is the point of a beat: without it a long job would
   // lose its lease mid-encode and become reclaimable — exactly the duplicate
-  // GPU run this mechanism exists to prevent.
+  // GPU run this mechanism exists to prevent. What the lease does *not* need is
+  // a write per beat: the transcoder reports progress once a second per encoder,
+  // so a beat that lands inside the coalescing window would only move
+  // `last_heartbeat_at` forward by less than a second against a 20-minute lease.
+  //
+  // The ownership check above runs first, so a superseded attempt still answers
+  // `ignored` rather than being coalesced into a success. This is the one place
+  // the answer can differ from the pre-coalescing route: a beat against a
+  // *terminal* row whose last beat is still recent answers `throttled` instead of
+  // `ignored`. The row is not written either way, and the transcoder treats any
+  // 2xx the same — which is why the terminal case is pinned by a test rather than
+  // left to chance.
+  //
+  // What this delays: `last_heartbeat_at` can now be up to
+  // HEARTBEAT_WRITE_MIN_INTERVAL_MS stale, and `planSweep` reads exactly that
+  // column. At 10s against a 45-minute staleness window that is not measurable.
+  const throttle = decideHeartbeatThrottle(record.lastHeartbeatAt, Date.now())
+  if (throttle.skip) {
+    return c.json({ success: true, throttled: true })
+  }
+
   const updated = await db
     .update(video)
     .set({

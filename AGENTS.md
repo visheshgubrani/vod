@@ -1,6 +1,6 @@
 # AGENTS.md - Agentic Coding Guidelines
 
-Guidelines for agents working on the **OpenVOD** codebase (open-source BYOK
+Guidelines for agents working on the **ClipMux** codebase (open-source BYOK
 VOD platform).
 
 ## Repository layout (single pnpm workspace at the repo root)
@@ -9,17 +9,17 @@ VOD platform).
 server/        Hono API — control plane (Cloudflare Worker or Node/Docker)
 delivery/      Cloudflare Worker — media delivery (JWT, manifest rewriting, metering)
 web/           Next.js dashboard + Developer Welcome (/setup BYOK page)
-sdk/           @openvod/uploader — browser upload SDK (windowed multipart,
+sdk/           @clipmux/uploader — browser upload SDK (windowed multipart,
                resumable sessions, typed errors)
-player/        @openvod/player — Vidstack React player (token auto-refresh)
-server-sdk/    @openvod/server — server SDK (upload/playback tokens, webhook
+player/        @clipmux/player — Vidstack React player (token auto-refresh)
+server-sdk/    @clipmux/server — server SDK (upload/playback tokens, webhook
                signature verification); webhook verify uses WebCrypto
 examples/      nextjs-integration — the documented upload → play → webhook flow,
                compiled in CI so the docs cannot drift
-transcoding/   openvod_transcoder — shared processing engine (FFmpeg + Shaka +
+transcoding/   clipmux_transcoder — shared processing engine (FFmpeg + Shaka +
                Whisper), the Modal runner (main.py), and the self-hosted agent
-               (`openvod_transcoder.agent`: CLI, daemon, journal) + pytest
-docs-site/     Fumadocs documentation site (package: openvod-docs) — the
+               (`clipmux_transcoder.agent`: CLI, daemon, journal) + pytest
+docs-site/     Fumadocs documentation site (package: clipmux-docs) — the
                developer-facing docs: quickstart, framework integrations,
                API reference, error catalogue, configuration
 docs/          Maintainer-facing markdown: cross-service contracts
@@ -30,7 +30,7 @@ docs/          Maintainer-facing markdown: cross-service contracts
 scripts/       bootstrap.sh launcher (toolchain + wizard exec) and lib/ —
                detect.sh (OS/package-manager verdict, the one detector) and
                pkg-commands.tsv (install commands, read by bash AND the wizard)
-setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora):
+setup/         clipmux-setup — interactive bootstrap wizard (TS, clack + chalk + ora):
                choices → system requirements → credentials → opt-in deploy
 ```
 
@@ -57,7 +57,7 @@ pnpm docker:up / :down / :build / :migrate / :logs / :reset   # deployment stack
 pnpm test                     # server/delivery/sdk/player/server-sdk/setup suites
 pnpm build                    # builds packages that define build
 pnpm lint                     # web (eslint) + others that define it
-pnpm test:setup                # openvod-setup wizard unit tests
+pnpm test:setup                # clipmux-setup wizard unit tests
 pnpm typecheck                # sdk/player/server-sdk typecheck scripts
 pnpm typecheck:tsc            # server + delivery tsc --noEmit
 (cd transcoding && .venv/bin/python -m pytest)   # python logic tests
@@ -110,14 +110,14 @@ the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
   `deployment` object with the resolved shape — runtime, transports, providers,
   stores, `deliveryRuntime`/`deliveryUrl` — see `docs/deployment-shapes.md`),
   delivery `GET /health`, Modal `GET /healthz`.
-- **Delivery worker** verifies HS256 JWTs (iss `openvod`, aud `playback`,
+- **Delivery worker** verifies HS256 JWTs (iss `clipmux`, aud `playback`,
   shared `JWT_SECRET`) per request for signed content, rewrites every
   URI-bearing HLS/DASH tag (never foreign-host URLs), serves 206 ranges,
   meters bandwidth into Analytics Engine, cache-tags signed segments.
 - **Transcoding** reports stable `error_code`s (see `docs/delivery-contract.md`),
   heartbeats non-fatally, adapts segment duration to short clips, verifies
   uploads (typed `PARTIAL_UPLOAD`), pre-bakes Whisper weights. The engine lives in
-  `transcoding/openvod_transcoder` and must import without Modal/boto3/CUDA —
+  `transcoding/clipmux_transcoder` and must import without Modal/boto3/CUDA —
   `tests/test_engine_isolation.py` enforces that in a subprocess with the
   optional packages blocked. Provider selection is stored per job
   (`transcode_job.provider`); never re-derive it from the environment.
@@ -207,7 +207,7 @@ expected values from literals/worked examples (never re-derived from code).
   that file's `...` catch-all, unordered — keep `...` and keep it last.
   `docs-site` is built in CI (`docs` job) and typechecked through the
   `js-workspace` matrix, so a broken page fails the build; run
-  `pnpm --filter openvod-docs build` before pushing.
+  `pnpm --filter clipmux-docs build` before pushing.
   **Every claim in the docs must be traceable to source** — endpoint fields from
   `server/src/routes/`, error codes from `sdk/src/errors.ts` and
   `server-sdk/src/errors.ts`, env vars from the `.example` templates. Never
@@ -252,5 +252,5 @@ Web: `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_BASE_URL`,
   9.0.1 for BOTH the Modal image (`transcoding/main.py`) and the agent image;
   `versions.env` is the only place a version/hash/digest is written down, and
   both images run `verify_toolchain.sh` at build time. See
-  `docs/transcoding-toolchain.md`. `OPENVOD_REQUIRE_MEDIA_TOOLS=1` (set in CI)
+  `docs/transcoding-toolchain.md`. `CLIPMUX_REQUIRE_MEDIA_TOOLS=1` (set in CI)
   turns a missing ffmpeg/packager into a test failure instead of a skip.

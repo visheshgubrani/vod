@@ -3,45 +3,53 @@ import Link from "next/link";
 export default function PrivacyPage() {
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <div className="max-w-4xl mx-auto px-6 py-14 md:py-20">
-        <header className="mb-10">
-          <p className="text-sm text-muted-foreground mb-3">
+      <div className="mx-auto max-w-[68ch] px-6 py-14 md:py-20">
+        <header className="mb-12">
+          <p className="mb-3 text-[13px] text-muted-foreground">
             Last updated: September 5, 2026
           </p>
-          <h1 className="text-3xl md:text-4xl font-bold mb-3">Privacy Policy</h1>
-          <p className="text-muted-foreground">
-            Sample privacy text for a self-hosted OpenVOD deployment. Replace
+          <h1 className="mb-3 text-3xl font-bold tracking-[-0.025em] text-foreground md:text-4xl">
+            Privacy Policy
+          </h1>
+          <p className="text-[15px] leading-[1.7] text-muted-foreground md:text-base">
+            Sample privacy text for a self-hosted ClipMux deployment. Replace
             this page with your organization&apos;s own policy before exposing a
             public dashboard. The operator of <em>this instance</em> (not the
-            upstream OpenVOD project) decides how data on their servers is
+            upstream ClipMux project) decides how data on their servers is
             handled.
           </p>
-          <div className="mt-4 flex items-center gap-4 text-sm">
-            <Link href="/terms" className="text-primary hover:underline">
+          <div className="mt-5 flex items-center gap-5 text-[15px]">
+            <Link
+              href="/terms"
+              className="text-ember underline underline-offset-4 hover:text-ember-quiet"
+            >
               Terms
             </Link>
-            <Link href="/cookies" className="text-primary hover:underline">
+            <Link
+              href="/cookies"
+              className="text-ember underline underline-offset-4 hover:text-ember-quiet"
+            >
               Cookies
             </Link>
           </div>
         </header>
 
-        <div className="space-y-8 text-sm md:text-base leading-7 text-foreground/90">
+        <div className="space-y-10 text-[15px] leading-[1.75] text-foreground/90 md:text-base">
           <section>
-            <h2 className="text-xl font-semibold mb-2">1. Information collected</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">1. Information collected</h2>
             <p>
               This instance may collect information you provide directly, such as
               account details, support requests, and uploaded media metadata. It
               may also collect technical usage data such as API logs, request
               timing, IP address, device/browser signals, and playback analytics
-              events. OpenVOD does not collect payment or billing details.
+              events. ClipMux does not collect payment or billing details.
             </p>
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">2. How information is used</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">2. How information is used</h2>
             <ul className="list-disc pl-5 space-y-2">
-              <li>Operate and secure this OpenVOD instance.</li>
+              <li>Operate and secure this ClipMux instance.</li>
               <li>Process uploads, transcoding, playback delivery, and usage metering.</li>
               <li>Respond to support requests and service communications.</li>
               <li>Improve reliability and performance of the deployment.</li>
@@ -50,7 +58,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">3. Legal bases</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">3. Legal bases</h2>
             <p>
               Where required, personal data is processed on the basis of contract
               performance, legitimate interests, consent, and legal compliance
@@ -59,7 +67,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">4. Data sharing</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">4. Data sharing</h2>
             <p>The operator may share information with:</p>
             <ul className="list-disc pl-5 space-y-2 mt-2">
               <li>
@@ -76,7 +84,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">5. Data retention</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">5. Data retention</h2>
             <p>
               Data is retained as long as needed to operate the instance, satisfy
               legal requirements, resolve disputes, and enforce the operator&apos;s
@@ -86,7 +94,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">6. Security</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">6. Security</h2>
             <p>
               The operator should use administrative, technical, and
               organizational safeguards. No system is completely secure, and you
@@ -95,7 +103,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">7. Your rights</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">7. Your rights</h2>
             <p>
               Depending on your location, you may have rights to access, correct,
               delete, restrict, or port your personal data, and to object to
@@ -105,7 +113,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">8. International transfers</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">8. International transfers</h2>
             <p>
               Information may be processed in countries other than your own,
               depending on where the operator hosts Postgres, R2, and Modal.
@@ -113,15 +121,15 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">9. Children&apos;s privacy</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">9. Children&apos;s privacy</h2>
             <p>
-              OpenVOD is not directed to children under 13. Operators should not
+              ClipMux is not directed to children under 13. Operators should not
               knowingly collect personal information from children under 13.
             </p>
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">10. Changes</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">10. Changes</h2>
             <p>
               The operator may update this policy. Material changes should be
               posted on this page with a revised effective date.
@@ -129,15 +137,15 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-xl font-semibold mb-2">11. Contact</h2>
+            <h2 className="mb-2.5 text-xl font-semibold tracking-[-0.015em] text-foreground">11. Contact</h2>
             <p>
               For privacy questions about <em>this instance</em>, contact its
               operator. For the upstream project,{" "}
               <a
-                href="mailto:privacy@openvod.dev"
-                className="text-primary hover:underline"
+                href="mailto:privacy@clipmux.com"
+                className="text-ember underline underline-offset-4 hover:text-ember-quiet"
               >
-                privacy@openvod.dev
+                privacy@clipmux.com
               </a>
               .
             </p>

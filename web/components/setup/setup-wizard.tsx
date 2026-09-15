@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import { apiOrigin } from "@/lib/api-base";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type HealthConfig = {
   ready: boolean;
@@ -31,6 +33,15 @@ const CHECK_LABELS: Record<keyof HealthConfig["checks"], string> = {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
 const HEALTH_CONFIG_URL = `${apiOrigin(API_BASE)}/health/config`;
+
+/** Inline command/env token inside body copy. */
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="rounded-md border border-border-soft bg-panel-quiet px-1.5 py-0.5 font-mono text-[13px] text-foreground">
+      {children}
+    </code>
+  );
+}
 
 export function SetupWizard() {
   const [config, setConfig] = React.useState<HealthConfig | null>(null);
@@ -66,63 +77,80 @@ export function SetupWizard() {
   }, [check]);
 
   return (
-    <div className="mt-8 space-y-6">
+    <div className="mt-10 space-y-5">
       {/* API reachability */}
-      <section className="rounded-xl border p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="font-medium">API reachability</h2>
+      <section className="dash-panel p-5 md:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="dash-section-title text-foreground">
+            API reachability
+          </h2>
           <span
-            className={
+            className={cn(
+              "inline-flex items-center gap-2 text-[13px] font-medium",
               apiState === "ok"
-                ? "text-emerald-500"
+                ? "text-ready"
                 : apiState === "loading"
-                  ? "text-amber-500"
-                  : "text-red-500"
-            }
+                  ? "text-processing"
+                  : "text-failed",
+            )}
           >
+            <span className="dash-dot" aria-hidden="true" />
             {apiState === "ok"
-              ? "● reachable"
+              ? "reachable"
               : apiState === "loading"
-                ? "● probing…"
-                : "● unreachable"}
+                ? "probing…"
+                : "unreachable"}
           </span>
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="dash-body mt-2 break-all text-muted-foreground">
           {HEALTH_CONFIG_URL} — is the API worker/container running?
         </p>
         {apiState === "down" && (
-          <p className="mt-2 text-sm text-red-500">
+          <p className="dash-body mt-3 text-failed">
             Could not reach the API at {HEALTH_CONFIG_URL}. Start it with{" "}
-            <code>wrangler dev</code> (server package) or{" "}
-            <code>docker compose up -d</code>.
+            <Code>wrangler dev</Code> (server package) or{" "}
+            <Code>docker compose up -d</Code>.
           </p>
         )}
         {error && apiState === "ok" && (
-          <p className="mt-2 text-sm text-amber-600">Config parse: {error}</p>
+          <p className="dash-body mt-3 text-processing">
+            Config parse: {error}
+          </p>
         )}
-        <button
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => void check()}
-          className="mt-3 rounded-md border px-3 py-1.5 text-sm"
+          className="mt-4"
         >
           Re-check
-        </button>
+        </Button>
       </section>
 
       {/* Capability checks */}
       {config && (
-        <section className="rounded-xl border p-5">
-          <h2 className="font-medium">Configured capabilities</h2>
-          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+        <section className="dash-panel p-5 md:p-6">
+          <h2 className="dash-section-title text-foreground">
+            Configured capabilities
+          </h2>
+          <ul className="mt-4 grid gap-2.5 sm:grid-cols-2">
             {(Object.keys(CHECK_LABELS) as Array<keyof HealthConfig["checks"]>).map(
               (key) => {
                 const ok = config.checks[key];
                 return (
                   <li
                     key={key}
-                    className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+                    className="flex items-center justify-between gap-3 rounded-xl border border-border-soft bg-panel-quiet px-3.5 py-2.5"
                   >
-                    <span>{CHECK_LABELS[key]}</span>
-                    <span className={ok ? "text-emerald-500" : "text-red-500"}>
+                    <span className="dash-body text-foreground">
+                      {CHECK_LABELS[key]}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-[13px] font-medium whitespace-nowrap",
+                        ok ? "text-ready" : "text-failed",
+                      )}
+                    >
                       {ok ? "✓ configured" : "✗ missing"}
                     </span>
                   </li>
@@ -131,14 +159,14 @@ export function SetupWizard() {
             )}
           </ul>
           {config.problems.length > 0 && (
-            <ul className="mt-4 space-y-1 text-sm text-amber-600">
+            <ul className="dash-body mt-5 space-y-1.5 text-processing">
               {config.problems.map((problem) => (
                 <li key={problem}>• {problem}</li>
               ))}
             </ul>
           )}
           {config.advisories?.map((advisory) => (
-            <p key={advisory} className="mt-1 text-xs text-muted-foreground">
+            <p key={advisory} className="dash-meta mt-2">
               {advisory}
             </p>
           ))}
@@ -146,20 +174,20 @@ export function SetupWizard() {
       )}
 
       {/* Next steps */}
-      <section className="rounded-xl border p-5">
-        <h2 className="font-medium">Next steps</h2>
-        <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm">
+      <section className="dash-panel p-5 md:p-6">
+        <h2 className="dash-section-title text-foreground">Next steps</h2>
+        <ol className="dash-body mt-4 list-decimal space-y-3 pl-5 text-foreground/90">
           <li>
-            Run <code>scripts/setup.sh</code> on your server to generate{" "}
-            <code>server/.dev.vars</code> with your Cloudflare R2 + Modal keys.
+            Run <Code>scripts/setup.sh</Code> on your server to generate{" "}
+            <Code>server/.dev.vars</Code> with your Cloudflare R2 + Modal keys.
           </li>
           <li>
             Create the R2 buckets and add the S3 CORS rule (see the docs).
           </li>
           <li>
-            Deploy the transcoder: <code>modal deploy main.py</code> from{" "}
-            <code>transcoding/</code>, then verify{" "}
-            <code>GET /healthz</code> on the Modal endpoint.
+            Deploy the transcoder: <Code>modal deploy main.py</Code> from{" "}
+            <Code>transcoding/</Code>, then verify <Code>GET /healthz</Code> on
+            the Modal endpoint.
           </li>
           <li>
             Restart the API so it picks up the new environment, then re-check

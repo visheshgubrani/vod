@@ -1,5 +1,5 @@
 /**
- * OpenVOD server configuration module.
+ * ClipMux server configuration module.
  *
  * Deep module: callers learn one small interface (`loadConfig` + `matchOrigin`)
  * and never reach into raw `process.env`/binding maps for validation-sensitive
@@ -72,7 +72,7 @@ export type CapabilityChecks = {
   rawUploads: boolean
 }
 
-export type OpenVodConfig = {
+export type ClipMuxConfig = {
   /** True when every capability this deployment's provider actually needs is configured. */
   ready: boolean
   checks: CapabilityChecks
@@ -247,7 +247,7 @@ export function requiresRawBucket(input: {
   return input.transcodeProvider === 'modal'
 }
 
-export function loadConfig(env: EnvLike): OpenVodConfig {
+export function loadConfig(env: EnvLike): ClipMuxConfig {
   const problems: string[] = []
   const advisories: string[] = []
 
@@ -472,7 +472,7 @@ export function parseOriginList(value: string | undefined): string[] {
  * Takes the *resolved* config, so it cannot disagree with the validation
  * `loadConfig` already performed, and cannot reach a second environment.
  */
-export function requirePlaybackJwtSecret(config: OpenVodConfig): string {
+export function requirePlaybackJwtSecret(config: ClipMuxConfig): string {
   if (!config.jwtSecret) {
     throw new Error('JWT_SECRET is not configured (must be at least 32 characters)')
   }

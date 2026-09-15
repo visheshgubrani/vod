@@ -84,7 +84,7 @@ function describePlatform(detection: PlatformDetection): string {
   if (detection.manager !== '') parts.push(detection.manager)
   if (detection.isRoot) parts.push('running as root')
   else if (detection.canInstall) parts.push('passwordless sudo')
-  else if (detection.noSudo) parts.push('elevation disabled (OPENVOD_NO_SUDO=1)')
+  else if (detection.noSudo) parts.push('elevation disabled (CLIPMUX_NO_SUDO=1)')
   else parts.push('no root/passwordless sudo')
   return parts.join(' · ')
 }

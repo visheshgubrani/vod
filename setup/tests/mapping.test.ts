@@ -33,8 +33,8 @@ export function workersAnswers(overrides: Partial<WizardAnswers> = {}): WizardAn
     accountId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     r2AccessKeyId: 'r2-access-key',
     r2SecretAccessKey: 'r2-secret-key',
-    rawBucket: 'openvod-raw',
-    transcodedBucket: 'openvod-transcoded',
+    rawBucket: 'clipmux-raw',
+    transcodedBucket: 'clipmux-transcoded',
     frontendUrl: 'http://localhost:3000',
     ...overrides,
   }
@@ -190,12 +190,12 @@ describe('mapping to env entries', () => {
       buildDeployConfig(
         workersAnswers({
           runtime: 'node',
-          db: { kind: 'existing', url: 'postgresql://db.example.com:5432/openvod' },
+          db: { kind: 'existing', url: 'postgresql://db.example.com:5432/clipmux' },
         }),
         SECRETS,
       ),
     )
-    expect(entries.get('DATABASE_URL')).toBe('postgresql://db.example.com:5432/openvod')
+    expect(entries.get('DATABASE_URL')).toBe('postgresql://db.example.com:5432/clipmux')
   })
 
   it('carries a plain-Redis choice into the deployment .env, and blanks Upstash', () => {
@@ -404,7 +404,7 @@ describe('deriveAnswersFromConfig', () => {
     const deploy = workersAnswers({
       target: 'deploy',
       runtime: 'node',
-      db: { kind: 'existing', url: 'postgresql://db.example.com:5432/openvod' },
+      db: { kind: 'existing', url: 'postgresql://db.example.com:5432/clipmux' },
       transcodeProvider: 'modal',
       queue: { kind: 'qstash', token: 'qst_7' },
     })
@@ -414,7 +414,7 @@ describe('deriveAnswersFromConfig', () => {
     expect(derived.runtime).toBe('node')
     expect(derived.db).toEqual({
       kind: 'existing',
-      url: 'postgresql://db.example.com:5432/openvod',
+      url: 'postgresql://db.example.com:5432/clipmux',
     })
     expect(derived.queue).toEqual({ kind: 'qstash', token: 'qst_7' })
   })
@@ -424,7 +424,7 @@ describe('deriveAnswersFromConfig', () => {
       DB_DRIVER: 'neon-http',
       DATABASE_URL: 'postgresql://user:pass@ep-x.aws.neon.tech/vod',
       ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
-      RAW_BUCKET_NAME: 'openvod-raw',
+      RAW_BUCKET_NAME: 'clipmux-raw',
     }
     const derived = deriveAnswersFromConfig('dev', legacy)
     expect(derived.transcodeProvider).toBe('modal')

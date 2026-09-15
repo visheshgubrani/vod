@@ -10,7 +10,7 @@ from urllib.parse import urlparse, urljoin
 
 import requests
 
-from openvod_transcoder.config import allowed_callback_hosts, allowed_url_hosts
+from clipmux_transcoder.config import allowed_callback_hosts, allowed_url_hosts
 
 
 LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}

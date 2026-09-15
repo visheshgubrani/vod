@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * OpenVOD bootstrap wizard entrypoint (run by scripts/bootstrap.sh after the
+ * ClipMux bootstrap wizard entrypoint (run by scripts/bootstrap.sh after the
  * toolchain check; also runnable directly once node + pnpm exist).
  *
  *   ./scripts/bootstrap.sh                 interactive configure
@@ -240,7 +240,7 @@ function findRepoRoot(): string {
     const parent = join(dir, '..')
     if (parent === dir) {
       throw new WizardError(
-        'could not find pnpm-workspace.yaml — run the wizard from inside the OpenVOD repo clone',
+        'could not find pnpm-workspace.yaml — run the wizard from inside the ClipMux repo clone',
       )
     }
     dir = parent

@@ -24,8 +24,8 @@ from urllib.parse import urljoin
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
-from openvod_transcoder.encoding.backends import RenderSpec
-from openvod_transcoder.errors import (
+from clipmux_transcoder.encoding.backends import RenderSpec
+from clipmux_transcoder.errors import (
     ERROR_ENCODER_FAILED,
     ERROR_PACKAGING_FAILED,
     TranscodeError,

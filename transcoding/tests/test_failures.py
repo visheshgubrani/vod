@@ -9,7 +9,7 @@ retrying without it.
 """
 import pytest
 
-from openvod_transcoder.encoding.failures import (
+from clipmux_transcoder.encoding.failures import (
     FAILURE_DECODE,
     FAILURE_DEVICE,
     FAILURE_DISK,
@@ -25,7 +25,7 @@ from openvod_transcoder.encoding.failures import (
     is_fallback_eligible_kind,
     marks_backend_unusable,
 )
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_ENCODER_FAILED,
     ERROR_INSUFFICIENT_DISK,
     ERROR_SOURCE_MISSING,

@@ -30,20 +30,20 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Test the packages being published
         run: |
-          pnpm --filter @openvod/uploader test
-          pnpm --filter @openvod/player test
-          pnpm --filter @openvod/server test
+          pnpm --filter @clipmux/uploader test
+          pnpm --filter @clipmux/player test
+          pnpm --filter @clipmux/server test
       - name: Build
         run: |
-          pnpm --filter @openvod/uploader build
-          pnpm --filter @openvod/player build
-          pnpm --filter @openvod/server build
+          pnpm --filter @clipmux/uploader build
+          pnpm --filter @clipmux/player build
+          pnpm --filter @clipmux/server build
       # A dry run catches the packaging mistakes (a missing `files` entry, a
       # dist path that no longer exists, exports pointing at an unbuilt file)
       # before the registry has an immutable version to regret.
       - name: Pack (dry run)
         run: |
-          for pkg in @openvod/uploader @openvod/player @openvod/server; do
+          for pkg in @clipmux/uploader @clipmux/player @clipmux/server; do
             echo "::group::npm pack $pkg"
             (cd "$(pnpm --filter "$pkg" exec pwd)" && npm pack --dry-run)
             echo "::endgroup::"
@@ -53,7 +53,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          for pkg in @openvod/uploader @openvod/player @openvod/server; do
+          for pkg in @clipmux/uploader @clipmux/player @clipmux/server; do
             version=$(node -p "require('./$(pnpm --filter "$pkg" exec pwd | sed 's|^'$PWD'/||')/package.json').version")
             if npm view "${pkg}@${version}" version >/dev/null 2>&1; then
               echo "${pkg}@${version} is already on the registry — skipping"
@@ -68,9 +68,9 @@ jobs:
           workdir=$(mktemp -d)
           cd "$workdir"
           npm init -y >/dev/null
-          npm install @openvod/uploader @openvod/player @openvod/server
+          npm install @clipmux/uploader @clipmux/player @clipmux/server
           # The exports map must resolve from both module systems: ESM for
           # bundlers, CJS for the server SDK inside a CommonJS app.
-          node -e "const u = require('@openvod/uploader'); if (!u.OpenVodUploader) process.exit(1)"
-          node -e "const s = require('@openvod/server'); if (!s.OpenVod || !s.constructWebhookEvent) process.exit(1)"
-          node --input-type=module -e "import { OpenVodUploader } from '@openvod/uploader'; import { OpenVod } from '@openvod/server'; if (!OpenVodUploader || !OpenVod) process.exit(1)"
+          node -e "const u = require('@clipmux/uploader'); if (!u.ClipMuxUploader) process.exit(1)"
+          node -e "const s = require('@clipmux/server'); if (!s.ClipMux || !s.constructWebhookEvent) process.exit(1)"
+          node --input-type=module -e "import { ClipMuxUploader } from '@clipmux/uploader'; import { ClipMux } from '@clipmux/server'; if (!ClipMuxUploader || !ClipMux) process.exit(1)"

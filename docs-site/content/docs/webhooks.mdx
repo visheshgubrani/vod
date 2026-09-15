@@ -1,9 +1,9 @@
 ---
 title: Webhooks
-description: Every OpenVOD event, the payload shape, raw-body signature verification with @openvod/server, and the delivery guarantees.
+description: Every ClipMux event, the payload shape, raw-body signature verification with @clipmux/server, and the delivery guarantees.
 ---
 
-OpenVOD POSTs a JSON event to every enabled webhook endpoint that subscribed to
+ClipMux POSTs a JSON event to every enabled webhook endpoint that subscribed to
 that event name. Webhook endpoints belong to your deployment: the dashboard
 registers them (URL, subscribed events, description) and shows the signing
 secret **once** — save it, because the API never displays it again.
@@ -45,24 +45,24 @@ The request also carries these headers:
 | `X-Webhook-Id` | The payload's `id` |
 | `X-Webhook-Event` | The payload's `event` |
 | `X-Webhook-Attempt` | Present on outbox deliveries; 1 on the first attempt |
-| `User-Agent` | `OpenVOD-Webhooks/1.0` |
+| `User-Agent` | `ClipMux-Webhooks/1.0` |
 
 Deliveries time out after 10 seconds.
 
 ## Verify the signature
 
 The signature is `HMAC-SHA256(secret, "<timestamp>.<raw body>")`, hex-encoded,
-prefixed with `sha256=`. `@openvod/server` verifies and parses in one call:
+prefixed with `sha256=`. `@clipmux/server` verifies and parses in one call:
 
 ```ts
-// app/api/webhooks/openvod/route.ts
-import { constructWebhookEvent } from '@openvod/server'
+// app/api/webhooks/clipmux/route.ts
+import { constructWebhookEvent } from '@clipmux/server'
 
 export async function POST(req: Request) {
   const rawBody = await req.text() // NOT req.json()
 
   const event = await constructWebhookEvent({
-    secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+    secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
     rawBody,
     signature: req.headers.get('x-webhook-signature'),
     timestamp: req.headers.get('x-webhook-timestamp'),
@@ -111,7 +111,7 @@ ones it takes deliberate configuration:
     ```ts
     // express.raw on THIS route only. A global app.use(express.json()) consumes
     // the body first and express.raw never sees it.
-    app.post('/api/webhooks/openvod', express.raw({ type: 'application/json' }), handler)
+    app.post('/api/webhooks/clipmux', express.raw({ type: 'application/json' }), handler)
 
     // inside the handler:
     const rawBody = req.body.toString('utf8') // a Buffer

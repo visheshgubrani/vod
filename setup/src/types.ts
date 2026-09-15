@@ -1,5 +1,5 @@
 /**
- * Shared answer types for the OpenVOD bootstrap wizard.
+ * Shared answer types for the ClipMux bootstrap wizard.
  *
  * One schema drives both the interactive questions and the headless
  * `--answers <file.json>` mode, so a file written for CI is exactly what the
@@ -16,7 +16,7 @@ export type RuntimeKind = 'workers' | 'node'
 /**
  * Which configuration this run owns.
  *
- * OpenVOD keeps two of them, and they are not interchangeable:
+ * ClipMux keeps two of them, and they are not interchangeable:
  *
  * - `dev`    — `server/.dev.vars` + `delivery/.dev.vars`: running the API on
  *              this machine (`pnpm dev`), or deploying it as a Cloudflare
@@ -88,8 +88,8 @@ export const DEFAULT_ANSWERS: Pick<
   WizardAnswers,
   'rawBucket' | 'transcodedBucket' | 'frontendUrl'
 > = {
-  rawBucket: 'openvod-raw',
-  transcodedBucket: 'openvod-transcoded',
+  rawBucket: 'clipmux-raw',
+  transcodedBucket: 'clipmux-transcoded',
   frontendUrl: 'http://localhost:3000',
 }
 

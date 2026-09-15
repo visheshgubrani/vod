@@ -1,10 +1,10 @@
 ---
 title: API reference
-description: The OpenVOD public HTTP API — base URL, both authentication schemes, conventions, rate limits, health probes and the full endpoint index.
+description: The ClipMux public HTTP API — base URL, both authentication schemes, conventions, rate limits, health probes and the full endpoint index.
 ---
 
 The public API is mounted at your own API origin, under `/v1`. There is no
-hosted OpenVOD API — `https://api.yourvod.com` below is your deployment.
+hosted ClipMux API — `https://api.yourvod.com` below is your deployment.
 
 <Callout type="info" title="baseUrl never includes /v1">
   The SDKs take the **origin** and append the full path themselves. Pass
@@ -51,11 +51,11 @@ by the endpoint, not by you.
 
 ```bash
 # API key — mint an upload token
-curl -X POST "$OPENVOD_API_URL/v1/upload/token" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY"
+curl -X POST "$CLIPMUX_API_URL/v1/upload/token" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
 
 # Upload token — declare an upload
-curl -X POST "$OPENVOD_API_URL/v1/upload/create" \
+curl -X POST "$CLIPMUX_API_URL/v1/upload/create" \
   -H "Authorization: UploadToken $UPLOAD_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"filename":"a.mp4","content_type":"video/mp4","size":1048576}'
@@ -91,11 +91,11 @@ Redis, Upstash REST, or an in-memory window — chosen by your configuration (se
 [Configuration](/configuration#rate-limiting)).
 
 An exceeded limit answers `429` with a `Retry-After` header. The SDKs surface it
-as `OpenVodError` with `code: 'RATE_LIMITED'` and `retryAfterMs` already parsed
+as `ClipMuxError` with `code: 'RATE_LIMITED'` and `retryAfterMs` already parsed
 from that header — honour it rather than using a fixed backoff.
 
 ```ts
-if (error instanceof OpenVodError && error.code === 'RATE_LIMITED') {
+if (error instanceof ClipMuxError && error.code === 'RATE_LIMITED') {
   await sleep(error.retryAfterMs ?? 1000)
 }
 ```
@@ -117,7 +117,7 @@ any non-fatal advisories.
 
 ```json
 {
-  "service": "openvod",
+  "service": "clipmux",
   "time": "2025-01-15T10:00:00.000Z",
   "ready": true,
   "checks": {
@@ -177,7 +177,7 @@ webhook retries and storage reclamation are silently not running — see
 (false means uploads will fail).
 
 ```bash
-curl -s "$OPENVOD_API_URL/health/config" | jq '{ready, checks, deployment}'
+curl -s "$CLIPMUX_API_URL/health/config" | jq '{ready, checks, deployment}'
 ```
 
 ## Endpoint index

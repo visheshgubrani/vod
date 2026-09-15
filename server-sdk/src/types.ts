@@ -1,5 +1,5 @@
 /**
- * Wire types for the public OpenVOD API (`/v1`).
+ * Wire types for the public ClipMux API (`/v1`).
  *
  * Field names here are the API's own snake_case names, deliberately: this is
  * the boundary, and renaming on the way in would mean the docs, the curl

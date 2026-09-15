@@ -1,7 +1,7 @@
 """Tests for heartbeat/callback network behavior (no real network)."""
 import requests
 
-from openvod_transcoder.utils import network as netw
+from clipmux_transcoder.utils import network as netw
 
 
 class FakeResponse:

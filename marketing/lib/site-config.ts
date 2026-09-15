@@ -6,24 +6,41 @@ export type SiteConfig = {
   managedFormUrl: string;
   enterpriseFormUrl: string;
   privacyUrl: string;
-  walkthroughVideoUrl: string;
+  /** The 24-second hero recording, in a 1080p desktop cut… */
+  heroVideoUrl: string;
+  /** …and a tighter 720p cut for narrow viewports. */
+  heroVideoMobileUrl: string;
+  heroPosterUrl: string;
 };
 
 type SiteEnv = Record<string, string | undefined>;
 
+/**
+ * Defaults are written as literals rather than imported from `lib/media`,
+ * because `next.config.ts` evaluates this module outside the app's module
+ * resolver. `lib/media.ts` reads the resulting config, so this stays the single
+ * source of truth for the hero paths.
+ */
 const localDefaults: SiteConfig = {
   canonicalOrigin: "http://localhost:3004",
   docsUrl: "http://localhost:3002",
   quickstartUrl: "http://localhost:3002/quickstart",
   githubUrl: "https://github.com/visheshgubrani/vod",
   managedFormUrl:
-    "mailto:hello@openvod.dev?subject=OpenVOD%20managed%20hosting%20waitlist",
+    "mailto:hello@clipmux.com?subject=ClipMux%20managed%20hosting%20waitlist",
   enterpriseFormUrl:
-    "mailto:hello@openvod.dev?subject=OpenVOD%20enterprise%20deployment",
+    "mailto:hello@clipmux.com?subject=ClipMux%20enterprise%20deployment",
   privacyUrl: "http://localhost:3000/privacy",
-  walkthroughVideoUrl: "/walkthrough.mp4",
+  heroVideoUrl: "/media/hero-1080.mp4",
+  heroVideoMobileUrl: "/media/hero-720.mp4",
+  heroPosterUrl: "/media/hero-poster.jpg",
 };
 
+/**
+ * Destinations that must be configured explicitly for a production build. The
+ * media paths are deliberately *not* required: they default to the files shipped
+ * in `public/media`, so a deployment without a CDN still renders.
+ */
 const requiredEnv: Array<[keyof SiteConfig, string]> = [
   ["canonicalOrigin", "MARKETING_CANONICAL_ORIGIN"],
   ["docsUrl", "MARKETING_DOCS_URL"],
@@ -48,8 +65,10 @@ export function getSiteConfig(env: SiteEnv = process.env): SiteConfig {
     enterpriseFormUrl:
       env.MARKETING_ENTERPRISE_FORM_URL ?? localDefaults.enterpriseFormUrl,
     privacyUrl: env.MARKETING_PRIVACY_URL ?? localDefaults.privacyUrl,
-    walkthroughVideoUrl:
-      env.MARKETING_WALKTHROUGH_VIDEO_URL ?? localDefaults.walkthroughVideoUrl,
+    heroVideoUrl: env.MARKETING_HERO_VIDEO_URL ?? localDefaults.heroVideoUrl,
+    heroVideoMobileUrl:
+      env.MARKETING_HERO_VIDEO_MOBILE_URL ?? localDefaults.heroVideoMobileUrl,
+    heroPosterUrl: env.MARKETING_HERO_POSTER_URL ?? localDefaults.heroPosterUrl,
   };
 
   if (isProductionBuild(env)) {
@@ -59,7 +78,7 @@ export function getSiteConfig(env: SiteEnv = process.env): SiteConfig {
 
     if (missing.length > 0) {
       throw new Error(
-        `[openvod-marketing] Missing required production destinations: ${missing.join(", ")}`,
+        `[clipmux-marketing] Missing required production destinations: ${missing.join(", ")}`,
       );
     }
   }

@@ -26,7 +26,7 @@ import type { ConfigTarget, WizardAnswers } from './types'
 import { WizardError } from './errors'
 import { pairingCommand } from './pairing'
 import { primaryConfigPath } from './envio'
-import { openvodCredsFromEnv, MODAL_CREDS_SECRET } from './modal'
+import { clipmuxCredsFromEnv, MODAL_CREDS_SECRET } from './modal'
 import { bucketCorsOrigins, createDeployPort, type DeployPort } from './deployPort'
 
 export interface DeployResult {
@@ -298,7 +298,7 @@ export async function runDeployPhase(
           // bucket or callback host edited by hand has to reach the transcoder,
           // and a stale answer silently pointing at the wrong bucket is the kind
           // of bug that only shows up as a failed encode.
-          const creds = openvodCredsFromEnv(config)
+          const creds = clipmuxCredsFromEnv(config)
           if (creds.problems.length > 0) {
             throw new Error(
               `the ${MODAL_CREDS_SECRET} Modal secret is built from ${configPath}, and that ` +
@@ -452,7 +452,7 @@ export async function runDeployPhase(
         async () => {
           const config = io.readConfig()
           if (!config) throw new Error(`${configPath} disappeared mid-deploy`)
-          const creds = openvodCredsFromEnv(config)
+          const creds = clipmuxCredsFromEnv(config)
           const bin = modalBin as string
           const updated = await io.refreshModalCallbacks(bin, creds, uploadedCallbackHosts)
           if (updated === uploadedCallbackHosts) return 'already correct'

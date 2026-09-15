@@ -5,8 +5,8 @@ This module used to be where the FFmpeg command line lived, which is exactly why
 the pipeline could only ever run on one machine: the command embedded an L4's
 capabilities (NVDEC, ``tonemap_cuda``, three concurrent 4K decodes) as literals.
 
-Command construction now lives in :mod:`openvod_transcoder.encoding.backends` as
-pure functions over a :class:`~openvod_transcoder.encoding.backends.RenderSpec`,
+Command construction now lives in :mod:`clipmux_transcoder.encoding.backends` as
+pure functions over a :class:`~clipmux_transcoder.encoding.backends.RenderSpec`,
 and this module is the thin execution layer: run the command, report progress,
 honour cancellation, validate the output.
 """
@@ -15,8 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.encoding.backends import (
     BACKEND_CPU,
     EncoderBackend,
     RenderSpec,
@@ -25,9 +25,9 @@ from openvod_transcoder.encoding.backends import (
     build_video_command,
     fit_dimensions,
 )
-from openvod_transcoder.errors import ERROR_ENCODER_FAILED, TranscodeError
-from openvod_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
-from openvod_transcoder.video.analysis import VideoMetadata
+from clipmux_transcoder.errors import ERROR_ENCODER_FAILED, TranscodeError
+from clipmux_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
+from clipmux_transcoder.video.analysis import VideoMetadata
 
 
 def transcode_rendition(
@@ -47,7 +47,7 @@ def transcode_rendition(
     """
     Encode one rendition of ``input_path``.
 
-    ``profile`` is an :class:`~openvod_transcoder.config.EncodingProfile` (or any
+    ``profile`` is an :class:`~clipmux_transcoder.config.EncodingProfile` (or any
     object with ``label``/``height``/``bitrate``/``maxrate``/``bufsize``); the
     pixel dimensions are resolved here so callers do not have to reason about the
     source's aspect ratio or about even-dimension rounding.
@@ -102,7 +102,7 @@ def transcode_audio(
     """
     Normalize the selected audio track to stereo AAC in a fragmented MP4.
 
-    The default track is chosen by :func:`openvod_transcoder.planning.plan_audio`
+    The default track is chosen by :func:`clipmux_transcoder.planning.plan_audio`
     and its index pinned here, so a file whose first stream is a commentary or an
     alternate language does not silently become the delivered audio.
     """

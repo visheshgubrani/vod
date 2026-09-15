@@ -22,14 +22,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
-from openvod_transcoder.config import (
+from clipmux_transcoder.config import (
     DEFAULT_MAX_HEIGHT,
     ENCODING_PROFILES,
     LADDER_MIN_HEIGHT_GAP,
     EncodingProfile,
 )
-from openvod_transcoder.encoding.backends import RenderSpec, even, fit_dimensions
-from openvod_transcoder.video.analysis import VideoMetadata, select_optimal_ladder
+from clipmux_transcoder.encoding.backends import RenderSpec, even, fit_dimensions
+from clipmux_transcoder.video.analysis import VideoMetadata, select_optimal_ladder
 
 POLICY_LEGACY = "legacy"
 POLICY_CAPPED = "capped"

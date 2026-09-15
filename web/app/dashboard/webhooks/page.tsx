@@ -16,6 +16,7 @@ import {
 import { useSession, useActiveOrganization } from "@/lib/auth-client";
 import { DashboardPageHeader } from "@/components/dashboard/page-header";
 import { DashboardTablePageSkeleton } from "@/components/dashboard/page-skeletons";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,24 +48,75 @@ interface NewWebhookResponse {
   message: string;
 }
 
-function WebhookActions({ onDelete }: { onDelete: () => void }) {
+function WebhookActions({
+  onDelete,
+  url,
+}: {
+  onDelete: () => void;
+  url: string;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="rounded-sm p-2 text-foreground/80 transition-colors hover:bg-muted/70 hover:text-foreground">
-          <MoreVertical className="w-4 h-4" />
+        <button
+          type="button"
+          aria-label={`Actions for ${url}`}
+          className="inline-flex size-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-panel-strong hover:text-foreground"
+        >
+          <MoreVertical className="size-5" aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="min-w-[200px] whitespace-nowrap rounded-sm bg-muted/80 p-1.5"
+        className="min-w-[200px] whitespace-nowrap"
       >
-        <DropdownMenuItem onClick={onDelete} destructive className="rounded-sm">
-          <Trash2 className="w-4 h-4" />
+        <DropdownMenuItem onClick={onDelete} destructive>
+          <Trash2 className="size-4" aria-hidden="true" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** Enabled/disabled switch: 44px hit target, real switch semantics. */
+function WebhookToggle({
+  enabled,
+  url,
+  isToggling,
+  onToggle,
+}: {
+  enabled: boolean;
+  url: string;
+  isToggling: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={`${enabled ? "Disable" : "Enable"} webhook ${url}`}
+      onClick={onToggle}
+      disabled={isToggling}
+      className="inline-flex h-11 w-14 items-center justify-center rounded-lg transition-colors hover:bg-panel-strong disabled:opacity-50"
+    >
+      <span
+        className={cn(
+          "relative block h-6 w-12 rounded-full border transition-colors",
+          enabled
+            ? "border-brand bg-brand"
+            : "border-border bg-panel-strong"
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-1 left-1 size-4 rounded-full bg-white transition-transform",
+            enabled && "translate-x-6"
+          )}
+        />
+      </span>
+    </button>
   );
 }
 
@@ -227,74 +279,77 @@ export default function WebhooksPage() {
   }
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="w-full max-w-5xl space-y-8">
       {/* Page Header */}
       <DashboardPageHeader
         title="Webhooks"
         description="Configure outbound event delivery for your organization."
         actions={
-          <>
-            {/* <button className="rounded-full p-1 transition-colors hover:bg-muted/50">
-              <Info className="w-5 h-5 text-muted-foreground" />
-            </button> */}
-            <Button
-              onClick={() => setShowCreateModal(true)}
-              className="bg-primary/65 hover:bg-primary/75"
-            >
-              {" "}
-              <Plus className="size-5" />
-              Create webhook
-            </Button>
-          </>
+          <Button onClick={() => setShowCreateModal(true)}>
+            <Plus className="size-5" aria-hidden="true" />
+            Create webhook
+          </Button>
         }
       />
 
       {/* Error Banner */}
       {error && (
-        <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+        <div
+          role="alert"
+          className="rounded-xl border border-failed/35 bg-failed/10 p-4 text-sm text-danger"
+        >
           {error}
         </div>
       )}
 
       {/* Newly Created Webhook Banner */}
       {newlyCreated && (
-        <div className="rounded-sm border border-lime-500/30 bg-lime-500/10 p-4 md:p-6">
+        <section className="dash-panel border-ready/40 bg-ready/5 p-5 md:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-sm bg-lime-500/20">
-              <Webhook className="w-5 h-5 text-lime-400" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-lg font-semibold text-foreground mb-1">
-                Webhook Created
-              </h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Save your signing secret now. You will not be able to see it
-                again!
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-ready/35 bg-ready/10 text-ready">
+              <Webhook className="size-5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="dash-section-title text-foreground">
+                Webhook created
+              </h2>
+              <p className="dash-body mt-1.5 max-w-2xl text-muted-foreground">
+                Save your signing secret now. It is shown once and cannot be
+                retrieved again.
               </p>
-              <div className="flex items-center gap-2 p-3 rounded-sm bg-background/50 border border-border font-mono text-sm">
-                <code className="flex-1 break-all text-foreground">
+              <p className="dash-meta mt-3 break-all font-mono text-foreground">
+                {newlyCreated.url}
+              </p>
+              <div className="dash-code-block mt-3 flex items-center gap-2 p-3">
+                <code className="min-w-0 flex-1 break-all text-foreground">
                   {secretVisible ? newlyCreated.secret : "•".repeat(40)}
                 </code>
                 <Button
                   size="sm"
                   variant="ghost"
+                  aria-label={
+                    secretVisible
+                      ? "Hide signing secret"
+                      : "Show signing secret"
+                  }
                   onClick={() => setSecretVisible(!secretVisible)}
                 >
                   {secretVisible ? (
-                    <EyeOff className="w-4 h-4" />
+                    <EyeOff className="size-4" aria-hidden="true" />
                   ) : (
-                    <Eye className="w-4 h-4" />
+                    <Eye className="size-4" aria-hidden="true" />
                   )}
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
+                  aria-label="Copy signing secret"
                   onClick={() => handleCopySecret(newlyCreated.secret)}
                 >
                   {secretCopied ? (
-                    <Check className="w-4 h-4 text-lime-400" />
+                    <Check className="size-4 text-ready" aria-hidden="true" />
                   ) : (
-                    <Copy className="w-4 h-4" />
+                    <Copy className="size-4" aria-hidden="true" />
                   )}
                 </Button>
               </div>
@@ -307,147 +362,133 @@ export default function WebhooksPage() {
               Dismiss
             </Button>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Webhooks Table */}
-      <div className="glass overflow-visible rounded-sm">
+      {/* Webhooks list */}
+      <section className="dash-panel overflow-hidden">
         {webhooks.length === 0 ? (
-          <div className="px-4 mt-2 md:px-6 py-12 text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-sm bg-muted/50">
-              <Webhook className="w-8 h-8 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold text-foreground mb-1">
-              No Webhooks
-            </h3>
-            <p className="text-muted-foreground mb-4">
-              Create your first webhook to receive event notifications
+          <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+            <span className="flex size-14 items-center justify-center rounded-full border border-border bg-panel-strong text-muted-foreground">
+              <Webhook className="size-6" aria-hidden="true" />
+            </span>
+            <h2 className="mt-5 text-lg font-semibold text-foreground">
+              No webhooks yet
+            </h2>
+            <p className="dash-body mt-2 max-w-md text-muted-foreground">
+              Add an endpoint to receive signed event notifications when your
+              videos change state.
             </p>
             <Button
               onClick={() => setShowCreateModal(true)}
-              className="bg-primary/65 hover:bg-primary/75"
+              className="mt-6"
             >
-              <Plus className="w-4 h-4" />
+              <Plus className="size-4" aria-hidden="true" />
               Create webhook
             </Button>
           </div>
         ) : (
-          <>
-            <div className="hidden md:block">
-              <table className="w-full">
-                <thead className="border-b border-border">
-                  <tr className="text-left text-sm text-muted-foreground/80">
-                    <th className="w-20 px-6 py-4 font-medium"></th>
-                    <th className="px-6 py-4 font-medium">Endpoint</th>
-                    <th className="px-6 py-4 font-medium">Created</th>
-                    <th className="w-12 px-6 py-4 font-medium"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {webhooks.map((wh) => (
-                    <tr
-                      key={wh.id}
-                      className="transition-colors hover:bg-muted/30"
+          <ul className="divide-y divide-border-soft">
+            {webhooks.map((wh) => (
+              <li key={wh.id} className="flex flex-col gap-4 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={wh.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block break-all font-mono text-[15px] font-semibold text-ember transition-colors hover:underline"
                     >
-                      <td className="px-6 py-4">
-                        <button
-                          onClick={() => handleToggle(wh.id, wh.enabled)}
-                          disabled={togglingId === wh.id}
-                          className={cn(
-                            "relative h-6 w-12 rounded-full transition-colors",
-                            wh.enabled ? "bg-primary" : "bg-muted-foreground/30"
-                          )}
-                        >
-                          <span
-                            className={cn(
-                              "absolute top-1 left-1 h-4 w-4 rounded-full bg-white transition-transform",
-                              wh.enabled && "translate-x-6"
-                            )}
-                          />
-                        </button>
-                      </td>
-                      <td className="px-6 py-4">
-                        <a
-                          href={wh.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-mono text-sm text-primary hover:underline"
-                        >
-                          {wh.url}
-                        </a>
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-sm text-muted-foreground">
-                        {formatDate(wh.createdAt)}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex justify-end">
-                          <WebhookActions onDelete={() => setDeleteId(wh.id)} />
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="divide-y divide-border md:hidden">
-              {webhooks.map((wh) => (
-                <div key={wh.id} className="space-y-3 px-4 py-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <a
-                        href={wh.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block break-all font-mono text-sm text-primary hover:underline"
-                      >
-                        {wh.url}
-                      </a>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Created {formatDate(wh.createdAt)}
-                      </p>
-                    </div>
-                    <WebhookActions onDelete={() => setDeleteId(wh.id)} />
+                      {wh.url}
+                    </a>
+                    {wh.description ? (
+                      <p className="dash-meta mt-1.5">{wh.description}</p>
+                    ) : null}
                   </div>
 
-                  <div className="flex items-center justify-between rounded-sm bg-muted/20 p-3">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Status</p>
-                      <p className="mt-1 text-sm text-foreground">
-                        {wh.enabled ? "Enabled" : "Disabled"}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => handleToggle(wh.id, wh.enabled)}
-                      disabled={togglingId === wh.id}
-                      className={cn(
-                        "relative h-6 w-12 rounded-full transition-colors",
-                        wh.enabled ? "bg-primary" : "bg-muted-foreground/30"
-                      )}
-                    >
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Badge variant={wh.enabled ? "ready" : "neutral"}>
                       <span
                         className={cn(
-                          "absolute top-1 left-1 h-4 w-4 rounded-full bg-white transition-transform",
-                          wh.enabled && "translate-x-6"
+                          "dash-dot",
+                          wh.enabled ? "bg-ready" : "bg-idle"
                         )}
+                        aria-hidden="true"
                       />
-                    </button>
+                      {wh.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                    <WebhookToggle
+                      enabled={wh.enabled}
+                      url={wh.url}
+                      isToggling={togglingId === wh.id}
+                      onToggle={() => handleToggle(wh.id, wh.enabled)}
+                    />
+                    <WebhookActions
+                      url={wh.url}
+                      onDelete={() => setDeleteId(wh.id)}
+                    />
                   </div>
                 </div>
-              ))}
-            </div>
-          </>
+
+                <div className="flex flex-col gap-3">
+                  <p className="dash-label">Events</p>
+                  {wh.events && wh.events.length > 0 ? (
+                    <ul className="flex flex-wrap gap-2">
+                      {wh.events.map((event) => (
+                        <li key={event}>
+                          <Badge
+                            variant="secondary"
+                            className="font-mono text-[13px]"
+                          >
+                            {event}
+                          </Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="dash-meta">
+                      No events subscribed — this endpoint will not receive
+                      deliveries.
+                    </p>
+                  )}
+                </div>
+
+                <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
+                  <div className="flex items-center gap-1.5">
+                    <dt className="text-muted-foreground">Last delivery</dt>
+                    <dd className="font-medium text-foreground">
+                      {formatDate(wh.lastTriggeredAt)}
+                    </dd>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <dt className="text-muted-foreground">Created</dt>
+                    <dd className="font-medium text-foreground">
+                      {formatDate(wh.createdAt)}
+                    </dd>
+                  </div>
+                </dl>
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
+      </section>
 
       {/* Create Webhook Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <h2 className="text-xl font-bold text-foreground mb-4">
-              Create Webhook
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-webhook-title"
+            className="w-full max-w-md rounded-2xl border border-border bg-panel p-6"
+          >
+            <h2
+              id="create-webhook-title"
+              className="text-lg font-semibold text-foreground"
+            >
+              Create webhook
             </h2>
-            <form onSubmit={handleCreate} className="space-y-4">
+            <form onSubmit={handleCreate} className="mt-4 space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="webhookUrl">Endpoint URL</Label>
                 <Input
@@ -457,30 +498,33 @@ export default function WebhooksPage() {
                   value={newUrl}
                   onChange={(e) => setNewUrl(e.target.value)}
                   autoFocus
-                  className="mt-1.5 rounded-sm bg-foreground/30"
+                  className="mt-1.5"
                 />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Must use HTTPS for production webhooks
+                <p className="dash-meta">
+                  HTTPS is required, except for localhost endpoints.
                 </p>
               </div>
-              <div className="flex gap-3 pt-2">
+              <div className="flex flex-col gap-2 pt-2 sm:flex-row">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setShowCreateModal(false)}
-                  className="flex-1 rounded-sm"
+                  className="flex-1"
                 >
                   Cancel
                 </Button>
                 <Button
                   type="submit"
                   disabled={isCreating || !newUrl.trim()}
-                  className="flex-1 rounded-sm bg-primary/65 hover:bg-primary/75"
+                  className="flex-1"
                 >
                   {isCreating ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Creating...
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      Creating…
                     </>
                   ) : (
                     "Create"
@@ -494,43 +538,58 @@ export default function WebhooksPage() {
 
       {/* Delete Confirmation Modal */}
       {deleteId && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-sm bg-destructive/20 flex items-center justify-center">
-                <AlertTriangle className="w-5 h-5 text-destructive" />
-              </div>
-              <h2 className="text-xl font-bold text-foreground">
-                Delete Webhook
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-webhook-title"
+            className="w-full max-w-md rounded-2xl border border-border bg-panel p-6"
+          >
+            <div className="flex items-center gap-3">
+              <span className="flex size-10 items-center justify-center rounded-xl border border-failed/35 bg-failed/10">
+                <AlertTriangle
+                  className="size-5 text-danger"
+                  aria-hidden="true"
+                />
+              </span>
+              <h2
+                id="delete-webhook-title"
+                className="text-lg font-semibold text-foreground"
+              >
+                Delete this webhook?
               </h2>
             </div>
-            <p className="text-muted-foreground mb-6">
-              Are you sure you want to delete this webhook? You will stop
-              receiving events at this endpoint.
+            <p className="dash-body mt-4 text-muted-foreground">
+              Deliveries to this endpoint stop immediately, and its delivery
+              log is removed. This cannot be undone.
             </p>
-            <div className="flex gap-3">
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row">
               <Button
                 variant="outline"
                 onClick={() => setDeleteId(null)}
-                className="flex-1 rounded-sm"
+                className="flex-1"
                 disabled={isDeleting}
               >
                 Cancel
               </Button>
               <Button
+                variant="destructive"
                 onClick={handleDelete}
                 disabled={isDeleting}
-                className="flex-1 rounded-sm bg-destructive hover:bg-destructive/90"
+                className="flex-1"
               >
                 {isDeleting ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Deleting...
+                    <Loader2
+                      className="size-4 animate-spin"
+                      aria-hidden="true"
+                    />
+                    Deleting…
                   </>
                 ) : (
                   <>
-                    <Trash2 className="w-4 h-4" />
-                    Delete
+                    <Trash2 className="size-4" aria-hidden="true" />
+                    Delete webhook
                   </>
                 )}
               </Button>

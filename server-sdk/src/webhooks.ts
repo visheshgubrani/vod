@@ -167,7 +167,7 @@ export interface ConstructEventOptions extends VerifyWebhookOptions {
  *
  * ```ts
  * const event = await constructWebhookEvent({
- *   secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+ *   secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
  *   rawBody: await req.text(),
  *   signature: req.headers.get('x-webhook-signature'),
  *   timestamp: req.headers.get('x-webhook-timestamp'),

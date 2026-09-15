@@ -1,13 +1,13 @@
 ---
 title: Overview
-description: A high-level introduction to OpenVOD and the self-hosted VOD workflow it is designed to support.
+description: A high-level introduction to ClipMux and the self-hosted VOD workflow it is designed to support.
 ---
 
-OpenVOD is open-source video infrastructure you run on your own accounts. Paste Cloudflare R2 credentials and a Modal API key and you get Mux-style ingestion, GPU transcoding, signed playback, and a dashboard — without a metered SaaS in the middle.
+ClipMux is open-source video infrastructure you run on your own accounts. Paste Cloudflare R2 credentials and a Modal API key and you get Mux-style ingestion, GPU transcoding, signed playback, and a dashboard — without a metered SaaS in the middle.
 
-## What OpenVOD Does
+## What ClipMux Does
 
-At a high level, OpenVOD helps you:
+At a high level, ClipMux helps you:
 
 - upload source video files (direct-to-storage multipart)
 - process them into playback-ready HLS/DASH outputs
@@ -21,15 +21,15 @@ The platform is focused on VOD first. Live streaming can come later; the current
 
 ### Assets
 
-An asset is the canonical video object inside OpenVOD. It begins as an uploaded source file and becomes the reference point for processing status, playback metadata, and delivery configuration.
+An asset is the canonical video object inside ClipMux. It begins as an uploaded source file and becomes the reference point for processing status, playback metadata, and delivery configuration.
 
 ### Processing
 
-After ingestion, OpenVOD analyzes and transcodes the source (Modal GPU pipeline: FFmpeg, Shaka, optional Whisper) into formats suitable for streaming playback.
+After ingestion, ClipMux analyzes and transcodes the source (Modal GPU pipeline: FFmpeg, Shaka, optional Whisper) into formats suitable for streaming playback.
 
 ### Playback
 
-Once an asset is ready, OpenVOD exposes a playback URL and, for private assets, a short-lived JWT. `@openvod/player` consumes that URL.
+Once an asset is ready, ClipMux exposes a playback URL and, for private assets, a short-lived JWT. `@clipmux/player` consumes that URL.
 
 ### Delivery
 
@@ -39,7 +39,7 @@ Delivery is always a **Cloudflare Worker** in front of R2 (there is no Docker/No
 
 The intended workflow looks like this:
 
-1. Your app requests an upload token from the OpenVOD API.
+1. Your app requests an upload token from the ClipMux API.
 2. The source file is uploaded to your R2 raw bucket via presigned URLs.
 3. The Modal pipeline prepares adaptive-bitrate output in your transcoded bucket.
 4. Your backend or frontend retrieves playback details when the asset is ready.
@@ -54,7 +54,7 @@ Playback is designed around the same concerns as larger platforms:
 - adaptive delivery
 - controlled access (signed JWTs with UA/domain binding)
 - predictable URLs and playback identifiers
-- a drop-in React player (`@openvod/player`)
+- a drop-in React player (`@clipmux/player`)
 
 The delivery worker is Cloudflare-only and that is **fixed**, not a default. The API and dashboard can run on Workers **or** Node/Docker; signed playback still goes through the delivery worker in front of R2. See [Deployment](/deploy).
 

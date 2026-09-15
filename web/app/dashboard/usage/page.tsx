@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { DashboardPageHeader } from "@/components/dashboard/page-header";
 import { DashboardUsageSkeleton } from "@/components/dashboard/page-skeletons";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   BarChart,
@@ -23,14 +24,20 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { format, parseISO, subDays } from "date-fns";
+import { format, parseISO } from "date-fns";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
 const VIDEOS_PER_PAGE = 10;
+const BANDWIDTH_PERIOD_DAYS = 30;
 
 interface UsageData {
   organizationId: string;
@@ -105,6 +112,19 @@ interface BreakdownData {
   videos: VideoBreakdown[];
 }
 
+const bandwidthChartConfig = {
+  gigabytes: {
+    label: "Bandwidth served",
+    color: "var(--chart-1)",
+  },
+} satisfies ChartConfig;
+
+const countNumber = new Intl.NumberFormat("en-US");
+
+function formatCount(value: number): string {
+  return countNumber.format(value || 0);
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
@@ -113,14 +133,85 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
-function createFallbackBandwidthPoint(date: Date) {
-  return {
-    date: date.toISOString(),
-    bytes: 0,
-    megabytes: 0,
-    gigabytes: 0,
-    requests: 0,
-  };
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (Array.isArray(value)) return toNumber(value[0] as unknown);
+  return 0;
+}
+
+function safeDateLabel(value: string): string {
+  try {
+    return format(parseISO(value), "MMM d");
+  } catch {
+    return value;
+  }
+}
+
+function safeLongDateLabel(value: string): string {
+  try {
+    return format(parseISO(value), "MMM d, yyyy");
+  } catch {
+    return value;
+  }
+}
+
+/** Status pills follow the shared ready / processing / failed palette. */
+function statusBadgeVariant(
+  status: string
+): "ready" | "processing" | "failed" {
+  if (status === "ready") return "ready";
+  if (status === "processing") return "processing";
+  return "failed";
+}
+
+function statusDotClass(status: string): string {
+  if (status === "ready") return "bg-ready";
+  if (status === "processing") return "bg-processing animate-pulse";
+  return "bg-failed";
+}
+
+function TooltipRow({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex w-full items-center justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono font-medium tabular-nums text-foreground">
+        {value}
+      </span>
+    </span>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  description,
+  className,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-panel-quiet px-6 py-10 text-center",
+        className
+      )}
+    >
+      <span className="flex size-12 items-center justify-center rounded-full border border-border bg-panel-strong text-muted-foreground">
+        {icon}
+      </span>
+      <p className="mt-4 text-[15px] font-semibold text-foreground">{title}</p>
+      <p className="dash-body mt-1.5 max-w-md text-muted-foreground">
+        {description}
+      </p>
+    </div>
+  );
 }
 
 export default function UsagePage() {
@@ -183,28 +274,11 @@ export default function UsagePage() {
     dailyBandwidth?.daily.slice(-7).map((d) => ({
       value: d.gigabytes,
     })) || [];
-  const bandwidthChartData = React.useMemo(() => {
-    const daily = dailyBandwidth?.daily ?? [];
-
-    if (daily.length >= 5) return daily;
-
-    const fallbackCount = 5;
-    const fallbackDays = Array.from({ length: fallbackCount }, (_, index) =>
-      createFallbackBandwidthPoint(
-        subDays(new Date(), fallbackCount - 1 - index)
-      )
-    );
-
-    if (daily.length === 0) return fallbackDays;
-
-    return [...fallbackDays.slice(0, fallbackCount - daily.length), ...daily];
-  }, [dailyBandwidth]);
-
-  const bandwidthTicks = React.useMemo(
-    () => bandwidthChartData.map((item) => item.date),
-    [bandwidthChartData]
+  // Only real daily buckets are plotted — no synthetic zero-filled days.
+  const bandwidthChartData = React.useMemo(
+    () => dailyBandwidth?.daily ?? [],
+    [dailyBandwidth]
   );
-  const bandwidthBarSize = bandwidthChartData.length > 10 ? 18 : 32;
   const paginatedVideos = React.useMemo(() => {
     const videos = breakdown?.videos ?? [];
     return videos.slice(
@@ -222,221 +296,256 @@ export default function UsagePage() {
     setCurrentPage((page) => Math.min(page, totalPages));
   }, [totalPages]);
 
+  const hasDailyBandwidth = bandwidthChartData.length > 0;
+  const hasSparkline = sparklineData.length > 0;
+
   if (loading) {
     return <DashboardUsageSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 gap-4">
-        <p className="text-red-400">{error}</p>
-        <Button onClick={fetchUsage} variant="outline">
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Retry
-        </Button>
+      <div className="w-full space-y-8">
+        <DashboardPageHeader
+          title="Usage"
+          description="Storage and bandwidth consumed by this organization."
+        />
+        <div
+          role="alert"
+          className="flex flex-col gap-4 rounded-xl border border-failed/35 bg-failed/10 p-4 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p className="text-sm text-danger">{error}</p>
+          <Button onClick={fetchUsage} variant="outline" size="sm">
+            <RefreshCw className="size-4" aria-hidden="true" />
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
+    <div className="w-full space-y-8">
       <DashboardPageHeader
         title="Usage"
-        description="Monitor your infrastructure consumption"
+        description="Storage and bandwidth consumed by this organization, measured from transcoded output and delivery-worker egress."
         actions={
-          <Button
-            onClick={fetchUsage}
-            variant="outline"
-            size="sm"
-            className="mt-4"
-          >
-            <RefreshCw className="w-4 h-4 mr-0.5" />
+          <Button onClick={fetchUsage} variant="outline">
+            <RefreshCw className="size-4" aria-hidden="true" />
             Refresh
           </Button>
         }
       />
 
-      {/* Usage cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Storage Card */}
-        <div className="rounded-sm border border-primary/20 bg-card/60 p-4 md:p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="rounded-sm bg-accent/15 p-2">
-              <HardDrive className="w-5 h-5 text-purple-200" />
-            </div>
-            <span className="text-sm font-medium text-muted-foreground">
-              Storage Used
+      {/* Headline figures */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="dash-panel flex flex-col gap-4 p-5 md:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <span className="dash-label">Storage used</span>
+            <span className="flex size-9 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+              <HardDrive className="size-4.5" aria-hidden="true" />
             </span>
           </div>
-          <p className="text-4xl font-bold text-foreground mb-2">
-            {usage?.storage.billedGB.toFixed(2)}{" "}
-            <span className="text-xl text-muted-foreground">GB</span>
+          <p className="flex items-baseline gap-2">
+            <span className="font-mono text-4xl font-semibold tracking-tight tabular-nums text-foreground">
+              {(usage?.storage.billedGB ?? 0).toFixed(2)}
+            </span>
+            <span className="text-sm text-muted-foreground">GB stored</span>
           </p>
-          <p className="text-xs text-muted-foreground">Transcoded assets</p>
+          <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
+            <div className="flex items-center gap-1.5">
+              <dt className="text-muted-foreground">Raw uploads</dt>
+              <dd className="font-mono font-medium tabular-nums text-foreground">
+                {formatBytes(usage?.storage.uploadedBytes ?? 0)}
+              </dd>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <dt className="text-muted-foreground">Saved by transcoding</dt>
+              <dd className="font-mono font-medium tabular-nums text-foreground">
+                {usage?.storage.compressionRatio ?? 0}%
+              </dd>
+            </div>
+          </dl>
+          <p className="dash-meta">
+            Transcoded HLS output currently stored. This is a running total, not
+            a monthly figure.
+          </p>
         </div>
 
-        {/* Bandwidth Card */}
-        <div className="rounded-sm border border-lime-500/20 bg-lime-500/10 p-4 md:p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="rounded-sm bg-lime-100/20 p-2">
-              <TrendingUp className="w-5 h-5 text-lime-500" />
-            </div>
-            <span className="text-sm font-medium text-muted-foreground">
-              Bandwidth (Last 30 Days)
+        <div className="dash-panel flex flex-col gap-4 p-5 md:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <span className="dash-label">
+              Bandwidth served, last {BANDWIDTH_PERIOD_DAYS} days
+            </span>
+            <span className="flex size-9 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+              <TrendingUp className="size-4.5" aria-hidden="true" />
             </span>
           </div>
-          <div className="mb-2 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <p className="text-4xl font-bold text-foreground">
-              {bandwidth?.bandwidth.totalGB.toFixed(2) || "—"}{" "}
-              <span className="text-xl text-muted-foreground">GB</span>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <p className="flex items-baseline gap-2">
+              <span className="font-mono text-4xl font-semibold tracking-tight tabular-nums text-foreground">
+                {bandwidth ? bandwidth.bandwidth.totalGB.toFixed(2) : "—"}
+              </span>
+              {bandwidth ? (
+                <span className="text-sm text-muted-foreground">GB served</span>
+              ) : null}
             </p>
-            {sparklineData.length > 0 && (
-              <div className="h-12 w-full sm:w-32">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={sparklineData}>
-                    <Line
-                      type="monotone"
-                      dataKey="value"
-                      stroke="#84cc16"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+            {hasSparkline ? (
+              <div className="shrink-0">
+                <div className="h-12 w-full sm:w-32" aria-hidden="true">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={sparklineData}>
+                      <Line
+                        type="monotone"
+                        dataKey="value"
+                        stroke="var(--chart-1)"
+                        strokeWidth={2}
+                        dot={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="dash-meta mt-1 text-right">
+                  Daily GB, last 7 days
+                </p>
               </div>
-            )}
+            ) : null}
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="dash-meta">
             {bandwidth
-              ? `${bandwidth.bandwidth.totalRequests.toLocaleString()} requests`
-              : "Not configured"}
+              ? `${formatCount(
+                  bandwidth.bandwidth.totalRequests
+                )} delivery requests in the last ${BANDWIDTH_PERIOD_DAYS} days.`
+              : "Bandwidth analytics is not configured in this deployment."}
           </p>
         </div>
       </div>
 
       {/* Daily Bandwidth Chart */}
       {dailyBandwidth && (
-        <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-          <div className="flex items-start gap-3 mb-6">
-            <div className="rounded-sm bg-accent/10 p-3">
-              <Database className="size-6 text-accent" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">
-                Bandwidth Usage (Daily)
+        <section className="dash-panel p-5 md:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="dash-section-title text-foreground">
+                Bandwidth usage by day
               </h2>
-              <p className="text-sm text-muted-foreground">Last 30 days</p>
+              <p className="dash-meta mt-1.5">
+                Gigabytes served per day over the last{" "}
+                {dailyBandwidth.period.days} days.
+              </p>
             </div>
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+              <Database className="size-4.5" aria-hidden="true" />
+            </span>
           </div>
-          <div className="h-64 sm:h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={bandwidthChartData}
-                barCategoryGap={bandwidthChartData.length > 10 ? "12%" : "24%"}
-                margin={{ top: 8, right: 8, bottom: 8, left: -18 }}
+
+          <div className="mt-6">
+            {hasDailyBandwidth ? (
+              <ChartContainer
+                config={bandwidthChartConfig}
+                className="h-80 w-full sm:h-96"
               >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="hsl(var(--border))"
-                  strokeOpacity={0.75}
-                />
-                <XAxis
-                  dataKey="date"
-                  ticks={bandwidthTicks}
-                  interval="preserveStartEnd"
-                  minTickGap={20}
-                  tickMargin={10}
-                  tickFormatter={(value: string) => {
-                    try {
-                      return format(parseISO(value), "MMM d");
-                    } catch {
-                      return value;
+                <BarChart
+                  accessibilityLayer
+                  data={bandwidthChartData}
+                  margin={{ top: 8, right: 12, bottom: 4, left: 4 }}
+                >
+                  <CartesianGrid
+                    strokeDasharray="4 4"
+                    stroke="var(--border-soft)"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="date"
+                    tickLine={false}
+                    axisLine={false}
+                    minTickGap={24}
+                    tickMargin={10}
+                    tick={{ fontSize: 13, fill: "var(--muted-foreground)" }}
+                    tickFormatter={(value: string) => safeDateLabel(value)}
+                  />
+                  <YAxis
+                    width={72}
+                    tickLine={false}
+                    axisLine={false}
+                    tickMargin={8}
+                    tick={{ fontSize: 13, fill: "var(--muted-foreground)" }}
+                    tickFormatter={(value: number) => `${value.toFixed(1)} GB`}
+                  />
+                  <ChartTooltip
+                    cursor={{ fill: "var(--panel-strong)", opacity: 0.4 }}
+                    content={
+                      <ChartTooltipContent
+                        className="text-[13px]"
+                        labelFormatter={(label) =>
+                          safeLongDateLabel(String(label))
+                        }
+                        formatter={(value) => (
+                          <TooltipRow
+                            label="Bandwidth served"
+                            value={`${toNumber(value).toFixed(2)} GB`}
+                          />
+                        )}
+                      />
                     }
-                  }}
-                  stroke="#888"
-                  style={{ fontSize: "12px" }}
-                />
-                <YAxis
-                  stroke="#888"
-                  style={{ fontSize: "12px" }}
-                  width={75}
-                  tickMargin={8}
-                  tickFormatter={(value: number) => `${value.toFixed(1)} GB`}
-                />
-                <Tooltip
-                  cursor={false}
-                  contentStyle={{
-                    backgroundColor: "#1a1a1a",
-                    border: "1px solid #333",
-                    borderRadius: "8px",
-                  }}
-                  labelFormatter={(label) => {
-                    if (typeof label === "string") {
-                      try {
-                        return format(parseISO(label), "MMM d, yyyy");
-                      } catch {
-                        return label;
-                      }
-                    }
-                    return label;
-                  }}
-                  formatter={(value) => [
-                    `${(value as number).toFixed(2)} GB`,
-                    "Bandwidth",
-                  ]}
-                />
-                <Bar
-                  dataKey="gigabytes"
-                  fill="hsl(var(--accent))"
-                  radius={[4, 4, 0, 0]}
-                  barSize={Math.min(bandwidthBarSize, 24)}
-                />
-              </BarChart>
-            </ResponsiveContainer>
+                  />
+                  <Bar
+                    dataKey="gigabytes"
+                    fill="var(--chart-1)"
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={28}
+                  />
+                </BarChart>
+              </ChartContainer>
+            ) : (
+              <EmptyState
+                className="h-72"
+                icon={<Database className="size-5" aria-hidden="true" />}
+                title="No bandwidth recorded yet"
+                description="Daily egress appears here after the delivery worker serves its first segment. Play a video through its delivery URL to generate traffic."
+              />
+            )}
           </div>
-        </div>
+        </section>
       )}
 
       {/* Video Breakdown Table */}
-      <div className="rounded-sm border border-border bg-card/60 p-4 md:p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <div className="rounded-sm bg-accent/15 p-3">
-              <Film className="size-5.5 text-cyan-500" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">
-                Storage Breakdown
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Per-video storage usage
-              </p>
-            </div>
+      <section className="dash-panel p-5 md:p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="dash-section-title text-foreground">
+              Storage breakdown
+            </h2>
+            <p className="dash-meta mt-1.5">
+              Transcoded storage per asset. Totals are current, not per period.
+            </p>
           </div>
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-panel-strong text-muted-foreground">
+            <Film className="size-4.5" aria-hidden="true" />
+          </span>
         </div>
 
-        {breakdown?.videos.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">
-            <Film className="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <p>No videos yet. Upload your first video to see usage stats.</p>
-          </div>
+        {totalVideos === 0 ? (
+          <EmptyState
+            className="mt-6 py-12"
+            icon={<Film className="size-5" aria-hidden="true" />}
+            title="No videos yet"
+            description="Upload your first video to see how much storage each asset takes. Per-asset rows appear once transcoding finishes."
+          />
         ) : (
           <>
-            <div className="hidden overflow-x-auto md:block">
+            <div className="mt-6 hidden overflow-x-auto md:block">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-border">
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-muted-foreground">
-                      Video
-                    </th>
-                    <th className="px-4 py-3 text-center text-sm font-semibold text-muted-foreground">
+                  <tr className="border-b border-border text-[13px] font-semibold text-muted-foreground">
+                    <th className="px-5 py-3 text-left font-semibold">Video</th>
+                    <th className="px-5 py-3 text-center font-semibold">
                       Status
                     </th>
-                    <th className="px-4 py-3 text-right text-sm font-semibold text-muted-foreground">
+                    <th className="px-5 py-3 text-right font-semibold">
                       Storage
                     </th>
-                    <th className="px-4 py-3 text-right text-sm font-semibold text-muted-foreground">
+                    <th className="px-5 py-3 text-right font-semibold">
                       Created
                     </th>
                   </tr>
@@ -445,50 +554,41 @@ export default function UsagePage() {
                   {paginatedVideos.map((video) => (
                     <tr
                       key={video.id}
-                      className="border-b border-border/90 transition-colors hover:bg-muted/30"
+                      className="border-b border-border-soft transition-colors last:border-b-0 hover:bg-panel-strong/40"
                     >
-                      <td className="px-4 py-4">
+                      <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
-                          <div
+                          <span
                             className={cn(
-                              "h-2 w-2 rounded-full",
-                              video.status === "ready"
-                                ? "bg-lime-500"
-                                : video.status === "processing"
-                                ? "bg-amber-400 animate-pulse"
-                                : "bg-red-500"
+                              "dash-dot",
+                              statusDotClass(video.status)
                             )}
+                            aria-hidden="true"
                           />
-                          <div>
-                            <p className="max-w-[300px] truncate font-medium text-foreground">
+                          <div className="min-w-0">
+                            <p className="max-w-[320px] truncate text-[15px] font-medium text-foreground">
                               {video.title}
                             </p>
-                            <p className="font-mono text-xs text-muted-foreground">
-                              {video.id.slice(0, 8)}...
+                            <p className="mt-0.5 font-mono text-[13px] text-muted-foreground">
+                              {video.id.slice(0, 8)}…
                             </p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-4 text-center">
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-sm px-2 py-1 text-xs font-medium",
-                            video.status === "ready"
-                              ? "bg-lime-500/20 text-lime-400"
-                              : video.status === "processing"
-                              ? "bg-amber-500/20 text-amber-400"
-                              : "bg-red-500/20 text-red-400"
-                          )}
-                        >
+                      <td className="px-5 py-4 text-center">
+                        <Badge variant={statusBadgeVariant(video.status)}>
                           {video.status}
-                        </span>
+                        </Badge>
                       </td>
-                      <td className="px-4 py-4 text-right">
-                        <span className="text-sm font-medium text-foreground">
+                      <td className="px-5 py-4 text-right">
+                        <span className="font-mono text-[15px] font-medium tabular-nums text-foreground">
                           {formatBytes(video.transcodedBytes)}
                         </span>
+                        <p className="dash-meta mt-0.5">
+                          from {formatBytes(video.rawBytes)} raw
+                        </p>
                       </td>
-                      <td className="px-4 py-4 text-right text-sm text-muted-foreground">
+                      <td className="whitespace-nowrap px-5 py-4 text-right text-[15px] text-muted-foreground">
                         {format(new Date(video.createdAt), "MMM d, yyyy")}
                       </td>
                     </tr>
@@ -497,72 +597,73 @@ export default function UsagePage() {
               </table>
             </div>
 
-            <div className="divide-y divide-border md:hidden">
+            <ul className="mt-6 divide-y divide-border-soft md:hidden">
               {paginatedVideos.map((video) => (
-                <div key={video.id} className="space-y-3 py-4">
+                <li key={video.id} className="space-y-3 py-4">
                   <div className="flex items-start gap-3">
-                    <div
+                    <span
                       className={cn(
-                        "mt-1 h-2.5 w-2.5 rounded-full",
-                        video.status === "ready"
-                          ? "bg-lime-500"
-                          : video.status === "processing"
-                          ? "bg-amber-500 animate-pulse"
-                          : "bg-red-500"
+                        "dash-dot mt-2",
+                        statusDotClass(video.status)
                       )}
+                      aria-hidden="true"
                     />
                     <div className="min-w-0">
-                      <p className="truncate font-medium text-foreground">
+                      <p className="truncate text-[15px] font-medium text-foreground">
                         {video.title}
                       </p>
-                      <p className="mt-1 font-mono text-xs text-muted-foreground">
-                        {video.id.slice(0, 8)}...
+                      <p className="mt-0.5 font-mono text-[13px] text-muted-foreground">
+                        {video.id.slice(0, 8)}…
                       </p>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 rounded-sm bg-muted/20 p-3 text-xs">
+                  <div className="grid grid-cols-2 gap-3 rounded-xl border border-border-soft bg-panel-quiet p-4 text-[13px]">
                     <div>
                       <p className="text-muted-foreground">Status</p>
-                      <span
-                        className={cn(
-                          "mt-1 inline-flex items-center rounded-sm px-2 py-1 text-xs font-medium",
-                          video.status === "ready"
-                            ? "bg-lime-500/20 text-lime-400"
-                            : video.status === "processing"
-                            ? "bg-amber-500/20 text-amber-400"
-                            : "bg-red-500/20 text-red-400"
-                        )}
-                      >
-                        {video.status}
-                      </span>
+                      <p className="mt-1.5">
+                        <Badge variant={statusBadgeVariant(video.status)}>
+                          {video.status}
+                        </Badge>
+                      </p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">Storage</p>
-                      <p className="mt-1 text-sm text-foreground">
+                      <p className="mt-1.5 font-mono text-[15px] tabular-nums text-foreground">
                         {formatBytes(video.transcodedBytes)}
+                      </p>
+                      <p className="dash-meta mt-0.5">
+                        from {formatBytes(video.rawBytes)} raw
                       </p>
                     </div>
                     <div className="col-span-2">
                       <p className="text-muted-foreground">Created</p>
-                      <p className="mt-1 text-sm text-foreground">
+                      <p className="mt-1.5 text-[15px] text-foreground">
                         {format(new Date(video.createdAt), "MMM d, yyyy")}
                       </p>
                     </div>
                   </div>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
 
             {totalVideos > 0 && (
-              <div className="flex flex-col gap-5 rounded-sm px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-                <p className="text-sm font-medium text-muted-foreground">
-                  Showing {rangeStart}-{rangeEnd} of {totalVideos} videos
+              <nav
+                aria-label="Storage breakdown pagination"
+                className="mt-6 flex flex-col gap-4 border-t border-border-soft pt-5 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <p className="dash-meta">
+                  Showing{" "}
+                  <span className="font-mono text-foreground">
+                    {rangeStart}–{rangeEnd}
+                  </span>{" "}
+                  of{" "}
+                  <span className="font-mono text-foreground">
+                    {totalVideos}
+                  </span>{" "}
+                  assets
                 </p>
-                <div className="min-w-[88px] rounded-sm bg-muted/30 px-3 py-1 text-center text-xs font-medium text-foreground/50">
-                  Page {currentPage} of {totalPages}
-                </div>
-                <div className="flex md:flex-row flex-col w-full items-center gap-2 self-end sm:w-fit sm:self-auto">
+                <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
@@ -570,12 +671,21 @@ export default function UsagePage() {
                       setCurrentPage((page) => Math.max(1, page - 1))
                     }
                     disabled={currentPage === 1}
-                    className="w-full rounded-sm border border-mauve-300/60 hover:border-mauve-300/40 hover:bg-muted sm:w-fit"
+                    className="flex-1 sm:flex-none"
                   >
-                    <ChevronLeft className="h-4 w-4" />
+                    <ChevronLeft className="size-4" aria-hidden="true" />
                     Previous
                   </Button>
-
+                  <span className="dash-meta whitespace-nowrap px-2">
+                    Page{" "}
+                    <span className="font-mono text-foreground">
+                      {currentPage}
+                    </span>{" "}
+                    of{" "}
+                    <span className="font-mono text-foreground">
+                      {totalPages}
+                    </span>
+                  </span>
                   <Button
                     variant="outline"
                     size="sm"
@@ -583,40 +693,39 @@ export default function UsagePage() {
                       setCurrentPage((page) => Math.min(totalPages, page + 1))
                     }
                     disabled={currentPage === totalPages}
-                    className="w-full rounded-sm bg-accent/50 hover:bg-accent/60 sm:w-fit"
+                    className="flex-1 sm:flex-none"
                   >
                     Next
-                    <ChevronRight className="h-4 w-4" />
+                    <ChevronRight className="size-4" aria-hidden="true" />
                   </Button>
                 </div>
-              </div>
+              </nav>
             )}
           </>
         )}
-      </div>
+      </section>
 
       {/* Usage metering note */}
-      <div className="rounded-sm border border-primary/10 bg-card/60 p-4 md:p-6">
+      <section className="dash-panel-quiet p-5 md:p-6">
         <div className="flex items-start gap-4">
-          <div className="rounded-sm bg-accent/15 p-3">
-            <Server className="w-6 h-6 text-purple-200" />
-          </div>
-          <div>
-            <h3 className="font-semibold text-foreground mb-1">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-border bg-panel-strong text-muted-foreground">
+            <Server className="size-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-semibold text-foreground">
               Usage metering
             </h3>
-            <p className="text-sm text-muted-foreground">
+            <p className="dash-body mt-1.5 max-w-2xl text-muted-foreground">
               These numbers measure{" "}
-              <span className="text-foreground font-medium">storage</span>{" "}
+              <span className="font-medium text-foreground">storage</span>{" "}
               (transcoded HLS segments on your R2 bucket) and{" "}
-              <span className="text-foreground font-medium">bandwidth</span>{" "}
-              (bytes your delivery worker served). They are operational
-              metrics for your own infrastructure costs — OpenVOD does not
-              bill you.
+              <span className="font-medium text-foreground">bandwidth</span>{" "}
+              (bytes your delivery worker served). They are operational metrics
+              for your own infrastructure costs — ClipMux does not bill you.
             </p>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

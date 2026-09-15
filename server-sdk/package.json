@@ -1,7 +1,7 @@
 {
-  "name": "@openvod/server",
+  "name": "@clipmux/server",
   "version": "0.1.0",
-  "description": "OpenVOD server SDK — upload tokens, playback tokens, video management and webhook verification",
+  "description": "ClipMux server SDK — upload tokens, playback tokens, video management and webhook verification",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -40,7 +40,7 @@
     "node": ">=18"
   },
   "keywords": [
-    "openvod",
+    "clipmux",
     "vod",
     "video",
     "webhooks",

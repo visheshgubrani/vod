@@ -1,11 +1,11 @@
-# @openvod/player
+# @clipmux/player
 
-A drop-in React player for self-hosted [OpenVOD](https://github.com/visheshgubrani/vod),
+A drop-in React player for self-hosted [ClipMux](https://github.com/visheshgubrani/vod),
 built on [Vidstack](https://vidstack.io): HLS/DASH, signed playback tokens with
 automatic refresh, AI-generated chapters and subtitles, and opt-in analytics.
 
 ```bash
-npm install @openvod/player
+npm install @clipmux/player
 ```
 
 There is **no hosted default**. Pass a playback URL (`src`) or your own delivery
@@ -15,9 +15,9 @@ origin (`cdnBase` + `playbackId`). Analytics are off unless you set
 ## Public videos
 
 ```tsx
-import { OpenVodPlayer } from '@openvod/player'
+import { ClipMuxPlayer } from '@clipmux/player'
 
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId="your-video-id"
   src="https://media.example.com/videos/your-video-id/playlist.m3u8"
   title="My Video"
@@ -27,7 +27,7 @@ import { OpenVodPlayer } from '@openvod/player'
 Or let the player build the URL from your delivery origin:
 
 ```tsx
-<OpenVodPlayer playbackId="your-video-id" cdnBase="https://media.example.com/videos" />
+<ClipMuxPlayer playbackId="your-video-id" cdnBase="https://media.example.com/videos" />
 ```
 
 > **Prefer `src` whenever you have the URL.** `cdnBase` builds
@@ -44,7 +44,7 @@ Your backend mints a short-lived playback token and the player appends it to
 the manifest, poster and subtitle URLs.
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId={videoId}
   src={session.playback_url}   // the API's own field names
   token={session.token}
@@ -61,11 +61,11 @@ tokens are bound to it by default.
 
 ```ts
 // app/api/videos/[id]/play-token/route.ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!, // your API origin, no /v1 suffix
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!, // your API origin, no /v1 suffix
 })
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -110,7 +110,7 @@ stop after 5 consecutive failures rather than hammering your endpoint.
 ## Chapters and subtitles
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   src={playbackUrl}
   token={token}
   subtitles="https://media.example.com/videos/abc-123/subs.vtt"
@@ -122,13 +122,13 @@ stop after 5 consecutive failures rather than hammering your endpoint.
 ```
 
 Chapters are converted to a WebVTT track internally. With
-`generateSubtitle`/`generateChapters` set at upload time, the OpenVOD API
+`generateSubtitle`/`generateChapters` set at upload time, the ClipMux API
 returns both on the playback-token response.
 
 ## Theming
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   src={playbackUrl}
   theme={{ primaryColor: '#6366f1', accentColor: '#f59e0b' }}
   className="rounded-xl"
@@ -140,11 +140,11 @@ anything deeper, override Vidstack's own CSS variables in your stylesheet.
 
 ## Analytics (opt-in)
 
-Analytics are **off** by default. Point `analyticsEndpoint` at the OpenVOD API's
+Analytics are **off** by default. Point `analyticsEndpoint` at the ClipMux API's
 journal route and pass a `userId` to attribute sessions:
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId={videoId}
   src={playbackUrl}
   userId={currentUser.id}
@@ -192,7 +192,7 @@ Styles are inlined into the JS bundle, so there is nothing extra to import. If
 you want them as a real CSS asset instead (strict CSP, smaller JS chunk):
 
 ```ts
-import '@openvod/player/styles.css'
+import '@clipmux/player/styles.css'
 ```
 
 Do not do both. The package is ~800 KB unpacked (Vidstack is bundled, React is
@@ -202,7 +202,7 @@ external); it tree-shakes with your bundler, and the CSS asset split removes
 ## Requirements
 
 - **React 18 or 19** (peer).
-- Delivery responses must allow cross-origin reads — the OpenVOD delivery worker
+- Delivery responses must allow cross-origin reads — the ClipMux delivery worker
   sends `Access-Control-Allow-Origin: *`, so this works out of the box.
 
 ## License

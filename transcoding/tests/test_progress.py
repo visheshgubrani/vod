@@ -1,14 +1,19 @@
 """Progress weighting and per-rendition aggregation."""
+import threading
+
 import pytest
 
-from openvod_transcoder.progress import (
+from clipmux_transcoder.progress import (
+    PROGRESS_BEAT_SECONDS,
     STAGE_ANALYZE,
+    STAGE_DOWNLOAD,
     STAGE_PACKAGE,
     STAGE_SNAPSHOT,
     STAGE_TRANSCODE,
     STAGE_UPLOAD,
     CallbackProgress,
     NullProgress,
+    ProgressBeat,
     ProgressUpdate,
     RenditionProgress,
     overall_progress,
@@ -138,6 +143,117 @@ class TestRenditionProgress:
 class TestSinks:
     def test_null_sink_swallows_everything(self):
         assert NullProgress().report(ProgressUpdate(stage=STAGE_UPLOAD)) is None
+
+
+class FakeClock:
+    """A monotonic clock the test drives. Thread-safe: the coalescer is called
+    from one thread per rendition."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self._lock = threading.Lock()
+        self._now = start
+
+    def __call__(self) -> float:
+        with self._lock:
+            return self._now
+
+    def advance(self, seconds: float) -> None:
+        with self._lock:
+            self._now += seconds
+
+
+class TestProgressBeat:
+    def test_the_first_beat_is_always_sent(self):
+        beat = ProgressBeat(interval=15.0, clock=FakeClock())
+        assert beat.should_send(STAGE_DOWNLOAD) is True
+
+    def test_a_beat_inside_the_window_is_skipped(self):
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        beat.should_send(STAGE_TRANSCODE)
+        clock.advance(14.9)
+        assert beat.should_send(STAGE_TRANSCODE) is False
+
+    def test_the_window_is_a_boundary_not_an_approximation(self):
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        beat.should_send(STAGE_TRANSCODE)
+        clock.advance(15.0)
+        assert beat.should_send(STAGE_TRANSCODE) is True
+
+    def test_a_stage_change_is_never_delayed(self):
+        # The dashboard must see `transcode -> package` the moment it happens,
+        # not up to a window later.
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        beat.should_send(STAGE_TRANSCODE)
+        clock.advance(0.5)
+        assert beat.should_send(STAGE_PACKAGE) is True
+
+    def test_a_skipped_beat_does_not_push_the_window_out(self):
+        # The bug this module exists for: a skipped beat that recorded its own
+        # time would defer the *next* one forever under a 1-per-second stream.
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        beat.should_send(STAGE_TRANSCODE)
+        for _ in range(14):
+            clock.advance(1.0)
+            assert beat.should_send(STAGE_TRANSCODE) is False
+        clock.advance(1.0)
+        assert beat.should_send(STAGE_TRANSCODE) is True
+
+    def test_a_stage_change_restarts_the_window(self):
+        # Sending immediately on a stage change must not mean sending *twice*:
+        # the window restarts from the change, so the next beat is a full interval
+        # away rather than repeating the same stage one second later.
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        beat.should_send(STAGE_TRANSCODE)
+        clock.advance(1.0)
+        assert beat.should_send(STAGE_PACKAGE) is True
+        clock.advance(1.0)
+        assert beat.should_send(STAGE_PACKAGE) is False
+        clock.advance(14.0)
+        assert beat.should_send(STAGE_PACKAGE) is True
+
+    def test_a_one_per_second_stream_becomes_one_beat_per_window(self):
+        # The regression this change is for: 60 FFmpeg progress blocks per minute
+        # (four concurrent encoders), previously 60 POSTs.
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        sent = 0
+        for _ in range(60):
+            if beat.should_send(STAGE_TRANSCODE):
+                sent += 1
+            clock.advance(1.0)
+        assert sent == 4
+
+    def test_concurrent_renditions_still_produce_one_beat_per_window(self):
+        clock = FakeClock()
+        beat = ProgressBeat(interval=15.0, clock=clock)
+        verdicts = []
+        guard = threading.Lock()
+
+        def worker() -> None:
+            for _ in range(50):
+                verdict = beat.should_send(STAGE_TRANSCODE)
+                with guard:
+                    verdicts.append(verdict)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(verdicts) == 200
+        assert sum(1 for verdict in verdicts if verdict) == 1
+
+    def test_a_one_second_interval_is_expressed_in_seconds(self):
+        # `now - last` is seconds. Reading the interval as milliseconds would make
+        # the default 0.015s and send every beat.
+        assert PROGRESS_BEAT_SECONDS == 15.0
+
 
     def test_callback_sink_forwards_updates(self):
         seen = []

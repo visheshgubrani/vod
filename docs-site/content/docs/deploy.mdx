@@ -3,7 +3,7 @@ title: Deployment
 description: Docker Compose and Cloudflare Workers deployment shapes, the axes a deployment chooses, maintenance, recovery and what refuses to boot.
 ---
 
-OpenVOD has one codebase and two stacks. Local development runs Postgres and
+ClipMux has one codebase and two stacks. Local development runs Postgres and
 Redis from `docker-compose.dev.yml` with the API and dashboard on the host
 (`pnpm dev`). A **deployment** is `docker-compose.yml`, configured by `.env` at
 the repo root — or Workers, configured by `wrangler secret`.
@@ -127,10 +127,10 @@ one replica — the one-shot service is the right call in production.
 Two providers share one engine:
 
 - **Modal GPU** — `modal deploy main.py` in `transcoding/`. Needs the
-  `openvod-creds` secret (and `openvod-groq-creds`, which the GPU function
+  `clipmux-creds` secret (and `clipmux-groq-creds`, which the GPU function
   requires to exist even when you skip AI — use a dummy value).
 - **Self-hosted agent** — `docker compose --profile transcoder up -d`, or the
-  `openvod_transcoder.agent` CLI. Pairing uses an organization-scoped token that
+  `clipmux_transcoder.agent` CLI. Pairing uses an organization-scoped token that
   cannot mint playback tokens or read another tenant's data, and holds no storage
   credentials: transfers are presigned per artifact and bounded to the attempt
   prefix.

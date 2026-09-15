@@ -35,7 +35,7 @@ describe('GET /health/config', () => {
       problems: string[]
       deployment: { runtime: string; deliveryRuntime: string }
     }
-    expect(body.service).toBe('openvod')
+    expect(body.service).toBe('clipmux')
     expect(body.ready).toBe(false)
     expect(Object.keys(body.checks).sort()).toEqual(
       ['ai', 'analytics', 'auth', 'database', 'delivery', 'rawUploads', 'storage', 'transcoder'].sort(),

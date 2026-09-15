@@ -12,9 +12,9 @@ from tests.test_pipeline import (
     patched, source, metadata_for, FakeFfmpeg, report_with, run_with, verified,
     device_error, cuda_filter_error, session_error,
 )
-from openvod_transcoder import pipeline
-from openvod_transcoder.encoding.failures import build_process_error
-from openvod_transcoder.errors import TranscodeError
+from clipmux_transcoder import pipeline
+from clipmux_transcoder.encoding.failures import build_process_error
+from clipmux_transcoder.errors import TranscodeError
 
 
 def test_cpu_limit_applies_after_concurrent_gpu_fallback(tmp_path, source, patched, monkeypatch):
@@ -80,7 +80,7 @@ def test_session_retry_waits_for_running_gpu_encode(tmp_path, source, patched, m
 
 @pytest.mark.parametrize("close_stdout", [True, False])
 def test_watchdog_cleans_up_after_stdout_eof_or_callback_error(close_stdout):
-    from openvod_transcoder.ffmpeg_progress import run_ffmpeg, StallPolicy, StallError
+    from clipmux_transcoder.ffmpeg_progress import run_ffmpeg, StallPolicy, StallError
     script = ("import os,time; os.close(1); time.sleep(1)" if close_stdout else
               "import time; print('frame=1\\nprogress=continue', flush=True); time.sleep(1)")
     def callback(*_):
@@ -93,7 +93,7 @@ def test_watchdog_cleans_up_after_stdout_eof_or_callback_error(close_stdout):
 
 
 def test_terminal_failure_waits_for_sibling_cleanup(tmp_path, source, patched, monkeypatch):
-    from openvod_transcoder.errors import CancelledError
+    from clipmux_transcoder.errors import CancelledError
     patched["metadata"] = metadata_for(has_audio=False)
     entered = threading.Event()
     stopped = threading.Event()
@@ -136,7 +136,7 @@ def test_thread_budget_bounds_output_encoder_and_filters(tmp_path, source, patch
 
 @pytest.mark.parametrize("gpu_decode", [True, False])
 def test_nvenc_device_is_bound_on_output(gpu_decode):
-    from openvod_transcoder.encoding.backends import build_video_command, backend_named, RenderSpec
+    from clipmux_transcoder.encoding.backends import build_video_command, backend_named, RenderSpec
     cmd = build_video_command(ffmpeg="ffmpeg", input_path="source.mp4", output_path="out.mp4",
         backend=backend_named("nvenc:1"), spec=RenderSpec("480p", 854, 480, "1M", "2M", "4M", 25),
         metadata=metadata_for(), segment_duration=4, gpu_decode=gpu_decode)
@@ -145,14 +145,14 @@ def test_nvenc_device_is_bound_on_output(gpu_decode):
 
 
 def test_missing_hls_initialization_reference_is_rejected(tmp_path):
-    from openvod_transcoder.encoding.validation import validate_manifest_references
+    from clipmux_transcoder.encoding.validation import validate_manifest_references
     (tmp_path / "playlist.m3u8").write_text('#EXTM3U\n#EXT-X-MAP:URI="absent.mp4"\n')
     with pytest.raises(TranscodeError, match="absent.mp4"):
         validate_manifest_references(tmp_path)
 
 
 def test_missing_dash_middle_segment_is_rejected(tmp_path):
-    from openvod_transcoder.encoding.validation import validate_manifest_references
+    from clipmux_transcoder.encoding.validation import validate_manifest_references
     (tmp_path / "manifest.mpd").write_text('''<MPD><Period><AdaptationSet><Representation>
         <SegmentTemplate media="$Number$.m4s" startNumber="1"><SegmentTimeline>
         <S t="0" d="1000" r="2"/></SegmentTimeline></SegmentTemplate>
@@ -164,7 +164,7 @@ def test_missing_dash_middle_segment_is_rejected(tmp_path):
 
 
 def test_dash_base_url_and_nonzero_start_time_are_resolved(tmp_path):
-    from openvod_transcoder.encoding.validation import validate_manifest_references
+    from clipmux_transcoder.encoding.validation import validate_manifest_references
     (tmp_path / "manifest.mpd").write_text('''<MPD><Period><AdaptationSet>
         <BaseURL>video/</BaseURL><SegmentTemplate media="$RepresentationID$-$Time$.m4s"
         initialization="init.mp4"><SegmentTimeline><S t="100" d="20" r="1"/>
@@ -177,7 +177,7 @@ def test_dash_base_url_and_nonzero_start_time_are_resolved(tmp_path):
 
 
 def test_child_cancellation_does_not_leave_a_watcher_per_completed_job():
-    from openvod_transcoder.cancellation import CancellationToken
+    from clipmux_transcoder.cancellation import CancellationToken
     before = set(threading.enumerate())
     parent = CancellationToken()
     child = parent.child()
@@ -207,7 +207,7 @@ def test_missing_nvenc_driver_library_allows_cpu_fallback():
 
 
 def test_generic_thread_setting_invalidates_reusable_encodes():
-    from openvod_transcoder.options import ProcessingOptions
+    from clipmux_transcoder.options import ProcessingOptions
     assert (ProcessingOptions(ffmpeg_threads=1).plan_fingerprint()
             != ProcessingOptions(ffmpeg_threads=8).plan_fingerprint())
 
@@ -215,7 +215,7 @@ def test_generic_thread_setting_invalidates_reusable_encodes():
 # ── the toolchain is at two paths, and a container only has one of them ──────
 #
 # The image bakes `transcoding/toolchain/` at a *remote* path
-# (`add_local_dir(..., remote_path="/opt/openvod/toolchain", copy=True)`), while
+# (`add_local_dir(..., remote_path="/opt/clipmux/toolchain", copy=True)`), while
 # `main.py` and `image_build.py` are mounted as loose files at `/root`. So
 # `Path(__file__).parent / "toolchain"` is empty in the container, and a
 # module-level read of it kills hydration for every function in the app — the
@@ -245,11 +245,11 @@ def test_toolchain_file_resolves_in_a_container_layout(tmp_path, monkeypatch):
     assert toolchain_root("/root/main.py") == Path("/root")
     assert toolchain_root("/root/image_build.py") == Path("/root")
 
-    baked = tmp_path / "opt" / "openvod" / "toolchain"
+    baked = tmp_path / "opt" / "clipmux" / "toolchain"
     baked.mkdir(parents=True)
-    (baked / "apt-packages.env").write_text("OPENVOD_BUILD_PACKAGES=(\n  clang\n)\n")
+    (baked / "apt-packages.env").write_text("CLIPMUX_BUILD_PACKAGES=(\n  clang\n)\n")
 
-    monkeypatch.delenv("OPENVOD_TOOLCHAIN_DIR", raising=False)
+    monkeypatch.delenv("CLIPMUX_TOOLCHAIN_DIR", raising=False)
     # module_file + roots ARE the container: a source file whose parent has no
     # toolchain/, and the recipe where add_local_dir's remote_path put it.
     resolved = resolve_toolchain_file(
@@ -258,7 +258,7 @@ def test_toolchain_file_resolves_in_a_container_layout(tmp_path, monkeypatch):
     assert resolved == baked / "apt-packages.env"
     # Where the image build writes must be where the reader falls back to, or
     # this fix is only a rename.
-    assert str(TOOLCHAIN_IN_IMAGE) == "/opt/openvod/toolchain"
+    assert str(TOOLCHAIN_IN_IMAGE) == "/opt/clipmux/toolchain"
 
 
 def test_toolchain_file_honours_an_explicit_relocated_recipe(tmp_path, monkeypatch):
@@ -271,11 +271,11 @@ def test_toolchain_file_honours_an_explicit_relocated_recipe(tmp_path, monkeypat
     relocated.mkdir()
     (relocated / "apt-packages.env").write_text(source.read_text(encoding="utf-8"))
 
-    monkeypatch.setenv("OPENVOD_TOOLCHAIN_DIR", str(relocated))
+    monkeypatch.setenv("CLIPMUX_TOOLCHAIN_DIR", str(relocated))
     resolved = resolve_toolchain_file("apt-packages.env")
     assert resolved == relocated / "apt-packages.env"
-    assert "clang" in read_package_list(resolved, "OPENVOD_BUILD_PACKAGES")
-    assert "libx264-164" in read_package_list(resolved, "OPENVOD_RUNTIME_PACKAGES")
+    assert "clang" in read_package_list(resolved, "CLIPMUX_BUILD_PACKAGES")
+    assert "libx264-164" in read_package_list(resolved, "CLIPMUX_RUNTIME_PACKAGES")
 
 
 def test_missing_toolchain_file_names_every_path_it_tried(tmp_path, monkeypatch):
@@ -283,7 +283,7 @@ def test_missing_toolchain_file_names_every_path_it_tried(tmp_path, monkeypatch)
 
     empty = tmp_path / "nothing-here"
     empty.mkdir()
-    monkeypatch.delenv("OPENVOD_TOOLCHAIN_DIR", raising=False)
+    monkeypatch.delenv("CLIPMUX_TOOLCHAIN_DIR", raising=False)
     with pytest.raises(FileNotFoundError) as excinfo:
         resolve_toolchain_file(
             "apt-packages.env", module_file="/root/main.py", roots=(empty,)
@@ -312,7 +312,7 @@ def test_image_build_hydrates_in_a_container_layout(tmp_path):
     mounted_root = tmp_path / "root"
     mounted_root.mkdir()
     shutil.copy(source_root / "image_build.py", mounted_root / "image_build.py")
-    baked = tmp_path / "opt" / "openvod" / "toolchain"
+    baked = tmp_path / "opt" / "clipmux" / "toolchain"
     baked.mkdir(parents=True)
     shutil.copy(source_root / "toolchain" / "apt-packages.env", baked / "apt-packages.env")
 
@@ -321,8 +321,8 @@ def test_image_build_hydrates_in_a_container_layout(tmp_path):
         "import image_build",
         f"image_build.TOOLCHAIN_IN_IMAGE = pathlib.Path({str(baked)!r})",
         "path = image_build.resolve_toolchain_file('apt-packages.env')",
-        "build = image_build.read_package_list(path, 'OPENVOD_BUILD_PACKAGES')",
-        "runtime = image_build.read_package_list(path, 'OPENVOD_RUNTIME_PACKAGES')",
+        "build = image_build.read_package_list(path, 'CLIPMUX_BUILD_PACKAGES')",
+        "runtime = image_build.read_package_list(path, 'CLIPMUX_RUNTIME_PACKAGES')",
         "print(len(build), len(runtime))",
     ])
     result = subprocess.run(
@@ -333,7 +333,7 @@ def test_image_build_hydrates_in_a_container_layout(tmp_path):
             "PYTHONPATH": str(mounted_root),
             # Empty on purpose: an override pointing anywhere else would mask the
             # fallback this test exists to exercise.
-            "OPENVOD_TOOLCHAIN_DIR": "",
+            "CLIPMUX_TOOLCHAIN_DIR": "",
         },
         capture_output=True,
         text=True,

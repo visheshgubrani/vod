@@ -32,7 +32,7 @@ const ATTEMPT = 'att-compose-1'
 // Must point at THIS suite's database, not the shared base URL: the route and
 // the drain talk to the module-level `db` proxy, and pointing them at a shared
 // database would put other suites' rows in reach of this suite's assertions.
-const SUITE_DATABASE = 'openvod_t_composition'
+const SUITE_DATABASE = 'clipmux_t_composition'
 process.env.DATABASE_URL = testDatabaseUrl(SUITE_DATABASE)
 process.env.DB_DRIVER = 'pg'
 process.env.MODAL_WEBHOOK_SECRET = INGEST_SECRET
@@ -116,7 +116,7 @@ describe.skipIf(!hasTestDatabase)('webhook composition (real route, real DB)', (
   }
 
   beforeAll(async () => {
-    handle = await createTestDb({ database: 'openvod_t_composition' })
+    handle = await createTestDb({ database: 'clipmux_t_composition' })
     await handle.exec(DDL)
     const mod = await import('../../src/routes/webhook')
     route = withRuntime(

@@ -61,7 +61,7 @@ class ApiConfig:
     token: str
     timeout: float = DEFAULT_TIMEOUT
     attempts: int = DEFAULT_ATTEMPTS
-    user_agent: str = "openvod-transcoder"
+    user_agent: str = "clipmux-transcoder"
 
 
 class TranscoderApiClient:
@@ -179,7 +179,7 @@ class TranscoderApiClient:
                 "capabilities": capabilities or {},
             },
             timeout=timeout,
-            headers={"User-Agent": "openvod-transcoder"},
+            headers={"User-Agent": "clipmux-transcoder"},
         )
         if response.status_code >= 400:
             body = _safe_json(response)

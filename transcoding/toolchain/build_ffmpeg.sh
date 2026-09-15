@@ -3,7 +3,7 @@
 # Build the ONE shared FFmpeg every managed image uses.
 #
 #   ./build_ffmpeg.sh [install-prefix]        # default /usr/local
-#   OPENVOD_BUILD_DIR=/var/tmp/ffmpeg-build ./build_ffmpeg.sh /usr/local
+#   CLIPMUX_BUILD_DIR=/var/tmp/ffmpeg-build ./build_ffmpeg.sh /usr/local
 #   JOBS=8 ./build_ffmpeg.sh /usr/local
 #   ./build_ffmpeg.sh --force /usr/local      # rebuild even if the manifest matches
 #
@@ -27,7 +27,7 @@
 #     nvcc are needed to build. Only clang plus the ffnvcodec headers.
 #   * The driver is reached by dlopen at RUNTIME. Nothing here proves a GPU
 #     works, and nothing here may pretend to: hardware usability is a runtime
-#     probe (`openvod-transcoder doctor`).
+#     probe (`clipmux-transcoder doctor`).
 #
 # The default `--nvccflags` is `--cuda-gpu-arch=sm_30 -O2`, which modern clang
 # rejects outright (sm_30 was dropped long ago). We pass an explicit
@@ -35,16 +35,16 @@
 # baseline: the driver JITs that PTX forward onto every newer GPU, so one built
 # binary runs on the whole fleet, and the filters do not need a per-arch fatbin.
 #
-# Idempotent: a manifest at <prefix>/share/openvod/toolchain.json records the
+# Idempotent: a manifest at <prefix>/share/clipmux/toolchain.json records the
 # version, the configure line, the source hashes and a hash of this script. If it
 # matches what would be built now, the script stops before downloading anything.
 #
 # Installs, next to the binaries:
-#   <prefix>/share/openvod/toolchain.json          build manifest (machine-readable)
-#   <prefix>/share/doc/openvod-ffmpeg/LICENSE.md        FFmpeg's own license text
-#   <prefix>/share/doc/openvod-ffmpeg/COPYING.GPLv2     ... and the two it offers
-#   <prefix>/share/doc/openvod-ffmpeg/COPYING.LGPLv2.1  ... under --enable-gpl
-#   <prefix>/share/doc/openvod-ffmpeg/NOTICE            exact source URLs/versions
+#   <prefix>/share/clipmux/toolchain.json          build manifest (machine-readable)
+#   <prefix>/share/doc/clipmux-ffmpeg/LICENSE.md        FFmpeg's own license text
+#   <prefix>/share/doc/clipmux-ffmpeg/COPYING.GPLv2     ... and the two it offers
+#   <prefix>/share/doc/clipmux-ffmpeg/COPYING.LGPLv2.1  ... under --enable-gpl
+#   <prefix>/share/doc/clipmux-ffmpeg/NOTICE            exact source URLs/versions
 #
 set -euo pipefail
 
@@ -85,7 +85,7 @@ APT_PACKAGES_ENV="$SCRIPT_DIR/apt-packages.env"
 [ "${#NV_CODEC_HEADERS_SHA}" -eq 40 ] || die "NV_CODEC_HEADERS_SHA is not a 40-char commit sha"
 [ "${#NV_CODEC_HEADERS_SHA256}" -eq 64 ] || die "NV_CODEC_HEADERS_SHA256 is not a sha256"
 
-BUILD_DIR="${OPENVOD_BUILD_DIR:-/tmp/openvod-ffmpeg-build}"
+BUILD_DIR="${CLIPMUX_BUILD_DIR:-/tmp/clipmux-ffmpeg-build}"
 JOBS="${JOBS:-$(nproc)}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "JOBS must be a positive integer (got '$JOBS')"
 
@@ -93,8 +93,8 @@ FFMPEG_SRC="$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
 NV_SRC="$BUILD_DIR/nv-codec-headers-${NV_CODEC_HEADERS_SHA}"
 BUILD_JOBS_DIR="$BUILD_DIR/build"
 DOWNLOADS="$BUILD_DIR/downloads"
-MANIFEST="$PREFIX/share/openvod/toolchain.json"
-DOC_DIR="$PREFIX/share/doc/openvod-ffmpeg"
+MANIFEST="$PREFIX/share/clipmux/toolchain.json"
+DOC_DIR="$PREFIX/share/doc/clipmux-ffmpeg"
 
 # ── The configure line (the contract with verify_toolchain.sh) ───────────────
 # Every capability the engine relies on is named here, and the build manifest
@@ -289,7 +289,7 @@ for f in LICENSE.md COPYING.GPLv2 COPYING.LGPLv2.1; do
 done
 
 cat > "$DOC_DIR/NOTICE" <<NOTICE
-OpenVOD media toolchain
+ClipMux media toolchain
 =======================
 
 This directory accompanies a locally built FFmpeg. The binaries in
@@ -301,7 +301,7 @@ FFmpeg ${FFMPEG_VERSION}
   source:  ${FFMPEG_URL}
   sha256:  ${FFMPEG_SHA256}
   license: GPLv2+ (built with --enable-gpl; see LICENSE.md, COPYING.GPLv2)
-  configure: see ${PREFIX}/share/openvod/toolchain.json
+  configure: see ${PREFIX}/share/clipmux/toolchain.json
 
 nv-codec-headers ${NV_CODEC_HEADERS_VERSION}
   source:  ${NV_CODEC_HEADERS_URL}
@@ -346,7 +346,7 @@ if [ -f "$APT_PACKAGES_ENV" ]; then
   # shellcheck source=apt-packages.env disable=SC1091
   . "$APT_PACKAGES_ENV"
   if command -v dpkg-query >/dev/null 2>&1; then
-    for pkg in "${OPENVOD_RUNTIME_PACKAGES[@]}"; do
+    for pkg in "${CLIPMUX_RUNTIME_PACKAGES[@]}"; do
       dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' \
         || MISSING_RUNTIME_PACKAGES="$MISSING_RUNTIME_PACKAGES $pkg"
     done
@@ -394,7 +394,7 @@ def shared_libs(binary):
     return sorted(libs, key=lambda x: x["name"])
 
 manifest = {
-    "name": "openvod-media-toolchain",
+    "name": "clipmux-media-toolchain",
     "component": "ffmpeg",
     "ffmpeg_version": os.environ["FFMPEG_VERSION"],
     "ffmpeg_url": os.environ["FFMPEG_URL"],

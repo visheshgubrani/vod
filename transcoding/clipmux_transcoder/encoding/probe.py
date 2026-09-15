@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.encoding.backends import (
     ALL_BACKENDS,
     BACKEND_CPU,
     BACKEND_NVENC,
@@ -43,7 +43,7 @@ from openvod_transcoder.encoding.backends import (
     input_args,
     source_gpu_path_supported,
 )
-from openvod_transcoder.encoding.failures import (
+from clipmux_transcoder.encoding.failures import (
     classify_ffmpeg_stderr,
     probe_verdict_for_kind,
 )
@@ -57,7 +57,7 @@ def classify_probe_failure(stderr: str) -> str:
     to stop guessing about hardware.
 
     Delegates to the shared classifier in
-    :mod:`openvod_transcoder.encoding.failures`, so a message means the same
+    :mod:`clipmux_transcoder.encoding.failures`, so a message means the same
     thing here as it does at the encoding boundary. Keeping two tables would be
     how "the probe said the GPU was fine" and "the encode failed on the GPU"
     drift apart.
@@ -330,7 +330,7 @@ def preflight_source(
 
     1. full GPU (GPU decode + GPU filter + GPU encode), skipped entirely when the
        source's own properties rule it out (see
-       :func:`~openvod_transcoder.encoding.backends.source_gpu_path_supported`);
+       :func:`~clipmux_transcoder.encoding.backends.source_gpu_path_supported`);
     2. hybrid (software decode and filter, hardware encode) — the same NVENC
        encode without ``scale_cuda``, which is the path that recovers from the
        filter failure this module was extended for.
@@ -457,7 +457,7 @@ def detect_capabilities(
 
 
 def _backend_for_name(name: str) -> EncoderBackend:
-    from openvod_transcoder.encoding.backends import backend_named
+    from clipmux_transcoder.encoding.backends import backend_named
 
     return backend_named(name)
 
@@ -506,7 +506,7 @@ def toolchain_versions(report: CapabilityReport) -> Dict[str, str]:
     into reuse fingerprints, and it has to be comparable between two machines
     that never see each other.
     """
-    from openvod_transcoder.config import ENGINE_VERSION, PROCESSING_PLAN_VERSION
+    from clipmux_transcoder.config import ENGINE_VERSION, PROCESSING_PLAN_VERSION
 
     versions = {
         "engine": ENGINE_VERSION,

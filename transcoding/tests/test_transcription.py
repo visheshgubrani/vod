@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from openvod_transcoder.video import transcription as transcription_module
-from openvod_transcoder.video.transcription import (
+from clipmux_transcoder.video import transcription as transcription_module
+from clipmux_transcoder.video.transcription import (
     format_timestamp,
     is_gpu_runtime_failure,
     transcribe_to_vtt,

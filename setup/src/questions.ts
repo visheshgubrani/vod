@@ -97,7 +97,7 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
     runtime =
       prefill.runtime ??
       (await askSelect<RuntimeKind>(
-        'Where should the OpenVOD API run?',
+        'Where should the ClipMux API run?',
         [
           {
             value: 'workers',
@@ -156,7 +156,7 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
   const transcodeProvider =
     prefill.transcodeProvider ??
     (await askSelect<'modal' | 'self-hosted'>(
-      'How should OpenVOD transcode?',
+      'How should ClipMux transcode?',
       [
         {
           value: 'modal',

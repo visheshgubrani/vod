@@ -12,7 +12,7 @@
 import type { EntryList } from './mapping'
 import type { CheckRow } from './verify'
 import type { WizardAnswers } from './types'
-import { openvodCredsFromEnv, type ModalCredsPayload } from './modal'
+import { clipmuxCredsFromEnv, type ModalCredsPayload } from './modal'
 import {
   applyBucketCors,
   browserUploadCorsOrigins,

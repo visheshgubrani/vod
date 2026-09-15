@@ -18,7 +18,7 @@ Two families, and the distinction is load-bearing:
   what the encoder produced.
 
 ``FFmpegProcessError`` is how a non-zero FFmpeg exit enters this taxonomy. It is
-built by :func:`openvod_transcoder.encoding.failures.build_process_error`, which
+built by :func:`clipmux_transcoder.encoding.failures.build_process_error`, which
 classifies the process's stderr into the kind that decides both the code and
 whether the fallback policy may act on it.
 """

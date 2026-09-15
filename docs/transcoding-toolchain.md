@@ -43,7 +43,7 @@ recipe therefore:
   modern clang, and PTX is forward-compatible: newer drivers JIT it;
 - includes NVENC/NVDEC, VAAPI, libx264, libdav1d, Opus and zscale support, and
   links the distribution's codec libraries rather than vendoring them;
-- writes a build manifest (`share/openvod/toolchain.json`) with the versions,
+- writes a build manifest (`share/clipmux/toolchain.json`) with the versions,
   hashes, the exact configure line and the `ldd` inventory, and ships FFmpeg's
   licence files plus a NOTICE naming each source URL.
 
@@ -79,9 +79,9 @@ difference is load-bearing:
 | Context | Path | How it gets there |
 | --- | --- | --- |
 | Deploy machine / `modal run` / tests | `transcoding/toolchain/` | the checkout |
-| Modal container | `/opt/openvod/toolchain` | `main.py`'s `add_local_dir(..., remote_path=_TOOLCHAIN_IN_IMAGE, copy=True)`, an image layer |
-| Self-hosted agent image | `/opt/openvod/toolchain` | `Dockerfile.agent` copies four recipe files there |
-| Relocated copy (opt-in) | `$OPENVOD_TOOLCHAIN_DIR` | for a build from elsewhere; searched first |
+| Modal container | `/opt/clipmux/toolchain` | `main.py`'s `add_local_dir(..., remote_path=_TOOLCHAIN_IN_IMAGE, copy=True)`, an image layer |
+| Self-hosted agent image | `/opt/clipmux/toolchain` | `Dockerfile.agent` copies four recipe files there |
+| Relocated copy (opt-in) | `$CLIPMUX_TOOLCHAIN_DIR` | for a build from elsewhere; searched first |
 
 Inside a container the Modal CLI mounts `main.py` and `image_build.py` as
 **loose files at `/root`**, so `Path(__file__).parent / "toolchain"` is empty

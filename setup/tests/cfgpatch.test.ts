@@ -14,8 +14,8 @@ const WRANGLER = `{
 
 describe('patchBucketName', () => {
   it('replaces the first bucket_name value', () => {
-    const updated = patchBucketName(WRANGLER, 'openvod-transcoded')
-    expect(updated).toContain('"bucket_name": "openvod-transcoded"')
+    const updated = patchBucketName(WRANGLER, 'clipmux-transcoded')
+    expect(updated).toContain('"bucket_name": "clipmux-transcoded"')
     expect(updated).not.toContain('"bucket_name": "transcoded-bucket"')
     expect(updated).toContain('"binding": "TRANSCODED_BUCKET"')
   })

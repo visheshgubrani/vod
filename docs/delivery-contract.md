@@ -49,7 +49,7 @@ URL the API returns rather than building one from the video id.
 
 ## 2. Object metadata (S3 custom metadata)
 
-The transcoder (`openvod_transcoder/transfer/s3.py` for Modal,
+The transcoder (`clipmux_transcoder/transfer/s3.py` for Modal,
 `transfer/signed.py` for an agent) must set these custom metadata
 on **every object it uploads**:
 
@@ -67,7 +67,7 @@ key fall back to `DEFAULT_POLICY` (worker env, default `public`). If you set
 Minted by the API (`video.ts` / `api.ts`), verified by the delivery worker:
 
 - HS256, symmetric `JWT_SECRET` **shared between API and delivery worker**
-- `iss`: `openvod`, `aud`: `playback`
+- `iss`: `clipmux`, `aud`: `playback`
 - Claims: `video_id` (or `sub`), `org_id`, `ua_hash` (SHA-256 of the
   normalized UA family), optional `allowed_domains` (`["*"]` default) and
   `allow_no_referrer` (default `true`)
@@ -144,6 +144,29 @@ Heartbeats POST to `/api/webhook/heartbeat` with
 `{ video_id, stage, progress, ts, attempt_id }`. Both are authenticated with
 the ingest secret (bearer / `x-webhook-secret`). Heartbeats are strictly
 non-fatal on the worker side: the pipeline never aborts because a beat failed.
+
+A beat exists to extend the attempt's lease (20 minutes), and the two sides
+**coalesce** their beats so that renewing a 20-minute lease does not cost a
+database write per encoder-second:
+
+| Side | Cadence |
+| --- | --- |
+| worker progress beats | at most one per `PROGRESS_BEAT_SECONDS` (15s), plus one immediately on every stage change |
+| worker liveness thread | every 30s, unconditional; carries the latest stage/progress |
+| agent progress beats | at most one per `progress_beat_seconds` (`CLIPMUX_PROGRESS_BEAT_SECONDS`, 15s), plus every stage change; the per-job lease probe is independent |
+| API write guard | a beat whose row was already beaten inside `HEARTBEAT_WRITE_MIN_INTERVAL_MS` (10s) answers `{ success: true, throttled: true }` without writing |
+
+Coalescing is a load guard, never an ownership guard: attempt and status checks
+run first on both sides, so a superseded attempt is still refused (`ignored`)
+and never kept alive by a throttled beat. Any 2xx — `success`, `ignored` or
+`throttled` — means the same thing to the worker: the beat landed, keep going.
+
+The two windows are independent, so a stage change that arrives at the API a
+moment after a progress beat is acknowledged but not recorded. That costs at most
+one progress interval of staleness in the stored stage — the worker re-sends the
+stage on its next beat — and the worker must **not** wait for the API before
+moving on. A `throttled` answer means "I already have a fresher beat", not "send
+this again immediately".
 
 Error callbacks carry a stable `error_code` (server stores it in
 `video.failure_code`):
@@ -380,4 +403,4 @@ capacity, encoder list and scratch headroom, plus the queue's state histogram.
 
 - API: `GET /health` (text `ok`), `GET /health/config` (JSON capability flags)
 - Delivery: `GET /health` (text `ok`) — added before key resolution
-- Agent: `openvod-transcoder doctor` (exit code is the answer)
+- Agent: `clipmux-transcoder doctor` (exit code is the answer)

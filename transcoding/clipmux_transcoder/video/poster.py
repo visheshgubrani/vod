@@ -1,7 +1,7 @@
 """
 Poster/thumbnail generation.
 """
-from openvod_transcoder.utils.cmd import run_cmd
+from clipmux_transcoder.utils.cmd import run_cmd
 
 
 def choose_poster_time(duration: float) -> float:

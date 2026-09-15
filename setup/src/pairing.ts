@@ -5,7 +5,7 @@
  * Pure strings on purpose. The pairing invocation is the single most
  * copy-pasted command this project prints, and it is easy to get wrong in a way
  * nobody notices until an operator runs it: `--api` is a **global** option on
- * the agent's argparse root (`transcoding/openvod_transcoder/agent/cli.py`), so
+ * the agent's argparse root (`transcoding/clipmux_transcoder/agent/cli.py`), so
  * it must come *before* the `pair` subcommand — `pair --api …` is a parse error.
  */
 
@@ -31,7 +31,7 @@ export function pairingCommand(apiUrl?: string, code?: string): string {
 /**
  * What an agent container can and cannot reach.
  *
- * The container's `OPENVOD_API_URL` default is the Compose service address
+ * The container's `CLIPMUX_API_URL` default is the Compose service address
  * (`http://api:4080`), which only resolves while the bundled API service is
  * running. Any other API — a Worker, a tunnel, or `pnpm dev` on this same
  * machine — has to be given an address that works *from inside the container*,
@@ -41,13 +41,13 @@ export function pairingCommand(apiUrl?: string, code?: string): string {
 export function agentApiUrlNote(apiUrl: string | undefined, apiIsComposeService: boolean): string {
   if (apiIsComposeService) {
     return (
-      'The agent talks to the Compose API service (OPENVOD_API_URL=http://api:4080), ' +
+      'The agent talks to the Compose API service (CLIPMUX_API_URL=http://api:4080), ' +
       'which resolves while `docker compose up` runs the bundled api service.'
     )
   }
   const api = (apiUrl ?? '').trim() || PAIRING_API_PLACEHOLDER
   return (
-    `Set OPENVOD_API_URL=${api} for the transcoder service — the container must be able to reach it.\n` +
+    `Set CLIPMUX_API_URL=${api} for the transcoder service — the container must be able to reach it.\n` +
     'A public API URL works as-is; an API running on this machine needs the host address\n' +
     '(`http://host.docker.internal:<port>`, which docker-compose.yml maps on Linux too).'
   )

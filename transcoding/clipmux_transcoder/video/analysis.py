@@ -5,14 +5,14 @@ import json
 from dataclasses import dataclass
 from typing import List, Optional
 
-from openvod_transcoder.config import ENCODING_PROFILES, EncodingProfile
-from openvod_transcoder.errors import (
+from clipmux_transcoder.config import ENCODING_PROFILES, EncodingProfile
+from clipmux_transcoder.errors import (
     ERROR_EMPTY_FILE,
     ERROR_INVALID_CONTAINER,
     ERROR_INVALID_METADATA,
     TranscodeError,
 )
-from openvod_transcoder.utils.cmd import run_cmd
+from clipmux_transcoder.utils.cmd import run_cmd
 
 
 @dataclass

@@ -11,7 +11,9 @@ import { cn } from "@/lib/utils";
 import type { SiteConfig } from "@/lib/site-config";
 
 const navItems = [
-  { href: "#product", label: "Product" },
+  { href: "#ownership", label: "Ownership" },
+  { href: "#workflow", label: "Workflow" },
+  { href: "#platform", label: "Platform" },
   { href: "#developers", label: "Developers" },
   { href: "#hosting", label: "Hosting" },
 ];
@@ -22,10 +24,18 @@ type SiteNavProps = {
 
 export function SiteNav({ config }: SiteNavProps) {
   const [open, setOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
   const reduceMotion = useReducedMotion();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const firstMobileLinkRef = useRef<HTMLAnchorElement>(null);
   const wasOpen = useRef(false);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -36,17 +46,18 @@ export function SiteNav({ config }: SiteNavProps) {
     wasOpen.current = open;
   }, [open]);
 
-  const closeMenu = () => setOpen(false);
-
   return (
-    <header className="site-header sticky top-0 z-50 border-b border-transparent bg-paper/90 backdrop-blur-xl">
-      <div className="content-width flex h-[76px] items-center justify-between">
-        <Link href="#top" className="group flex items-center gap-2.5" aria-label="OpenVOD home">
-          <BrandMark className="size-7 transition-transform duration-200 group-hover:rotate-12" />
-          <span className="text-[17px] font-extrabold tracking-[-0.05em]">OpenVOD</span>
+    <header className="site-header" data-scrolled={scrolled}>
+      <div className="content-width">
+        <Link href="#top" className="brand-lockup" aria-label="ClipMux home">
+          <BrandMark className="size-7" />
+          ClipMux
         </Link>
 
-        <nav className="hidden items-center gap-7 lg:flex" aria-label="Primary navigation">
+        <nav
+          className="hidden items-center gap-7 lg:flex"
+          aria-label="Primary navigation"
+        >
           {navItems.map((item) => (
             <a key={item.href} href={item.href} className="nav-link">
               {item.label}
@@ -54,33 +65,35 @@ export function SiteNav({ config }: SiteNavProps) {
           ))}
         </nav>
 
-        <div className="hidden items-center gap-5 lg:flex">
-          <a className="nav-link inline-flex items-center gap-1" href={config.docsUrl}>
-            Docs <ArrowUpRight className="size-3.5" />
-          </a>
+        <div className="hidden items-center gap-6 lg:flex">
           <a
             className="nav-link inline-flex items-center gap-1"
-            href={config.githubUrl}
-            target="_blank"
-            rel="noreferrer"
+            href={config.docsUrl}
           >
-            GitHub <ArrowUpRight className="size-3.5" />
+            Docs <ArrowUpRight className="size-3.5" aria-hidden="true" />
           </a>
-          <a className={cn(buttonVariants({ variant: "primary", size: "sm" }))} href={config.quickstartUrl}>
+          <a
+            className={buttonVariants({ size: "default" })}
+            href={config.quickstartUrl}
+          >
             Start self-hosting
           </a>
         </div>
 
         <button
           ref={menuButtonRef}
-          className="inline-flex size-10 items-center justify-center rounded-lg border border-ink/15 lg:hidden"
           type="button"
+          className="inline-flex size-11 items-center justify-center rounded-[10px] border border-[color:var(--hairline-strong)] text-[color:var(--ink)] lg:hidden"
           aria-expanded={open}
           aria-controls="mobile-nav"
           aria-label={open ? "Close menu" : "Open menu"}
           onClick={() => setOpen((current) => !current)}
         >
-          {open ? <X className="size-5" /> : <Menu className="size-5" />}
+          {open ? (
+            <X className="size-5" aria-hidden="true" />
+          ) : (
+            <Menu className="size-5" aria-hidden="true" />
+          )}
         </button>
       </div>
 
@@ -88,28 +101,42 @@ export function SiteNav({ config }: SiteNavProps) {
         {open ? (
           <motion.div
             id="mobile-nav"
-            className="border-t border-hairline bg-paper lg:hidden"
+            className="border-t border-[color:var(--hairline)] bg-[color:var(--paper)] lg:hidden"
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: reduceMotion ? 0 : 0.2, ease: "easeOut" }}
+            transition={{ duration: reduceMotion ? 0 : 0.18, ease: "easeOut" }}
             onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
               if (event.key === "Escape") setOpen(false);
             }}
           >
-            <nav className="content-width flex flex-col gap-1 py-4" aria-label="Mobile navigation">
+            <nav
+              className="content-width flex flex-col gap-1 py-4"
+              aria-label="Mobile navigation"
+            >
               {navItems.map((item, index) => (
-                <a key={item.href} ref={index === 0 ? firstMobileLinkRef : undefined} href={item.href} className="mobile-nav-link" onClick={closeMenu}>
+                <a
+                  key={item.href}
+                  ref={index === 0 ? firstMobileLinkRef : undefined}
+                  href={item.href}
+                  className="mobile-nav-link"
+                  onClick={() => setOpen(false)}
+                >
                   {item.label}
                 </a>
               ))}
-              <a href={config.docsUrl} className="mobile-nav-link" onClick={closeMenu}>
-                Docs <ArrowUpRight className="size-4" />
+              <a
+                href={config.docsUrl}
+                className="mobile-nav-link"
+                onClick={() => setOpen(false)}
+              >
+                Docs <ArrowUpRight className="size-4" aria-hidden="true" />
               </a>
-              <a href={config.githubUrl} className="mobile-nav-link" onClick={closeMenu}>
-                GitHub <ArrowUpRight className="size-4" />
-              </a>
-              <a href={config.quickstartUrl} className={cn(buttonVariants({ className: "mt-3 w-full" }))} onClick={closeMenu}>
+              <a
+                href={config.quickstartUrl}
+                className={cn(buttonVariants({ size: "lg" }), "mt-3 w-full")}
+                onClick={() => setOpen(false)}
+              >
                 Start self-hosting
               </a>
             </nav>
@@ -118,13 +145,19 @@ export function SiteNav({ config }: SiteNavProps) {
       </AnimatePresence>
 
       <noscript>
-        <nav className="content-width flex flex-col gap-3 border-t border-hairline py-4 lg:hidden" aria-label="No-script navigation">
+        <nav
+          className="content-width flex flex-col gap-2 border-t border-[color:var(--hairline)] py-4 lg:hidden"
+          aria-label="No-script navigation"
+        >
           {navItems.map((item) => (
             <a key={item.href} href={item.href} className="mobile-nav-link">
               {item.label}
             </a>
           ))}
-          <a href={config.quickstartUrl} className={cn(buttonVariants({ className: "w-full" }))}>
+          <a
+            href={config.quickstartUrl}
+            className={cn(buttonVariants({ size: "lg" }), "w-full")}
+          >
             Start self-hosting
           </a>
         </nav>

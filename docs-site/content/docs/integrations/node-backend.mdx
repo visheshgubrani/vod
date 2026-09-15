@@ -23,18 +23,18 @@ Add a third for webhooks if you want to know when a transcode finishes.
 <Tabs items={['Express', 'Hono', 'Fastify']}>
   <Tab value="Express">
     ```bash
-    npm install express @openvod/server
+    npm install express @clipmux/server
     ```
 
     ```ts
     import express from 'express'
-    import { OpenVod, WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+    import { ClipMux, WebhookSignatureError, constructWebhookEvent } from '@clipmux/server'
 
     const app = express()
 
-    const vod = new OpenVod({
-      apiKey: process.env.OPENVOD_API_KEY!,
-      baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+    const vod = new ClipMux({
+      apiKey: process.env.CLIPMUX_API_KEY!,
+      baseUrl: process.env.CLIPMUX_API_URL!, // no /v1 suffix
     })
 
     // ── Upload token ──────────────────────────────────────────────────────
@@ -59,14 +59,14 @@ Add a third for webhooks if you want to know when a transcode finishes.
     // ── Webhooks ──────────────────────────────────────────────────────────
     // express.raw, NOT express.json: the signature covers the raw bytes.
     app.post(
-      '/api/webhooks/openvod',
+      '/api/webhooks/clipmux',
       express.raw({ type: 'application/json' }),
       async (req, res) => {
         const rawBody = req.body.toString('utf8') // a Buffer, thanks to express.raw
 
         try {
           const event = await constructWebhookEvent({
-            secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+            secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
             rawBody,
             signature: req.get('x-webhook-signature'),
             timestamp: req.get('x-webhook-timestamp'),
@@ -101,19 +101,19 @@ Add a third for webhooks if you want to know when a transcode finishes.
 
   <Tab value="Hono">
     ```bash
-    npm install hono @hono/node-server @openvod/server
+    npm install hono @hono/node-server @clipmux/server
     ```
 
     ```ts
     import { Hono } from 'hono'
     import { serve } from '@hono/node-server'
-    import { OpenVod, WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+    import { ClipMux, WebhookSignatureError, constructWebhookEvent } from '@clipmux/server'
 
     const app = new Hono()
 
-    const vod = new OpenVod({
-      apiKey: process.env.OPENVOD_API_KEY!,
-      baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+    const vod = new ClipMux({
+      apiKey: process.env.CLIPMUX_API_KEY!,
+      baseUrl: process.env.CLIPMUX_API_URL!, // no /v1 suffix
     })
 
     app.post('/api/upload-token', async (c) => {
@@ -134,13 +134,13 @@ Add a third for webhooks if you want to know when a transcode finishes.
       return c.json({ token: session.token, playbackUrl: session.playback_url })
     })
 
-    app.post('/api/webhooks/openvod', async (c) => {
+    app.post('/api/webhooks/clipmux', async (c) => {
       // Hono does not parse the body until you ask — text() gives the raw bytes.
       const rawBody = await c.req.text()
 
       try {
         const event = await constructWebhookEvent({
-          secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+          secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
           rawBody,
           signature: c.req.header('x-webhook-signature'),
           timestamp: c.req.header('x-webhook-timestamp'),
@@ -172,18 +172,18 @@ Add a third for webhooks if you want to know when a transcode finishes.
 
   <Tab value="Fastify">
     ```bash
-    npm install fastify @openvod/server
+    npm install fastify @clipmux/server
     ```
 
     ```ts
     import Fastify from 'fastify'
-    import { OpenVod, WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+    import { ClipMux, WebhookSignatureError, constructWebhookEvent } from '@clipmux/server'
 
     const app = Fastify()
 
-    const vod = new OpenVod({
-      apiKey: process.env.OPENVOD_API_KEY!,
-      baseUrl: process.env.OPENVOD_API_URL!, // no /v1 suffix
+    const vod = new ClipMux({
+      apiKey: process.env.CLIPMUX_API_KEY!,
+      baseUrl: process.env.CLIPMUX_API_URL!, // no /v1 suffix
     })
 
     // Keep the raw JSON text on every request, so the webhook route can verify
@@ -219,13 +219,13 @@ Add a third for webhooks if you want to know when a transcode finishes.
       return { token: session.token, playbackUrl: session.playback_url }
     })
 
-    app.post('/api/webhooks/openvod', async (request, reply) => {
+    app.post('/api/webhooks/clipmux', async (request, reply) => {
       const rawBody = (request as { rawBody?: string }).rawBody ?? ''
       const headers = request.headers as Record<string, string | undefined>
 
       try {
         const event = await constructWebhookEvent({
-          secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+          secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
           rawBody,
           signature: headers['x-webhook-signature'],
           timestamp: headers['x-webhook-timestamp'],
@@ -258,16 +258,16 @@ Add a third for webhooks if you want to know when a transcode finishes.
 
 ## Cloudflare Workers and edge runtimes
 
-`@openvod/server` runs unchanged on Workers, Deno and Bun. It uses WebCrypto for
+`@clipmux/server` runs unchanged on Workers, Deno and Bun. It uses WebCrypto for
 webhook verification, so there is no Node `crypto` dependency and nothing to
 polyfill.
 
 ```ts
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const vod = new OpenVod({
-      apiKey: env.OPENVOD_API_KEY,
-      baseUrl: env.OPENVOD_API_URL,
+    const vod = new ClipMux({
+      apiKey: env.CLIPMUX_API_KEY,
+      baseUrl: env.CLIPMUX_API_URL,
     })
 
     const url = new URL(request.url)
@@ -277,11 +277,11 @@ export default {
       return Response.json({ uploadToken: token.upload_token, expiresAt: token.expires_at })
     }
 
-    if (url.pathname === '/api/webhooks/openvod' && request.method === 'POST') {
+    if (url.pathname === '/api/webhooks/clipmux' && request.method === 'POST') {
       const rawBody = await request.text() // Workers: no framework parser in the way
 
       const event = await constructWebhookEvent({
-        secret: env.OPENVOD_WEBHOOK_SECRET,
+        secret: env.CLIPMUX_WEBHOOK_SECRET,
         rawBody,
         signature: request.headers.get('x-webhook-signature'),
         timestamp: request.headers.get('x-webhook-timestamp'),
@@ -298,13 +298,13 @@ export default {
 
 <Callout type="info" title="A Worker is a great home for the token routes">
   No cold-start penalty worth mentioning, and it is exactly the same deployment
-  model as the OpenVOD delivery worker. If your frontend is already on Workers or
+  model as the ClipMux delivery worker. If your frontend is already on Workers or
   Pages, this is the least-moving-parts place to mint tokens.
 </Callout>
 
 ## Authenticate the token routes
 
-The examples carry a `TODO` because OpenVOD cannot know your auth model — and
+The examples carry a `TODO` because ClipMux cannot know your auth model — and
 because these routes are a real security boundary:
 
 - **`/api/upload-token`** lets the caller start an upload against your storage
@@ -312,7 +312,7 @@ because these routes are a real security boundary:
 - **`/api/play-token/:id`** decides who may watch *what*. A signed-in user must
   still be checked against **this video id** — otherwise any account can mint a
   token for any id it can guess. This is the most commonly missed check in an
-  OpenVOD integration.
+  ClipMux integration.
 
 ```ts
 app.post('/api/play-token/:id', express.json(), async (req, res) => {

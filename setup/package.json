@@ -1,15 +1,15 @@
 {
-  "name": "openvod-setup",
+  "name": "clipmux-setup",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "OpenVOD interactive bootstrap wizard — BYOK env configuration with an opt-in Cloudflare/Modal provision & deploy phase",
+  "description": "ClipMux interactive bootstrap wizard — BYOK env configuration with an opt-in Cloudflare/Modal provision & deploy phase",
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "openvod-setup": "./src/cli.ts"
+    "clipmux-setup": "./src/cli.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

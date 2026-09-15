@@ -25,9 +25,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Sequence
 
-from openvod_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.cancellation import CancellationToken
 
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.encoding.backends import (
     ALL_BACKENDS,
     BACKEND_CPU,
     BACKEND_NVENC,
@@ -36,8 +36,8 @@ from openvod_transcoder.encoding.backends import (
     EncoderBackend,
     backend_named,
 )
-from openvod_transcoder.encoding.probe import CapabilityReport, ChainProbe
-from openvod_transcoder.errors import (
+from clipmux_transcoder.encoding.probe import CapabilityReport, ChainProbe
+from clipmux_transcoder.errors import (
     ERROR_ENCODER_UNAVAILABLE,
     TranscodeError,
     is_fallback_eligible,

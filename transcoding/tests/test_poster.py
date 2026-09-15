@@ -1,5 +1,5 @@
 """Tests for poster seek-time selection."""
-from openvod_transcoder.video.poster import choose_poster_time
+from clipmux_transcoder.video.poster import choose_poster_time
 
 
 class TestChoosePosterTime:

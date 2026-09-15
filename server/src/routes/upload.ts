@@ -186,7 +186,7 @@ function parseUploadTokenExpiry(value: unknown): { seconds: number; error?: stri
  * uses — `/v1/upload/{create,parts,complete}` with
  * `Authorization: UploadToken ut_…` — instead of its own bespoke multipart
  * routes. Two upload implementations existed before this; keeping one means the
- * documented integration path is the one OpenVOD itself exercises.
+ * documented integration path is the one ClipMux itself exercises.
  */
 app.post('/token', async (c) => {
   const session = c.var.session

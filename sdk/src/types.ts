@@ -1,5 +1,5 @@
 /**
- * OpenVOD uploader SDK types.
+ * ClipMux uploader SDK types.
  *
  * The wire types (`CreateUploadResponse`, `PartsWindow`, `CompleteUploadResponse`)
  * mirror the public API in `server/src/routes/upload-public.ts`; the request
@@ -11,9 +11,9 @@
 export type UploadSource = File | Blob
 
 /** Configuration options for the uploader. */
-export interface OpenVodUploaderConfig {
+export interface ClipMuxUploaderConfig {
     /**
-     * Origin of the OpenVOD API, without the `/v1` suffix
+     * Origin of the ClipMux API, without the `/v1` suffix
      * (e.g. `https://api.yourvod.com`). The public API is mounted at the root.
      */
     baseUrl: string

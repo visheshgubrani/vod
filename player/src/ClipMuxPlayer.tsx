@@ -26,9 +26,9 @@ import {
 // Vidstack CSS — vendored locally to avoid sideEffects:false tree-shaking.
 // tsup's injectStyle will bundle these into the JS output, so the stylesheet is
 // inlined by default and there is nothing extra to import. Consumers who prefer
-// a separate file can import '@openvod/player/styles.css' (see the README).
+// a separate file can import '@clipmux/player/styles.css' (see the README).
 import './vidstack-styles.css'
-import './openvod-player.css'
+import './clipmux-player.css'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -58,9 +58,9 @@ export interface TokenResponse {
     playback_url?: string
 }
 
-export interface OpenVodPlayerProps {
+export interface ClipMuxPlayerProps {
     /**
-     * The OpenVOD video ID. Used with `cdnBase` to resolve the HLS URL and
+     * The ClipMux video ID. Used with `cdnBase` to resolve the HLS URL and
      * to tag analytics events. At minimum, one of `src` or (`cdnBase` +
      * `playbackId`) must be provided.
      */
@@ -158,7 +158,7 @@ function withToken(url: string, token?: string): string {
 
 /** Resolve the playback source URL from props. */
 export function resolveSourceUrl(
-    props: Pick<OpenVodPlayerProps, 'playbackId' | 'src' | 'token' | 'cdnBase'>,
+    props: Pick<ClipMuxPlayerProps, 'playbackId' | 'src' | 'token' | 'cdnBase'>,
 ): string {
     const fromCdn =
         props.cdnBase && props.playbackId
@@ -401,7 +401,7 @@ function useVideoAnalytics(
 
 // ─── Component ──────────────────────────────────────────────────────
 
-export function OpenVodPlayer({
+export function ClipMuxPlayer({
     playbackId,
     src,
     cdnBase,
@@ -423,7 +423,7 @@ export function OpenVodPlayer({
     onReady,
     onError,
     onEnded: onEndedCallback,
-}: OpenVodPlayerProps) {
+}: ClipMuxPlayerProps) {
     const videoId = playbackId || 'unknown'
 
     // Live token state: `token` from props is the initial/static value; a
@@ -530,7 +530,7 @@ export function OpenVodPlayer({
 
     return (
         <MediaPlayer
-            className={`openvod-player ${className || ''}`}
+            className={`clipmux-player ${className || ''}`}
             title={title}
             src={videoSrc}
             autoPlay={autoPlay}

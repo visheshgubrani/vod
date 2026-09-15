@@ -11,7 +11,7 @@ a :class:`RenderSpec` and are unit-tested against literals.
 A word on what probing means. ``ffmpeg -hwaccels`` lists what the binary was
 *compiled* with; it says nothing about whether the device node exists, whether
 the driver can be opened, or whether this container was given the render group.
-Every "available" answer in :mod:`openvod_transcoder.encoding.probe` therefore
+Every "available" answer in :mod:`clipmux_transcoder.encoding.probe` therefore
 comes from an actual encode of a synthetic frame. A listed-but-unusable
 accelerator is the normal case on real machines, not an edge case.
 """
@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from openvod_transcoder.config import EncodingProfile
+from clipmux_transcoder.config import EncodingProfile
 
 
 class SourceTraits(Protocol):
@@ -324,7 +324,7 @@ def video_filter_chain(
 
     Hardware decoding and filtering are only used when the caller has already
     verified that *this* source decodes on that device (see the preflight in
-    :mod:`openvod_transcoder.encoding.probe`); passing ``gpu_decode`` is that
+    :mod:`clipmux_transcoder.encoding.probe`); passing ``gpu_decode`` is that
     verification's result, not an assumption.
 
     Three shapes, matching the plan's execution paths:

@@ -29,7 +29,7 @@ import {
  * column this schema does not declare fails here, not in production.
  */
 
-const SUITE_DATABASE = 'openvod_t_account'
+const SUITE_DATABASE = 'clipmux_t_account'
 
 const TEST_EMAIL = 'account-schema@example.invalid'
 const TEST_PASSWORD = 'account-schema-password-1'

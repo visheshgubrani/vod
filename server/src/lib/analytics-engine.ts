@@ -18,7 +18,7 @@
  * - index1: organizationId
  */
 
-import type { OpenVodConfig } from './config'
+import type { ClipMuxConfig } from './config'
 
 export const PLAYBACK_DATASET = 'playback_events'
 
@@ -45,7 +45,7 @@ export function escapeSqlString(value: string): string {
  * which resolved the same credentials two different ways.
  */
 export function getAnalyticsConfig(
-  config: Pick<OpenVodConfig, 'accountId' | 'cloudflareAnalyticsToken'>,
+  config: Pick<ClipMuxConfig, 'accountId' | 'cloudflareAnalyticsToken'>,
 ): { accountId: string; apiToken: string } | null {
   const accountId = config.accountId
   const apiToken = config.cloudflareAnalyticsToken

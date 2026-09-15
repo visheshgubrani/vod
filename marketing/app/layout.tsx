@@ -34,35 +34,42 @@ const geistMono = localFont({
   ],
 });
 
+const TITLE = "ClipMux — Your videos. Your infrastructure.";
+const DESCRIPTION =
+  "Upload, transcode, and stream with an open-source video platform. Keep your files in your R2 buckets, choose your transcode compute, and build playback into your product.";
+
 export const metadata: Metadata = {
   metadataBase: new URL(siteConfig.canonicalOrigin),
   title: {
-    default: "OpenVOD — Your video. Your platform.",
-    template: "%s | OpenVOD",
+    default: TITLE,
+    template: "%s | ClipMux",
   },
-  description:
-    "Open-source video infrastructure for products that need upload, transcoding, and playback on infrastructure they control.",
+  description: DESCRIPTION,
   alternates: {
     canonical: "/",
   },
-  applicationName: "OpenVOD",
-  keywords: ["open-source video", "video infrastructure", "self-hosted VOD", "HLS", "video API"],
-  authors: [{ name: "OpenVOD" }],
-  creator: "OpenVOD",
+  applicationName: "ClipMux",
+  keywords: [
+    "open-source video",
+    "video infrastructure",
+    "self-hosted VOD",
+    "HLS",
+    "video API",
+  ],
+  authors: [{ name: "ClipMux" }],
+  creator: "ClipMux",
   openGraph: {
     type: "website",
     locale: "en_US",
-    siteName: "OpenVOD",
-    title: "OpenVOD — Your video. Your platform.",
-    description:
-      "Upload, transcode, and stream with a complete open-source video platform.",
+    siteName: "ClipMux",
+    title: TITLE,
+    description: DESCRIPTION,
     images: [{ url: "/opengraph-image" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "OpenVOD — Your video. Your platform.",
-    description:
-      "Open-source video infrastructure on infrastructure you control.",
+    title: TITLE,
+    description: DESCRIPTION,
     images: ["/opengraph-image"],
   },
   icons: {
@@ -81,9 +88,14 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${manrope.variable} ${instrumentSerif.variable} ${geistMono.variable}`}>
+    <html
+      lang="en"
+      className={`${manrope.variable} ${instrumentSerif.variable} ${geistMono.variable}`}
+    >
       <body>{children}</body>
     </html>
   );

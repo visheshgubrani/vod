@@ -30,7 +30,7 @@ const FIXTURES: Record<string, string> = {
 let dir: string
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'openvod-detect-'))
+  dir = mkdtempSync(join(tmpdir(), 'clipmux-detect-'))
   for (const [name, text] of Object.entries(FIXTURES)) {
     writeFileSync(join(dir, name), text)
   }
@@ -66,7 +66,7 @@ async function runDetect(
 function dumpFor(fixture: string, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   return runDetect(
     `. scripts/lib/detect.sh\nov_detect_all\nov_dump`,
-    { OPENVOD_OS_RELEASE_FILE: join(dir, fixture), ...extraEnv },
+    { CLIPMUX_OS_RELEASE_FILE: join(dir, fixture), ...extraEnv },
   )
 }
 
@@ -107,7 +107,7 @@ describe('scripts/lib/detect.sh', () => {
 
   it('detects macOS from uname and uses Homebrew', async () => {
     const result = await runDetect('. scripts/lib/detect.sh\nov_detect_all\nov_dump', {
-      OPENVOD_UNAME_OVERRIDE: 'Darwin',
+      CLIPMUX_UNAME_OVERRIDE: 'Darwin',
     })
     expect(field(result.stdout, 'OS')).toBe('macos')
     expect(field(result.stdout, 'FAMILY')).toBe('mac')
@@ -116,10 +116,10 @@ describe('scripts/lib/detect.sh', () => {
 
   it('needs neither root nor sudo on a machine that has neither', async () => {
     const dump = (await dumpFor('ubuntu')).stdout
-    // NOT a claim about the machine running the suite: OPENVOD_NO_SUDO below is
+    // NOT a claim about the machine running the suite: CLIPMUX_NO_SUDO below is
     // what makes the policy testable without privileges.
     expect(['0', '1']).toContain(field(dump, 'CAN_INSTALL'))
-    const forced = (await dumpFor('ubuntu', { OPENVOD_NO_SUDO: '1' })).stdout
+    const forced = (await dumpFor('ubuntu', { CLIPMUX_NO_SUDO: '1' })).stdout
     expect(field(forced, 'NO_SUDO')).toBe('1')
     expect(field(forced, 'CAN_INSTALL')).toBe('0')
     expect(field(forced, 'HAS_SUDO')).toBe('0')
@@ -132,7 +132,7 @@ describe('scripts/lib/detect.sh', () => {
         'ov_detect_all',
         'if ov_run_pkg python3; then echo RAN; else echo REFUSED; fi',
       ].join('\n'),
-      { OPENVOD_OS_RELEASE_FILE: join(dir, 'ubuntu'), OPENVOD_NO_SUDO: '1' },
+      { CLIPMUX_OS_RELEASE_FILE: join(dir, 'ubuntu'), CLIPMUX_NO_SUDO: '1' },
     )
     expect(result.stdout.trim()).toBe('REFUSED')
   })
@@ -146,7 +146,7 @@ describe('scripts/lib/detect.sh', () => {
         'printf "HINT=%s\\n" "$(ov_pkg_hint python3)"',
         'printf "MISSING=%s\\n" "$(ov_pkg_command docker || printf none)"',
       ].join('\n'),
-      { OPENVOD_OS_RELEASE_FILE: join(dir, 'ubuntu') },
+      { CLIPMUX_OS_RELEASE_FILE: join(dir, 'ubuntu') },
     )
     expect(result.stdout).toContain('PY=apt-get install -y python3 python3-venv python3-pip')
     // The hint is what a user runs themselves, so it carries the sudo prefix.
@@ -200,7 +200,7 @@ describe('scripts/lib/pkg-commands.tsv', () => {
 })
 
 describe('bash 3.2 (macOS /bin/bash)', () => {
-  const maybeDocker = process.env.OPENVOD_BASH32_BIN ?? null
+  const maybeDocker = process.env.CLIPMUX_BASH32_BIN ?? null
 
   it('runs the detector under real bash 3.2', async () => {
     const image = 'bash:3.2'
@@ -210,7 +210,7 @@ describe('bash 3.2 (macOS /bin/bash)', () => {
       'ov_detect_all',
       'ov_dump',
       'printf "PY=%s\\n" "$(ov_pkg_hint python3)"',
-      'printf "REFUSED=%s\\n" "$(OPENVOD_NO_SUDO=1 bash -c ". /w/scripts/lib/detect.sh; ov_detect_all; ov_run_pkg python3 || echo yes")"',
+      'printf "REFUSED=%s\\n" "$(CLIPMUX_NO_SUDO=1 bash -c ". /w/scripts/lib/detect.sh; ov_detect_all; ov_run_pkg python3 || echo yes")"',
     ].join('\n')
 
     const result = maybeDocker !== null

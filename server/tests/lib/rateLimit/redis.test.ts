@@ -123,7 +123,7 @@ describe('createRedisLimiter', () => {
  * `pnpm test` still works with no Redis; CI provides one.
  */
 const TEST_REDIS_URL = process.env.TEST_REDIS_URL ?? ''
-const suiteKey = `openvod-test:${Math.random().toString(36).slice(2, 8)}`
+const suiteKey = `clipmux-test:${Math.random().toString(36).slice(2, 8)}`
 
 describe.skipIf(!TEST_REDIS_URL)('createRedisLimiter (real Redis)', () => {
   it('enforces a sliding window and reports the same numbers as the memory adapter', async () => {

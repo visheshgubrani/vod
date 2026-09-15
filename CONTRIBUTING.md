@@ -1,6 +1,6 @@
-# Contributing to OpenVOD
+# Contributing to ClipMux
 
-Thanks for contributing! OpenVOD is an open-source, self-hostable VOD platform:
+Thanks for contributing! ClipMux is an open-source, self-hostable VOD platform:
 bring your own Cloudflare R2 + Modal keys and get Mux-style HLS/DASH video
 infrastructure.
 
@@ -16,9 +16,9 @@ maintainers (see the CoC for contact details).
 server/         Hono API (Cloudflare Worker or Node/Docker) — control plane
 delivery/       Cloudflare Worker — media delivery (JWT, manifest rewrite, metering)
 web/            Next.js dashboard + Developer Welcome (standalone build; Vercel or Docker)
-sdk/            @openvod/uploader — browser upload SDK
-player/         @openvod/player — Vidstack-based React player
-server-sdk/     @openvod/server — server SDK (tokens, videos, webhooks)
+sdk/            @clipmux/uploader — browser upload SDK
+player/         @clipmux/player — Vidstack-based React player
+server-sdk/     @clipmux/server — server SDK (tokens, videos, webhooks)
 examples/       nextjs-integration — runnable end-to-end integration example
 transcoding/   Modal Python GPU pipeline (FFmpeg + Shaka + Whisper)
 docs-site/     Fumadocs documentation site
@@ -54,9 +54,9 @@ pnpm typecheck        # type-check every package
 3. Start the local infrastructure, then a runtime:
    - `pnpm dev:infra` — dev Postgres (host port **5433**, database `vod_dev`)
      and Redis (host port **6379**) from `docker-compose.dev.yml` (project
-     `openvod-dev`), waiting for both health checks. `pnpm dev:infra:down`
+     `clipmux-dev`), waiting for both health checks. `pnpm dev:infra:down`
      stops them and keeps the data; `pnpm dev:infra:reset` also drops the
-     Postgres volume (`openvod_dev_postgres`). `pnpm db:up` / `pnpm db:down`
+     Postgres volume (`clipmux_dev_postgres`). `pnpm db:up` / `pnpm db:down`
      are kept as Postgres-only compatibility aliases. If you ran the previous
      stack, a stale container named `vod-postgres-dev` may still hold port
      5433: `docker rm -f vod-postgres-dev`.
@@ -86,7 +86,7 @@ pnpm typecheck        # type-check every package
 
    `docs-site` is deliberately not part of either aggregate command — it also
    defaults to port 3000; run it with
-   `PORT=3002 pnpm --filter openvod-docs dev` (pass the port as an env var, not
+   `PORT=3002 pnpm --filter clipmux-docs dev` (pass the port as an env var, not
    a `-p` flag: pnpm parses `-p` as its own `--parallel` shorthand).
 
    To run a single service in its own terminal (useful for isolating logs):
@@ -130,7 +130,7 @@ pnpm typecheck        # type-check every package
        a callback URL only this machine can reach never arrives.
    3. Allow that host on the transcoder, or the callback is blocked before it is
        ever sent: set `ALLOWED_CALLBACK_HOSTS=<your-tunnel-host>` (hostname
-       only, no scheme) on the `openvod-creds` Modal secret the transcoder
+       only, no scheme) on the `clipmux-creds` Modal secret the transcoder
        deploys with, then redeploy if the secret is read at container start.
        `./scripts/bootstrap.sh --deploy --target dev` derives that allowlist from
        `BACKEND_URL`, so setting `BACKEND_URL` before deploying does this for

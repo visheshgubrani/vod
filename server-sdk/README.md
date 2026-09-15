@@ -1,6 +1,6 @@
-# @openvod/server
+# @clipmux/server
 
-The server-side SDK for a self-hosted [OpenVOD](https://github.com/visheshgubrani/vod)
+The server-side SDK for a self-hosted [ClipMux](https://github.com/visheshgubrani/vod)
 deployment: mint **upload tokens** for browsers, mint **playback tokens** for
 viewers, manage videos, and **verify webhooks**.
 
@@ -8,15 +8,15 @@ Your API key (`sk_live_…`) only ever lives here — in your backend, never in 
 browser.
 
 ```bash
-npm install @openvod/server
+npm install @clipmux/server
 ```
 
 ```ts
-import { OpenVod, constructWebhookEvent } from '@openvod/server'
+import { ClipMux, constructWebhookEvent } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!, // https://api.yourvod.com — no /v1 suffix
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!, // https://api.yourvod.com — no /v1 suffix
 })
 ```
 
@@ -36,7 +36,7 @@ The token is scoped to your organization, expires (24h max), and can cap the
 number and size of files. It is only checked when an upload *starts*, so a slow
 upload is never cut off by its own token lapsing.
 
-Then in the browser, [`@openvod/uploader`](https://www.npmjs.com/package/@openvod/uploader)
+Then in the browser, [`@clipmux/uploader`](https://www.npmjs.com/package/@clipmux/uploader)
 takes it from there.
 
 ### 2. Playback token — for one viewer
@@ -63,12 +63,12 @@ Pass `allowedDomains` to restrict which origins may play the video, and
 ### 3. Webhooks — know when a video is ready
 
 ```ts
-// app/api/webhooks/openvod/route.ts
+// app/api/webhooks/clipmux/route.ts
 export async function POST(req: Request) {
   const rawBody = await req.text() // NOT req.json()
 
   const event = await constructWebhookEvent({
-    secret: process.env.OPENVOD_WEBHOOK_SECRET!,
+    secret: process.env.CLIPMUX_WEBHOOK_SECRET!,
     rawBody,
     signature: req.headers.get('x-webhook-signature'),
     timestamp: req.headers.get('x-webhook-timestamp'),
@@ -128,7 +128,7 @@ rejects an empty patch locally instead of spending a round trip on a 400.
 
 ## Errors
 
-Every API failure is an `OpenVodError` with a stable `code`:
+Every API failure is an `ClipMuxError` with a stable `code`:
 
 | `code` | `status` | Retry? |
 |---|---|---|
@@ -143,12 +143,12 @@ Every API failure is an `OpenVodError` with a stable `code`:
 | `HTTP` | other | Depends on `retryable` |
 
 ```ts
-import { OpenVodError } from '@openvod/server'
+import { ClipMuxError } from '@clipmux/server'
 
 try {
   await vod.playback.createToken(videoId)
 } catch (error) {
-  if (error instanceof OpenVodError && error.code === 'VIDEO_NOT_READY') {
+  if (error instanceof ClipMuxError && error.code === 'VIDEO_NOT_READY') {
     return Response.json({ status: 'processing' }, { status: 202 })
   }
   throw error
@@ -162,7 +162,7 @@ outcome you need to know about.
 ## Configuration
 
 ```ts
-new OpenVod({
+new ClipMux({
   apiKey: 'sk_live_…',                 // required
   baseUrl: 'https://api.yourvod.com',  // required — no /v1 suffix
   timeoutMs: 30_000,                   // default 30s

@@ -5,7 +5,7 @@ This module is now only the *Modal adapter*. It owns the things that are
 genuinely Modal's: the image, the HTTP ingest endpoint, the container-level
 duplicate suppression, and the GPU worker's resource request. Everything else —
 probing, planning, encoding, packaging, validation, inventory — is in
-`openvod_transcoder`, which is the same code a self-hosted agent runs.
+`clipmux_transcoder`, which is the same code a self-hosted agent runs.
 
 That split is the point of the extraction: a fix to rendition planning or to
 output validation lands in both environments at once, and cannot drift.
@@ -37,22 +37,22 @@ from image_build import (
 
 # The shared engine. Imported here so `modal deploy` fails loudly if the
 # package does not hydrate, rather than at the first job.
-from openvod_transcoder import (
+from clipmux_transcoder import (
     CancellationToken,
     ProcessingOptions,
     classify_error,
     run_pipeline,
 )
-from openvod_transcoder.config import (
+from clipmux_transcoder.config import (
     R2_PREFIX,
     allowed_source_buckets,
     allowed_url_hosts,
     config_warnings,
 )
-from openvod_transcoder.errors import ERROR_INSUFFICIENT_DISK, TranscodeError
-from openvod_transcoder.progress import CallbackProgress
-from openvod_transcoder.transfer.s3 import S3Transfer, client_from_env
-from openvod_transcoder.utils import send_callback, send_heartbeat
+from clipmux_transcoder.errors import ERROR_INSUFFICIENT_DISK, TranscodeError
+from clipmux_transcoder.progress import CallbackProgress, ProgressBeat
+from clipmux_transcoder.transfer.s3 import S3Transfer, client_from_env
+from clipmux_transcoder.utils import send_callback, send_heartbeat
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -65,7 +65,7 @@ _config_warned = False
 
 
 def _emit_config_warnings_once() -> None:
-    """Log allowlist gaps inside the container, where openvod-creds is injected.
+    """Log allowlist gaps inside the container, where clipmux-creds is injected.
 
     Do not call this at module import: `modal deploy` imports this file on the
     laptop, which has no Modal secret env, and the warnings are a false alarm.
@@ -111,7 +111,7 @@ _TOOLCHAIN_DIR = _root / "toolchain"
 # instead. Reading the checkout path unconditionally is what made the deployed
 # app fail hydration with '/root/toolchain/apt-packages.env' — so the two paths
 # are named, and `resolve_toolchain_file` picks the one that exists.
-_TOOLCHAIN_IN_IMAGE = "/opt/openvod/toolchain"
+_TOOLCHAIN_IN_IMAGE = "/opt/clipmux/toolchain"
 _CUDA_BASE_REF = (
     "nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04"
     "@sha256:070f8f2672df1b05b84c0409a5fd1d54ddfd646e5b9d8dee7878131271b563fc"
@@ -121,8 +121,8 @@ _CUDA_BASE_REF = (
 # Read through the resolver, not `_TOOLCHAIN_DIR`: this module executes at
 # container start too, not only on the deploy machine.
 _APT_PACKAGES = resolve_toolchain_file("apt-packages.env")
-_BUILD_PACKAGES = read_package_list(_APT_PACKAGES, "OPENVOD_BUILD_PACKAGES")
-_RUNTIME_PACKAGES = read_package_list(_APT_PACKAGES, "OPENVOD_RUNTIME_PACKAGES")
+_BUILD_PACKAGES = read_package_list(_APT_PACKAGES, "CLIPMUX_BUILD_PACKAGES")
+_RUNTIME_PACKAGES = read_package_list(_APT_PACKAGES, "CLIPMUX_RUNTIME_PACKAGES")
 
 # CUDA 12.9 + cuDNN 9 runtime base, pinned by manifest digest: faster-whisper's
 # CTranslate2 backend wants CUDA 12 and cuDNN 9, and a floating tag is a silent
@@ -153,9 +153,9 @@ image = (
     .env({"HF_HOME": "/root/.cache/huggingface"})
     .run_function(download_whisper_weights, timeout=60 * 60)
     # The engine package is mounted as a package, not as loose modules: that is
-    # what lets `openvod_transcoder.encoding.backends` resolve inside the
+    # what lets `clipmux_transcoder.encoding.backends` resolve inside the
     # container, and what stops the shared modules shadowing third-party ones.
-    .add_local_python_source("openvod_transcoder", "image_build")
+    .add_local_python_source("clipmux_transcoder", "image_build")
 )
 
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -213,14 +213,14 @@ def healthz(request: Request):
         presented = request.headers.get("x-transcode-secret", "")
         if not presented or not secrets.compare_digest(presented, expected):
             raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"status": "ok", "service": "openvod-transcoder"}
+    return {"status": "ok", "service": "clipmux-transcoder"}
 
 
 @app.function(
     image=image,
     secrets=[
         modal.Secret.from_name(
-            "openvod-creds",
+            "clipmux-creds",
             # Asserted at deploy time: a secret missing one of these would
             # otherwise surface as a 500 on the first upload or, worse, as an
             # empty allowlist that silently accepts any bucket.
@@ -369,7 +369,7 @@ def transcode_video(request: Request, payload: dict):
     image=image,
     secrets=[
         modal.Secret.from_name(
-            "openvod-creds",
+            "clipmux-creds",
             required_keys=[
                 "R2_BUCKET_NAME",
                 "TRANSCODE_INGEST_SECRET",
@@ -379,7 +379,7 @@ def transcode_video(request: Request, payload: dict):
         ),
         # Required to exist even when AI subtitles are skipped; the wizard
         # creates it with a dummy value.
-        modal.Secret.from_name("openvod-groq-creds"),
+        modal.Secret.from_name("clipmux-groq-creds"),
     ],
     timeout=3600,  # 1 hour max
     memory=16384,  # 16GB RAM
@@ -408,10 +408,17 @@ def transcode_worker(payload: dict):
     beat_state = {"stage": "download", "progress": 0.0}
     stop_event = threading.Event()
 
+    # The engine reports every second per encoder and the ladder encodes its
+    # renditions concurrently, so forwarding each update as a beat meant four
+    # requests a second — each one a server write that only renewed a lease
+    # measured in minutes. Beats are coalesced; the state above is not, so the
+    # liveness thread always carries the freshest stage and progress.
+    beat = ProgressBeat()
+
     def report_stage(stage: str, progress: float) -> None:
         beat_state["stage"] = stage
         beat_state["progress"] = progress
-        if heartbeat_url:
+        if heartbeat_url and beat.should_send(stage):
             send_heartbeat(heartbeat_url, video_id, stage, progress, attempt_id)
 
     def _heartbeat_loop() -> None:
@@ -552,14 +559,14 @@ def _preflight_disk(work_dir: Path) -> None:
 
 def _download_source(payload: dict, local_input: Path) -> None:
     """Fetch the source from R2 or a public URL, with retry."""
-    from openvod_transcoder.utils import download_public_url
+    from clipmux_transcoder.utils import download_public_url
 
     last_error: Exception | None = None
     for attempt in range(3):
         try:
             print(f"⬇️ Download attempt {attempt + 1}/3...")
             if "key" in payload and "bucket" in payload:
-                from openvod_transcoder.transfer.s3 import transfer_config
+                from clipmux_transcoder.transfer.s3 import transfer_config
 
                 s3 = client_from_env()
                 print(f"📦 Downloading from R2: {payload['bucket']}/{payload['key']}")

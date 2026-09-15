@@ -47,7 +47,7 @@ describe.skipIf(!hasTestDatabase)('outbox drain and delivery (real Postgres)', (
   let handle: TestDbHandle
 
   beforeAll(async () => {
-    handle = await createTestDb({ database: 'openvod_t_delivery' })
+    handle = await createTestDb({ database: 'clipmux_t_delivery' })
     await handle.exec(DDL)
   })
 
@@ -180,7 +180,7 @@ describe.skipIf(!hasTestDatabase)('outbox drain and delivery (real Postgres)', (
 
   it('lets only one of two concurrent claimers take the same event', async () => {
     await seedEvent(EVENT_1)
-    const racer = await connectTestDb({ database: 'openvod_t_delivery' })
+    const racer = await connectTestDb({ database: 'clipmux_t_delivery' })
 
     try {
       const [a, b] = await Promise.all([

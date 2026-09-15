@@ -7,9 +7,9 @@
  * surface is a deliberate choice rather than whatever the file exports.
  */
 
-import type { OpenVod } from './client'
+import type { ClipMux } from './client'
 import { listQuery, updateBody } from './client'
-import { OpenVodError } from './errors'
+import { ClipMuxError } from './errors'
 import type {
     CreatePlaybackTokenParams,
     CreateUploadTokenParams,
@@ -50,7 +50,7 @@ export interface PlaybackResource {
 }
 
 export function createUploadToken(
-    client: OpenVod,
+    client: ClipMux,
     params: CreateUploadTokenParams,
 ): Promise<UploadToken> {
     return client.request<UploadToken>({
@@ -66,12 +66,12 @@ export function createUploadToken(
     })
 }
 
-export async function getVideo(client: OpenVod, id: string): Promise<Video> {
+export async function getVideo(client: ClipMux, id: string): Promise<Video> {
     requireId(id)
     return client.request<Video>({ method: 'GET', path: `/v1/video/${encodeURIComponent(id)}` })
 }
 
-export function listVideos(client: OpenVod, params: ListVideosParams): Promise<VideoList> {
+export function listVideos(client: ClipMux, params: ListVideosParams): Promise<VideoList> {
     return client.request<VideoList>({
         method: 'GET',
         path: '/v1/videos',
@@ -80,7 +80,7 @@ export function listVideos(client: OpenVod, params: ListVideosParams): Promise<V
 }
 
 export async function updateVideo(
-    client: OpenVod,
+    client: ClipMux,
     id: string,
     patch: UpdateVideoParams,
 ): Promise<Partial<Video> & { id: string }> {
@@ -89,14 +89,14 @@ export async function updateVideo(
     if (Object.keys(body).length === 0) {
         // The API would answer 400 "No valid fields to update"; failing here
         // names the actual mistake (an empty patch) instead of the symptom.
-        throw new OpenVodError('update() needs a title or a playbackPolicy', {
+        throw new ClipMuxError('update() needs a title or a playbackPolicy', {
             code: 'INVALID_REQUEST',
         })
     }
     return client.request({ method: 'PATCH', path: `/v1/video/${encodeURIComponent(id)}`, body })
 }
 
-export async function deleteVideo(client: OpenVod, id: string): Promise<DeleteVideoResponse> {
+export async function deleteVideo(client: ClipMux, id: string): Promise<DeleteVideoResponse> {
     requireId(id)
     return client.request<DeleteVideoResponse>({
         method: 'DELETE',
@@ -105,7 +105,7 @@ export async function deleteVideo(client: OpenVod, id: string): Promise<DeleteVi
 }
 
 export async function createPlaybackToken(
-    client: OpenVod,
+    client: ClipMux,
     id: string,
     params: CreatePlaybackTokenParams,
 ): Promise<PlaybackSession> {
@@ -137,6 +137,6 @@ export async function createPlaybackToken(
  */
 function requireId(id: string): void {
     if (typeof id !== 'string' || !id.trim()) {
-        throw new OpenVodError('A video id is required', { code: 'INVALID_REQUEST' })
+        throw new ClipMuxError('A video id is required', { code: 'INVALID_REQUEST' })
     }
 }

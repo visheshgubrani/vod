@@ -1,6 +1,6 @@
 ---
 title: Next.js
-description: The full OpenVOD flow in a Next.js App Router project — route handlers for token minting, the uploader in a client component, the player, and verified webhooks.
+description: The full ClipMux flow in a Next.js App Router project — route handlers for token minting, the uploader in a client component, the player, and verified webhooks.
 ---
 
 This is the flagship integration, and the one with a **runnable, CI-compiled
@@ -19,39 +19,39 @@ Everything here is App Router (Next 15/16, React 19, strict TypeScript).
       <File name="video-status/[id]/route.ts" />
       <File name="play-token/[id]/route.ts" />
       <Folder name="webhooks" defaultOpen>
-        <File name="openvod/route.ts" />
+        <File name="clipmux/route.ts" />
       </Folder>
     </Folder>
     <File name="page.tsx" />
   </Folder>
   <Folder name="lib" defaultOpen>
-    <File name="openvod.ts" />
+    <File name="clipmux.ts" />
   </Folder>
   <File name=".env.local" />
 </Files>
 
 The split is forced by the API key: everything under `app/api/**` runs on the
-server and can read `OPENVOD_API_KEY`; `app/page.tsx` ships to the browser and
+server and can read `CLIPMUX_API_KEY`; `app/page.tsx` ships to the browser and
 cannot.
 
 ## Environment
 
 ```bash
 # .env.local — Next.js loads this automatically. Never commit it.
-OPENVOD_API_KEY=sk_live_…
-OPENVOD_API_URL=http://localhost:8787     # no /v1 suffix
-OPENVOD_WEBHOOK_SECRET=whsec_…
+CLIPMUX_API_KEY=sk_live_…
+CLIPMUX_API_URL=http://localhost:8787     # no /v1 suffix
+CLIPMUX_WEBHOOK_SECRET=whsec_…
 
 # Browser-side. NEXT_PUBLIC_ is inlined at build time, so it must not be a
 # secret — and must be the same origin that minted the token.
-NEXT_PUBLIC_OPENVOD_API_URL=http://localhost:8787
+NEXT_PUBLIC_CLIPMUX_API_URL=http://localhost:8787
 ```
 
 <Callout type="error" title="No NEXT_PUBLIC_ prefix on the API key. Ever.">
   Adding one inlines `sk_live_…` into the client bundle, where anyone can read it
   and spend your storage and GPU budget. The only reason the key is safe in a
   Next.js app is that route handlers are server-only. This is also why the
-  browser needs `NEXT_PUBLIC_OPENVOD_API_URL` separately — it is the same value,
+  browser needs `NEXT_PUBLIC_CLIPMUX_API_URL` separately — it is the same value,
   but it is not a secret.
 </Callout>
 
@@ -60,22 +60,22 @@ NEXT_PUBLIC_OPENVOD_API_URL=http://localhost:8787
 One memoized client, so a route does not rebuild the SDK per request:
 
 ```ts
-// lib/openvod.ts
-import { OpenVod } from '@openvod/server'
+// lib/clipmux.ts
+import { ClipMux } from '@clipmux/server'
 
-const clients = new Map<string, OpenVod>()
+const clients = new Map<string, ClipMux>()
 
-export function getOpenVod(): OpenVod {
-  const apiKey = process.env.OPENVOD_API_KEY
-  if (!apiKey) throw new Error('OPENVOD_API_KEY is not set')
+export function getClipMux(): ClipMux {
+  const apiKey = process.env.CLIPMUX_API_KEY
+  if (!apiKey) throw new Error('CLIPMUX_API_KEY is not set')
 
-  const baseUrl = process.env.OPENVOD_API_URL ?? 'http://localhost:8787'
+  const baseUrl = process.env.CLIPMUX_API_URL ?? 'http://localhost:8787'
   const cacheKey = `${apiKey}:${baseUrl}`
 
   const existing = clients.get(cacheKey)
   if (existing) return existing
 
-  const client = new OpenVod({ apiKey, baseUrl })
+  const client = new ClipMux({ apiKey, baseUrl })
   clients.set(cacheKey, client)
   return client
 }
@@ -85,13 +85,13 @@ export function getOpenVod(): OpenVod {
 
 ```ts
 // app/api/upload-token/route.ts
-import { getOpenVod } from '@/lib/openvod'
+import { getClipMux } from '@/lib/clipmux'
 
 // Reads a request-time secret, so it must never be evaluated at build time.
 export const dynamic = 'force-dynamic'
 
 export async function POST() {
-  const vod = getOpenVod()
+  const vod = getClipMux()
 
   const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
 
@@ -115,7 +115,7 @@ export async function POST() {
 'use client'
 
 import { useState } from 'react'
-import { OpenVodUploader, isUploadAbortedError, OpenVodError } from '@openvod/uploader'
+import { ClipMuxUploader, isUploadAbortedError, ClipMuxError } from '@clipmux/uploader'
 
 export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
   const [percent, setPercent] = useState(0)
@@ -129,8 +129,8 @@ export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
     const { uploadToken } = await fetch('/api/upload-token', { method: 'POST' })
       .then((r) => r.json())
 
-    const uploader = new OpenVodUploader({
-      baseUrl: process.env.NEXT_PUBLIC_OPENVOD_API_URL!, // no /v1 suffix
+    const uploader = new ClipMuxUploader({
+      baseUrl: process.env.NEXT_PUBLIC_CLIPMUX_API_URL!, // no /v1 suffix
       uploadToken,
     })
 
@@ -143,7 +143,7 @@ export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
       onVideoId(result.fileId)
     } catch (cause) {
       if (isUploadAbortedError(cause)) return // cancelled is not a failure
-      if (cause instanceof OpenVodError) setError(`${cause.code}: ${cause.message}`)
+      if (cause instanceof ClipMuxError) setError(`${cause.code}: ${cause.message}`)
       else setError('Upload failed')
     }
   }
@@ -166,8 +166,8 @@ failure and should not surface an alert.
 
 ```ts
 // app/api/video-status/[id]/route.ts
-import { OpenVodError } from '@openvod/server'
-import { getOpenVod } from '@/lib/openvod'
+import { ClipMuxError } from '@clipmux/server'
+import { getClipMux } from '@/lib/clipmux'
 
 export const dynamic = 'force-dynamic'
 
@@ -177,7 +177,7 @@ export async function GET(
 ) {
   const { id } = await params // params are async in Next 15+
 
-  const vod = getOpenVod()
+  const vod = getClipMux()
   const video = await vod.videos.get(id)
 
   if (video.status !== 'ready') {
@@ -216,11 +216,11 @@ Catch it and answer `202` again rather than surfacing an error.
 ```tsx
 'use client'
 
-import { OpenVodPlayer } from '@openvod/player'
+import { ClipMuxPlayer } from '@clipmux/player'
 
 export function Player({ videoId, playbackUrl, token, subtitles, chapters }: Props) {
   return (
-    <OpenVodPlayer
+    <ClipMuxPlayer
       playbackId={videoId}
       src={playbackUrl}
       token={token}
@@ -239,8 +239,8 @@ The refresh route the player calls before the token expires:
 
 ```ts
 // app/api/play-token/[id]/route.ts
-import { OpenVodError } from '@openvod/server'
-import { getOpenVod } from '@/lib/openvod'
+import { ClipMuxError } from '@clipmux/server'
+import { getClipMux } from '@/lib/clipmux'
 
 export const dynamic = 'force-dynamic'
 
@@ -253,13 +253,13 @@ export async function POST(
   // TODO: this is where a viewer proves they may watch *this* video.
   // The cookie proves who is asking, not what they are allowed to see.
   try {
-    const session = await getOpenVod().playback.createToken(id, {
+    const session = await getClipMux().playback.createToken(id, {
       expiresIn: '30m',
       viewerUserAgent: request.headers.get('user-agent') ?? undefined,
     })
     return Response.json({ token: session.token, expiresAt: session.expires_at })
   } catch (error) {
-    if (error instanceof OpenVodError && error.code === 'NOT_FOUND') {
+    if (error instanceof ClipMuxError && error.code === 'NOT_FOUND') {
       return Response.json({ error: 'Unknown video id' }, { status: 404 })
     }
     return Response.json({ error: 'Could not mint a playback token' }, { status: 500 })
@@ -287,11 +287,11 @@ tokenRefreshEndpoint={async () => {
 ## 5. Verify webhooks
 
 ```ts
-// app/api/webhooks/openvod/route.ts
-import { WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+// app/api/webhooks/clipmux/route.ts
+import { WebhookSignatureError, constructWebhookEvent } from '@clipmux/server'
 
 export async function POST(req: Request) {
-  const secret = process.env.OPENVOD_WEBHOOK_SECRET!
+  const secret = process.env.CLIPMUX_WEBHOOK_SECRET!
 
   // The RAW body. `JSON.stringify(await req.json())` is NOT the same bytes.
   const rawBody = await req.text()
@@ -345,7 +345,7 @@ so — a real integration needs durable storage keyed on `event.id`.
   </Accordion>
   <Accordion title="The player's styles ship inside its JS bundle">
     There is nothing extra to import. If you need a real CSS asset instead (strict
-    CSP, smaller JS chunk), `import '@openvod/player/styles.css'` — but not both.
+    CSP, smaller JS chunk), `import '@clipmux/player/styles.css'` — but not both.
   </Accordion>
   <Accordion title="Vercel deployments and R2 CORS">
     Add your Vercel preview pattern (`https://*.vercel.app`) to both the raw
@@ -358,12 +358,12 @@ so — a real integration needs durable storage keyed on `event.id`.
 
 ```bash
 pnpm install
-pnpm --filter @openvod/uploader build
-pnpm --filter @openvod/player build
-pnpm --filter @openvod/server build
+pnpm --filter @clipmux/uploader build
+pnpm --filter @clipmux/player build
+pnpm --filter @clipmux/server build
 
 cd examples/nextjs-integration
-cp .env.example .env.local     # then set OPENVOD_API_KEY (+ the webhook secret)
+cp .env.example .env.local     # then set CLIPMUX_API_KEY (+ the webhook secret)
 
 pnpm dev                       # repo root, a second terminal: the API on :8787
 pnpm --filter ./examples/nextjs-integration dev

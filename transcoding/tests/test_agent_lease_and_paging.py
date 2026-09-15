@@ -20,18 +20,18 @@ from typing import Any, Dict, List
 
 import pytest
 
-from openvod_transcoder.agent.client import AgentApiError, ApiConfig, LeaseLost, TranscoderApiClient
-from openvod_transcoder.agent.config import AgentConfig
-from openvod_transcoder.agent.journal import RecoveryJournal
-from openvod_transcoder.agent.runner import (
+from clipmux_transcoder.agent.client import AgentApiError, ApiConfig, LeaseLost, TranscoderApiClient
+from clipmux_transcoder.agent.config import AgentConfig
+from clipmux_transcoder.agent.journal import RecoveryJournal
+from clipmux_transcoder.agent.runner import (
     DEFAULT_LEASE_SECONDS,
     LEASE_STOP_MARGIN_SECONDS,
     ClaimedJob,
     JobRunner,
 )
-from openvod_transcoder.paths import PathPolicy, Root
-from openvod_transcoder.progress import ProgressUpdate
-from openvod_transcoder.result import Artifact
+from clipmux_transcoder.paths import PathPolicy, Root
+from clipmux_transcoder.progress import ProgressUpdate
+from clipmux_transcoder.result import Artifact
 
 
 class FakeClient:
@@ -209,8 +209,8 @@ class TestProgressSinkAlwaysSends:
         # `--quiet` suppresses output, not correctness. A job whose lease lapsed
         # because the operator asked for less log noise would be a far worse
         # outcome than a few suppressed lines.
-        from openvod_transcoder.agent.daemon import TranscoderAgent
-        from openvod_transcoder.cancellation import CancellationToken
+        from clipmux_transcoder.agent.daemon import TranscoderAgent
+        from clipmux_transcoder.cancellation import CancellationToken
 
         client = FakeClient()
         runner = make_runner(tmp_path, client)
@@ -227,8 +227,8 @@ class TestProgressSinkAlwaysSends:
         assert [call for call in client.calls if call["method"] == "heartbeat"]
 
     def test_a_stop_reply_cancels_the_token(self, tmp_path):
-        from openvod_transcoder.agent.daemon import TranscoderAgent
-        from openvod_transcoder.cancellation import CancellationToken
+        from clipmux_transcoder.agent.daemon import TranscoderAgent
+        from clipmux_transcoder.cancellation import CancellationToken
 
         client = FakeClient([{"ok": True, "stop": True, "reason": "cancelled"}])
         runner = make_runner(tmp_path, client)
@@ -241,6 +241,70 @@ class TestProgressSinkAlwaysSends:
         agent._progress_sink(make_job(), token).report(ProgressUpdate(stage="transcode"))
         assert token.cancelled is True
 
+    def test_a_second_of_engine_updates_collapses_to_one_beat(self, tmp_path):
+        # The defect this guards: the sink posted one request per progress block,
+        # so four concurrent encoders meant four requests a second — each one a
+        # server write for a lease measured in minutes.
+        from clipmux_transcoder.agent.daemon import TranscoderAgent
+        from clipmux_transcoder.cancellation import CancellationToken
+
+        client = FakeClient()
+        runner = make_runner(tmp_path, client)
+        agent = TranscoderAgent(
+            runner.config, client, runner.journal, capabilities=None, verbose=False
+        )
+        agent._runner = runner
+
+        sink = agent._progress_sink(make_job(), CancellationToken())
+        for tenth in range(10):
+            sink.report(ProgressUpdate(stage="transcode", fraction=tenth / 10))
+
+        heartbeats = [call for call in client.calls if call["method"] == "heartbeat"]
+        assert len(heartbeats) == 1
+
+    def test_a_stage_change_always_beats_immediately(self, tmp_path):
+        from clipmux_transcoder.agent.daemon import TranscoderAgent
+        from clipmux_transcoder.cancellation import CancellationToken
+
+        client = FakeClient()
+        runner = make_runner(tmp_path, client)
+        agent = TranscoderAgent(
+            runner.config, client, runner.journal, capabilities=None, verbose=False
+        )
+        agent._runner = runner
+
+        sink = agent._progress_sink(make_job(), CancellationToken())
+        sink.report(ProgressUpdate(stage="transcode", fraction=0.5))
+        sink.report(ProgressUpdate(stage="transcode", fraction=0.6))
+        sink.report(ProgressUpdate(stage="package", fraction=0.0))
+
+        heartbeats = [call for call in client.calls if call["method"] == "heartbeat"]
+        assert len(heartbeats) == 2
+        assert [call["progress"]["stage"] for call in heartbeats] == [
+            "transcode",
+            "package",
+        ]
+
+    def test_each_job_on_this_machine_has_its_own_window(self, tmp_path):
+        # A single daemon-wide window would starve the second of two parallel jobs.
+        from clipmux_transcoder.agent.daemon import TranscoderAgent
+        from clipmux_transcoder.cancellation import CancellationToken
+
+        client = FakeClient()
+        runner = make_runner(tmp_path, client)
+        agent = TranscoderAgent(
+            runner.config, client, runner.journal, capabilities=None, verbose=False
+        )
+        agent._runner = runner
+
+        first = agent._progress_sink(make_job(), CancellationToken())
+        second = agent._progress_sink(make_job(), CancellationToken())
+        first.report(ProgressUpdate(stage="transcode", fraction=0.1))
+        second.report(ProgressUpdate(stage="transcode", fraction=0.1))
+
+        heartbeats = [call for call in client.calls if call["method"] == "heartbeat"]
+        assert len(heartbeats) == 2
+
 
 class TestPagedTransfer:
     """A multi-rendition lecture exceeds one grant page; the old code gave up."""
@@ -252,7 +316,7 @@ class TestPagedTransfer:
         ]
 
     def test_requests_grants_until_the_inventory_is_exhausted(self, tmp_path, monkeypatch):
-        from openvod_transcoder.agent import runner as runner_module
+        from clipmux_transcoder.agent import runner as runner_module
 
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -304,7 +368,7 @@ class TestPagedTransfer:
             return artifacts
 
         monkeypatch.setattr(runner_module, "run_pipeline", None, raising=False)
-        import openvod_transcoder.result as result_module
+        import clipmux_transcoder.result as result_module
 
         monkeypatch.setattr(result_module, "build_inventory", fake_inventory)
 
@@ -313,7 +377,7 @@ class TestPagedTransfer:
                 self.grants = grants
 
             def upload_artifacts(self, directory, paths, already_uploaded=frozenset()):
-                from openvod_transcoder.transfer.base import TransferStats
+                from clipmux_transcoder.transfer.base import TransferStats
 
                 return TransferStats(total=len(paths), uploaded=len(paths), skipped=0)
 

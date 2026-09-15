@@ -3,9 +3,9 @@ Transfer seam: how finished artifacts leave the machine doing the encoding.
 
 Two implementations, chosen by the caller rather than by the engine:
 
-- :mod:`openvod_transcoder.transfer.s3` — the existing Modal path, where the
+- :mod:`clipmux_transcoder.transfer.s3` — the existing Modal path, where the
   worker holds short-lived R2 credentials from a Modal secret.
-- :mod:`openvod_transcoder.transfer.signed` — the self-hosted path, where the
+- :mod:`clipmux_transcoder.transfer.signed` — the self-hosted path, where the
   API hands out bounded, short-lived presigned URLs and the agent never sees a
   permanent storage credential.
 

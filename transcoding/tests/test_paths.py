@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from openvod_transcoder.paths import (
+from clipmux_transcoder.paths import (
     REASON_INVALID,
     REASON_NOT_A_FILE,
     REASON_NOT_A_DIRECTORY,

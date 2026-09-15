@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# OpenVOD dashboard (Next.js standalone). Build context MUST be repo root.
+# ClipMux dashboard (Next.js standalone). Build context MUST be repo root.
 
 FROM node:22-alpine AS deps
 WORKDIR /repo

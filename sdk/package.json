@@ -1,7 +1,7 @@
 {
-  "name": "@openvod/uploader",
+  "name": "@clipmux/uploader",
   "version": "0.2.0",
-  "description": "OpenVOD uploader SDK — windowed multipart uploads, resumable sessions, typed errors",
+  "description": "ClipMux uploader SDK — windowed multipart uploads, resumable sessions, typed errors",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -41,7 +41,7 @@
     "upload",
     "multipart",
     "resumable",
-    "openvod",
+    "clipmux",
     "vod",
     "streaming"
   ],

@@ -1,6 +1,6 @@
 ---
 title: React + Vite
-description: OpenVOD in a client-only React SPA — the uploader and player in the browser, and the single backend route a pure SPA cannot avoid.
+description: ClipMux in a client-only React SPA — the uploader and player in the browser, and the single backend route a pure SPA cannot avoid.
 ---
 
 A Vite SPA is the most common integration shape and the one with the sharpest
@@ -9,13 +9,13 @@ Everything else here is straightforward.
 
 <Callout type="error" title="VITE_ variables are public. All of them.">
   Anything prefixed `VITE_` is inlined into the client bundle at build time and
-  is readable by anyone who opens DevTools. `VITE_OPENVOD_API_KEY` would publish
+  is readable by anyone who opens DevTools. `VITE_CLIPMUX_API_KEY` would publish
   your key.
 
   This is not a Vite quirk — the same is true of `NEXT_PUBLIC_`, `NUXT_PUBLIC_`
   and `PUBLIC_` in every framework. A client-only app cannot mint tokens, so it
   needs a backend you control. That backend is
-  [one route](/integrations/node-backend) — you do not need a second OpenVOD
+  [one route](/integrations/node-backend) — you do not need a second ClipMux
   deployment, just a place to keep one secret.
 </Callout>
 
@@ -23,13 +23,13 @@ Everything else here is straightforward.
 
 ```
 ┌── Browser (Vite SPA) ──────────┐
-│  @openvod/uploader             │      ┌── Your backend ────────┐
-│  @openvod/player               │─────▶│ POST /api/upload-token │──┐
+│  @clipmux/uploader             │      ┌── Your backend ────────┐
+│  @clipmux/player               │─────▶│ POST /api/upload-token │──┐
 └────────────────────────────────┘      │ POST /api/play-token   │  │
             │                           └────────────────────────┘  │
             │ PUT parts (presigned)                                 │ sk_live_…
             ▼                                                       ▼
-      ┌── R2 raw bucket ──┐                                  ┌── OpenVOD API ──┐
+      ┌── R2 raw bucket ──┐                                  ┌── ClipMux API ──┐
       └───────────────────┘                                  └─────────────────┘
 ```
 
@@ -40,11 +40,11 @@ the API key.
 
 ```bash
 # .env.local — Vite loads VITE_* into the client bundle.
-VITE_OPENVOD_API_URL=http://localhost:8787    # public: the API origin
+VITE_CLIPMUX_API_URL=http://localhost:8787    # public: the API origin
 VITE_BACKEND_URL=http://localhost:3001        # public: your token-minting backend
 ```
 
-Your **backend** holds `OPENVOD_API_KEY`, in its own environment — not here.
+Your **backend** holds `CLIPMUX_API_KEY`, in its own environment — not here.
 
 ## The backend route you need
 
@@ -53,11 +53,11 @@ are in the [Node backend guide](/integrations/node-backend); this is the shape:
 
 ```ts
 // your backend — POST /api/upload-token
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!,
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!,
 })
 
 app.post('/api/upload-token', async (req, res) => {
@@ -94,7 +94,7 @@ API's `CORS_ORIGINS` to your SPA origin.
 
 ```tsx
 import { useState } from 'react'
-import { OpenVodUploader, OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+import { ClipMuxUploader, ClipMuxError, isUploadAbortedError } from '@clipmux/uploader'
 
 export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
   const [percent, setPercent] = useState(0)
@@ -107,8 +107,8 @@ export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
     const { uploadToken } = await fetch('/api/upload-token', { method: 'POST' })
       .then((r) => r.json())
 
-    const uploader = new OpenVodUploader({
-      baseUrl: import.meta.env.VITE_OPENVOD_API_URL, // no /v1 suffix
+    const uploader = new ClipMuxUploader({
+      baseUrl: import.meta.env.VITE_CLIPMUX_API_URL, // no /v1 suffix
       uploadToken,
     })
 
@@ -120,7 +120,7 @@ export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
       onVideoId(result.fileId)
     } catch (cause) {
       if (isUploadAbortedError(cause)) return
-      setError(cause instanceof OpenVodError ? `${cause.code}: ${cause.message}` : 'Upload failed')
+      setError(cause instanceof ClipMuxError ? `${cause.code}: ${cause.message}` : 'Upload failed')
     }
   }
 
@@ -135,7 +135,7 @@ export function Uploader({ onVideoId }: { onVideoId: (id: string) => void }) {
 ```
 
 <Callout type="warn" title="`import.meta.env` values are baked in at build time">
-  `VITE_OPENVOD_API_URL` is substituted during `vite build`. To point one build
+  `VITE_CLIPMUX_API_URL` is substituted during `vite build`. To point one build
   artifact at staging and production you need runtime configuration — a
   `/config.json` the app fetches on boot, or a `window.__ENV__` script tag — not
   a different `.env` per deploy.
@@ -172,7 +172,7 @@ are not re-sent. See [Resumable uploads](/upload#resumable-uploads).
 The player is React, so it drops straight in:
 
 ```tsx
-import { OpenVodPlayer } from '@openvod/player'
+import { ClipMuxPlayer } from '@clipmux/player'
 import { useEffect, useState } from 'react'
 
 export function Video({ videoId }: { videoId: string }) {
@@ -189,7 +189,7 @@ export function Video({ videoId }: { videoId: string }) {
   if (!session) return <p>Loading…</p>
 
   return (
-    <OpenVodPlayer
+    <ClipMuxPlayer
       playbackId={videoId}
       src={session.playbackUrl}
       token={session.token}
@@ -212,7 +212,7 @@ For token refresh, skip the string form (it implies a same-origin session route
 you probably do not have) and use the callback:
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId={videoId}
   src={session.playbackUrl}
   token={session.token}
@@ -232,7 +232,7 @@ Two separate origins, two separate fixes:
 | Surface | Configure | Symptom if missing |
 | --- | --- | --- |
 | R2 raw bucket | `ExposeHeaders: ["ETag"]` + your SPA origin in `AllowedOrigins` | `/complete` fails; multipart completion has no ETags |
-| OpenVOD API | Your SPA origin in `CORS_ORIGINS` | `/v1/upload/create` blocked in the console |
+| ClipMux API | Your SPA origin in `CORS_ORIGINS` | `/v1/upload/create` blocked in the console |
 | Your token backend | Its own CORS, or serve it same-origin | `/api/upload-token` blocked |
 
 The R2 policy is on [Uploads](/upload#r2-cors-must-expose-etag); `CORS_ORIGINS`

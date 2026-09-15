@@ -1,4 +1,4 @@
-# Deploying OpenVOD
+# Deploying ClipMux
 
 First-run: **[README](../README.md)** or `./scripts/bootstrap.sh` — the
 launcher installs Node/pnpm (nvm) when missing, then the interactive wizard
@@ -17,8 +17,8 @@ provider, dispatch transport, rate-limit store; delivery and storage are
 
 | File | Purpose | Configuration |
 | --- | --- | --- |
-| `docker-compose.dev.yml` (project `openvod-dev`) | Local development infrastructure only: `postgres` (:5433) and `redis` (:6382). No API or web service — application code runs on the host. | `server/.dev.vars` |
-| `docker-compose.yml` (project `openvod`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `maintenance`, `web`, plus the `migrate` (`tools`) and `transcoder` (`transcoder`) profiles. | `.env` at the repo root |
+| `docker-compose.dev.yml` (project `clipmux-dev`) | Local development infrastructure only: `postgres` (:5433) and `redis` (:6382). No API or web service — application code runs on the host. | `server/.dev.vars` |
+| `docker-compose.yml` (project `clipmux`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `maintenance`, `web`, plus the `migrate` (`tools`) and `transcoder` (`transcoder`) profiles. | `.env` at the repo root |
 
 `server/.dev.vars` is **development-only** (`pnpm dev`, `pnpm dev:workers`,
 migrations, tests). A Compose deployment is configured entirely by `.env` at
@@ -41,7 +41,7 @@ pnpm docker:up            # docker compose up -d
 - `NEXT_PUBLIC_*` are baked into the dashboard bundle at build time; rebuild
   after changing them: `pnpm docker:build && pnpm docker:up`.
 - Every service that can come from a registry declares
-  `image: ${OPENVOD_*_IMAGE:-<local-name>}` alongside `build:`, so
+  `image: ${CLIPMUX_*_IMAGE:-<local-name>}` alongside `build:`, so
   `pnpm docker:build` and `docker compose pull` both work.
 - Lifecycle: `pnpm docker:logs` (follow), `pnpm docker:down` (stop),
   `pnpm docker:reset` (stop and delete volumes).
@@ -138,7 +138,7 @@ exist, say which) and optionally probes `/health/config`.
 
 ## JWT parity
 
-The API mints playback tokens (`iss: openvod`, `aud: playback`). The delivery
+The API mints playback tokens (`iss: clipmux`, `aud: playback`). The delivery
 worker verifies them with the **same** `JWT_SECRET`. The bootstrap wizard
 mirrors that secret into `delivery/.dev.vars` (the `dev` target);
 `./scripts/bootstrap.sh --check --target dev` warns if they diverge. A Workers deployment sets it with
@@ -146,7 +146,7 @@ mirrors that secret into `delivery/.dev.vars` (the `dev` target);
 
 ## Modal
 
-Create secrets `openvod-creds` and optional `openvod-groq-creds`, then
+Create secrets `clipmux-creds` and optional `clipmux-groq-creds`, then
 `modal deploy main.py`. Set `ALLOWED_CALLBACK_HOSTS` to your API host and
 `ALLOWED_SOURCE_BUCKETS` to the raw bucket name. The API needs
 `MODAL_WEBHOOK_URL` and `TRANSCODE_INGEST_SECRET` (the primary name — the legacy

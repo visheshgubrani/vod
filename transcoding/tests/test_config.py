@@ -1,6 +1,6 @@
 """Allowlists are read from the current env, not an import-time snapshot."""
 
-from openvod_transcoder.config import (
+from clipmux_transcoder.config import (
     allowed_callback_hosts,
     allowed_source_buckets,
     allowed_url_hosts,
@@ -10,8 +10,8 @@ from openvod_transcoder.config import (
 
 class TestAllowedSourceBuckets:
     def test_parses_the_raw_bucket_literal(self):
-        assert allowed_source_buckets({"ALLOWED_SOURCE_BUCKETS": "openvod-raw"}) == {
-            "openvod-raw"
+        assert allowed_source_buckets({"ALLOWED_SOURCE_BUCKETS": "clipmux-raw"}) == {
+            "clipmux-raw"
         }
 
     def test_empty_or_missing_is_an_empty_set(self):
@@ -21,8 +21,8 @@ class TestAllowedSourceBuckets:
 
     def test_splits_commas_and_lowercases(self):
         assert allowed_source_buckets(
-            {"ALLOWED_SOURCE_BUCKETS": " openvod-raw , Other-Bucket "}
-        ) == {"openvod-raw", "other-bucket"}
+            {"ALLOWED_SOURCE_BUCKETS": " clipmux-raw , Other-Bucket "}
+        ) == {"clipmux-raw", "other-bucket"}
 
 
 class TestAllowedCallbackAndUrlHosts:
@@ -45,7 +45,7 @@ class TestConfigWarnings:
         assert (
             config_warnings(
                 {
-                    "ALLOWED_SOURCE_BUCKETS": "openvod-raw",
+                    "ALLOWED_SOURCE_BUCKETS": "clipmux-raw",
                     "ALLOWED_CALLBACK_HOSTS": "localhost",
                 }
             )

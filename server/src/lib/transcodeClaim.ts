@@ -209,6 +209,58 @@ export function decideAttemptOwnership(
 }
 
 /**
+ * The shortest gap between two heartbeats that actually write.
+ *
+ * A beat exists to renew the lease, and the lease is 20 minutes — so a write
+ * more often than this buys nothing. It was added because it was being asked for
+ * constantly: the engine reports progress once a second per encoder and a ladder
+ * runs its renditions concurrently, so a four-rendition job posted four times a
+ * second, each one an `UPDATE` that only moved `last_heartbeat_at` forward.
+ *
+ * Deliberately well under the client cadence (the transcoder beats every 15s,
+ * its liveness thread every 30s) so a prompt client is never alias-dropped, and
+ * far under the 45-minute sweep window that reads the column.
+ */
+export const HEARTBEAT_WRITE_MIN_INTERVAL_MS = 10_000
+
+export type HeartbeatThrottleDecision = {
+  /** True when this beat would write nothing new. */
+  skip: boolean
+  /** Milliseconds since the last recorded beat, or null when there is none. */
+  elapsedMs: number | null
+}
+
+/**
+ * Decide whether a heartbeat should write, or be coalesced into a 200.
+ *
+ * Only the *write* is skipped. Attempt ownership and status are checked before
+ * this runs, so a superseded attempt is still answered exactly as before — this
+ * can never be the reason a stale attempt looks live, nor the reason a live one
+ * is reported dead.
+ *
+ * An unknown or nonsensical timestamp (missing, or in the future) applies the
+ * beat: extending a lease twice is harmless, and skipping one for a live job is
+ * the failure that matters.
+ */
+export function decideHeartbeatThrottle(
+  lastHeartbeatAt: Date | null | undefined,
+  nowMs: number,
+): HeartbeatThrottleDecision {
+  if (!(lastHeartbeatAt instanceof Date)) {
+    return { skip: false, elapsedMs: null }
+  }
+  const lastMs = lastHeartbeatAt.getTime()
+  if (!Number.isFinite(lastMs)) {
+    return { skip: false, elapsedMs: null }
+  }
+  const elapsedMs = nowMs - lastMs
+  if (elapsedMs < 0) {
+    return { skip: false, elapsedMs }
+  }
+  return { skip: elapsedMs < HEARTBEAT_WRITE_MIN_INTERVAL_MS, elapsedMs }
+}
+
+/**
  * Lock the owning organization row for the rest of this transaction.
  *
  * Why a separate statement is required for the concurrency cap to mean

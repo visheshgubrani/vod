@@ -19,7 +19,7 @@ import type { SecretSet, WizardAnswers } from '../src/types'
 let root: string
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'openvod-envio-'))
+  root = mkdtempSync(join(tmpdir(), 'clipmux-envio-'))
 })
 
 afterEach(() => {
@@ -44,8 +44,8 @@ function answers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
     accountId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     r2AccessKeyId: 'r2-access-key',
     r2SecretAccessKey: 'r2-secret-key',
-    rawBucket: 'openvod-raw',
-    transcodedBucket: 'openvod-transcoded',
+    rawBucket: 'clipmux-raw',
+    transcodedBucket: 'clipmux-transcoded',
     frontendUrl: 'http://localhost:3000',
     ...overrides,
   }
@@ -128,11 +128,11 @@ describe('upsertTargetConfig', () => {
     )
     upsertTargetConfig(root, 'deploy', [
       ['DELIVERY_URL', 'https://delivery.example.workers.dev'],
-      ['MODAL_WEBHOOK_URL', 'https://acme--openvod-transcode.modal.run'],
+      ['MODAL_WEBHOOK_URL', 'https://acme--clipmux-transcode.modal.run'],
     ])
     const map = readTargetConfig(root, 'deploy') ?? {}
     expect(map['DELIVERY_URL']).toBe('https://delivery.example.workers.dev')
-    expect(map['MODAL_WEBHOOK_URL']).toBe('https://acme--openvod-transcode.modal.run')
+    expect(map['MODAL_WEBHOOK_URL']).toBe('https://acme--clipmux-transcode.modal.run')
     expect(map['POSTGRES_PASSWORD']).toBe(SECRETS.postgresPassword)
   })
 

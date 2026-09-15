@@ -13,8 +13,9 @@ import {
   HardDrive,
   Webhook,
   ServerCog,
+  Upload,
+  Check,
 } from "lucide-react";
-import { IoAddCircleOutline } from "react-icons/io5";
 import { CreateOrganizationModal } from "@/components/dashboard/create-organization-modal";
 import { cn } from "@/lib/utils";
 
@@ -34,67 +35,28 @@ interface DashboardSidebarProps {
 }
 
 const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  // { href: "/dashboard/content", label: "Content", icon: Film },
+  { href: "/dashboard", label: "Library", icon: LayoutDashboard },
   { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/dashboard/api-keys", label: "API Keys", icon: Key },
-  { href: "/dashboard/webhooks", label: "Webhooks", icon: Webhook },
-  { href: "/dashboard/transcoders", label: "Transcoders", icon: ServerCog },
   { href: "/dashboard/usage", label: "Usage", icon: HardDrive },
-  // { href: "/dashboard/developers", label: "Developers", icon: Code2 },
+  { href: "/dashboard/webhooks", label: "Webhooks", icon: Webhook },
+  { href: "/dashboard/api-keys", label: "API keys", icon: Key },
+  { href: "/dashboard/transcoders", label: "Transcoders", icon: ServerCog },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
-interface SidebarIconButtonProps {
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  href?: string;
-  isActive?: boolean;
-  onClick?: () => void;
-  className?: string;
-  iconClassName?: string;
-}
-
-function SidebarIconButton({
-  label,
-  icon: Icon,
-  href,
-  isActive = false,
-  onClick,
-  className,
-  iconClassName,
-}: SidebarIconButtonProps) {
-  const buttonClassName = cn(
-    "flex size-11 items-center justify-center rounded-sm border transition-all duration-200",
-    isActive
-      ? "border-primary/30 bg-primary/15 text-foreground"
-      : "border-transparent text-muted-foreground/85 hover:border-border hover:bg-accent/10 hover:text-foreground",
-    className
-  );
-
-  if (href) {
-    return (
-      <Link
-        href={href}
-        className={buttonClassName}
-        aria-label={label}
-        title={label}
-      >
-        <Icon className={cn("size-5", iconClassName)} />
-      </Link>
-    );
-  }
+function OrgMark({ name, className }: { name: string; className?: string }) {
+  const initial = name.trim().charAt(0).toUpperCase() || "O";
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={buttonClassName}
-      aria-label={label}
-      title={label}
+    <span
+      aria-hidden="true"
+      className={cn(
+        "flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-panel-strong text-[13px] font-bold text-ember",
+        className,
+      )}
     >
-      <Icon className={cn("size-6.5", iconClassName)} />
-    </button>
+      {initial}
+    </span>
   );
 }
 
@@ -107,223 +69,122 @@ export function DashboardSidebar({
   const pathname = usePathname();
   const [isOrgSwitcherOpen, setIsOrgSwitcherOpen] = React.useState(false);
   const [isCreateOrgOpen, setIsCreateOrgOpen] = React.useState(false);
-  const [isCompactOrgOpen, setIsCompactOrgOpen] = React.useState(false);
-  const compactOrgSwitcherRef = React.useRef<HTMLDivElement | null>(null);
 
   const activeOrg =
     organizations.find((org) => org.id === activeOrgId) ?? organizations[0];
   const displayName = activeOrg?.name ?? "Workspace";
 
-  React.useEffect(() => {
-    if (!isCompactOrgOpen) return;
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-
-      if (
-        compactOrgSwitcherRef.current &&
-        target instanceof Node &&
-        !compactOrgSwitcherRef.current.contains(target)
-      ) {
-        setIsCompactOrgOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [isCompactOrgOpen]);
-
   return (
     <>
-      <aside className="relative z-40 flex h-screen shrink-0 md:w-18 flex-col border-r border-border bg-card/50 backdrop-blur-sm lg:w-66">
-        <div className="lg:hidden border-b border-muted px-3 py-3">
-          <div
-            ref={compactOrgSwitcherRef}
-            className="relative z-30 flex flex-col items-center gap-3 pt-1"
+      {/* Fixed 248px rail. Below `lg` the shell renders the drawer instead. */}
+      <aside className="hidden w-62 shrink-0 flex-col border-r border-border bg-panel-quiet lg:flex">
+        <div className="flex items-center gap-2.5 px-5 py-5">
+          <Image
+            src="/logo.svg"
+            alt=""
+            width={26}
+            height={26}
+            className="size-6.5 shrink-0"
+            priority
+          />
+          <span className="text-[15px] font-extrabold tracking-[-0.02em] text-foreground">
+            ClipMux
+          </span>
+        </div>
+
+        {/* Organization switcher */}
+        <div className="px-3">
+          <button
+            type="button"
+            onClick={() => setIsOrgSwitcherOpen((open) => !open)}
+            aria-expanded={isOrgSwitcherOpen}
+            aria-controls="organization-switcher-panel"
+            className={cn(
+              "flex w-full items-center gap-2.5 rounded-xl border border-border bg-panel px-2.5 py-2.5 text-left transition-colors",
+              "hover:border-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            )}
           >
-            <SidebarIconButton
-              label={displayName}
-              icon={() => (
-                <Image
-                  src="/logo.svg"
-                  alt="OpenVOD logo"
-                  width={24}
-                  height={24}
-                  className="size-8 w-auto shrink-0"
-                  priority
-                />
+            <OrgMark name={displayName} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold text-foreground">
+                {displayName}
+              </span>
+              <span className="block text-[13px] text-muted-foreground">
+                Organization
+              </span>
+            </span>
+            <ChevronDown
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+                isOrgSwitcherOpen && "rotate-180",
               )}
-              onClick={() => setIsCompactOrgOpen((open) => !open)}
-              className="border-transparent bg-transparent text-white shadow-none hover:border-transparent hover:bg-transparent hover:text-white"
             />
-            <SidebarIconButton
-              label="Upload Video"
-              icon={IoAddCircleOutline}
-              onClick={onUploadClick}
-            />
+          </button>
 
-            {isCompactOrgOpen ? (
-              <div className="absolute left-[calc(100%+0.75rem)] top-0 z-[90] w-[min(16rem,calc(100vw-5.5rem))] overflow-hidden rounded-sm border border-border/80 bg-background shadow-[0_20px_50px_rgba(0,0,0,0.45)]">
-                <div className="pointer-events-none absolute inset-0 bg-background/95" />
-                <div className="relative p-2">
-                <div className="border-b border-muted-foreground/15 px-2 pb-2">
-                  <p className="truncate text-sm font-medium text-foreground">
-                    {displayName}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Current organization
-                  </p>
-                </div>
-
-                <div className="space-y-1 pt-2">
-                  {organizations.map((org) => (
+          <div
+            id="organization-switcher-panel"
+            hidden={!isOrgSwitcherOpen}
+            className="mt-2 overflow-hidden rounded-xl border border-border bg-panel"
+          >
+            <ul className="max-h-64 overflow-y-auto p-1.5">
+              {organizations.map((org) => {
+                const isActive = org.id === (activeOrg?.id ?? activeOrgId);
+                return (
+                  <li key={org.id}>
                     <button
-                      key={org.id}
                       type="button"
                       onClick={() => {
                         onOrgChange?.(org.id);
-                        setIsCompactOrgOpen(false);
+                        setIsOrgSwitcherOpen(false);
                       }}
                       className={cn(
-                        "flex w-full items-center gap-3 rounded-sm px-3 py-3 text-sm font-medium transition-all duration-200",
-                        activeOrgId === org.id
-                          ? "bg-secondary text-foreground"
-                          : "text-muted-foreground/85 hover:bg-accent/10 hover:text-foreground"
+                        "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors",
+                        isActive
+                          ? "bg-panel-strong text-foreground"
+                          : "text-muted-foreground hover:bg-panel-strong/60 hover:text-foreground",
                       )}
                     >
-                      <span
-                        className={cn(
-                          "size-2.5 shrink-0 rounded-full bg-foreground/30",
-                          activeOrgId === org.id && "bg-lime-600"
-                        )}
-                      />
-                      <span className="flex-1 truncate text-left">
-                        {org.name}
-                      </span>
+                      <OrgMark name={org.name} className="size-7 text-[12px]" />
+                      <span className="min-w-0 flex-1 truncate">{org.name}</span>
+                      {isActive ? (
+                        <Check className="size-4 shrink-0 text-ember" />
+                      ) : null}
                     </button>
-                  ))}
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsCreateOrgOpen(true);
-                      setIsCompactOrgOpen(false);
-                    }}
-                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-sm border border-foreground/10 bg-black/20 px-4 py-2.5 font-semibold text-white shadow-lg transition-all duration-200 hover:opacity-90"
-                  >
-                    <IoAddCircleOutline className="size-5" />
-                    Create Organization
-                  </button>
-                </div>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="hidden lg:block">
-          {/* Organization Switcher */}
-          <div className="border-b w-full border-muted">
-            <div className="bg-muted/55 p-2">
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="border-t border-border-soft p-1.5">
               <button
                 type="button"
-                onClick={() => setIsOrgSwitcherOpen((open) => !open)}
-                className="flex items-center gap-1 w-full rounded-sm px-1 py-2 text-left transition-colors group"
-                aria-expanded={isOrgSwitcherOpen}
-                aria-controls="organization-switcher-panel"
+                onClick={() => {
+                  setIsCreateOrgOpen(true);
+                  setIsOrgSwitcherOpen(false);
+                }}
+                className="w-full rounded-lg px-2.5 py-2.5 text-left text-sm font-semibold text-muted-foreground transition-colors hover:bg-panel-strong/60 hover:text-foreground"
               >
-                <div className="flex items-center justify-center shrink-0">
-                  <Image
-                    src="/logo.svg"
-                    alt="OpenVOD logo"
-                    width={34}
-                    height={34}
-                    className="size-9 w-auto shrink-0"
-                    priority
-                  />
-                </div>
-                <div className="ml-1 min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground truncate">
-                    {displayName}
-                  </p>
-                  <p className="text-xs text-muted-foreground/80">
-                    Current organization
-                  </p>
-                </div>
-                <ChevronDown
-                  className={cn(
-                    "size-4.5 ml-auto shrink-0 text-muted-foreground group-hover:text-foreground transition-all duration-200",
-                    isOrgSwitcherOpen && "rotate-180"
-                  )}
-                />
+                Create organization
               </button>
-
-              <div
-                id="organization-switcher-panel"
-                className={cn(
-                  "grid transition-all duration-200 ease-out",
-                  isOrgSwitcherOpen
-                    ? "grid-rows-[1fr] opacity-100 pt-2"
-                    : "grid-rows-[0fr] opacity-0"
-                )}
-              >
-                <div className="overflow-hidden">
-                  <div className="space-y-1 border-t border-muted-foreground/15 pt-2">
-                    {organizations.map((org) => (
-                      <button
-                        key={org.id}
-                        type="button"
-                        onClick={() => onOrgChange?.(org.id)}
-                        className={cn(
-                          "flex w-full items-center gap-3 rounded-sm px-3 py-3 text-sm font-medium transition-all duration-200",
-                          activeOrgId === org.id
-                            ? "bg-secondary"
-                            : "text-muted-foreground/85 hover:text-foreground hover:bg-accent/10"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "size-2.5 shrink-0 rounded-full bg-foreground/30",
-                            activeOrgId === org.id && "bg-lime-600"
-                          )}
-                        />
-                        <span className="flex-1 truncate text-left">
-                          {org.name}
-                        </span>
-                      </button>
-                    ))}
-
-                    <button
-                      type="button"
-                      onClick={() => setIsCreateOrgOpen(true)}
-                      className="mb-2 mt-4 flex items-center border border-foreground/10 justify-center gap-2 w-full py-2.5 px-4 rounded-sm bg-black/20 text-white font-semibold shadow-lg hover:opacity-90 transition-all duration-200"
-                    >
-                      <IoAddCircleOutline className="w-5 h-5" />
-                      Create Organization
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
 
-        {/* Upload Button */}
-        <div className="mt-3 hidden p-3 lg:block">
+        {/* Upload */}
+        <div className="px-3 pt-3">
           <button
+            type="button"
             onClick={onUploadClick}
-            className="flex items-center justify-center gap-2 w-full py-2.5 px-4 rounded-sm bg-gradient-to-r from-primary to-accent text-white font-semibold shadow-lg hover:opacity-90 transition-all duration-200"
+            className="flex h-11 w-full items-center justify-center gap-2 rounded-[10px] bg-brand text-sm font-semibold text-brand-foreground transition-colors hover:bg-brand-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-panel-quiet"
           >
-            <IoAddCircleOutline className="w-5 h-5" />
-            Upload Video
+            <Upload className="size-4" />
+            Upload video
           </button>
         </div>
 
-        {/* Navigation */}
-        <nav className="hidden flex-1 space-y-2 overflow-y-auto px-3 py-2 lg:block">
+        <nav
+          aria-label="Dashboard"
+          className="mt-4 flex-1 space-y-0.5 overflow-y-auto px-3 pb-4"
+        >
           {navItems.map((item) => {
             const isActive =
               pathname === item.href ||
@@ -334,47 +195,31 @@ export function DashboardSidebar({
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-3 rounded-sm text-sm font-medium transition-all duration-200",
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   isActive
-                    ? "bg-primary/15 text-foreground border border-primary/35"
-                    : "text-muted-foreground hover:text-foreground hover:bg-accent/10"
+                    ? "bg-panel-strong text-foreground"
+                    : "text-muted-foreground hover:bg-panel-strong/60 hover:text-foreground",
                 )}
               >
-                <Icon className="w-5 h-5" />
+                <Icon
+                  className={cn(
+                    "size-4.5 shrink-0",
+                    isActive ? "text-ember" : "text-faint-foreground",
+                  )}
+                />
                 {item.label}
               </Link>
             );
           })}
         </nav>
 
-        <nav className="flex flex-1 flex-col items-center gap-2 px-3 py-4 lg:hidden">
-          {navItems.map((item) => {
-            const isActive =
-              pathname === item.href ||
-              (item.href !== "/dashboard" && pathname.startsWith(item.href));
-
-            return (
-              <SidebarIconButton
-                key={item.href}
-                href={item.href}
-                label={item.label}
-                icon={item.icon}
-                isActive={isActive}
-              />
-            );
-          })}
-        </nav>
-
-        {/* Footer */}
-        <div className="hidden border-t border-border p-4 lg:block">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            All systems operational
-          </div>
-        </div>
-        <div className="border-t overflow-hidden border-border px-3 py-4 lg:hidden">
-          <div className="mx-auto size-3 rounded-full bg-emerald-500 animate-pulse" />
+        <div className="border-t border-border px-5 py-4">
+          <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
+            <span className="dash-dot status-ready" aria-hidden="true" />
+            Platform reachable
+          </p>
         </div>
       </aside>
 
@@ -383,5 +228,131 @@ export function DashboardSidebar({
         onClose={() => setIsCreateOrgOpen(false)}
       />
     </>
+  );
+}
+
+/**
+ * The same navigation, rendered inside the mobile drawer. Kept as a separate
+ * export so the shell can mount it inside a focus-trapping sheet without
+ * duplicating the desktop rail in the layout tree.
+ */
+export function DashboardMobileNav({
+  organizations = [],
+  activeOrgId,
+  onOrgChange,
+  onUploadClick,
+  onNavigate,
+}: Omit<DashboardSidebarProps, "userName"> & {
+  /** Called after any action that should dismiss the drawer. */
+  onNavigate?: () => void;
+}) {
+  const pathname = usePathname();
+  const [isCreateOrgOpen, setIsCreateOrgOpen] = React.useState(false);
+
+  const activeOrg =
+    organizations.find((org) => org.id === activeOrgId) ?? organizations[0];
+  const displayName = activeOrg?.name ?? "Workspace";
+
+  return (
+    <div className="flex h-full flex-col bg-panel-quiet">
+      <div className="flex items-center gap-2.5 px-5 py-5">
+        <Image
+          src="/logo.svg"
+          alt=""
+          width={26}
+          height={26}
+          className="size-6.5 shrink-0"
+        />
+        <span className="text-[15px] font-extrabold tracking-[-0.02em]">ClipMux</span>
+      </div>
+
+      <div className="px-4">
+        <p className="dash-label">Organization</p>
+        <ul className="mt-2 space-y-1">
+          {organizations.map((org) => {
+            const isActive = org.id === (activeOrg?.id ?? activeOrgId);
+            return (
+              <li key={org.id}>
+                <button
+                  type="button"
+                  onClick={() => onOrgChange?.(org.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors",
+                    isActive
+                      ? "border-border bg-panel text-foreground"
+                      : "border-transparent text-muted-foreground hover:bg-panel-strong/60",
+                  )}
+                >
+                  <OrgMark name={org.name} className="size-7 text-[12px]" />
+                  <span className="min-w-0 flex-1 truncate">{org.name}</span>
+                  {isActive ? <Check className="size-4 text-ember" /> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <button
+          type="button"
+          onClick={() => setIsCreateOrgOpen(true)}
+          className="mt-2 w-full rounded-lg border border-border px-3 py-2.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Create organization
+        </button>
+      </div>
+
+      <div className="px-4 pt-4">
+        <button
+          type="button"
+          onClick={() => {
+            onUploadClick?.();
+            onNavigate?.();
+          }}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded-[10px] bg-brand text-sm font-semibold text-brand-foreground transition-colors hover:bg-brand-hover"
+        >
+          <Upload className="size-4" />
+          Upload video
+        </button>
+      </div>
+
+      <nav
+        aria-label="Dashboard"
+        className="mt-4 flex-1 space-y-0.5 overflow-y-auto px-3 pb-6"
+      >
+        {navItems.map((item) => {
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/dashboard" && pathname.startsWith(item.href));
+          const Icon = item.icon;
+
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={onNavigate}
+              aria-current={isActive ? "page" : undefined}
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-3 text-[15px] font-medium transition-colors",
+                isActive
+                  ? "bg-panel-strong text-foreground"
+                  : "text-muted-foreground hover:bg-panel-strong/60 hover:text-foreground",
+              )}
+            >
+              <Icon
+                className={cn(
+                  "size-4.5 shrink-0",
+                  isActive ? "text-ember" : "text-faint-foreground",
+                )}
+              />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      <CreateOrganizationModal
+        open={isCreateOrgOpen}
+        onClose={() => setIsCreateOrgOpen(false)}
+      />
+    </div>
   );
 }

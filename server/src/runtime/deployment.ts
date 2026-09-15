@@ -23,7 +23,7 @@ import {
   parseLogLevel,
   type EnvLike,
   type LogLevel,
-  type OpenVodConfig,
+  type ClipMuxConfig,
   type RuntimeName,
 } from '../lib/config'
 import { resolveRateLimitConfig, type RateLimitConfig } from '../lib/rateLimit'
@@ -32,7 +32,7 @@ import type { DeploymentProblem, DeploymentShape } from './types'
 export type { DeploymentProblem }
 
 export type DeploymentResolution = {
-  config: OpenVodConfig
+  config: ClipMuxConfig
   shape: DeploymentShape
   rateLimit: RateLimitConfig
   problems: DeploymentProblem[]

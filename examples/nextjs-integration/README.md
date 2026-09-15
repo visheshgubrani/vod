@@ -1,24 +1,24 @@
-# OpenVOD · Next.js integration example
+# ClipMux · Next.js integration example
 
 A runnable, minimal Next.js 16 (app router, React 19, strict TypeScript) app that
-demonstrates the **whole documented OpenVOD developer experience** end to end:
+demonstrates the **whole documented ClipMux developer experience** end to end:
 
 ```
-browser                     your Next.js app                 OpenVOD API
+browser                     your Next.js app                 ClipMux API
 ───────                     ────────────────                 ───────────
 choose a file ────────────▶ POST /api/upload-token
-                            └─ new OpenVod({ apiKey }) ─────▶ POST /v1/upload/token
+                            └─ new ClipMux({ apiKey }) ─────▶ POST /v1/upload/token
                                                                  (API key, server-side only)
-OpenVodUploader.upload() ─────────────────────────────────▶ POST /v1/upload/create
+ClipMuxUploader.upload() ─────────────────────────────────▶ POST /v1/upload/create
   onProgress → progress bar                                POST /v1/upload/parts (windowed)
                                                            PUT  <presigned R2 URL>
                                                            POST /v1/upload/complete
 poll /api/video-status/[id] ▶ GET /v1/video/:id ──────────▶  … status: processing
    every 5s                     POST /v1/video/:id/playback-token
                                    (viewer UA forwarded)
-OpenVodPlayer src+token ◀─── { playbackUrl, token, subtitles, chapters }
+ClipMuxPlayer src+token ◀─── { playbackUrl, token, subtitles, chapters }
   token refresh ──────────▶ POST /api/play-token/[id] ────▶ POST /v1/video/:id/playback-token
-webhooks ◀───────────────────────────────────────────────  POST /api/webhooks/openvod
+webhooks ◀───────────────────────────────────────────────  POST /api/webhooks/clipmux
                                                              video.ready / video.failed
 ```
 
@@ -29,17 +29,17 @@ So a single page shows the four things an integration actually needs: **upload**
 
 | Path | What it shows |
 |---|---|
-| `app/page.tsx` | The demo. File input → `POST /api/upload-token` → `new OpenVodUploader({ baseUrl, uploadToken }).upload(file, { onProgress })` → progress bar → poll while `processing` → `<OpenVodPlayer>`. Errors are matched on `OpenVodError.code`; the Cancel button aborts through an `AbortSignal` (`UploadAbortedError`). |
+| `app/page.tsx` | The demo. File input → `POST /api/upload-token` → `new ClipMuxUploader({ baseUrl, uploadToken }).upload(file, { onProgress })` → progress bar → poll while `processing` → `<ClipMuxPlayer>`. Errors are matched on `ClipMuxError.code`; the Cancel button aborts through an `AbortSignal` (`UploadAbortedError`). |
 | `app/api/upload-token/route.ts` | `vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })` → `{ uploadToken, expiresAt }`. The canonical "your API key never reaches the browser" sample. |
 | `app/api/video-status/[id]/route.ts` | `vod.videos.get(id)`, then `vod.playback.createToken(id, { viewerUserAgent })` once it is `ready` → `{ status, playbackUrl, token, subtitleUrl, chapters }`. |
 | `app/api/play-token/[id]/route.ts` | What the player's `tokenRefreshEndpoint` calls; returns `{ token }`. |
-| `app/api/webhooks/openvod/route.ts` | `await req.text()` (raw body!) → `constructWebhookEvent(...)` → switch on `event.event`. |
-| `lib/openvod.ts` | The shared, memoized `OpenVod` client. |
+| `app/api/webhooks/clipmux/route.ts` | `await req.text()` (raw body!) → `constructWebhookEvent(...)` → switch on `event.event`. |
+| `lib/clipmux.ts` | The shared, memoized `ClipMux` client. |
 | `scripts/e2e-upload.mjs` | Manual Node script: the same flow without a browser. |
 
-Public entry points used: `@openvod/uploader` (`OpenVodUploader`, `OpenVodError`,
-`isUploadAbortedError`), `@openvod/player` (`OpenVodPlayer`), `@openvod/server`
-(`OpenVod`, `constructWebhookEvent`, `WebhookSignatureError`). All three are
+Public entry points used: `@clipmux/uploader` (`ClipMuxUploader`, `ClipMuxError`,
+`isUploadAbortedError`), `@clipmux/player` (`ClipMuxPlayer`), `@clipmux/server`
+(`ClipMux`, `constructWebhookEvent`, `WebhookSignatureError`). All three are
 workspace packages, resolved through `"workspace:*"`.
 
 ## Run it
@@ -52,7 +52,7 @@ pnpm --filter ./sdk build && pnpm --filter ./player build && pnpm --filter ./ser
 
 # 2. Configure the example.
 cd examples/nextjs-integration
-cp .env.example .env.local     # then set OPENVOD_API_KEY (+ the webhook secret)
+cp .env.example .env.local     # then set CLIPMUX_API_KEY (+ the webhook secret)
 
 # 3. Start the API (a second terminal, repo root) and this app.
 pnpm dev                       # API on http://localhost:8787
@@ -65,9 +65,9 @@ Open <http://localhost:3000>, choose a video, press **Upload**, and watch it go
 from `initializing` → `uploading` → `completing` → `processing` → `ready`, at
 which point the player replaces the progress bar.
 
-`OPENVOD_API_URL` and `NEXT_PUBLIC_OPENVOD_API_URL` must point at the same
+`CLIPMUX_API_URL` and `NEXT_PUBLIC_CLIPMUX_API_URL` must point at the same
 deployment: the server mints the upload token, the browser then uses it against
-`NEXT_PUBLIC_OPENVOD_API_URL`.
+`NEXT_PUBLIC_CLIPMUX_API_URL`.
 
 ### Build without a backend
 
@@ -76,7 +76,7 @@ pnpm --filter ./examples/nextjs-integration build
 ```
 
 `next build` needs **no** API and no `.env.local`: every route that talks to
-OpenVOD is `dynamic = 'force-dynamic'` and reads its config at request time.
+ClipMux is `dynamic = 'force-dynamic'` and reads its config at request time.
 
 ## The manual e2e script
 
@@ -86,20 +86,20 @@ manual tool, not a test: it needs a **running local stack** and it really writes
 to your storage and spends a transcode job.
 
 ```bash
-OPENVOD_API_KEY=sk_live_… \
-OPENVOD_API_URL=http://localhost:8787 \
+CLIPMUX_API_KEY=sk_live_… \
+CLIPMUX_API_URL=http://localhost:8787 \
 node examples/nextjs-integration/scripts/e2e-upload.mjs ./clip.mp4
 ```
 
-It mints an upload token with `@openvod/server`, uploads with
-`@openvod/uploader` (from `sdk/dist`, the same build the app uses), then polls
+It mints an upload token with `@clipmux/server`, uploads with
+`@clipmux/uploader` (from `sdk/dist`, the same build the app uses), then polls
 `vod.videos.get()` until the video is `ready` and prints the playback URL.
 
 Flags: `--title <t>`, `--signed`, `--subtitles`, `--no-wait`, and
 `--watch <videoId>` to poll an existing video instead of uploading.
 
 For a `--signed` video the script mints the playback token with a fixed
-`openvod-e2e-script/1.0` User-Agent: signed tokens are bound to the viewer's UA
+`clipmux-e2e-script/1.0` User-Agent: signed tokens are bound to the viewer's UA
 and there is no browser here, so the URL it prints only plays for a client that
 sends that same UA. The app instead forwards the real viewer's UA.
 
@@ -133,8 +133,8 @@ successfully. Add your production origin to `AllowedOrigins` when you deploy.
 ## Webhooks
 
 Point your deployment's webhook URL at
-`https://your-app.example.com/api/webhooks/openvod` and set
-`OPENVOD_WEBHOOK_SECRET` to the signing secret. The route:
+`https://your-app.example.com/api/webhooks/clipmux` and set
+`CLIPMUX_WEBHOOK_SECRET` to the signing secret. The route:
 
 1. reads the **raw** body (`await req.text()`). The signature is
    `HMAC-SHA256(secret, "${timestamp}.${rawBody}")`; re-serializing parsed JSON

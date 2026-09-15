@@ -5,7 +5,7 @@
  * must ask for a fresh one shortly before that happens, keep playing if the
  * request fails, and eventually give up instead of hammering the API.
  *
- * This module decides *when* to ask. `OpenVodPlayer` owns the timer and the
+ * This module decides *when* to ask. `ClipMuxPlayer` owns the timer and the
  * network call, so the policy is testable without rendering anything.
  *
  * Failure behavior matters more than it looks: an earlier implementation

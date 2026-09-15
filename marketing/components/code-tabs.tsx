@@ -1,113 +1,179 @@
 "use client";
 
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Check, Clipboard } from "lucide-react";
+import { Check, Copy, Play } from "lucide-react";
 import { useState } from "react";
 
-import { cn } from "@/lib/utils";
+import { CodeBlock } from "@/components/code-block";
+import { codeTabs, playerPreviewThumb, type CodeTabId } from "@/lib/code-samples";
 
-const codeSamples = {
-  Upload: `import { createUploader } from "@openvod/uploader";
+function ResultPanel({ tab }: { tab: (typeof codeTabs)[number] }) {
+  return (
+    <div className="result-panel">
+      <div className="result-panel-head">{tab.resultTitle}</div>
+      <div className="result-panel-body">
+        {tab.progress ? (
+          <>
+            <div className="process-track">
+              <span style={{ width: `${tab.progress.percentage}%` }} />
+            </div>
+            <div className="mt-3 flex items-center justify-between font-mono text-[13px] text-[color:var(--muted)]">
+              <span>Uploading</span>
+              <span>
+                part {tab.progress.partsCompleted}/{tab.progress.partsTotal} ·{" "}
+                {tab.progress.percentage}%
+              </span>
+            </div>
+          </>
+        ) : tab.player ? (
+          <div className="media-frame">
+            <img
+              src={playerPreviewThumb}
+              alt=""
+              width={1280}
+              height={720}
+              loading="lazy"
+              decoding="async"
+            />
+            <div className="media-scrim">
+              <span className="media-button media-button--primary">
+                <Play
+                  className="ml-0.5 size-4 fill-current"
+                  aria-hidden="true"
+                />
+              </span>
+              <p className="media-caption">coastal-headland · 00:42</p>
+            </div>
+          </div>
+        ) : (
+          <dl>
+            {tab.rows?.map((row) => (
+              <div key={row.label} className="result-row">
+                <dt className="font-mono text-[13px]">{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
 
-const session = await fetch("/api/upload-token", {
-  method: "POST",
-}).then((response) => response.json());
+        <p className="example-note">{tab.note}</p>
+      </div>
+    </div>
+  );
+}
 
-await createUploader({
-  token: session.token,
-}).upload(file);`,
-  Play: `import { OpenVodPlayer } from "@openvod/player";
-
-<OpenVodPlayer
-  playbackId={video.id}
-  src={video.playback_url}
-  title={video.title}
-  poster={video.poster_url}
-/>`,
-  "Verify webhook": `import { verifyWebhook } from "@openvod/server";
-
-const event = await verifyWebhook(
-  request,
-  process.env.OPENVOD_WEBHOOK_SECRET,
-);
-
-if (event.type === "video.ready") {
-  await publishVideo(event.data.video_id);
-}`,
-} as const;
-
-type CodeTab = keyof typeof codeSamples;
-
+/**
+ * Four accessible tabs. Each shows a real filename, whether the code runs on
+ * the server or in the browser, selectable code with copy feedback, and the
+ * result that code produces.
+ */
 export function CodeTabs() {
-  const [active, setActive] = useState<CodeTab>("Upload");
-  const [copied, setCopied] = useState(false);
-  const reduceMotion = useReducedMotion();
+  const [active, setActive] = useState<CodeTabId>("token");
+  const [copied, setCopied] = useState<CodeTabId | null>(null);
+
+  const activeTab = codeTabs.find((tab) => tab.id === active) ?? codeTabs[0];
 
   const copyCode = async () => {
     try {
-      await navigator.clipboard.writeText(codeSamples[active]);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      await navigator.clipboard.writeText(activeTab.code);
+      setCopied(activeTab.id);
+      window.setTimeout(
+        () => setCopied((current) => (current === activeTab.id ? null : current)),
+        1800,
+      );
     } catch {
-      setCopied(false);
+      setCopied(null);
     }
   };
 
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+
+    const buttons = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    );
+    const currentIndex = buttons.findIndex(
+      (button) => button === document.activeElement,
+    );
+    if (currentIndex === -1) return;
+
+    event.preventDefault();
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? buttons.length - 1
+          : event.key === "ArrowLeft"
+            ? (currentIndex - 1 + buttons.length) % buttons.length
+            : (currentIndex + 1) % buttons.length;
+
+    buttons[nextIndex]?.focus();
+    setActive(codeTabs[nextIndex].id);
+  };
+
   return (
-    <div className="code-window overflow-hidden rounded-2xl border border-white/10 bg-cinema shadow-2xl shadow-ink/10">
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-        <div className="flex items-center gap-1.5" aria-hidden="true">
-          <span className="size-2 rounded-full bg-[#ff6b6b]" />
-          <span className="size-2 rounded-full bg-[#ffd166]" />
-          <span className="size-2 rounded-full bg-[#68d391]" />
-        </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">app/video.tsx</span>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-white/55 transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet"
-          onClick={copyCode}
-          aria-label={copied ? "Code copied" : "Copy code"}
-        >
-          {copied ? <Check className="size-3.5 text-[#bba3ff]" /> : <Clipboard className="size-3.5" />}
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <div className="flex gap-1 border-b border-white/10 px-4 pt-3" role="tablist" aria-label="Code examples">
-        {(Object.keys(codeSamples) as CodeTab[]).map((tab) => (
+    <div className="integrate-grid">
+      <div className="code-panel">
+        <div className="code-panel-bar">
+          <span className="code-panel-file">
+            <strong>{activeTab.file}</strong>
+            <span className="code-panel-scope">{activeTab.scope}</span>
+          </span>
           <button
-            key={tab}
             type="button"
-            role="tab"
-            aria-selected={active === tab}
-            className={cn(
-              "relative rounded-t-md px-3 py-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet",
-              active === tab ? "text-white" : "text-white/40 hover:text-white/75",
+            className="code-copy"
+            onClick={copyCode}
+            aria-label={
+              copied === activeTab.id ? "Code copied" : "Copy this example"
+            }
+          >
+            {copied === activeTab.id ? (
+              <Check className="size-4" aria-hidden="true" />
+            ) : (
+              <Copy className="size-4" aria-hidden="true" />
             )}
-            onClick={() => {
-              setActive(tab);
-              setCopied(false);
-            }}
-          >
-            {tab}
-            {active === tab ? <span className="absolute inset-x-2 bottom-0 h-px bg-violet" /> : null}
+            {copied === activeTab.id ? "Copied" : "Copy"}
           </button>
-        ))}
+        </div>
+
+        <div
+          className="code-tabs"
+          role="tablist"
+          aria-label="Integration steps"
+          onKeyDown={onKeyDown}
+        >
+          {codeTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              id={`integration-tab-${tab.id}`}
+              aria-selected={active === tab.id}
+              aria-controls={`integration-panel-${tab.id}`}
+              tabIndex={active === tab.id ? 0 : -1}
+              className="code-tab"
+              onClick={() => {
+                setActive(tab.id);
+                setCopied(null);
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div
+          className="code-body"
+          role="tabpanel"
+          id={`integration-panel-${activeTab.id}`}
+          aria-labelledby={`integration-tab-${activeTab.id}`}
+          tabIndex={0}
+        >
+          <CodeBlock code={activeTab.code} label={activeTab.file} />
+        </div>
       </div>
-      <div className="min-h-[330px] overflow-x-auto px-5 py-6 sm:min-h-[310px]">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.pre
-            key={active}
-            className="font-mono text-[12px] leading-7 text-[#ddd4f8] sm:text-[13px]"
-            initial={reduceMotion ? false : { opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? undefined : { opacity: 0, y: -6 }}
-            transition={{ duration: reduceMotion ? 0 : 0.16 }}
-            role="tabpanel"
-          >
-            <code>{codeSamples[active]}</code>
-          </motion.pre>
-        </AnimatePresence>
-      </div>
+
+      <ResultPanel tab={activeTab} />
     </div>
   );
 }

@@ -2,13 +2,13 @@
 #
 # JWT_SECRET must be IDENTICAL to the API-side value (server/.dev.vars locally,
 # `wrangler secret put JWT_SECRET` in production): playback tokens are minted by
-# the API (issuer `openvod`, audience `playback`) and verified here.
+# the API (issuer `clipmux`, audience `playback`) and verified here.
 # `./scripts/bootstrap.sh` generates one value and writes both files.
 JWT_SECRET=
 
 # Policy applied to objects that carry NO playback-policy metadata.
 # "public" preserves historical behavior; "signed" fails closed. Objects
-# transcoded by OpenVOD always carry the metadata, so this only matters for
+# transcoded by ClipMux always carry the metadata, so this only matters for
 # hand-written/legacy objects.
 DEFAULT_POLICY=public
 

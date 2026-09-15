@@ -9,8 +9,6 @@ import {
   Play,
   Lock,
   Globe,
-  Clock,
-  Calendar,
   Loader2,
   Trash2,
   BarChart3,
@@ -22,6 +20,8 @@ import {
   Link2,
   HardDrive,
   Pencil,
+  Clock,
+  Calendar,
 } from "lucide-react";
 import {
   CartesianGrid,
@@ -34,8 +34,10 @@ import {
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
-import { OpenVodPlayer } from "@openvod/player";
+import { ClipMuxPlayer } from "@clipmux/player";
 import {
   DashboardSectionSkeleton,
   DashboardVideoDetailSkeleton,
@@ -120,6 +122,84 @@ interface VideoAnalyticsData {
   techHealth: VideoTechHealth;
 }
 
+const STATUS_BADGE = {
+  ready: { label: "Ready", variant: "ready" as const, dot: "status-ready" },
+  processing: {
+    label: "Processing",
+    variant: "processing" as const,
+    dot: "status-processing",
+  },
+  uploading: {
+    label: "Uploading",
+    variant: "uploading" as const,
+    dot: "status-uploading",
+  },
+  pending: { label: "Pending", variant: "neutral" as const, dot: "status-idle" },
+  error: { label: "Failed", variant: "failed" as const, dot: "status-failed" },
+  failed: { label: "Failed", variant: "failed" as const, dot: "status-failed" },
+};
+
+/** A labelled panel used for every metadata group on this screen. */
+function DetailSection({
+  title,
+  description,
+  children,
+  className,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cn("dash-panel p-5 md:p-6", className)}>
+      <h2 className="dash-section-title text-foreground">{title}</h2>
+      {description ? (
+        <p className="dash-meta mt-1.5 max-w-prose">{description}</p>
+      ) : null}
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+/** A read-only mono value with its own copy control. */
+function CopyableValue({
+  label,
+  value,
+  copied,
+  onCopy,
+  copyKey,
+}: {
+  label: string;
+  value: string;
+  copied: string | null;
+  onCopy: (text: string, key: string) => void;
+  copyKey: string;
+}) {
+  return (
+    <div>
+      <p className="dash-label">{label}</p>
+      <div className="mt-2 flex items-center gap-2">
+        <code className="min-w-0 flex-1 truncate rounded-lg border border-border bg-background px-3 py-2.5 font-mono text-[13px] text-foreground md:text-sm">
+          {value}
+        </code>
+        <button
+          type="button"
+          onClick={() => onCopy(value, copyKey)}
+          aria-label={copied === copyKey ? `${label} copied` : `Copy ${label}`}
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-panel-strong hover:text-foreground"
+        >
+          {copied === copyKey ? (
+            <Check className="size-4 text-ready" aria-hidden="true" />
+          ) : (
+            <Copy className="size-4" aria-hidden="true" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -134,12 +214,12 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [editTitle, setEditTitle] = React.useState("");
   const [editPolicy, setEditPolicy] = React.useState<"public" | "signed">(
-    "public"
+    "public",
   );
   const [isSaving, setIsSaving] = React.useState(false);
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [analytics, setAnalytics] = React.useState<VideoAnalyticsData | null>(
-    null
+    null,
   );
   const [analyticsLoading, setAnalyticsLoading] = React.useState(false);
   const [embedAutoplay, setEmbedAutoplay] = React.useState(false);
@@ -188,19 +268,19 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
               `${API_URL}/analytics-stats/video/content-score?videoId=${videoId}`,
               {
                 credentials: "include",
-              }
+              },
             ),
             fetch(
               `${API_URL}/analytics-stats/video/retention-curve?videoId=${videoId}`,
               {
                 credentials: "include",
-              }
+              },
             ),
             fetch(
               `${API_URL}/analytics-stats/video/tech-health?videoId=${videoId}`,
               {
                 credentials: "include",
-              }
+              },
             ),
           ]);
 
@@ -256,7 +336,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
       });
       if (!res.ok) throw new Error("Failed to update video");
       setVideo((prev) =>
-        prev ? { ...prev, title: editTitle, playbackPolicy: editPolicy } : null
+        prev ? { ...prev, title: editTitle, playbackPolicy: editPolicy } : null,
       );
       setIsEditing(false);
     } catch (err) {
@@ -279,7 +359,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
       router.push("/dashboard");
     } catch (err) {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete video"
+        err instanceof Error ? err.message : "Failed to delete video",
       );
     } finally {
       setIsDeleting(false);
@@ -287,7 +367,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   };
 
   const formatDuration = (seconds?: number) => {
-    if (!seconds) return "--:--";
+    if (!seconds) return "—";
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}m ${secs}s`;
@@ -313,15 +393,15 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
   const formatFileSize = (bytes?: number) => {
     if (!bytes) return "—";
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024)
-      return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
   const truncateTitle = (title: string, maxLen: number = 32) => {
     if (title.length <= maxLen) return title;
-    return title.slice(0, maxLen) + "...";
+    return title.slice(0, maxLen) + "…";
   };
 
   // The previous snippet pointed an <iframe> straight at the HLS manifest and
@@ -331,13 +411,13 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   const getEmbedCode = () => {
     if (!video?.playbackUrl) return "";
     return [
-      'import { OpenVodPlayer } from "@openvod/player";',
+      'import { ClipMuxPlayer } from "@clipmux/player";',
       "",
-      "<OpenVodPlayer",
+      "<ClipMuxPlayer",
       `  playbackId="${video.id}"`,
       `  src="${video.playbackUrl}"`,
       video.playbackPolicy === "signed"
-        ? '  token={playbackToken} // mint server-side, refresh before it expires'
+        ? "  token={playbackToken} // mint server-side, refresh before it expires"
         : null,
       '  tokenRefreshEndpoint="/api/play-token"',
       embedAutoplay ? "  autoPlay" : null,
@@ -354,837 +434,835 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
 
   if (!video) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <AlertTriangle className="w-12 h-12 text-red-400 mb-4" />
-        <h2 className="text-xl font-semibold text-foreground mb-2">
+      <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
+        <AlertTriangle className="size-10 text-danger" aria-hidden="true" />
+        <h1 className="mt-4 text-xl font-semibold text-foreground">
           Video not found
-        </h2>
-        <Button onClick={() => router.push("/dashboard")}>
-          Back to Dashboard
+        </h1>
+        <p className="dash-body mt-2 max-w-prose text-muted-foreground">
+          This video does not exist in the active organization, or it was
+          deleted.
+        </p>
+        <Button className="mt-6" onClick={() => router.push("/dashboard")}>
+          Back to library
         </Button>
       </div>
     );
   }
 
-  const statusConfig = {
-    ready: {
-      color: "bg-lime-500",
-      text: "Ready",
-      textColor: "text-lime-600",
-    },
-    processing: {
-      color: "bg-amber-500",
-      text: "Processing",
-      textColor: "text-amber-400",
-    },
-    uploading: {
-      color: "bg-blue-500",
-      text: "Uploading",
-      textColor: "text-blue-400",
-    },
-    pending: {
-      color: "bg-slate-500",
-      text: "Pending",
-      textColor: "text-slate-400",
-    },
-    error: { color: "bg-red-500", text: "Error", textColor: "text-red-400" },
-    failed: { color: "bg-red-500", text: "Failed", textColor: "text-red-400" },
-  }[video.status];
+  const status = STATUS_BADGE[video.status];
+  const isSigned = video.playbackPolicy === "signed";
 
   return (
-    <div className="animate-fade-in">
-      {/* ═══════════════════════════════════════════════════════════
-                HEADER BAR
-            ═══════════════════════════════════════════════════════════ */}
-      <header className="mb-6 flex w-full flex-wrap items-center justify-between gap-4 rounded-sm border border-border bg-card/30 px-4 py-4">
-        {/* Left: Breadcrumbs */}
-        <div className="flex items-center gap-2 text-sm">
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Videos
-          </button>
-          <ChevronRight className="w-4 h-4 text-muted-foreground/50" />
-          <span className="text-foreground font-medium max-w-[200px]">
-            {truncateTitle(video.title)}
-          </span>
-        </div>
-
-        {/* Center: Title (Editable) */}
-        <div className="flex-1 flex items-center justify-center min-w-0 px-4">
-          {isEditing ? (
-            <Input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              className="max-w-md rounded-sm border-border bg-muted/30 text-center text-xl font-semibold"
-              placeholder="Video title"
-              autoFocus
-            />
-          ) : (
-            <h1 className="text-xl font-semibold text-foreground truncate max-w-lg">
-              {video.title}
-            </h1>
-          )}
-        </div>
-
-        {/* Right: Actions */}
-        <div className="flex items-center gap-2">
-          {isEditing ? (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setIsEditing(false);
-                  setEditTitle(video.title);
-                  setEditPolicy(video.playbackPolicy || "public");
-                }}
-                className="rounded-sm"
+    <div className="w-full">
+      {/* ── Header: title, status, policy, actions ─────────────────── */}
+      <header className="flex flex-col gap-5">
+        <nav aria-label="Breadcrumb">
+          <ol className="flex items-center gap-1.5 text-sm">
+            <li>
+              <button
+                type="button"
+                onClick={() => router.push("/dashboard")}
+                className="text-muted-foreground transition-colors hover:text-foreground"
               >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSave}
-                disabled={isSaving}
-                className="rounded-sm"
-              >
-                {isSaving ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                Library
+              </button>
+            </li>
+            <li aria-hidden="true">
+              <ChevronRight className="size-4 text-faint-foreground" />
+            </li>
+            <li className="truncate font-medium text-foreground">
+              {truncateTitle(video.title, 48)}
+            </li>
+          </ol>
+        </nav>
+
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-8">
+          <div className="min-w-0 max-w-3xl">
+            {isEditing ? (
+              <>
+                <label htmlFor="video-title" className="dash-label">
+                  Title
+                </label>
+                <Input
+                  id="video-title"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="mt-2 text-lg font-semibold"
+                  placeholder="Video title"
+                  autoFocus
+                />
+              </>
+            ) : (
+              <h1 className="dash-title text-foreground">{video.title}</h1>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Badge variant={status.variant}>
+                <span
+                  className={cn("dash-dot", status.dot)}
+                  aria-hidden="true"
+                />
+                {status.label}
+              </Badge>
+              <Badge variant="neutral">
+                {isSigned ? (
+                  <Lock className="size-3.5" aria-hidden="true" />
                 ) : (
-                  <>
-                    <Check className="w-4 h-4 mr-1" />
-                    Save
-                  </>
+                  <Globe className="size-3.5" aria-hidden="true" />
                 )}
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsEditing(true)}
-                className="rounded-sm border-border text-muted-foreground hover:text-foreground"
-              >
-                <Pencil className="w-4 h-4 mr-1" />
-                Edit
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setDeleteError(null);
-                  setShowDeleteConfirm(true);
-                }}
-                className="rounded-sm border-red-400/30 text-red-400 hover:text-red-400 hover:bg-red-500/10"
-              >
-                <Trash2 className="w-4 h-4" />
-              </Button>
-            </>
-          )}
+                {isSigned ? "Signed playback" : "Public playback"}
+              </Badge>
+              {video.resolutions ? (
+                <Badge variant="neutral">{video.resolutions}</Badge>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {isEditing ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setIsEditing(false);
+                    setEditTitle(video.title);
+                    setEditPolicy(video.playbackPolicy || "public");
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={handleSave} disabled={isSaving}>
+                  {isSaving ? (
+                    <>
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      Saving…
+                    </>
+                  ) : (
+                    <>
+                      <Check className="size-4" aria-hidden="true" />
+                      Save changes
+                    </>
+                  )}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setIsEditing(true)}>
+                  <Pencil className="size-4" aria-hidden="true" />
+                  Edit details
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setDeleteError(null);
+                    setShowDeleteConfirm(true);
+                  }}
+                  className="border-failed/40 text-danger hover:border-failed/60"
+                >
+                  <Trash2 className="size-4" aria-hidden="true" />
+                  Delete
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* ═══════════════════════════════════════════════════════════
-                2-COLUMN HERO LAYOUT
-            ═══════════════════════════════════════════════════════════ */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-8">
-        {/* LEFT: Video Player (3/5 = 60%) */}
-        <div className="lg:col-span-3">
-          <div className="overflow-hidden rounded-sm bg-black shadow-2xl">
-            {video.status === "ready" && video.playbackUrl ? (
-              <OpenVodPlayer
-                playbackId={video.id}
-                src={video.playbackUrl}
-                token={video.token || undefined}
-                // The dashboard's own session-authenticated refresher. Signed
-                // tokens last an hour; a lesson is usually watched for longer.
-                tokenRefreshEndpoint={
-                  video.playbackPolicy === "signed"
-                    ? `${API_URL}/video/${video.id}/token`
-                    : undefined
-                }
-                title={video.title}
-                subtitles={video.subtitleUrl || undefined}
-                chapters={video.chapters || undefined}
-                // Analytics are opt-in in @openvod/player; the dashboard opts in.
-                analyticsEndpoint={`${API_URL}/playback/journal`}
-              />
-            ) : (
-              <div className="aspect-video flex flex-col items-center justify-center bg-muted/20">
-                {video.status === "processing" ||
-                video.status === "uploading" ? (
-                  <>
-                    <Loader2 className="w-10 h-10 text-amber-400 animate-spin mb-3" />
-                    <p className="text-sm text-muted-foreground">
-                      Processing video...
-                    </p>
-                  </>
-                ) : video.status === "error" || video.status === "failed" ? (
-                  <>
-                    <AlertTriangle className="w-10 h-10 text-red-400 mb-3" />
-                    <p className="text-sm text-muted-foreground">
-                      Processing failed
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-10 h-10 text-muted-foreground mb-3" />
-                    <p className="text-sm text-muted-foreground">
-                      Waiting to process
-                    </p>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT: Info Cards (2/5 = 40%) */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-          {/* ─────────────────────────────────────────────────
-                        CARD A: Asset Details
-                    ───────────────────────────────────────────────── */}
-          <div className="glass rounded-sm p-4 md:p-6">
-            <div className="mb-4 flex items-start justify-between gap-4">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Asset Details
-              </h3>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium",
-                    statusConfig.textColor,
-                    "bg-current/10"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 rounded-full",
-                      statusConfig.color
-                    )}
-                  />
-                  {statusConfig.text}
-                </span>
-                {video.resolutions && (
-                  <span className="rounded-sm bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
-                    {video.resolutions}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Video ID */}
-            <div className="mb-4 w-full">
-              <label className="text-xs text-muted-foreground block mb-1.5">
-                Video ID
-              </label>
-              <div className="flex items-center md:gap-2 w-full">
-                <code className="flex-1 truncate rounded-sm bg-muted-foreground/30 px-3 py-2 font-mono text-xs text-foreground">
-                  {video.id}
-                </code>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => handleCopy(video.id, "id")}
-                  className="shrink-0"
-                >
-                  {copied === "id" ? (
-                    <Check className="w-4 h-4 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
-
-            {/* Specs Row */}
-            <div className="pt-4 flex md:flex-row flex-col md:items-center gap-4 font-medium text-sm text-foreground/75">
-              <span className="flex whitespace-nowrap items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5" />
-                {formatDuration(video.duration)}
-              </span>
-              <span className="text-muted-foreground/30">•</span>
-              <span className="flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5" />
-                {formatDate(video.createdAt)}
-              </span>
-              {video.fileSize && (
+      {/* ── Playback: the primary visual ───────────────────────────── */}
+      <div className="mt-8">
+        <div className="overflow-hidden rounded-2xl border border-border bg-black">
+          {video.status === "ready" && video.playbackUrl ? (
+            <ClipMuxPlayer
+              playbackId={video.id}
+              src={video.playbackUrl}
+              token={video.token || undefined}
+              // The dashboard's own session-authenticated refresher. Signed
+              // tokens last an hour; a lesson is usually watched for longer.
+              tokenRefreshEndpoint={
+                video.playbackPolicy === "signed"
+                  ? `${API_URL}/video/${video.id}/token`
+                  : undefined
+              }
+              title={video.title}
+              subtitles={video.subtitleUrl || undefined}
+              chapters={video.chapters || undefined}
+              // Analytics are opt-in in @clipmux/player; the dashboard opts in.
+              analyticsEndpoint={`${API_URL}/playback/journal`}
+            />
+          ) : (
+            <div className="flex aspect-video flex-col items-center justify-center gap-3 bg-panel-quiet text-muted-foreground">
+              {video.status === "ready" ? (
                 <>
-                  <span className="text-muted-foreground/30">•</span>
-                  <span className="flex items-center gap-1.5">
-                    <HardDrive className="w-3.5 h-3.5" />
-                    {formatFileSize(video.fileSize)}
-                  </span>
+                  <AlertTriangle
+                    className="size-8 text-processing"
+                    aria-hidden="true"
+                  />
+                  <p className="text-[15px] font-medium text-foreground">
+                    No playback URL on this asset
+                  </p>
+                  <p className="dash-meta max-w-prose px-6 text-center">
+                    The video finished processing but has no stream attached.
+                    Re-run the transcode from the API, or check the delivery
+                    Worker configuration.
+                  </p>
+                </>
+              ) : video.status === "processing" || video.status === "uploading" ? (
+                <>
+                  <Loader2
+                    className="size-8 animate-spin text-processing"
+                    aria-hidden="true"
+                  />
+                  <p className="text-[15px] font-medium text-foreground">
+                    {video.status === "uploading"
+                      ? "Upload in progress"
+                      : "Transcoding in progress"}
+                  </p>
+                  <p className="dash-meta">
+                    Playback appears here as soon as the renditions are ready.
+                  </p>
+                </>
+              ) : video.status === "error" || video.status === "failed" ? (
+                <>
+                  <AlertTriangle
+                    className="size-8 text-failed"
+                    aria-hidden="true"
+                  />
+                  <p className="text-[15px] font-medium text-foreground">
+                    Transcoding failed
+                  </p>
+                  <p className="dash-meta">
+                    Check the transcoder logs or retry the job from the API.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Play className="size-8" aria-hidden="true" />
+                  <p className="text-[15px] font-medium text-foreground">
+                    Waiting to process
+                  </p>
+                  <p className="dash-meta">
+                    This asset has not been picked up by a transcoder yet.
+                  </p>
                 </>
               )}
             </div>
-          </div>
-
-          {/* ─────────────────────────────────────────────────
-                        CARD B: Delivery
-                    ───────────────────────────────────────────────── */}
-          <div className="glass flex-1 rounded-sm p-4 md:p-6">
-            <div className="mb-4 flex items-start justify-between gap-4">
-              <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Delivery
-              </h3>
-              <div className="flex items-center gap-2">
-                {video.playbackPolicy === "signed" ? (
-                  <>
-                    <Lock className="h-4 w-4 text-amber-400" />
-                    <span className="text-sm font-medium text-amber-400">
-                      Signed URL Required
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <Globe className="h-4 w-4 text-lime-500/80" />
-                    <span className="text-sm font-medium text-lime-500/80">
-                      Public Access
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Playback URL */}
-            {video.playbackUrl && (
-              <div className="mb-4">
-                <label className="text-xs text-muted-foreground block mb-1.5 flex items-center gap-2">
-                  <Link2 className="size-4" />
-                  Playback URL
-                  {video.playbackPolicy === "signed" && (
-                    <span className="text-[10px] text-amber-400">
-                      (Token expires in 1h)
-                    </span>
-                  )}
-                </label>
-                <div className="flex items-center md:gap-2">
-                  <input
-                    type="text"
-                    readOnly
-                    value={video.playbackUrl}
-                    className="flex-1 px-3 py-2 rounded-sm bg-muted-foreground/25 border border-border text-xs text-foreground font-mono truncate"
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleCopy(video.playbackUrl!, "url")}
-                    className="shrink-0"
-                  >
-                    {copied === "url" ? (
-                      <Check className="w-4 h-4 text-emerald-400" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Thumbnail */}
-            {video.thumbnailUrl ? (
-              <div className="pt-4">
-                <div className="mb-1.5 flex md:flex-row flex-col md:items-center justify-between gap-1.5 md:gap-3">
-                  <label className="block text-xs text-muted-foreground">
-                    Thumbnail
-                  </label>
-                  <a
-                    href={video.thumbnailUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex whitespace-nowrap md:items-center gap-2 text-sm text-primary hover:underline"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Download Poster
-                  </a>
-                </div>
-              </div>
-            ) : (
-              <div className="text-xs text-muted-foreground">
-                Thumbnail available after processing
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </div>
 
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-destructive/20">
-                <AlertTriangle className="h-5 w-5 text-destructive" />
+      {/* ── Readable metadata sections ─────────────────────────────── */}
+      <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <DetailSection
+          title="Asset"
+          description="What this video is and when it entered the platform."
+        >
+          <div className="space-y-5">
+            <CopyableValue
+              label="Video ID"
+              value={video.id}
+              copied={copied}
+              onCopy={handleCopy}
+              copyKey="id"
+            />
+
+            <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <div>
+                <dt className="dash-label flex items-center gap-1.5">
+                  <Clock className="size-3.5" aria-hidden="true" />
+                  Duration
+                </dt>
+                <dd className="mt-1.5 font-mono text-sm text-foreground">
+                  {formatDuration(video.duration)}
+                </dd>
               </div>
-              <h2 className="text-xl font-bold text-foreground">
-                Delete Video
-              </h2>
+              <div>
+                <dt className="dash-label flex items-center gap-1.5">
+                  <Calendar className="size-3.5" aria-hidden="true" />
+                  Added
+                </dt>
+                <dd className="mt-1.5 text-sm text-foreground">
+                  {formatDate(video.createdAt)}
+                </dd>
+              </div>
+              <div>
+                <dt className="dash-label flex items-center gap-1.5">
+                  <HardDrive className="size-3.5" aria-hidden="true" />
+                  Source size
+                </dt>
+                <dd className="mt-1.5 font-mono text-sm text-foreground">
+                  {formatFileSize(video.fileSize)}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </DetailSection>
+
+        <DetailSection
+          title="Delivery"
+          description="Where this video is served from, and who can request it."
+        >
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background p-3.5">
+              {isSigned ? (
+                <Lock className="size-4 text-processing" aria-hidden="true" />
+              ) : (
+                <Globe className="size-4 text-ready" aria-hidden="true" />
+              )}
+              <span className="text-sm font-medium text-foreground">
+                {isSigned ? "Signed playback" : "Public playback"}
+              </span>
+              <span className="dash-meta">
+                {isSigned
+                  ? "Every request needs a playback token."
+                  : "Anyone with the URL can watch."}
+              </span>
             </div>
-            <p className="mb-3 text-muted-foreground">
-              Are you sure you want to delete &quot;{video.title}&quot;? This
-              action cannot be undone.
-            </p>
-            {deleteError && (
-              <p className="mb-6 rounded-sm border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {deleteError}
+
+            {video.playbackUrl ? (
+              <CopyableValue
+                label="Playback URL"
+                value={video.playbackUrl}
+                copied={copied}
+                onCopy={handleCopy}
+                copyKey="url"
+              />
+            ) : (
+              <p className="dash-meta">
+                A playback URL appears once transcoding finishes.
               </p>
             )}
-            {!deleteError && <div className="mb-6" />}
-            <div className="flex gap-3">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowDeleteConfirm(false);
-                  setDeleteError(null);
-                }}
-                className="flex-1 rounded-sm"
-                disabled={isDeleting}
+
+            {video.thumbnailUrl ? (
+              <a
+                href={video.thumbnailUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-11 items-center gap-2 rounded-[10px] border border-border px-4 text-sm font-semibold text-foreground transition-colors hover:border-muted-foreground/40 hover:bg-panel-strong/60"
               >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleDelete}
-                disabled={isDeleting}
-                className="flex-1 rounded-sm bg-destructive hover:bg-destructive/90"
-              >
-                {isDeleting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Deleting...
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </>
-                )}
-              </Button>
-            </div>
+                <Download className="size-4" aria-hidden="true" />
+                Download poster
+              </a>
+            ) : (
+              <p className="dash-meta">
+                A poster image is generated during transcoding.
+              </p>
+            )}
+
+            {isSigned ? (
+              <p className="dash-meta">
+                Mint tokens with{" "}
+                <code className="rounded bg-panel-strong px-1.5 py-0.5 font-mono text-[13px] text-foreground">
+                  POST /v1/video/:id/playback-token
+                </code>
+                . Tokens expire after one hour.
+              </p>
+            ) : null}
           </div>
-        </div>
-      )}
+        </DetailSection>
+      </div>
 
-      {/* ═══════════════════════════════════════════════════════════
-                TABS SECTION
-            ═══════════════════════════════════════════════════════════ */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3 md:gap-3 rounded-sm border border-border bg-card/30 p-2">
-          <TabsTrigger
-            value="analytics"
-            className="gap-1.5 rounded-sm px-4 py-3 font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
-          >
-            <BarChart3 className="w-4 h-4" />
-            Analytics
-          </TabsTrigger>
-          <TabsTrigger
-            value="embed"
-            className="gap-1.5 rounded-sm px-4 py-3 font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
-          >
-            <Code className="w-4 h-4" />
-            Embed
-          </TabsTrigger>
-          <TabsTrigger
-            value="settings"
-            className="gap-1.5 rounded-sm px-4 py-3 font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
-          >
-            <Settings className="w-4 h-4" />
-            Settings
-          </TabsTrigger>
-        </TabsList>
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete this video?"
+        description={
+          <>
+            <span className="font-medium text-foreground">{video.title}</span>{" "}
+            and its transcoded outputs will be removed. This cannot be undone.
+          </>
+        }
+        confirmLabel="Delete video"
+        busyLabel="Deleting…"
+        busy={isDeleting}
+        error={deleteError}
+        onConfirm={handleDelete}
+        onCancel={() => {
+          setShowDeleteConfirm(false);
+          setDeleteError(null);
+        }}
+      />
 
-        {/* Analytics Tab */}
-        <TabsContent value="analytics" className="mt-6">
-          {analyticsLoading ? (
-            <div className="space-y-4 py-2">
-              <DashboardSectionSkeleton className="h-36" />
-              <DashboardSectionSkeleton className="h-72" />
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <DashboardSectionSkeleton className="h-44" />
-                <DashboardSectionSkeleton className="h-44" />
-              </div>
-            </div>
-          ) : analytics ? (
-            <div className="space-y-8">
-              {/* Row 1: Content Score */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium text-muted-foreground">
-                  Content Score
-                </h3>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <div className="rounded-sm border border-border bg-card/40 p-4">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                      Avg. Watch Time
-                    </p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {formatWatchSeconds(
-                        analytics.contentScore.avgWatchSeconds
-                      )}
-                    </p>
-                  </div>
-                  <div className="rounded-sm border border-border bg-card/40 p-4">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                      Completion Rate
-                    </p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {analytics.contentScore.completionRateAvailable === false
-                        ? "—"
-                        : `${analytics.contentScore.completionRatePercent.toFixed(1)}%`}
-                    </p>
-                    {analytics.contentScore.completionRateAvailable === false && (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Coming soon with advanced analytics
-                      </p>
-                    )}
-                  </div>
-                  <div className="rounded-sm border border-border bg-card/40 p-4">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                      Peak Concurrents
-                    </p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {analytics.contentScore.peakConcurrentsAvailable === false
-                        ? "—"
-                        : analytics.contentScore.peakConcurrents.toLocaleString()}
-                    </p>
-                    {analytics.contentScore.peakConcurrentsAvailable === false && (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Coming soon with advanced analytics
-                      </p>
-                    )}
-                  </div>
+      {/* ── Analytics / embed / settings ───────────────────────────── */}
+      <div className="mt-10">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="analytics" className="w-full">
+              <BarChart3 className="size-4" aria-hidden="true" />
+              Analytics
+            </TabsTrigger>
+            <TabsTrigger value="embed" className="w-full">
+              <Code className="size-4" aria-hidden="true" />
+              Embed
+            </TabsTrigger>
+            <TabsTrigger value="settings" className="w-full">
+              <Settings className="size-4" aria-hidden="true" />
+              Settings
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="analytics">
+            {analyticsLoading ? (
+              <div className="space-y-4">
+                <DashboardSectionSkeleton className="h-36" />
+                <DashboardSectionSkeleton className="h-72" />
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <DashboardSectionSkeleton className="h-44" />
+                  <DashboardSectionSkeleton className="h-44" />
                 </div>
               </div>
-
-              {/* Row 2: Audience Retention */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium text-muted-foreground">
-                  Audience Retention
-                </h3>
-                <div className="rounded-sm border border-border bg-card/40 p-4">
-                  {analytics.retention.comingSoon ? (
-                    <div className="text-sm text-muted-foreground py-10 text-center">
-                      <p>Detailed retention curves are coming soon.</p>
-                      {analytics.retention.message && (
-                        <p className="mt-2 text-xs opacity-70">
-                          {analytics.retention.message}
+            ) : analytics ? (
+              <div className="space-y-8">
+                <section>
+                  <h2 className="dash-section-title text-foreground">
+                    Watch behaviour
+                  </h2>
+                  <p className="dash-meta mt-1.5">
+                    Across{" "}
+                    <span className="font-mono text-foreground">
+                      {analytics.contentScore.totalSessions.toLocaleString()}
+                    </span>{" "}
+                    playback sessions.
+                  </p>
+                  <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <div className="dash-panel p-5">
+                      <p className="dash-label">Average watch time</p>
+                      <p className="mt-2 font-mono text-2xl font-semibold text-foreground">
+                        {formatWatchSeconds(
+                          analytics.contentScore.avgWatchSeconds,
+                        )}
+                      </p>
+                    </div>
+                    <div className="dash-panel p-5">
+                      <p className="dash-label">Completion rate</p>
+                      <p className="mt-2 font-mono text-2xl font-semibold text-foreground">
+                        {analytics.contentScore.completionRateAvailable === false
+                          ? "—"
+                          : `${analytics.contentScore.completionRatePercent.toFixed(1)}%`}
+                      </p>
+                      {analytics.contentScore.completionRateAvailable ===
+                        false && (
+                        <p className="dash-meta mt-2">
+                          Requires advanced analytics.
                         </p>
                       )}
                     </div>
-                  ) : analytics.retention.curve.length > 0 ? (
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={analytics.retention.curve}>
-                          <CartesianGrid
-                            strokeDasharray="3 3"
-                            stroke="hsl(var(--border))"
-                          />
-                          <XAxis
-                            dataKey="progressPercent"
-                            stroke="hsl(var(--muted-foreground))"
-                            tick={{ fontSize: 12 }}
-                            tickFormatter={(value) => `${value}%`}
-                          />
-                          <YAxis
-                            stroke="hsl(var(--muted-foreground))"
-                            tick={{ fontSize: 12 }}
-                            domain={[0, 100]}
-                            tickFormatter={(value) => `${value}%`}
-                          />
-                          <Tooltip
-                            contentStyle={{
-                              backgroundColor: "hsl(var(--card))",
-                              border: "1px solid hsl(var(--border))",
-                              borderRadius: "12px",
-                            }}
-                            formatter={(
-                              value: number | string | (number | string)[] | undefined,
-                              name: string | undefined
-                            ) => {
-                              const numericValue =
-                                typeof value === "number"
-                                  ? value
-                                  : Number(
-                                      Array.isArray(value) ? value[0] : value
-                                    ) || 0;
-                              const seriesName = String(name ?? "value");
-
-                              if (seriesName === "viewersPercent")
-                                return [
-                                  `${numericValue.toFixed(2)}%`,
-                                  "Viewers still watching",
-                                ];
-                              if (seriesName === "viewers")
-                                return [
-                                  numericValue.toLocaleString(),
-                                  "Viewers",
-                                ];
-                              return [numericValue, seriesName];
-                            }}
-                            labelFormatter={(value) => `${value}% watched`}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="viewersPercent"
-                            stroke="hsl(var(--primary))"
-                            strokeWidth={2.5}
-                            dot={false}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-muted-foreground py-10 text-center">
-                      No retention points available yet
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Row 3: Tech Health */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium text-muted-foreground">
-                  Tech Health
-                </h3>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="rounded-sm border border-border bg-card/40 p-4 md:p-6">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                      Seek Rate
-                    </p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {analytics.techHealth.bufferingSessionRatePercent.toFixed(
-                        1
+                    <div className="dash-panel p-5">
+                      <p className="dash-label">Peak concurrents</p>
+                      <p className="mt-2 font-mono text-2xl font-semibold text-foreground">
+                        {analytics.contentScore.peakConcurrentsAvailable === false
+                          ? "—"
+                          : analytics.contentScore.peakConcurrents.toLocaleString()}
+                      </p>
+                      {analytics.contentScore.peakConcurrentsAvailable ===
+                        false && (
+                        <p className="dash-meta mt-2">
+                          Requires advanced analytics.
+                        </p>
                       )}
-                      %
-                    </p>
-                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                      Sessions with seek events:{" "}
-                      {analytics.techHealth.sessionsWithSeek.toLocaleString()} /{" "}
-                      {analytics.techHealth.totalSessions.toLocaleString()}
-                    </p>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                      Seek events logged:{" "}
-                      {analytics.techHealth.seekEvents.toLocaleString()}
-                    </p>
+                    </div>
                   </div>
-                  <div className="rounded-sm border border-border bg-card/40 p-4 md:p-6">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                      Errors
-                    </p>
-                    <p className="mt-2 text-2xl font-semibold text-foreground">
-                      {analytics.techHealth.sessionErrorRatePercent.toFixed(2)}%
-                    </p>
-                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                      Sessions with errors:{" "}
-                      {analytics.techHealth.sessionsWithErrors.toLocaleString()}{" "}
-                      / {analytics.techHealth.totalSessions.toLocaleString()}
-                    </p>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                      Total error events:{" "}
-                      {analytics.techHealth.totalErrors.toLocaleString()}
-                    </p>
-                  </div>
-                </div>
+                </section>
 
-                <div className="rounded-sm border border-border bg-card/40 p-4">
-                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-3">
-                    Top Error Codes
+                <section>
+                  <h2 className="dash-section-title text-foreground">
+                    Audience retention
+                  </h2>
+                  <p className="dash-meta mt-1.5">
+                    Share of viewers still watching at each point of the video.
                   </p>
+                  <div className="dash-panel mt-4 p-5">
+                    {analytics.retention.comingSoon ? (
+                      <div className="py-12 text-center">
+                        <p className="dash-body text-muted-foreground">
+                          Retention curves are not available yet.
+                        </p>
+                        {analytics.retention.message && (
+                          <p className="dash-meta mt-2">
+                            {analytics.retention.message}
+                          </p>
+                        )}
+                      </div>
+                    ) : analytics.retention.curve.length > 0 ? (
+                      <div className="h-72">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={analytics.retention.curve}>
+                            <CartesianGrid
+                              strokeDasharray="3 3"
+                              stroke="var(--border-soft)"
+                            />
+                            <XAxis
+                              dataKey="progressPercent"
+                              stroke="var(--muted-foreground)"
+                              tick={{ fontSize: 13 }}
+                              tickFormatter={(value) => `${value}%`}
+                            />
+                            <YAxis
+                              stroke="var(--muted-foreground)"
+                              tick={{ fontSize: 13 }}
+                              domain={[0, 100]}
+                              tickFormatter={(value) => `${value}%`}
+                            />
+                            <Tooltip
+                              contentStyle={{
+                                backgroundColor: "var(--popover)",
+                                border: "1px solid var(--border)",
+                                borderRadius: "12px",
+                                fontSize: 14,
+                                color: "var(--foreground)",
+                              }}
+                              formatter={(
+                                value:
+                                  | number
+                                  | string
+                                  | (number | string)[]
+                                  | undefined,
+                                name: string | undefined,
+                              ) => {
+                                const numericValue =
+                                  typeof value === "number"
+                                    ? value
+                                    : Number(
+                                        Array.isArray(value) ? value[0] : value,
+                                      ) || 0;
+                                const seriesName = String(name ?? "value");
+
+                                if (seriesName === "viewersPercent")
+                                  return [
+                                    `${numericValue.toFixed(2)}%`,
+                                    "Still watching",
+                                  ];
+                                if (seriesName === "viewers")
+                                  return [
+                                    numericValue.toLocaleString(),
+                                    "Viewers",
+                                  ];
+                                return [numericValue, seriesName];
+                              }}
+                              labelFormatter={(value) => `${value}% watched`}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="viewersPercent"
+                              stroke="var(--chart-1)"
+                              strokeWidth={2.5}
+                              dot={false}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    ) : (
+                      <p className="dash-body py-12 text-center text-muted-foreground">
+                        No retention points recorded yet.
+                      </p>
+                    )}
+                  </div>
+                </section>
+
+                <section>
+                  <h2 className="dash-section-title text-foreground">
+                    Playback health
+                  </h2>
+                  <p className="dash-meta mt-1.5">
+                    Seek and error events reported by the player.
+                  </p>
+                  <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="dash-panel p-5 md:p-6">
+                      <p className="dash-label">Seek rate</p>
+                      <p className="mt-2 font-mono text-2xl font-semibold text-foreground">
+                        {analytics.techHealth.bufferingSessionRatePercent.toFixed(
+                          1,
+                        )}
+                        %
+                      </p>
+                      <p className="dash-meta mt-3">
+                        Sessions with a seek:{" "}
+                        <span className="font-mono text-foreground">
+                          {analytics.techHealth.sessionsWithSeek.toLocaleString()}
+                        </span>{" "}
+                        of{" "}
+                        <span className="font-mono text-foreground">
+                          {analytics.techHealth.totalSessions.toLocaleString()}
+                        </span>
+                      </p>
+                      <p className="dash-meta mt-1.5">
+                        Seek events logged:{" "}
+                        <span className="font-mono text-foreground">
+                          {analytics.techHealth.seekEvents.toLocaleString()}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="dash-panel p-5 md:p-6">
+                      <p className="dash-label">Error rate</p>
+                      <p className="mt-2 font-mono text-2xl font-semibold text-foreground">
+                        {analytics.techHealth.sessionErrorRatePercent.toFixed(2)}%
+                      </p>
+                      <p className="dash-meta mt-3">
+                        Sessions with an error:{" "}
+                        <span className="font-mono text-foreground">
+                          {analytics.techHealth.sessionsWithErrors.toLocaleString()}
+                        </span>{" "}
+                        of{" "}
+                        <span className="font-mono text-foreground">
+                          {analytics.techHealth.totalSessions.toLocaleString()}
+                        </span>
+                      </p>
+                      <p className="dash-meta mt-1.5">
+                        Total error events:{" "}
+                        <span className="font-mono text-foreground">
+                          {analytics.techHealth.totalErrors.toLocaleString()}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="dash-panel p-5 md:p-6">
+                  <h2 className="dash-section-title text-foreground">
+                    Top error codes
+                  </h2>
                   {analytics.techHealth.topErrors.length > 0 ? (
-                    <div className="space-y-2">
+                    <ul className="mt-4 divide-y divide-border-soft">
                       {analytics.techHealth.topErrors.map((errorRow) => (
-                        <div
+                        <li
                           key={errorRow.code}
-                          className="flex items-center justify-between text-sm"
+                          className="flex items-center justify-between gap-4 py-3"
                         >
-                          <span className="font-mono text-foreground">
+                          <span className="font-mono text-sm text-foreground">
                             {errorRow.code}
                           </span>
-                          <span className="text-muted-foreground">
+                          <span className="font-mono text-sm text-muted-foreground">
                             {errorRow.count.toLocaleString()}
                           </span>
-                        </div>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      No error events recorded.
+                    <p className="dash-body mt-3 text-muted-foreground">
+                      No error events recorded for this video.
                     </p>
                   )}
-                </div>
+                </section>
+
+                {analytics.contentScore.completionRateAvailable !== false && (
+                  <p className="dash-meta">
+                    A session counts as complete at 95% of the video duration.
+                  </p>
+                )}
               </div>
-
-              {analytics.contentScore.completionRateAvailable !== false && (
-                <div className="text-xs text-muted-foreground">
-                  Completion is counted when a session reaches at least 95% of the
-                  video duration.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-center py-16 text-muted-foreground">
-              <BarChart3 className="w-8 h-8 mx-auto mb-3 opacity-40" />
-              <p className="text-sm">No analytics data yet</p>
-              <p className="text-xs mt-1 opacity-60">
-                Data will appear once viewers watch your video
-              </p>
-            </div>
-          )}
-        </TabsContent>
-
-        {/* Embed Tab */}
-        <TabsContent value="embed" className="mt-6">
-          {video.status === "ready" && video.playbackUrl ? (
-            <div className="w-full space-y-6">
-              {/* Options */}
-              <div className="flex gap-6">
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={embedAutoplay}
-                    onChange={(e) => setEmbedAutoplay(e.target.checked)}
-                    className="rounded border border-accent size-4"
-                  />
-                  <span className="text-sm">Autoplay</span>
-                </label>
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={embedMuted}
-                    onChange={(e) => setEmbedMuted(e.target.checked)}
-                    className="rounded border border-accent size-4 "
-                  />
-                  <span className="text-sm">Muted</span>
-                </label>
-              </div>
-
-              {/* Code */}
-              <div className="relative">
-                <pre className="p-4 rounded-sm bg-muted/90 font-mono text-xs overflow-x-auto">
-                  <code>{getEmbedCode()}</code>
-                </pre>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => handleCopy(getEmbedCode(), "embed")}
-                  className="absolute top-2 right-2"
-                >
-                  {copied === "embed" ? (
-                    <Check className="w-4 h-4 text-lime-400" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
-                </Button>
-              </div>
-
-              {/* API Note */}
-              <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                <ExternalLink className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <p>
-                  For API access, use{" "}
-                  <code className="ml-1 text-xs bg-muted-foreground/35 py-1 px-2 font-medium text-foreground/90 rounded">
-                    GET /v1/video/{video.id}
-                  </code>
+            ) : (
+              <div className="dash-panel px-6 py-16 text-center">
+                <BarChart3
+                  className="mx-auto size-7 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <p className="dash-body mt-4 font-medium text-foreground">
+                  No analytics yet
+                </p>
+                <p className="dash-meta mx-auto mt-2 max-w-prose">
+                  Metrics appear here once viewers start watching this video
+                  through the player.
                 </p>
               </div>
-            </div>
-          ) : (
-            <div className="text-center py-16 text-muted-foreground">
-              <Code className="w-8 h-8 mx-auto mb-3 opacity-40" />
-              <p className="text-sm">Embed code available after processing</p>
-            </div>
-          )}
-        </TabsContent>
+            )}
+          </TabsContent>
 
-        {/* Settings Tab */}
-        <TabsContent value="settings" className="mt-6">
-          <div className="w-full space-y-8">
-            {/* Title */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Title</label>
-              {isEditing ? (
-                <Input
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  placeholder="Video title"
-                  className="rounded-sm border-border bg-muted/30"
+          <TabsContent value="embed">
+            {video.status === "ready" && video.playbackUrl ? (
+              <div className="w-full space-y-6">
+                <fieldset className="flex flex-wrap gap-6">
+                  <legend className="dash-label mb-2">Player options</legend>
+                  <label className="flex h-11 cursor-pointer items-center gap-2.5 text-[15px] text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={embedAutoplay}
+                      onChange={(e) => setEmbedAutoplay(e.target.checked)}
+                      className="size-4 rounded border-border accent-[var(--brand)]"
+                    />
+                    Autoplay
+                  </label>
+                  <label className="flex h-11 cursor-pointer items-center gap-2.5 text-[15px] text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={embedMuted}
+                      onChange={(e) => setEmbedMuted(e.target.checked)}
+                      className="size-4 rounded border-border accent-[var(--brand)]"
+                    />
+                    Start muted
+                  </label>
+                </fieldset>
+
+                <div className="relative">
+                  <pre className="dash-code-block overflow-x-auto p-5 pr-16">
+                    <code>{getEmbedCode()}</code>
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(getEmbedCode(), "embed")}
+                    aria-label={
+                      copied === "embed" ? "Embed code copied" : "Copy embed code"
+                    }
+                    className="absolute top-3.5 right-3.5 inline-flex size-11 items-center justify-center rounded-lg border border-border bg-panel text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {copied === "embed" ? (
+                      <Check className="size-4 text-ready" aria-hidden="true" />
+                    ) : (
+                      <Copy className="size-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+
+                <p className="dash-body flex items-start gap-2.5 text-muted-foreground">
+                  <ExternalLink
+                    className="mt-1 size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    Fetch the same record over the API with{" "}
+                    <code className="rounded bg-panel-strong px-1.5 py-0.5 font-mono text-[13px] text-foreground">
+                      GET /v1/video/{video.id}
+                    </code>
+                    .
+                  </span>
+                </p>
+              </div>
+            ) : (
+              <div className="dash-panel px-6 py-16 text-center">
+                <Code
+                  className="mx-auto size-7 text-muted-foreground"
+                  aria-hidden="true"
                 />
-              ) : (
-                <p className="text-foreground">{video.title}</p>
-              )}
-            </div>
-
-            {/* Playback Policy */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Access</label>
-              {isEditing ? (
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    onClick={() => setEditPolicy("public")}
-                    className={cn(
-                      "flex items-center gap-2 px-4 py-2 rounded-sm border text-sm transition-colors",
-                      editPolicy === "public"
-                        ? "border-primary bg-primary/5 text-foreground"
-                        : "border-border text-muted-foreground hover:border-primary/50"
-                    )}
-                  >
-                    <Globe className="w-4 h-4" />
-                    Public
-                  </button>
-                  <button
-                    onClick={() => setEditPolicy("signed")}
-                    className={cn(
-                      "flex items-center gap-2 px-4 py-2 rounded-sm border text-sm transition-colors",
-                      editPolicy === "signed"
-                        ? "border-primary bg-primary/5 text-foreground"
-                        : "border-border text-muted-foreground hover:border-primary/50"
-                    )}
-                  >
-                    <Lock className="w-4 h-4" />
-                    Signed URL
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  {video.playbackPolicy === "signed" ? (
-                    <>
-                      <Lock className="w-4 h-4 text-amber-400" />
-                      <span>Requires signed URL</span>
-                    </>
-                  ) : (
-                    <>
-                      <Globe className="w-4 h-4 text-lime-400" />
-                      <span>Public access</span>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Signed Video Notice */}
-            {video.playbackPolicy === "signed" && (
-              <div className="rounded-sm border border-amber-500/20 bg-amber-500/10 p-4">
-                <div className="flex items-start gap-3">
-                  <Lock className="w-5 h-5 text-amber-400 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-amber-400 mb-1">
-                      Signed Video
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Use{" "}
-                      <code className="text-xs bg-muted/50 px-1 rounded">
-                        POST /v1/video/:id/playback-token
-                      </code>{" "}
-                      to generate playback URLs for your users.
-                    </p>
-                  </div>
-                </div>
+                <p className="dash-body mt-4 font-medium text-foreground">
+                  Embed code appears after transcoding
+                </p>
+                <p className="dash-meta mx-auto mt-2 max-w-prose">
+                  The player snippet needs a playback URL, which only exists once
+                  the renditions are ready.
+                </p>
               </div>
             )}
-          </div>
-        </TabsContent>
-      </Tabs>
+          </TabsContent>
+
+          <TabsContent value="settings">
+            <div className="w-full space-y-6">
+              <DetailSection
+                title="Title"
+                description="Shown in the library, in the player chrome, and in webhook payloads."
+              >
+                {isEditing ? (
+                  <Input
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    placeholder="Video title"
+                  />
+                ) : (
+                  <p className="dash-body text-foreground">{video.title}</p>
+                )}
+              </DetailSection>
+
+              <DetailSection
+                title="Playback access"
+                description="Public videos play from an open URL. Signed videos need a token your backend mints per viewer."
+              >
+                {isEditing ? (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      aria-pressed={editPolicy === "public"}
+                      onClick={() => setEditPolicy("public")}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-xl border p-3.5 text-left text-[15px] font-medium transition-colors",
+                        editPolicy === "public"
+                          ? "border-brand bg-brand/10 text-foreground"
+                          : "border-border text-muted-foreground hover:border-muted-foreground/40",
+                      )}
+                    >
+                      <Globe className="size-4" aria-hidden="true" />
+                      Public
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={editPolicy === "signed"}
+                      onClick={() => setEditPolicy("signed")}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-xl border p-3.5 text-left text-[15px] font-medium transition-colors",
+                        editPolicy === "signed"
+                          ? "border-brand bg-brand/10 text-foreground"
+                          : "border-border text-muted-foreground hover:border-muted-foreground/40",
+                      )}
+                    >
+                      <Lock className="size-4" aria-hidden="true" />
+                      Signed
+                    </button>
+                  </div>
+                ) : (
+                  <p className="dash-body flex items-center gap-2.5 text-foreground">
+                    {isSigned ? (
+                      <Lock className="size-4 text-processing" aria-hidden="true" />
+                    ) : (
+                      <Globe className="size-4 text-ready" aria-hidden="true" />
+                    )}
+                    {isSigned
+                      ? "Signed — every request needs a playback token"
+                      : "Public — anyone with the URL can watch"}
+                  </p>
+                )}
+
+                {isSigned ? (
+                  <p className="dash-meta mt-4">
+                    Mint tokens with{" "}
+                    <code className="rounded bg-panel-strong px-1.5 py-0.5 font-mono text-[13px] text-foreground">
+                      POST /v1/video/:id/playback-token
+                    </code>
+                    . Refresh them before they expire so playback is not
+                    interrupted.
+                  </p>
+                ) : null}
+              </DetailSection>
+
+              {!isEditing ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => setIsEditing(true)}>
+                    <Pencil className="size-4" aria-hidden="true" />
+                    Edit details
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={handleSave} disabled={isSaving}>
+                    {isSaving ? (
+                      <>
+                        <Loader2
+                          className="size-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                        Saving…
+                      </>
+                    ) : (
+                      <>
+                        <Check className="size-4" aria-hidden="true" />
+                        Save changes
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setIsEditing(false);
+                      setEditTitle(video.title);
+                      setEditPolicy(video.playbackPolicy || "public");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
     </div>
   );
 }

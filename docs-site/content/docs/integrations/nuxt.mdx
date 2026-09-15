@@ -1,12 +1,12 @@
 ---
 title: Nuxt / Vue
-description: OpenVOD in a Nuxt app — Nitro server routes for token minting, the uploader in a component, and hls.js playback because the React player does not apply here.
+description: ClipMux in a Nuxt app — Nitro server routes for token minting, the uploader in a component, and hls.js playback because the React player does not apply here.
 ---
 
 Nuxt is a good fit: Nitro server routes are a natural home for token minting, so
 you get the Next.js shape without needing Next.js.
 
-**One difference from the Next.js guide:** `@openvod/player` is React-only. This
+**One difference from the Next.js guide:** `@clipmux/player` is React-only. This
 guide plays the same manifests with `hls.js`. You lose the automatic token-refresh
 timer and gain ~15 lines of code — see
 [Playback without React](/playback#playback-without-react).
@@ -19,12 +19,12 @@ timer and gain ~15 lines of code — see
       <File name="upload-token.post.ts" />
       <File name="play-token/[id].post.ts" />
       <Folder name="webhooks" defaultOpen>
-        <File name="openvod.post.ts" />
+        <File name="clipmux.post.ts" />
       </Folder>
     </Folder>
   </Folder>
   <Folder name="composables" defaultOpen>
-    <File name="useOpenVodUpload.ts" />
+    <File name="useClipMuxUpload.ts" />
   </Folder>
   <Folder name="components" defaultOpen>
     <File name="VideoUploader.vue" />
@@ -39,11 +39,11 @@ timer and gain ~15 lines of code — see
 
 ```bash
 # .env — server-side only. No NUXT_PUBLIC_ prefix, so the browser never sees it.
-OPENVOD_API_KEY=sk_live_…
-OPENVOD_API_URL=http://localhost:8787
+CLIPMUX_API_KEY=sk_live_…
+CLIPMUX_API_URL=http://localhost:8787
 
 # Public: inlined into the client bundle. Never put a secret here.
-NUXT_PUBLIC_OPENVOD_API_URL=http://localhost:8787
+NUXT_PUBLIC_CLIPMUX_API_URL=http://localhost:8787
 ```
 
 Expose them through `runtimeConfig` so the code reads typed values rather than
@@ -53,12 +53,12 @@ Expose them through `runtimeConfig` so the code reads typed values rather than
 // nuxt.config.ts
 export default defineNuxtConfig({
   runtimeConfig: {
-    // Server-only. Overridden by NUXT_OPENVOD_API_KEY at runtime.
-    openVodApiKey: '',
-    openVodApiUrl: 'http://localhost:8787',
-    openVodWebhookSecret: '',
+    // Server-only. Overridden by NUXT_CLIPMUX_API_KEY at runtime.
+    clipMuxApiKey: '',
+    clipMuxApiUrl: 'http://localhost:8787',
+    clipMuxWebhookSecret: '',
     public: {
-      openVodApiUrl: '', // overridden by NUXT_PUBLIC_OPENVOD_API_URL
+      clipMuxApiUrl: '', // overridden by NUXT_PUBLIC_CLIPMUX_API_URL
     },
   },
 })
@@ -75,14 +75,14 @@ export default defineNuxtConfig({
 
 ```ts
 // server/api/upload-token.post.ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event)
 
-  const vod = new OpenVod({
-    apiKey: config.openVodApiKey,
-    baseUrl: config.openVodApiUrl, // no /v1 suffix
+  const vod = new ClipMux({
+    apiKey: config.clipMuxApiKey,
+    baseUrl: config.clipMuxApiUrl, // no /v1 suffix
   })
 
   const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
@@ -103,7 +103,7 @@ explicit option:
 ```vue
 <!-- components/VideoUploader.vue -->
 <script setup lang="ts">
-import { OpenVodUploader, OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+import { ClipMuxUploader, ClipMuxError, isUploadAbortedError } from '@clipmux/uploader'
 
 const emit = defineEmits<{ uploaded: [videoId: string] }>()
 const runtime = useRuntimeConfig()
@@ -118,8 +118,8 @@ async function handleFile(event: Event) {
   error.value = null
   const { uploadToken } = await $fetch<{ uploadToken: string }>('/api/upload-token', { method: 'POST' })
 
-  const uploader = new OpenVodUploader({
-    baseUrl: runtime.public.openVodApiUrl, // no /v1 suffix
+  const uploader = new ClipMuxUploader({
+    baseUrl: runtime.public.clipMuxApiUrl, // no /v1 suffix
     uploadToken,
   })
 
@@ -131,7 +131,7 @@ async function handleFile(event: Event) {
     emit('uploaded', result.fileId)
   } catch (cause) {
     if (isUploadAbortedError(cause)) return
-    error.value = cause instanceof OpenVodError ? `${cause.code}: ${cause.message}` : 'Upload failed'
+    error.value = cause instanceof ClipMuxError ? `${cause.code}: ${cause.message}` : 'Upload failed'
   }
 }
 </script>
@@ -146,7 +146,7 @@ async function handleFile(event: Event) {
 ```
 
 <Callout type="info" title="Why ClientOnly and not onMounted">
-  `OpenVodUploader` needs `Blob` and `AbortController`, and it must not run during
+  `ClipMuxUploader` needs `Blob` and `AbortController`, and it must not run during
   SSR. `<ClientOnly>` is clearer than an `onMounted` guard about the intent, and
   it also prevents the component from hydrating against server markup it could
   never have produced.
@@ -156,14 +156,14 @@ async function handleFile(event: Event) {
 
 ```ts
 // server/api/play-token/[id].post.ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
   const config = useRuntimeConfig(event)
 
   // TODO: authorize the viewer against *this* video id before minting.
-  const vod = new OpenVod({ apiKey: config.openVodApiKey, baseUrl: config.openVodApiUrl })
+  const vod = new ClipMux({ apiKey: config.clipMuxApiKey, baseUrl: config.clipMuxApiUrl })
 
   // The browser sends the viewer's UA explicitly — see below.
   const viewerUserAgent = getHeader(event, 'x-viewer-user-agent')
@@ -258,8 +258,8 @@ async function refreshToken() {
 ## 5. Verify webhooks
 
 ```ts
-// server/api/webhooks/openvod.post.ts
-import { WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+// server/api/webhooks/clipmux.post.ts
+import { WebhookSignatureError, constructWebhookEvent } from '@clipmux/server'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event)
@@ -270,7 +270,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const payload = await constructWebhookEvent({
-      secret: config.openVodWebhookSecret,
+      secret: config.clipMuxWebhookSecret,
       rawBody: rawBody ?? '',
       signature: getHeader(event, 'x-webhook-signature'),
       timestamp: getHeader(event, 'x-webhook-timestamp'),

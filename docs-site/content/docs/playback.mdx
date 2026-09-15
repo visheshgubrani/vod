@@ -8,7 +8,7 @@ bucket. The API mints a short-lived JWT for private videos; the delivery worker
 verifies it on every request and rewrites the token into each manifest
 sub-resource.
 
-<Callout type="warn" title="@openvod/player is React-only">
+<Callout type="warn" title="@clipmux/player is React-only">
   This page documents the React player in depth. If you are on Vue, Nuxt, Svelte
   or plain HTML, jump to [Playback without React](#playback-without-react) — you
   play the same manifests with `hls.js`, and you lose only the auto-refresh
@@ -39,11 +39,11 @@ match. Forward the user-agent from the viewer's own request — not your server'
 
 ```ts
 // app/api/videos/[id]/play-token/route.ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!, // https://api.yourvod.com — no /v1 suffix
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!, // https://api.yourvod.com — no /v1 suffix
 })
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -102,17 +102,17 @@ ignores anything else. The full contract is on
 ## The player
 
 ```tsx
-import { OpenVodPlayer } from '@openvod/player'
+import { ClipMuxPlayer } from '@clipmux/player'
 
 // Public: either give it the manifest URL…
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId="your-video-id"
   src="https://media.example.com/videos/your-video-id/playlist.m3u8"
   title="My Video"
 />
 
 // …or let it build the URL from your delivery origin.
-<OpenVodPlayer playbackId="your-video-id" cdnBase="https://media.example.com/videos" />
+<ClipMuxPlayer playbackId="your-video-id" cdnBase="https://media.example.com/videos" />
 ```
 
 `src` takes precedence over `cdnBase`; with `cdnBase` the player builds
@@ -130,7 +130,7 @@ import { OpenVodPlayer } from '@openvod/player'
 For signed videos, pass the session your backend minted:
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId={videoId}
   src={session.playbackUrl}
   token={session.token}
@@ -194,7 +194,7 @@ Chapters arrive as `{ startTime, endTime, title }[]` and are converted to a
 WebVTT track internally. Subtitles are a plain WebVTT URL:
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   src={playbackUrl}
   token={token}
   subtitles="https://media.example.com/videos/abc-123/subs.vtt"
@@ -217,7 +217,7 @@ Point `analyticsEndpoint` at your API's journal route and pass a `userId` to
 attribute sessions:
 
 ```tsx
-<OpenVodPlayer
+<ClipMuxPlayer
   playbackId={videoId}
   src={playbackUrl}
   userId={currentUser.id}
@@ -243,7 +243,7 @@ while playing and not seeking, so scrubbing does not inflate it. Flushes use
 
 ### Playback without React
 
-`@openvod/player` is a **React** component — it is built on `@vidstack/react`. If
+`@clipmux/player` is a **React** component — it is built on `@vidstack/react`. If
 you are using Vue, Nuxt, Svelte, SvelteKit, Astro or plain HTML, you do not need
 it and cannot use it. Play the same manifest URLs directly.
 
@@ -301,10 +301,10 @@ and [SvelteKit](/integrations/sveltekit#refreshing-an-expiring-token) guides.
 ### React
 
 ```tsx
-import { OpenVodPlayer } from '@openvod/player'
+import { ClipMuxPlayer } from '@clipmux/player'
 
 export function Video({ playbackUrl, poster }: { playbackUrl: string; poster: string }) {
-  return <OpenVodPlayer src={playbackUrl} poster={poster} title="My Video" />
+  return <ClipMuxPlayer src={playbackUrl} poster={poster} title="My Video" />
 }
 ```
 
@@ -315,7 +315,7 @@ import. If you want them as a real CSS asset instead (strict CSP, smaller JS
 chunk):
 
 ```ts
-import '@openvod/player/styles.css'
+import '@clipmux/player/styles.css'
 ```
 
 Do not do both.

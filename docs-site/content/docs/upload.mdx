@@ -1,6 +1,6 @@
 ---
 title: Uploads
-description: Mint upload tokens on your server, upload from the browser with @openvod/uploader, and handle progress, resumption, cancellation and typed errors.
+description: Mint upload tokens on your server, upload from the browser with @clipmux/uploader, and handle progress, resumption, cancellation and typed errors.
 ---
 
 Uploads are a two-party flow. Your backend holds the API key and mints a
@@ -9,7 +9,7 @@ raw bucket with that token. The API key never reaches the client, and video
 bytes never pass through the API.
 
 ```
-Your backend                 OpenVOD API                  R2 (raw bucket)
+Your backend                 ClipMux API                  R2 (raw bucket)
      │                            │                             │
      │  POST /v1/upload/token     │                             │
      │  Authorization: Bearer sk_live_…                         │
@@ -30,7 +30,7 @@ Browser                           │                             │
 ```
 
 <Callout type="info" title="This page is the SDK path">
-  `@openvod/uploader` implements the whole protocol — windowed presigning, retry
+  `@clipmux/uploader` implements the whole protocol — windowed presigning, retry
   with backoff, resumable sessions. If you are implementing a client yourself, or
   debugging a raw request, the exact field-by-field contract for all five
   endpoints is in the [upload API reference](/api-reference/uploads).
@@ -46,15 +46,15 @@ Browser                           │                             │
 ## 1. Mint an upload token (server)
 
 `POST /v1/upload/token` requires the API key, so it belongs on your server.
-With `@openvod/server` it is one call:
+With `@clipmux/server` it is one call:
 
 ```ts
 // app/api/upload-token/route.ts
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 
-const vod = new OpenVod({
-  apiKey: process.env.OPENVOD_API_KEY!,
-  baseUrl: process.env.OPENVOD_API_URL!, // https://api.yourvod.com — no /v1 suffix
+const vod = new ClipMux({
+  apiKey: process.env.CLIPMUX_API_KEY!,
+  baseUrl: process.env.CLIPMUX_API_URL!, // https://api.yourvod.com — no /v1 suffix
 })
 
 export async function POST() {
@@ -85,12 +85,12 @@ The response is `{ upload_token, expires_at, max_files, max_size_bytes }` —
 ## 2. Upload in the browser
 
 ```ts
-import { OpenVodUploader } from '@openvod/uploader'
+import { ClipMuxUploader } from '@clipmux/uploader'
 
 // Your backend returns { uploadToken } — see step 1.
 const { uploadToken } = await fetch('/api/upload-token').then((r) => r.json())
 
-const uploader = new OpenVodUploader({
+const uploader = new ClipMuxUploader({
   baseUrl: 'https://api.yourvod.com', // your API origin — no /v1 suffix
   uploadToken,
 })
@@ -137,7 +137,7 @@ not the SDK's.
 ### Configuration
 
 ```ts
-new OpenVodUploader({
+new ClipMuxUploader({
   baseUrl: 'https://api.yourvod.com', // required, no /v1 suffix
   uploadToken: 'ut_…',                // required
   concurrency: 3,                     // parallel parts (default 3)
@@ -215,7 +215,7 @@ Cancellation is not a failure: an aborted `signal` and `cancel()` reject with
 
 ## Typed errors
 
-Every failure is an `OpenVodError` with a stable `code`. Match on the code, not
+Every failure is an `ClipMuxError` with a stable `code`. Match on the code, not
 on the message. The three you will actually hit while building:
 
 | `code` | Meaning | Retry? |
@@ -230,15 +230,15 @@ webhook verifier and the transcoder produce — is on
 does not duplicate it.
 
 ```ts
-import { OpenVodError } from '@openvod/uploader'
+import { ClipMuxError } from '@clipmux/uploader'
 
 try {
   await uploader.upload(file)
 } catch (error) {
-  if (error instanceof OpenVodError && error.retryable) {
+  if (error instanceof ClipMuxError && error.retryable) {
     // error.retryAfterMs is set when the API sent Retry-After.
   }
-  if (error instanceof OpenVodError) {
+  if (error instanceof ClipMuxError) {
     console.error(error.code, error.requestId) // requestId helps support
   }
 }

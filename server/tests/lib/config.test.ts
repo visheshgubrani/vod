@@ -286,7 +286,7 @@ describe('loadConfig with a self-hosted provider', () => {
     ACCOUNT_ID: 'acct',
     R2_ACCESS_KEY_ID: 'key',
     R2_SECRET_ACCESS_KEY: 'secret',
-    TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+    TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
     TRANSCODE_PROVIDER: 'self-hosted',
     UPLOADS_ENABLED: 'false',
     DELIVERY_URL: 'https://delivery.example.com',
@@ -365,7 +365,7 @@ describe('loadConfig transcode callback reachability', () => {
   })
 
   it('stays quiet when BACKEND_URL is publicly reachable', () => {
-    const cfg = loadConfig({ ...MODAL_ENV, BACKEND_URL: 'https://openvod-dev.ngrok-free.app' })
+    const cfg = loadConfig({ ...MODAL_ENV, BACKEND_URL: 'https://clipmux-dev.ngrok-free.app' })
     expect(cfg.advisories.some((a) => a.includes('BACKEND_URL'))).toBe(false)
   })
 

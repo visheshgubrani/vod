@@ -23,7 +23,7 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 // JWT token expiration (default)
 const TOKEN_EXPIRATION = '4h'
-const JWT_ISSUER = 'openvod'
+const JWT_ISSUER = 'clipmux'
 const JWT_AUDIENCE = 'playback'
 const DEFAULT_RESTRICTIONS = {
   allowed_domains: ['*'],

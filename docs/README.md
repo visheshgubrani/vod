@@ -1,16 +1,16 @@
-# OpenVOD docs
+# ClipMux docs
 
 Two documentation surfaces, with different audiences. The split is deliberate:
 
 - **[`docs-site/`](../docs-site)** — the published Fumadocs site. For developers
-  integrating OpenVOD into an application and operators deploying it: quickstart,
+  integrating ClipMux into an application and operators deploying it: quickstart,
   framework integration guides, the `/v1` API reference, the error catalogue and
   the configuration reference.
 - **`docs/`** (this folder) — maintainer-facing material that belongs next to the
   code: cross-service contracts, architecture rationale, build recipes and known
   gaps.
 
-If you are *using* OpenVOD, start at the docs site. If you are *changing* it,
+If you are *using* ClipMux, start at the docs site. If you are *changing* it,
 this folder is the reference for how the pieces fit together.
 
 | Doc | What it is | Audience |
@@ -46,7 +46,7 @@ code disagree, the code is right — and the doc is the bug. The usual sources:
 | Public capability reporting | `server/src/lib/agentCapabilities.ts`, `server/src/routes/health.ts` |
 | Playback JWT, object layout | `server/src/routes/video.ts`, `delivery/src/` |
 | Self-hosted agent protocol | `server/src/routes/transcoder.ts` |
-| Transcode error codes | `transcoding/openvod_transcoder/errors.py` |
+| Transcode error codes | `transcoding/clipmux_transcoder/errors.py` |
 | Toolchain versions | `transcoding/toolchain/versions.env` |
 
 Documentation content is [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).

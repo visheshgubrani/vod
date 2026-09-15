@@ -1,5 +1,5 @@
 # =========================================================
-# OpenVOD — root ignore file
+# ClipMux — root ignore file
 # Per-package ignores live in each package; this catches
 # anything that falls between them.
 # =========================================================
@@ -44,6 +44,11 @@ coverage/
 *.tgz
 .npmrc
 .pnpm-cache/
+
+# playwright — traces, screenshots and reports from a run
+test-results/
+playwright-report/
+blob-report/
 
 # crash dumps — the kernel writes core.<pid> into the crashing process's cwd,
 # so a `wrangler dev` abort in server/ once left a 3.3 GB core dump there.

@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from openvod_transcoder.agent.client import (
+from clipmux_transcoder.agent.client import (
     AgentApiError,
     AuthenticationFailed,
     LeaseLost,
     _error_for,
 )
-from openvod_transcoder.agent.config import AgentConfig
-from openvod_transcoder.agent.journal import RecoveryJournal
+from clipmux_transcoder.agent.config import AgentConfig
+from clipmux_transcoder.agent.journal import RecoveryJournal
 
 
 @pytest.fixture()
@@ -188,35 +188,49 @@ class TestConfigFromEnv:
         assert config.capacity_renditions == 1
 
     def test_reads_named_roots(self):
-        config = AgentConfig.from_env({"OPENVOD_ROOTS": "media:/srv/media,archive:/mnt/a"})
+        config = AgentConfig.from_env({"CLIPMUX_ROOTS": "media:/srv/media,archive:/mnt/a"})
         assert [(root.name, str(root.path)) for root in config.roots] == [
             ("media", "/srv/media"),
             ("archive", "/mnt/a"),
         ]
 
     def test_a_root_without_a_name_derives_one(self):
-        config = AgentConfig.from_env({"OPENVOD_ROOTS": "/srv/media"})
+        config = AgentConfig.from_env({"CLIPMUX_ROOTS": "/srv/media"})
         assert config.roots[0].name == "media"
 
     def test_reads_a_roots_file_when_no_roots_env_is_set(self, tmp_path):
         roots_file = tmp_path / "roots.json"
         roots_file.write_text('{"roots": [{"name": "media", "path": "/srv/media"}]}')
-        config = AgentConfig.from_env({"OPENVOD_ROOTS_FILE": str(roots_file)})
+        config = AgentConfig.from_env({"CLIPMUX_ROOTS_FILE": str(roots_file)})
         assert [root.name for root in config.roots] == ["media"]
 
     def test_a_malformed_roots_file_is_ignored_not_fatal(self, tmp_path):
         roots_file = tmp_path / "roots.json"
         roots_file.write_text("{not json")
-        config = AgentConfig.from_env({"OPENVOD_ROOTS_FILE": str(roots_file)})
+        config = AgentConfig.from_env({"CLIPMUX_ROOTS_FILE": str(roots_file)})
         assert config.roots == []
 
     def test_invalid_numbers_fall_back_to_defaults(self):
-        config = AgentConfig.from_env({"OPENVOD_CAPACITY_JOBS": "lots", "OPENVOD_HEARTBEAT_SECONDS": "-5"})
+        config = AgentConfig.from_env({"CLIPMUX_CAPACITY_JOBS": "lots", "CLIPMUX_HEARTBEAT_SECONDS": "-5"})
         assert config.capacity_jobs == 1
         assert config.heartbeat_seconds == 30.0
 
+    def test_progress_beats_default_to_one_per_fifteen_seconds(self):
+        config = AgentConfig.from_env({})
+        assert config.progress_beat_seconds == 15.0
+
+    def test_progress_beat_cadence_is_tunable(self):
+        config = AgentConfig.from_env({"CLIPMUX_PROGRESS_BEAT_SECONDS": "45"})
+        assert config.progress_beat_seconds == 45.0
+
+    def test_an_invalid_progress_beat_cadence_falls_back(self):
+        # Zero or negative would send every update — the flood this setting exists
+        # to prevent — so it falls back like the other numeric settings.
+        config = AgentConfig.from_env({"CLIPMUX_PROGRESS_BEAT_SECONDS": "0"})
+        assert config.progress_beat_seconds == 15.0
+
     def test_validation_reports_every_missing_precondition(self, tmp_path):
-        config = AgentConfig.from_env({"OPENVOD_SCRATCH_DIR": str(tmp_path)})
+        config = AgentConfig.from_env({"CLIPMUX_SCRATCH_DIR": str(tmp_path)})
         problems = config.validate()
         assert any("token" in problem for problem in problems)
         assert any("folders" in problem for problem in problems)
@@ -224,8 +238,8 @@ class TestConfigFromEnv:
     def test_validation_reports_a_missing_folder(self, tmp_path):
         config = AgentConfig.from_env(
             {
-                "OPENVOD_ROOTS": f"media:{tmp_path / 'not-here'}",
-                "OPENVOD_AGENT_TOKEN": "agt_x_y",
+                "CLIPMUX_ROOTS": f"media:{tmp_path / 'not-here'}",
+                "CLIPMUX_AGENT_TOKEN": "agt_x_y",
             }
         )
         assert any("does not exist" in problem for problem in config.validate())
@@ -233,9 +247,9 @@ class TestConfigFromEnv:
     def test_validation_passes_for_a_complete_configuration(self, tmp_path):
         config = AgentConfig.from_env(
             {
-                "OPENVOD_ROOTS": f"media:{tmp_path}",
-                "OPENVOD_AGENT_TOKEN": "agt_x_y",
-                "OPENVOD_API_URL": "https://api.example.com",
+                "CLIPMUX_ROOTS": f"media:{tmp_path}",
+                "CLIPMUX_AGENT_TOKEN": "agt_x_y",
+                "CLIPMUX_API_URL": "https://api.example.com",
             }
         )
         assert config.validate() == []
@@ -279,14 +293,14 @@ class TestErrorMapping:
 
 class TestDefaultApiConfig:
     def test_timeouts_are_bounded_so_a_hung_server_cannot_wedge_the_agent(self):
-        from openvod_transcoder.agent.client import ApiConfig
+        from clipmux_transcoder.agent.client import ApiConfig
 
         config = ApiConfig(base_url="https://api.example.com", token="t")
         assert config.timeout > 0
         assert config.attempts >= 1
 
     def test_the_client_sends_the_token_as_a_bearer_credential(self):
-        from openvod_transcoder.agent.client import ApiConfig, TranscoderApiClient
+        from clipmux_transcoder.agent.client import ApiConfig, TranscoderApiClient
 
         client = TranscoderApiClient(ApiConfig(base_url="https://api.example.com", token="secret"))
         assert client.session.headers["Authorization"] == "Bearer secret"
@@ -298,7 +312,7 @@ class TestRunnerIsSideEffectFreeAtImport:
         # `doctor` and `version` must work on a machine with no state directory.
         import importlib
 
-        import openvod_transcoder.agent.runner as runner
+        import clipmux_transcoder.agent.runner as runner
 
         importlib.reload(runner)
         assert hasattr(runner, "JobRunner")

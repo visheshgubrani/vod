@@ -32,7 +32,7 @@ export const color = {
 }
 
 export function intro(version?: string, subtitle = 'BYOK bootstrap'): void {
-  const parts = [chalk.bold.cyan('OpenVOD'), chalk.dim('·'), chalk.dim(subtitle)]
+  const parts = [chalk.bold.cyan('ClipMux'), chalk.dim('·'), chalk.dim(subtitle)]
   if (version) parts.push(chalk.dim(`v${version}`))
   clack.intro(parts.join(' '))
 }
@@ -108,7 +108,7 @@ export function printHelp(): void {
   const cmd = (line: string) => chalk.dim(line)
   const head = (text: string) => chalk.bold(text)
   const lines = [
-    `${chalk.bold.cyan('OpenVOD')} ${chalk.dim('bootstrap')} — BYOK environment wizard`,
+    `${chalk.bold.cyan('ClipMux')} ${chalk.dim('bootstrap')} — BYOK environment wizard`,
     '',
     head('Usage') + color.muted(' (run from anywhere inside the repo):'),
     `  ${cmd('./scripts/bootstrap.sh')}`,
@@ -139,9 +139,9 @@ export function printHelp(): void {
     `  ${flag('--queue')} direct|qstash    ${flag('--ratelimit')} memory|redis|upstash`,
     '',
     head('Environment:'),
-    `  ${flag('OPENVOD_SKIP_INSTALL=1')}     ${color.muted('skip `pnpm install` in the launcher')}`,
-    `  ${flag('OPENVOD_STRICT_ENGINES=1')}   ${color.muted('fail when node’s major differs from engines.node')}`,
-    `  ${flag('OPENVOD_NO_SUDO=1')}          ${color.muted('never escalate privileges; print the command instead')}`,
+    `  ${flag('CLIPMUX_SKIP_INSTALL=1')}     ${color.muted('skip `pnpm install` in the launcher')}`,
+    `  ${flag('CLIPMUX_STRICT_ENGINES=1')}   ${color.muted('fail when node’s major differs from engines.node')}`,
+    `  ${flag('CLIPMUX_NO_SUDO=1')}          ${color.muted('never escalate privileges; print the command instead')}`,
     `  ${flag('NO_COLOR=1')}                 ${color.muted('plain output')}`,
     '',
     head('Already configured?') +
@@ -159,7 +159,7 @@ export function printHelp(): void {
     chalk.dim('    "rateLimit": { "kind": "memory" }, // or { "kind": "upstash", "restUrl": "…", "token": "…" }'),
     chalk.dim('                                      // or { "kind": "redis", "url": "redis://…" } on node'),
     chalk.dim('    "accountId": "…", "r2AccessKeyId": "…", "r2SecretAccessKey": "…",'),
-    chalk.dim('    "rawBucket": "openvod-raw", "transcodedBucket": "openvod-transcoded",'),
+    chalk.dim('    "rawBucket": "clipmux-raw", "transcodedBucket": "clipmux-transcoded",'),
     chalk.dim('    "frontendUrl": "http://localhost:3000", "groqApiKey": ""   // optional'),
     chalk.dim('  }'),
   ]

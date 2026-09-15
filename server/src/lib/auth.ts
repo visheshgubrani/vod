@@ -14,7 +14,7 @@ import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { admin, organization } from 'better-auth/plugins'
 import type { Db } from './database'
-import type { OpenVodConfig } from './config'
+import type { ClipMuxConfig } from './config'
 
 const LOCAL_DEV_ORIGINS = [
   'http://localhost:3000',
@@ -24,7 +24,7 @@ const LOCAL_DEV_ORIGINS = [
 
 export type Auth = ReturnType<typeof createAuth>
 
-export function createAuth(db: Db, config: OpenVodConfig) {
+export function createAuth(db: Db, config: ClipMuxConfig) {
   // Trusted origins come exclusively from configuration (FRONTEND_URL /
   // CORS_ORIGINS) plus local development defaults — the same list CORS uses.
   const trustedOrigins: string[] = [...LOCAL_DEV_ORIGINS, ...config.corsPatterns]

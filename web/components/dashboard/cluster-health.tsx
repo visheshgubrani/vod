@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertCircle, CheckCircle2, HelpCircle, XCircle } from "lucide-react";
 import { apiOrigin } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +57,31 @@ interface ClusterHealthState {
   poll: PollResult | null;
   loading: boolean;
 }
+
+/** Status → the words and the token that carry it, in one place. */
+const CHECK_STATUS_STYLES: Record<
+  CheckStatus,
+  { label: string; dot: string; text: string; icon: ReactNode }
+> = {
+  ok: {
+    label: "Healthy",
+    dot: "bg-ready",
+    text: "text-ready",
+    icon: <CheckCircle2 className="size-4" aria-hidden="true" />,
+  },
+  down: {
+    label: "Unavailable",
+    dot: "bg-failed",
+    text: "text-failed",
+    icon: <XCircle className="size-4" aria-hidden="true" />,
+  },
+  unknown: {
+    label: "No report",
+    dot: "bg-processing",
+    text: "text-processing",
+    icon: <HelpCircle className="size-4" aria-hidden="true" />,
+  },
+};
 
 function isHealthConfig(value: unknown): value is HealthConfig {
   if (typeof value !== "object" || value === null) {
@@ -229,30 +255,31 @@ export function ClusterHealth() {
     const downChecks = checks.filter((check) => check.status === "down");
     const unknownChecks = checks.filter((check) => check.status === "unknown");
     const degraded = !poll.config.ready || downChecks.length > 0;
+    const isOperational = !degraded && unknownChecks.length === 0;
     return (
       <div
+        role="status"
         className={cn(
-          "flex items-center gap-2 rounded-sm border px-4 py-3 text-sm font-medium",
+          "flex items-center gap-3 rounded-[14px] border px-5 py-4 text-[15px] font-semibold",
           degraded
-            ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
-            : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+            ? "border-processing/35 bg-processing/10 text-processing"
+            : isOperational
+              ? "border-ready/35 bg-ready/10 text-ready"
+              : "border-info/35 bg-info/10 text-info",
         )}
       >
         <span
           className={cn(
-            "size-2 rounded-full",
-            degraded
-              ? "bg-amber-500"
-              : unknownChecks.length > 0
-                ? "bg-amber-500"
-                : "bg-emerald-500"
+            "dash-dot size-2.5",
+            degraded ? "bg-processing" : isOperational ? "bg-ready" : "bg-info",
           )}
+          aria-hidden="true"
         />
         {degraded
           ? "Degraded — some checks are failing"
-          : unknownChecks.length > 0
-            ? "Operational, with unreported checks"
-            : "All systems operational"}
+          : isOperational
+            ? "All systems operational"
+            : "Operational, with unreported checks"}
       </div>
     );
   };
@@ -265,7 +292,7 @@ export function ClusterHealth() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="shimmer h-[5.5rem] rounded-sm border border-border bg-card/40"
+              className="dash-skeleton h-[5.5rem] rounded-[14px]"
             />
           ))}
         </div>
@@ -275,57 +302,60 @@ export function ClusterHealth() {
     if (poll.kind !== "live") {
       const isUnreachable = poll.kind === "unreachable";
       return (
-        <div className="flex flex-col items-center gap-3 rounded-sm border border-amber-500/30 bg-card/50 px-6 py-8 text-center">
-          <span className="size-3 animate-pulse rounded-full bg-amber-500" />
-          <p className="font-semibold">
+        <div className="dash-panel flex flex-col items-center gap-3 border-processing/35 px-6 py-10 text-center">
+          <span className="flex size-12 items-center justify-center rounded-full border border-processing/35 bg-processing/10">
+            <AlertCircle
+              className="size-6 animate-pulse text-processing"
+              aria-hidden="true"
+            />
+          </span>
+          <p className="text-[15px] font-semibold text-foreground">
             {isUnreachable
               ? "API unreachable — is the server running?"
               : "Health/config endpoint is not reporting"}
           </p>
-          <code className="max-w-full break-all rounded-sm bg-muted/60 px-2 py-1 font-mono text-xs text-muted-foreground">
+          <code className="dash-code max-w-full break-all rounded-lg border border-border-soft bg-panel-quiet px-3 py-1.5 text-[13px] text-muted-foreground">
             {CONFIG_URL}
           </code>
-          <p className="max-w-xl text-sm text-muted-foreground">{poll.detail}</p>
+          <p className="dash-body max-w-[62ch] text-muted-foreground">
+            {poll.detail}
+          </p>
         </div>
       );
     }
 
     const checks = toCheckStates(poll.config);
     return (
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 md:gap-4">
-        {checks.map((check) => (
-          <div
-            key={check.key}
-            className="rounded-sm border border-border bg-card/65 p-4 backdrop-blur-sm transition-colors hover:bg-card/70"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <p className="text-sm font-semibold">{check.label}</p>
-              <span
-                className={cn(
-                  "mt-1.5 size-2.5 shrink-0 rounded-full",
-                  check.status === "ok" && "bg-emerald-500",
-                  check.status === "down" && "bg-red-500",
-                  check.status === "unknown" && "bg-amber-500"
-                )}
-              />
-            </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">{check.hint}</p>
-            <p
-              className={cn(
-                "mt-2 text-xs font-medium",
-                check.status === "ok" && "text-emerald-400",
-                check.status === "down" && "text-red-400",
-                check.status === "unknown" && "text-amber-400"
-              )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 md:gap-4">
+        {checks.map((check) => {
+          const style = CHECK_STATUS_STYLES[check.status];
+          return (
+            <div
+              key={check.key}
+              className="dash-panel p-4 transition-colors hover:border-muted-foreground/40 md:p-5"
             >
-              {check.status === "ok"
-                ? "Healthy"
-                : check.status === "down"
-                  ? "Unavailable"
-                  : "No report"}
-            </p>
-          </div>
-        ))}
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-[15px] font-semibold text-foreground">
+                  {check.label}
+                </p>
+                <span
+                  className={cn("mt-1.5 dash-dot size-2.5", style.dot)}
+                  aria-hidden="true"
+                />
+              </div>
+              <p className="dash-meta mt-1">{check.hint}</p>
+              <p
+                className={cn(
+                  "mt-3 flex items-center gap-2 text-[13px] font-medium",
+                  style.text,
+                )}
+              >
+                {style.icon}
+                {style.label}
+              </p>
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -338,15 +368,18 @@ export function ClusterHealth() {
       {renderStatusBanner()}
       {renderCheckCards()}
       {problems.length > 0 && (
-        <ul className="space-y-1.5 rounded-sm border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-300/90">
+        <ul className="dash-panel-quiet space-y-1.5 border-processing/30 px-4 py-4">
           {problems.map((problem, index) => (
-            <li key={index} className="list-inside list-disc">
+            <li
+              key={index}
+              className="dash-body list-inside list-disc text-processing"
+            >
               {problem}
             </li>
           ))}
         </ul>
       )}
-      <p className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
+      <p className="dash-meta flex flex-wrap items-center justify-between gap-2 px-1">
         <span>
           {poll
             ? `Last checked ${poll.at.toLocaleTimeString()}`

@@ -42,7 +42,7 @@ describe('scripts/bootstrap.sh (read-only modes)', () => {
     })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('Usage')
-    expect(result.stdout).toContain('OPENVOD_SKIP_INSTALL')
+    expect(result.stdout).toContain('CLIPMUX_SKIP_INSTALL')
     expect(result.stdout).toContain('--doctor')
     // The install step announces itself with this line; help must never reach it.
     expect(result.stdout).not.toContain('installing workspace dependencies')
@@ -85,7 +85,7 @@ maybe('scripts/bootstrap.sh (wizard handover)', () => {
     const result = await execa('bash', [scriptPath, '--definitely-not-a-flag'], {
       reject: false,
       cwd: repoRoot,
-      env: { OPENVOD_SKIP_INSTALL: '1' },
+      env: { CLIPMUX_SKIP_INSTALL: '1' },
     })
     expect(result.exitCode).toBe(2)
     const combined = result.stdout + result.stderr
@@ -99,7 +99,7 @@ maybe('scripts/bootstrap.sh (wizard handover)', () => {
     const result = await execa('bash', [scriptPath], {
       reject: false,
       cwd: repoRoot,
-      env: { OPENVOD_SKIP_INSTALL: '1' },
+      env: { CLIPMUX_SKIP_INSTALL: '1' },
     })
     // Either there is no configuration yet (the wizard refuses to run without a
     // terminal → 1) or there is (report + exit 0). Both must be explained.

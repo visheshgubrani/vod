@@ -49,7 +49,7 @@ MODAL_IMAGE_BUILD = TRANSCODING_DIR / "image_build.py"
 # ...and the path the image bakes the toolchain directory to. `main.py` passes
 # this same literal to `add_local_dir(remote_path=...)`, which is the only
 # reason a runtime read of it can ever succeed.
-TOOLCHAIN_IN_IMAGE = "/opt/openvod/toolchain"
+TOOLCHAIN_IN_IMAGE = "/opt/clipmux/toolchain"
 
 # The pins the whole stage is built on. Literals on purpose: if a bump is
 # intended, it is intended in both the file and here.
@@ -65,7 +65,7 @@ CUDA_BASE_IMAGE_DIGEST = (
 )
 
 # The configure contract: every flag here is load-bearing for the engine's
-# encoding paths (see transcoding/openvod_transcoder/encoding/backends.py).
+# encoding paths (see transcoding/clipmux_transcoder/encoding/backends.py).
 REQUIRED_CONFIGURE_FLAGS = [
     "--enable-gpl",
     "--enable-cuda-llvm",
@@ -276,18 +276,18 @@ class TestBuildScript:
         assert "set -euo pipefail" in text
         assert 'JOBS="${JOBS:-$(nproc)}"' in text
         assert 'make -C "$FFMPEG_SRC" -j"$JOBS"' in text
-        assert "OPENVOD_BUILD_DIR" in text
+        assert "CLIPMUX_BUILD_DIR" in text
         # nv-codec-headers must land where pkg-config looks, or FFmpeg's
         # configure cannot resolve `ffnvcodec >= 12.1.14.0`.
         assert "install PREFIX=/usr" in text
 
     def test_writes_the_build_manifest_and_licenses(self):
         text = read(BUILD_SCRIPT)
-        assert "share/openvod/toolchain.json" in text
+        assert "share/clipmux/toolchain.json" in text
         for field in ("ffmpeg_version", "configure", "ffmpeg_sha256", "target_arch",
                       "build_date", "recipe_sha256"):
             assert f'"{field}"' in text, f"toolchain.json is missing {field}"
-        assert "share/doc/openvod-ffmpeg" in text
+        assert "share/doc/clipmux-ffmpeg" in text
         for license_file in ("COPYING.GPLv2", "COPYING.LGPLv2.1", "LICENSE.md", "NOTICE"):
             assert license_file in text, f"the install no longer ships {license_file}"
         assert "FFMPEG_URL" in text and "NV_CODEC_HEADERS_URL" in text
@@ -470,8 +470,8 @@ class TestDockerfileAgent:
         # first image build failed exactly there.
         text = normalized(read(DOCKERFILE))
         assert 'SHELL ["/bin/bash"' in text
-        assert ". /tmp/openvod-toolchain/versions.env" in text
-        assert ". /tmp/openvod-toolchain/apt-packages.env" in text
+        assert ". /tmp/clipmux-toolchain/versions.env" in text
+        assert ". /tmp/clipmux-toolchain/apt-packages.env" in text
 
     def test_makes_the_engine_readable_by_the_unprivileged_user(self):
         # The image runs as uid 10001. A module that arrives mode 600 (which is
@@ -480,7 +480,7 @@ class TestDockerfileAgent:
         text = normalized(read(DOCKERFILE))
         copy_at = text.index("COPY transcoding/ /app/")
         chmod_at = text.index("chmod -R a+rX /app")
-        user_at = text.index("USER openvod")
+        user_at = text.index("USER clipmux")
         assert copy_at < chmod_at < user_at, (
             "the engine must be made world-readable before dropping privileges"
         )
@@ -498,14 +498,14 @@ class TestDockerfileAgent:
 
     def test_keeps_the_hardened_runtime_conventions(self):
         text = read(DOCKERFILE)
-        assert "useradd --uid 10001" in text and "openvod" in text
+        assert "useradd --uid 10001" in text and "clipmux" in text
         assert "groupadd --gid 44 video" in text
-        assert 'ENTRYPOINT ["/usr/bin/tini", "--", "openvod-transcoder"]' in text
-        assert 'VOLUME ["/var/lib/openvod-transcoder"]' in text
+        assert 'ENTRYPOINT ["/usr/bin/tini", "--", "clipmux-transcoder"]' in text
+        assert 'VOLUME ["/var/lib/clipmux-transcoder"]' in text
         assert "HEALTHCHECK" in text and "doctor" in text
-        for env_var in ("OPENVOD_SCRATCH_DIR", "OPENVOD_JOURNAL", "OPENVOD_ROOTS_FILE"):
+        for env_var in ("CLIPMUX_SCRATCH_DIR", "CLIPMUX_JOURNAL", "CLIPMUX_ROOTS_FILE"):
             assert env_var in text, f"the agent image lost {env_var}"
-        assert re.search(r"^USER openvod\s*$", text, re.MULTILINE)
+        assert re.search(r"^USER clipmux\s*$", text, re.MULTILINE)
 
     def test_documents_the_runtime_hardware_paths(self):
         text = read(DOCKERFILE)
@@ -527,7 +527,7 @@ class TestCiWorkflow:
     def test_requires_the_media_tools_instead_of_skipping(self):
         text = normalized(read(CI_WORKFLOW))
         job = text.split("transcoding-python:", 1)[1].split("\n  docker-images:", 1)[0]
-        assert 'OPENVOD_REQUIRE_MEDIA_TOOLS: "1"' in job, (
+        assert 'CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"' in job, (
             "without this the real-media suites skip and a missing binary looks green"
         )
 
@@ -554,7 +554,7 @@ class TestConfigureFlagsExistInThePinnedRelease:
         # Cached outside the repository and keyed by version: a version bump
         # fetches the new release's flags instead of validating against a stale
         # file, and no derived data lands in the working tree.
-        cache = Path(tempfile.gettempdir()) / f"openvod-ffmpeg-{version}-configure-flags.txt"
+        cache = Path(tempfile.gettempdir()) / f"clipmux-ffmpeg-{version}-configure-flags.txt"
         if cache.exists():
             return cache.read_text()
         try:
@@ -755,7 +755,7 @@ def checkout_toolchain_names(module: ast.Module) -> set[str]:
     Seeded with `_root` and `__file__`, which in a container resolve to `/root`
     and have no `toolchain/` beside them. Aliases propagate, so
     `_TOOLCHAIN_DIR = _root / "toolchain"` makes `_TOOLCHAIN_DIR` count too —
-    while `_TOOLCHAIN_IN_IMAGE = "/opt/openvod/toolchain"` deliberately does not,
+    while `_TOOLCHAIN_IN_IMAGE = "/opt/clipmux/toolchain"` deliberately does not,
     because that path is the one the image actually bakes.
     """
     names = {"_root", "__file__"}

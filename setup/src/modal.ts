@@ -15,7 +15,7 @@
  * the step as skipped, and carries on with the provider-independent steps.
  */
 
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WizardError } from './errors'
 import {
@@ -43,10 +43,10 @@ const TRANSCODING = 'transcoding'
  * app owns it. `transcoding/main.py` references this exact string, and
  * `LEGACY_MODAL_SECRETS` is what the deploy phase offers to clean up.
  */
-export const MODAL_CREDS_SECRET = 'openvod-creds'
+export const MODAL_CREDS_SECRET = 'clipmux-creds'
 
 /** The Groq key lives in its own secret: it is optional and must not be clobbered. */
-export const MODAL_GROQ_SECRET = 'openvod-groq-creds'
+export const MODAL_GROQ_SECRET = 'clipmux-groq-creds'
 
 /** Pre-rename secret names, offered for deletion so a workspace has one set. */
 export const LEGACY_MODAL_SECRETS: readonly string[] = ['r2-creds', 'groq-creds']
@@ -68,14 +68,110 @@ async function modalClientVersion(bin: string): Promise<string | null> {
   return parseModalClientVersion(result.stdout + result.stderr)
 }
 
+/** What we found on disk before touching anything. */
+export interface VenvProbe {
+  venvExists: boolean
+  /** The venv's interpreter runs *and* is really a venv (not a dangling link). */
+  interpreterOk: boolean
+  hasUv: boolean
+  hasPython3: boolean
+}
+
+export type VenvPlan =
+  | { kind: 'reuse' }
+  | { kind: 'create'; tool: 'uv' | 'python3' }
+  | { kind: 'rebuild'; tool: 'uv' | 'python3' }
+  | { kind: 'unavailable'; reason: string }
+
+/**
+ * What to do about `transcoding/.venv`.
+ *
+ * A venv is not a fact you can trust from the filesystem alone: an interpreter
+ * upgraded under it (brew, a uv-managed Python, a distro upgrade) leaves a
+ * `bin/python` that cannot run, and a half-created one leaves a `bin/pip` whose
+ * module is gone. Both used to surface as a confusing install failure deep in
+ * the log, so the decision to *rebuild* is made here, from a probe, and tested.
+ */
+export function planVenv(probe: VenvProbe): VenvPlan {
+  if (probe.venvExists && probe.interpreterOk) return { kind: 'reuse' }
+  const tool: 'uv' | 'python3' | undefined = probe.hasUv
+    ? 'uv'
+    : probe.hasPython3
+      ? 'python3'
+      : undefined
+  if (tool === undefined) {
+    return {
+      kind: 'unavailable',
+      reason: 'neither uv nor python3 is available to build transcoding/.venv',
+    }
+  }
+  return probe.venvExists ? { kind: 'rebuild', tool } : { kind: 'create', tool }
+}
+
+export type InstallerKind = 'uv' | 'venv-pip'
+
+/**
+ * Which installer runs `requirements-deploy.txt`.
+ *
+ * uv wins when present — including for a venv *python3* created — because a
+ * uv-created environment has **no pip at all** (`uv venv` deliberately omits it),
+ * so "use the venv's pip" is not a fallback that can work there. Deciding this
+ * once, explicitly, is what the old code got wrong: it always ran the venv's
+ * `pip` *after* uv had already succeeded, and a stale `bin/pip` script without
+ * its module turned a successful install into a failed deploy step.
+ */
+export function installStrategy(hasUv: boolean): InstallerKind {
+  return hasUv ? 'uv' : 'venv-pip'
+}
+
+export function installArgs(
+  kind: InstallerKind,
+  bins: { uv: string; venvPython: string },
+  requirements: string,
+): string[] {
+  return kind === 'uv'
+    ? [bins.uv, 'pip', 'install', '--python', bins.venvPython, '-r', requirements]
+    : [bins.venvPython, '-m', 'pip', 'install', '-r', requirements]
+}
+
+/** Does this interpreter run, and is it really a venv? */
+async function venvInterpreterOk(venvPython: string): Promise<boolean> {
+  if (!existsSync(venvPython)) return false
+  const result = await runCapture(
+    [venvPython, '-c', 'import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)'],
+    { timeoutMs: 30_000 },
+  )
+  return result.code === 0
+}
+
+/** `python -m pip` works? Repaired with ensurepip when it does not. */
+async function venvPipAvailable(venvPython: string): Promise<boolean> {
+  const before = await runCapture([venvPython, '-m', 'pip', '--version'], { timeoutMs: 30_000 })
+  if (before.code === 0) return true
+  // A venv created with `--without-pip`, or by a distro whose python3 lacks
+  // ensurepip, reports "No module named pip" here rather than at install time.
+  const seeded = await runCapture([venvPython, '-m', 'ensurepip', '--upgrade'], {
+    timeoutMs: 180_000,
+  })
+  if (seeded.code !== 0) return false
+  const after = await runCapture([venvPython, '-m', 'pip', '--version'], { timeoutMs: 30_000 })
+  return after.code === 0
+}
+
+function tail(text: string, max = 800): string {
+  const trimmed = (text ?? '').trim()
+  return trimmed.length <= max ? trimmed : trimmed.slice(-max)
+}
+
 /**
  * Ensure transcoding/.venv has the local hydrate deps (boto3, fastapi, modal)
  * and return the `modal` binary inside it.
  *
- * uv first (it can fetch its own Python), then a system `python3 -m venv`.
- * A venv that exists but does not carry a supported Modal CLI is an error the
- * caller reports with the one command that fixes it, not a silent fallback to
- * some other `modal` on PATH.
+ * uv when present (it can fetch its own Python and installs without pip), else a
+ * system `python3 -m venv` plus that interpreter's own pip. A venv that exists
+ * but cannot run is rebuilt rather than patched. Every failure reports the error
+ * from the tool that actually failed — the point of the exercise is that the
+ * operator can tell a network problem from a missing package.
  */
 export async function ensureTranscodingDeployEnv(root: string): Promise<string> {
   const venvDir = join(root, TRANSCODING, '.venv')
@@ -84,48 +180,71 @@ export async function ensureTranscodingDeployEnv(root: string): Promise<string> 
   const requirements = transcodingDeployRequirements(root)
 
   const uv = findOnPath('uv')
-  if (uv !== null) {
-    for (const args of [
-      [uv, 'venv', '--allow-existing', venvDir],
-      [uv, 'venv', venvDir],
-    ]) {
-      const created = await runCapture(args, { timeoutMs: 300_000 })
-      if (created.code !== 0) continue
-      const installed = await runCapture(
-        [uv, 'pip', 'install', '--python', venvPython, '-q', '-r', requirements],
-        { timeoutMs: 600_000 },
-      )
-      if (installed.code === 0) break
-    }
+  const python3 = findOnPath('python3')
+  const probe: VenvProbe = {
+    venvExists: existsSync(venvPython),
+    interpreterOk: await venvInterpreterOk(venvPython),
+    hasUv: uv !== null,
+    hasPython3: python3 !== null,
   }
+  const plan = planVenv(probe)
 
-  if (!existsSync(venvPython)) {
-    const python = findOnPath('python3')
-    if (!python) {
-      throw new WizardError(
-        'neither uv nor python3 is available to build transcoding/.venv for modal deploy.\n' +
-          'Install one of them and re-run, or deploy the pipeline yourself:\n' +
-          '  cd transcoding && python3 -m venv .venv && .venv/bin/pip install -r requirements-deploy.txt',
-      )
-    }
-    const venvOk = await runCapture([python, '-m', 'venv', venvDir], { timeoutMs: 120_000 })
-    if (venvOk.code !== 0) {
-      throw new WizardError(
-        `could not create transcoding/.venv: ${venvOk.stderr.trim()}\n` +
-          'Create it yourself: cd transcoding && python3 -m venv .venv\n' +
-          '(on Debian/Ubuntu the python3-venv package provides this)',
-      )
-    }
-  }
-
-  const pip = join(venvDir, 'bin', 'pip')
-  const pipResult = await runCapture([pip, 'install', '-q', '-r', requirements], {
-    timeoutMs: 600_000,
-  })
-  if (pipResult.code !== 0) {
+  if (plan.kind === 'unavailable') {
     throw new WizardError(
-      `pip install -r transcoding/requirements-deploy.txt failed: ${pipResult.stderr.trim()}\n` +
-        `Re-run with: ${venvPython} -m pip install -r ${requirements}`,
+      `${plan.reason}.\n` +
+        'Install one of them and re-run, or deploy the pipeline yourself:\n' +
+        '  cd transcoding && python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-deploy.txt\n' +
+        '(on Debian/Ubuntu, `python3-venv` provides the venv module)',
+    )
+  }
+
+  if (plan.kind === 'rebuild') {
+    logInfo(
+      `transcoding/.venv exists but its interpreter does not run — rebuilding it with ${plan.tool}`,
+    )
+    rmSync(venvDir, { recursive: true, force: true })
+  }
+
+  if (plan.kind === 'create' || plan.kind === 'rebuild') {
+    if (plan.tool === 'uv' && uv !== null) {
+      const created = await runCapture([uv, 'venv', venvDir], { timeoutMs: 300_000 })
+      if (created.code !== 0) {
+        throw new WizardError(
+          `uv could not create transcoding/.venv: ${tail(created.stderr || created.stdout)}\n` +
+            'Re-run with: uv venv transcoding/.venv',
+        )
+      }
+    } else if (python3 !== null) {
+      const created = await runCapture([python3, '-m', 'venv', venvDir], { timeoutMs: 180_000 })
+      if (created.code !== 0) {
+        throw new WizardError(
+          `could not create transcoding/.venv: ${tail(created.stderr || created.stdout)}\n` +
+            'Create it yourself: cd transcoding && python3 -m venv .venv\n' +
+            '(on Debian/Ubuntu the python3-venv package provides this)',
+        )
+      }
+    }
+  }
+
+  const strategy = installStrategy(uv !== null)
+  if (strategy === 'venv-pip' && !(await venvPipAvailable(venvPython))) {
+    throw new WizardError(
+      `the venv at ${venvDir} has no working pip, and uv is not installed.\n` +
+        `Re-run with: ${venvPython} -m pip install -r ${requirements}\n` +
+        '(on Debian/Ubuntu, `python3-venv` and `python3-pip` provide both)',
+    )
+  }
+
+  const installed = await runCapture(
+    installArgs(strategy, { uv: uv ?? 'uv', venvPython }, requirements),
+    { timeoutMs: 900_000 },
+  )
+  if (installed.code !== 0) {
+    const tool = strategy === 'uv' ? 'uv pip install' : `${venvPython} -m pip install`
+    throw new WizardError(
+      `${tool} -r transcoding/requirements-deploy.txt failed: ${tail(installed.stderr || installed.stdout)}\n` +
+        `Re-run: ${installArgs(strategy, { uv: uv ?? 'uv', venvPython }, requirements).join(' ')}\n` +
+        '(a read-only HOME, an unreachable package index, or a missing wheels mirror all look like this)',
     )
   }
 
@@ -251,9 +370,9 @@ export async function deleteModalSecret(bin: string, name: string): Promise<bool
 export type ModalSecretWritePlan = 'create' | 'skip' | 'overwrite'
 
 /**
- * `openvod-creds` is always rewritten from server/.dev.vars: the ingest secret
+ * `clipmux-creds` is always rewritten from server/.dev.vars: the ingest secret
  * and the bucket/host allowlists cannot be allowed to drift from the API's own
- * environment. `openvod-groq-creds` stays skip-if-exists so a re-run with an
+ * environment. `clipmux-groq-creds` stays skip-if-exists so a re-run with an
  * empty Groq key cannot overwrite a real key with "unused".
  */
 export function forceOverwriteModalSecret(name: string): boolean {
@@ -373,7 +492,7 @@ export async function deployModalPipeline(root: string, bin: string): Promise<st
 
 /**
  * `bareHost` below replaced the old `hostOf`/`rawBucketFromServerEnv` pair, and
- * `openvodCredsFromEnv` replaced `r2CredsValues` + `requireTranscodeIngestSecret`:
+ * `clipmuxCredsFromEnv` replaced `r2CredsValues` + `requireTranscodeIngestSecret`:
  * one function now reads every credential value from server/.dev.vars, so there
  * is exactly one place where the Modal secret can be built.
  */
@@ -440,7 +559,7 @@ export function callbackHostsFromEnv(env: Record<string, string | undefined>): s
 }
 
 export interface ModalCredsPayload {
-  /** Exactly what goes into the `openvod-creds` secret. */
+  /** Exactly what goes into the `clipmux-creds` secret. */
   values: Record<string, string>
   /** Missing required keys — the caller must refuse to upload. */
   problems: string[]
@@ -449,14 +568,14 @@ export interface ModalCredsPayload {
 }
 
 /**
- * Build the `openvod-creds` payload from server/.dev.vars.
+ * Build the `clipmux-creds` payload from server/.dev.vars.
  *
  * Reading the env file — rather than the wizard's in-memory answers — is the
  * point: a bucket name or callback host edited by hand must reach Modal, or the
  * transcoder reads from one bucket and writes to another (or silently refuses
  * every callback).
  */
-export function openvodCredsFromEnv(
+export function clipmuxCredsFromEnv(
   env: Record<string, string | undefined>,
 ): ModalCredsPayload {
   const read = (key: string): string => (env[key] ?? '').trim()

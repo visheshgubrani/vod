@@ -11,6 +11,12 @@ Per-rendition progress is reported as its own map so the dashboard can show real
 FFmpeg progress ("1080p 42%") instead of a single opaque bar, and so stall
 detection has a signal that is independent of the liveness heartbeat: a worker
 whose heartbeat thread is fine but whose encoder is wedged must still be caught.
+
+The engine emits a progress update **every second per encoder** (FFmpeg's
+``-progress pipe:1``), and a ladder runs its renditions concurrently, so a
+four-way job produces four updates a second. Those updates are consumed
+in-process — stall detection reads every one — but the *HTTP* beat built on top
+of them must not be, which is what :class:`ProgressBeat` is for.
 """
 from __future__ import annotations
 
@@ -54,6 +60,17 @@ STAGE_WEIGHTS: Dict[str, float] = {
     STAGE_UPLOAD: 0.15,
     STAGE_COMPLETE: 0.00,
 }
+
+
+# How often a progress beat is allowed to leave the worker. The engine still
+# sees every FFmpeg block; only the HTTP beat is coalesced to this cadence.
+#
+# What it trades: the API stores the modal path's progress only as liveness (the
+# lease), so a beat that is 15s rather than 1s old costs the dashboard at most
+# one refresh and makes the job four times cheaper to watch. Anything much
+# longer would make stage transitions feel stalled; anything much shorter
+# reintroduces the flood the module exists to prevent.
+PROGRESS_BEAT_SECONDS = 15.0
 
 
 def overall_progress(stage: str, fraction: float) -> float:
@@ -125,6 +142,68 @@ class CallbackProgress:
 
     def report(self, update: ProgressUpdate) -> None:
         self._callback(update)
+
+
+class ProgressBeat:
+    """
+    Decide whether a progress update is worth an HTTP beat.
+
+    The engine's own cadence is one update per second per encoder, and a ladder
+    encodes its renditions concurrently — so posting each update as a heartbeat
+    turned a four-rendition job into four requests a second, every one of them a
+    database write that only renewed a lease measured in minutes.
+
+    Two rules:
+
+    1. At most one beat per ``interval`` seconds.
+    2. A **stage change is never delayed**, however recently a beat went out. The
+       dashboard's stage is the part of progress a viewer reads, and holding
+       ``transcode -> package`` behind a throttle would look like a stall.
+
+    A skipped beat deliberately does *not* update the clock. Two consequences,
+    and the second is the reason it is stated here rather than left implicit:
+
+    - A beat that restarted the window on every skip would never expire under a
+      stream arriving every second, so the job would stop beating entirely.
+    - The first update after the window closes is therefore always sent, whatever
+      stage it carries — which is how a stage change gets a second chance.
+
+    That second chance is needed because the API coalesces its own writes on a
+    timer of its own: a stage beat landing a moment after a progress beat is
+    acknowledged but may not be recorded. This class cannot see that (the reply is
+    a 200 either way), so it re-presents the current stage on the next beat it
+    sends. Nothing here waits on the API — delaying a stage change to accommodate
+    the server is the failure rule 2 exists to prevent.
+
+    ``clock`` is injected so the behaviour is testable without sleeping, and the
+    lock makes it safe to share across the rendition threads.
+    """
+
+    def __init__(
+        self,
+        interval: float = PROGRESS_BEAT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._interval = float(interval)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._last_sent: Optional[float] = None
+        self._stage: Optional[str] = None
+
+    def should_send(self, stage: str) -> bool:
+        """True when a beat carrying ``stage`` should go out now."""
+        with self._lock:
+            now = self._clock()
+            # Rule 2 first, and on its own: a stage change that waited for the
+            # window would be a stage change that was delayed.
+            if stage != self._stage:
+                self._stage = stage
+                self._last_sent = now
+                return True
+            if self._last_sent is None or (now - self._last_sent) >= self._interval:
+                self._last_sent = now
+                return True
+            return False
 
 
 class RenditionProgress:

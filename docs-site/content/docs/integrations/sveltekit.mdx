@@ -1,12 +1,12 @@
 ---
 title: SvelteKit
-description: OpenVOD in a SvelteKit app — +server.ts endpoints for token minting and webhooks, the uploader in a component, and hls.js playback.
+description: ClipMux in a SvelteKit app — +server.ts endpoints for token minting and webhooks, the uploader in a component, and hls.js playback.
 ---
 
-SvelteKit maps onto OpenVOD cleanly: `+server.ts` endpoints are server-only, so
+SvelteKit maps onto ClipMux cleanly: `+server.ts` endpoints are server-only, so
 that is where the API key lives, and the uploader and playback run in the browser.
 
-**One difference from the Next.js guide:** `@openvod/player` is React-only. This
+**One difference from the Next.js guide:** `@clipmux/player` is React-only. This
 guide plays the same manifests with `hls.js` — see
 [Playback without React](/playback#playback-without-react).
 
@@ -22,14 +22,14 @@ guide plays the same manifests with `hls.js` — see
         <Folder name="play-token/[id]" defaultOpen>
           <File name="+server.ts" />
         </Folder>
-        <Folder name="webhooks/openvod" defaultOpen>
+        <Folder name="webhooks/clipmux" defaultOpen>
           <File name="+server.ts" />
         </Folder>
       </Folder>
       <File name="+page.svelte" />
     </Folder>
     <Folder name="lib" defaultOpen>
-      <File name="openvod.ts" />
+      <File name="clipmux.ts" />
       <File name="HlsPlayer.svelte" />
     </Folder>
   </Folder>
@@ -40,16 +40,16 @@ guide plays the same manifests with `hls.js` — see
 
 ```bash
 # .env — server-side only. NO PUBLIC_ prefix, so the browser never sees it.
-OPENVOD_API_KEY=sk_live_…
-OPENVOD_API_URL=http://localhost:8787
-OPENVOD_WEBHOOK_SECRET=whsec_…
+CLIPMUX_API_KEY=sk_live_…
+CLIPMUX_API_URL=http://localhost:8787
+CLIPMUX_WEBHOOK_SECRET=whsec_…
 
 # Public: inlined into the client bundle. Never put a secret here.
-PUBLIC_OPENVOD_API_URL=http://localhost:8787
+PUBLIC_CLIPMUX_API_URL=http://localhost:8787
 ```
 
 <Callout type="error" title="PUBLIC_ prefix means published">
-  `PUBLIC_OPENVOD_API_KEY` would inline your key into the client bundle. In
+  `PUBLIC_CLIPMUX_API_KEY` would inline your key into the client bundle. In
   SvelteKit the un-prefixed variables are the private ones — import them from
   `$env/dynamic/private`, never `$env/static/public`.
 </Callout>
@@ -58,9 +58,9 @@ Read them from the right module, depending on the boundary:
 
 | Module | Visible to | Use for |
 | --- | --- | --- |
-| `$env/dynamic/private` | Server only, read at runtime | `OPENVOD_API_KEY`, the webhook secret |
+| `$env/dynamic/private` | Server only, read at runtime | `CLIPMUX_API_KEY`, the webhook secret |
 | `$env/static/private` | Server only, inlined at build | Same, but frozen into the build |
-| `$env/static/public` | Client and server | `PUBLIC_OPENVOD_API_URL` |
+| `$env/static/public` | Client and server | `PUBLIC_CLIPMUX_API_URL` |
 
 Use `dynamic/private` for secrets so one build artifact can be deployed against
 different environments.
@@ -71,15 +71,15 @@ different environments.
 // src/routes/api/upload-token/+server.ts
 import { json } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
-import { OpenVod } from '@openvod/server'
+import { ClipMux } from '@clipmux/server'
 import type { RequestHandler } from './$types'
 
 export const POST: RequestHandler = async () => {
   // TODO: authorize the caller before minting — an open endpoint lets anyone
   // spend your storage budget. `locals.user` from your auth hook goes here.
-  const vod = new OpenVod({
-    apiKey: env.OPENVOD_API_KEY,
-    baseUrl: env.OPENVOD_API_URL, // no /v1 suffix
+  const vod = new ClipMux({
+    apiKey: env.CLIPMUX_API_KEY,
+    baseUrl: env.CLIPMUX_API_URL, // no /v1 suffix
   })
 
   const token = await vod.uploads.createToken({ expiresIn: '1h', maxFiles: 1 })
@@ -93,8 +93,8 @@ export const POST: RequestHandler = async () => {
 ```svelte
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
-  import { PUBLIC_OPENVOD_API_URL } from '$env/static/public'
-  import { OpenVodUploader, OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+  import { PUBLIC_CLIPMUX_API_URL } from '$env/static/public'
+  import { ClipMuxUploader, ClipMuxError, isUploadAbortedError } from '@clipmux/uploader'
 
   let percent = $state(0)
   let error = $state<string | null>(null)
@@ -108,8 +108,8 @@ export const POST: RequestHandler = async () => {
     const { uploadToken } = await fetch('/api/upload-token', { method: 'POST' })
       .then((r) => r.json())
 
-    const uploader = new OpenVodUploader({
-      baseUrl: PUBLIC_OPENVOD_API_URL, // no /v1 suffix
+    const uploader = new ClipMuxUploader({
+      baseUrl: PUBLIC_CLIPMUX_API_URL, // no /v1 suffix
       uploadToken,
     })
 
@@ -121,7 +121,7 @@ export const POST: RequestHandler = async () => {
       videoId = result.fileId
     } catch (cause) {
       if (isUploadAbortedError(cause)) return
-      error = cause instanceof OpenVodError ? `${cause.code}: ${cause.message}` : 'Upload failed'
+      error = cause instanceof ClipMuxError ? `${cause.code}: ${cause.message}` : 'Upload failed'
     }
   }
 </script>
@@ -145,12 +145,12 @@ export const POST: RequestHandler = async () => {
 // src/routes/api/play-token/[id]/+server.ts
 import { error, json } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
-import { OpenVod, OpenVodError } from '@openvod/server'
+import { ClipMux, ClipMuxError } from '@clipmux/server'
 import type { RequestHandler } from './$types'
 
 export const POST: RequestHandler = async ({ params, request }) => {
   // TODO: this is where the viewer proves they may watch *this* video.
-  const vod = new OpenVod({ apiKey: env.OPENVOD_API_KEY, baseUrl: env.OPENVOD_API_URL })
+  const vod = new ClipMux({ apiKey: env.CLIPMUX_API_KEY, baseUrl: env.CLIPMUX_API_URL })
 
   // The browser sends the viewer's own UA in this header — see the warning.
   const viewerUserAgent = request.headers.get('x-viewer-user-agent') ?? undefined
@@ -162,7 +162,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
     })
     return json({ token: session.token, playbackUrl: session.playback_url })
   } catch (cause) {
-    if (cause instanceof OpenVodError && cause.code === 'NOT_FOUND') {
+    if (cause instanceof ClipMuxError && cause.code === 'NOT_FOUND') {
       error(404, 'Unknown video id')
     }
     error(500, 'Could not mint a playback token')
@@ -238,10 +238,10 @@ hls?.loadSource(playbackUrl)
 ## 5. Verify webhooks
 
 ```ts
-// src/routes/api/webhooks/openvod/+server.ts
+// src/routes/api/webhooks/clipmux/+server.ts
 import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
-import { WebhookSignatureError, constructWebhookEvent } from '@openvod/server'
+import { WebhookSignatureError, constructWebhookEvent } from '@clipmux/server'
 import type { RequestHandler } from './$types'
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -251,7 +251,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
   try {
     const payload = await constructWebhookEvent({
-      secret: env.OPENVOD_WEBHOOK_SECRET,
+      secret: env.CLIPMUX_WEBHOOK_SECRET,
       rawBody,
       signature: request.headers.get('x-webhook-signature'),
       timestamp: request.headers.get('x-webhook-timestamp'),
@@ -302,7 +302,7 @@ export const POST: RequestHandler = async ({ request }) => {
   </Accordion>
   <Accordion title="Svelte 5 runes in these examples">
     `$state` and `$props` are Svelte 5. On Svelte 4 use `let percent = 0` and
-    `export let src`. The OpenVOD SDKs do not care which you use.
+    `export let src`. The ClipMux SDKs do not care which you use.
   </Accordion>
 </Accordions>
 

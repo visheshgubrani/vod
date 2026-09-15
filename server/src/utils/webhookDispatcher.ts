@@ -92,7 +92,7 @@ export async function dispatchWebhookEvent(
               'X-Webhook-Timestamp': timestamp.toString(),
               'X-Webhook-Signature': `sha256=${signature}`,
               'X-Webhook-Id': eventId,
-              'User-Agent': 'OpenVOD-Webhooks/1.0',
+              'User-Agent': 'ClipMux-Webhooks/1.0',
             },
             body,
             signal: AbortSignal.timeout(10000),

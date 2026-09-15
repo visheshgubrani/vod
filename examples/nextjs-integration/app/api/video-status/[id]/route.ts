@@ -9,8 +9,8 @@
  * so it must be awaited.
  */
 
-import { OpenVodError } from '@openvod/server'
-import { getOpenVod, toErrorResponse } from '@/lib/openvod'
+import { ClipMuxError } from '@clipmux/server'
+import { getClipMux, toErrorResponse } from '@/lib/clipmux'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,7 +21,7 @@ export async function GET(
   const { id } = await params
 
   try {
-    const vod = getOpenVod()
+    const vod = getClipMux()
     const video = await vod.videos.get(id)
 
     // Not ready yet: the browser keeps polling. 202 + the current status tells
@@ -51,11 +51,11 @@ export async function GET(
   } catch (error) {
     // `VIDEO_NOT_READY` is a race: the status flipped between the two calls.
     // Tell the browser to keep polling instead of surfacing an error.
-    if (error instanceof OpenVodError && error.code === 'VIDEO_NOT_READY') {
+    if (error instanceof ClipMuxError && error.code === 'VIDEO_NOT_READY') {
       return Response.json({ status: 'processing' }, { status: 202 })
     }
 
-    if (error instanceof OpenVodError && error.code === 'NOT_FOUND') {
+    if (error instanceof ClipMuxError && error.code === 'NOT_FOUND') {
       return Response.json({ error: 'Unknown video id' }, { status: 404 })
     }
 

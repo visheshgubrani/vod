@@ -14,8 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List
 
-from openvod_transcoder.config import R2_PREFIX
-from openvod_transcoder.transfer.base import (
+from clipmux_transcoder.config import R2_PREFIX
+from clipmux_transcoder.transfer.base import (
     TransferError,
     TransferStats,
     content_type_for,

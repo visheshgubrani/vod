@@ -1,6 +1,6 @@
 ---
 title: Upload endpoints
-description: The five endpoints of the OpenVOD upload protocol — token, create, parts, complete and abort — with exact request and response fields.
+description: The five endpoints of the ClipMux upload protocol — token, create, parts, complete and abort — with exact request and response fields.
 ---
 
 Uploads are a two-party flow. Your **backend** holds the API key and mints an
@@ -9,7 +9,7 @@ token. Video bytes go straight to your R2 raw bucket and never pass through the
 API.
 
 ```
-Your backend                 OpenVOD API                  R2 (raw bucket)
+Your backend                 ClipMux API                  R2 (raw bucket)
      │                            │                             │
      │  POST /v1/upload/token     │                             │
      │  Authorization: Bearer sk_live_…                         │
@@ -30,7 +30,7 @@ Browser                           │                             │
 ```
 
 <Callout type="info" title="You do not have to write this by hand">
-  `@openvod/uploader` implements this protocol completely, including windowed
+  `@clipmux/uploader` implements this protocol completely, including windowed
   presigning, retries with backoff and resumable sessions. These pages are the
   contract behind it — read them when you are debugging, or when you are
   implementing a client in another language.
@@ -51,8 +51,8 @@ than an error):
 | `max_size_bytes` | integer | `null` | Positive. No per-token ceiling when omitted. |
 
 ```bash
-curl -X POST "$OPENVOD_API_URL/v1/upload/token" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+curl -X POST "$CLIPMUX_API_URL/v1/upload/token" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "expires_in": "1h", "max_files": 1, "max_size_bytes": 5368709120 }'
 ```
@@ -159,7 +159,7 @@ parts, and presigning them upfront produces URLs that expire before they are use
 | `part_numbers` | integer[] | ✅ | Non-empty. **Maximum 100 per call** — this is the window size. |
 
 ```bash
-curl -X POST "$OPENVOD_API_URL/v1/upload/parts" \
+curl -X POST "$CLIPMUX_API_URL/v1/upload/parts" \
   -H "Authorization: UploadToken $UPLOAD_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{ "key": "uploads/8c4f…/source.mp4", "upload_id": "2~abcDEF…", "part_numbers": [1,2,3] }'
@@ -213,7 +213,7 @@ dispatching a transcode job, so a truncated upload never costs you GPU time.
 you. Parts are sorted by `part_number` server-side, so send them in any order.
 
 ```bash
-curl -X POST "$OPENVOD_API_URL/v1/upload/complete" \
+curl -X POST "$CLIPMUX_API_URL/v1/upload/complete" \
   -H "Authorization: UploadToken $UPLOAD_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

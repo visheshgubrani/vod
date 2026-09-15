@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from openvod_transcoder.errors import CancelledError
+from clipmux_transcoder.errors import CancelledError
 
 
 class CancellationToken:

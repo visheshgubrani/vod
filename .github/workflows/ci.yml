@@ -29,7 +29,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: openvod_test
+          POSTGRES_DB: clipmux_test
         ports:
           - 5432:5432
         options: >-
@@ -47,7 +47,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/openvod_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/clipmux_test
       TEST_REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
@@ -76,13 +76,13 @@ jobs:
           cache: pnpm
       - name: Install workspace
         run: pnpm install --frozen-lockfile
-      # The dashboard consumes @openvod/player and @openvod/uploader as
+      # The dashboard consumes @clipmux/player and @clipmux/uploader as
       # workspace packages, so their built output must exist before Next builds.
       - name: Build SDK packages
         run: |
-          pnpm --filter @openvod/uploader build
-          pnpm --filter @openvod/player build
-          pnpm --filter @openvod/server build
+          pnpm --filter @clipmux/uploader build
+          pnpm --filter @clipmux/player build
+          pnpm --filter @clipmux/server build
       - name: Lint
         run: pnpm --filter ./web lint
       - name: Build (standalone)
@@ -94,14 +94,16 @@ jobs:
     # CI supplies syntactically valid test destinations; deployments provide the
     # real docs and hosted-form URLs through marketing/.env.example.
     env:
-      MARKETING_CANONICAL_ORIGIN: https://openvod.dev
-      MARKETING_DOCS_URL: https://docs.openvod.dev
-      MARKETING_QUICKSTART_URL: https://docs.openvod.dev/quickstart
+      MARKETING_CANONICAL_ORIGIN: https://clipmux.com
+      MARKETING_DOCS_URL: https://docs.clipmux.com
+      MARKETING_QUICKSTART_URL: https://docs.clipmux.com/quickstart
       MARKETING_GITHUB_URL: https://github.com/visheshgubrani/vod
-      MARKETING_MANAGED_FORM_URL: https://forms.example.invalid/openvod-managed
-      MARKETING_ENTERPRISE_FORM_URL: https://forms.example.invalid/openvod-enterprise
-      MARKETING_PRIVACY_URL: https://openvod.dev/privacy
-      MARKETING_WALKTHROUGH_VIDEO_URL: /walkthrough.mp4
+      MARKETING_MANAGED_FORM_URL: https://forms.example.invalid/clipmux-managed
+      MARKETING_ENTERPRISE_FORM_URL: https://forms.example.invalid/clipmux-enterprise
+      MARKETING_PRIVACY_URL: https://clipmux.com/privacy
+      MARKETING_HERO_VIDEO_URL: /media/hero-1080.mp4
+      MARKETING_HERO_VIDEO_MOBILE_URL: /media/hero-720.mp4
+      MARKETING_HERO_POSTER_URL: /media/hero-poster.jpg
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -114,14 +116,44 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile
       - name: Typecheck
-        run: pnpm --filter openvod-marketing typecheck
+        run: pnpm --filter clipmux-marketing typecheck
       - name: Lint
-        run: pnpm --filter openvod-marketing lint
+        run: pnpm --filter clipmux-marketing lint
       - name: Build marketing site
-        run: pnpm --filter openvod-marketing build
+        run: pnpm --filter clipmux-marketing build
 
   # The integration example *is* the documented developer experience, compiled
   # on every change. Docs rot silently; a broken build does not.
+  e2e:
+    name: browser coverage
+    runs-on: ubuntu-latest
+    # The marketing and web specs run against the dev servers the Playwright
+    # config starts itself; the authenticated dashboard specs skip unless
+    # E2E_STORAGE_STATE is provided, which CI deliberately does not do.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck the specs
+        run: pnpm exec tsc --noEmit -p e2e/tsconfig.json
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run browser coverage
+        # The web app validates its env at build time; the dev server it boots
+        # here only needs the public API base URL to render its shell.
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8787/api
+          NEXT_PUBLIC_AUTH_BASE_URL: http://localhost:8787
+          NEXT_PUBLIC_FRONTEND_URL: http://localhost:3000
+        run: pnpm test:e2e
+
   example:
     runs-on: ubuntu-latest
     steps:
@@ -137,9 +169,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build SDK packages
         run: |
-          pnpm --filter @openvod/uploader build
-          pnpm --filter @openvod/player build
-          pnpm --filter @openvod/server build
+          pnpm --filter @clipmux/uploader build
+          pnpm --filter @clipmux/player build
+          pnpm --filter @clipmux/server build
       - name: Build the example
         run: pnpm --filter ./examples/nextjs-integration build
 
@@ -161,7 +193,7 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile
       - name: Build the docs site
-        run: pnpm --filter openvod-docs build
+        run: pnpm --filter clipmux-docs build
 
   transcoding-python:
     runs-on: ubuntu-latest
@@ -174,7 +206,7 @@ jobs:
       # a red build, not a green one with three skipped tests. This turns the
       # skip into a failure. (The test module reads it; see
       # transcoding/tests/test_real_media.py.)
-      OPENVOD_REQUIRE_MEDIA_TOOLS: "1"
+      CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -223,13 +255,13 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
       - name: Build API image
-        run: docker build -f server/Dockerfile -t openvod-api .
+        run: docker build -f server/Dockerfile -t clipmux-api .
       - name: Build web image
-        run: docker build -f web/Dockerfile -t openvod-web .
+        run: docker build -f web/Dockerfile -t clipmux-web .
       # The agent image was never built here, so a broken Dockerfile.agent
       # stayed invisible until someone ran the transcoder profile.
       - name: Build transcoder agent image
-        run: docker build -f transcoding/Dockerfile.agent -t openvod-transcoder .
+        run: docker build -f transcoding/Dockerfile.agent -t clipmux-transcoder .
 
   packages:
     runs-on: ubuntu-latest
@@ -244,12 +276,12 @@ jobs:
           cache: pnpm
       - name: Install workspace
         run: pnpm install --frozen-lockfile
-      # @openvod/uploader and @openvod/player only build at tag time otherwise,
+      # @clipmux/uploader and @clipmux/player only build at tag time otherwise,
       # so a broken build stayed invisible until a release was cut.
       - name: Build published packages
         run: |
-          pnpm --filter @openvod/uploader build
-          pnpm --filter @openvod/player build
+          pnpm --filter @clipmux/uploader build
+          pnpm --filter @clipmux/player build
 
   soft-delete-guard:
     runs-on: ubuntu-latest
@@ -354,21 +386,43 @@ jobs:
             . scripts/lib/detect.sh
             ov_detect_all
             ov_dump
-            OPENVOD_NO_SUDO=1 bash -c ". scripts/lib/detect.sh; ov_detect_all; ov_run_pkg python3 && exit 1; exit 0"
+            CLIPMUX_NO_SUDO=1 bash -c ". scripts/lib/detect.sh; ov_detect_all; ov_run_pkg python3 && exit 1; exit 0"
           '
 
   branding-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The rename to ClipMux replaced every earlier brand spelling — the
+      # previous product name in each of its casings (upper, title, camel and
+      # lower, and the env-var prefix) and the one before that. This is the
+      # completion assertion for that pass: case-insensitive, and deliberately
+      # absolute — there are no alias modules and no legacy env fallbacks, so
+      # nothing legitimate can match.
+      #
+      # Scanning `.` (rather than a hand-written path list, which had gaps —
+      # `setup/` and `marketing/` went unchecked) means a new top-level directory
+      # is covered by default. The exclude-dirs matter: `.git` holds the whole
+      # pre-rename history, and the rest are generated or vendored.
+      #
+      # Both alternatives are written with a character class so that this file
+      # does not match its own search string and fail the gate it defines.
       - name: Forbid residual brand strings in source
         run: |
-          if grep -rInE 'clipmux|indiemux' \
+          if grep -rIn -iE 'openv[o]d|indiemu[x]' \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.next \
+            --exclude-dir=dist --exclude-dir=out --exclude-dir=.turbo \
+            --exclude-dir=coverage --exclude-dir=.venv --exclude-dir=__pycache__ \
+            --exclude-dir=.wrangler --exclude-dir=.pnpm-store \
+            --exclude-dir=test-results --exclude-dir=playwright-report \
+            --exclude-dir=.parcel-cache --exclude-dir=.cache \
             --include='*.ts' --include='*.tsx' --include='*.py' \
             --include='*.md' --include='*.mdx' --include='*.jsonc' --include='*.css' \
-            --include='*.json' \
-            server delivery web sdk player transcoding docs docs-site \
-            README.md CONTRIBUTING.md AGENTS.md; then
+            --include='*.json' --include='*.sh' --include='*.mjs' \
+            --include='*.yml' --include='*.yaml' --include='*.toml' \
+            --include='*.svg' --include='*.example' --include='Dockerfile*' \
+            --include='.gitignore' --include='.dockerignore' \
+            . ; then
             echo "Residual brand strings found (see above). Rename pass incomplete."
             exit 1
           fi

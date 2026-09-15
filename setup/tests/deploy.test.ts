@@ -33,8 +33,8 @@ function answers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
     accountId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     r2AccessKeyId: 'r2-key',
     r2SecretAccessKey: 'r2-secret',
-    rawBucket: 'openvod-raw',
-    transcodedBucket: 'openvod-transcoded',
+    rawBucket: 'clipmux-raw',
+    transcodedBucket: 'clipmux-transcoded',
     frontendUrl: 'http://localhost:3000',
     groqApiKey: 'gsk_test',
     ...overrides,
@@ -48,8 +48,8 @@ function credsEnv(overrides: Record<string, string> = {}): Record<string, string
     ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     R2_ACCESS_KEY_ID: 'r2-key',
     R2_SECRET_ACCESS_KEY: 'r2-secret',
-    RAW_BUCKET_NAME: 'openvod-raw',
-    TRANSCODED_BUCKET_NAME: 'openvod-transcoded',
+    RAW_BUCKET_NAME: 'clipmux-raw',
+    TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
     TRANSCODE_PROVIDER: 'modal',
     TRANSCODE_INGEST_SECRET: SECRET,
     JWT_SECRET: SECRET,
@@ -102,15 +102,15 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
       if (failure !== undefined) throw new Error(failure)
       return { callbackHosts: payload.values['ALLOWED_CALLBACK_HOSTS'] ?? null }
     },
-    deployModal: async () => run('deployModal', 'https://acme--openvod-transcode.modal.run'),
+    deployModal: async () => run('deployModal', 'https://acme--clipmux-transcode.modal.run'),
     refreshModalCallbacks: async (_bin, payload, previous) =>
       run('refreshModalCallbacks', payload.values['ALLOWED_CALLBACK_HOSTS'] ?? previous),
     deployWorker: async (pkg) =>
       run(
         `deployWorker:${pkg}`,
         pkg === 'delivery'
-          ? 'https://openvod-delivery.acme.workers.dev'
-          : 'https://openvod-api.acme.workers.dev',
+          ? 'https://clipmux-delivery.acme.workers.dev'
+          : 'https://clipmux-api.acme.workers.dev',
       ),
     putWorkerSecrets: async (pkg) => void run(`putWorkerSecrets:${pkg}`, undefined),
     dbMigrate: async () => void run('dbMigrate', undefined),
@@ -166,7 +166,7 @@ describe('runDeployPhase — Modal + Workers (dev target)', () => {
     // The API deploy must come after the migration, and the callback refresh
     // after both the Modal and API steps.
     const order = h.calls
-    expect(order.indexOf('ensureCfLogin')).toBeLessThan(order.indexOf('ensureBucket:openvod-raw'))
+    expect(order.indexOf('ensureCfLogin')).toBeLessThan(order.indexOf('ensureBucket:clipmux-raw'))
     expect(order.indexOf('dbMigrate')).toBeLessThan(order.indexOf('deployWorker:server'))
     expect(order.indexOf('deployWorker:server')).toBeLessThan(
       order.indexOf('refreshModalCallbacks'),
@@ -189,7 +189,7 @@ describe('runDeployPhase — failures', () => {
     expect(h.calls).toContain('deployWorker:delivery')
     expect(h.calls).toContain('putWorkerSecrets:delivery')
     expect(h.calls).toContain('deployWorker:server')
-    expect(report.result.apiUrl).toBe('https://openvod-api.acme.workers.dev')
+    expect(report.result.apiUrl).toBe('https://clipmux-api.acme.workers.dev')
     // The callback refresh depends on the Modal secret, so it is blocked, not attempted.
     expect(report.steps.find((step) => step.id === 'modal-callbacks')?.status).toBe('blocked')
     expect(h.calls).not.toContain('refreshModalCallbacks')
@@ -250,9 +250,9 @@ describe('runDeployPhase — self-hosted provider', () => {
     expect(h.calls).toContain('deployWorker:server')
     expect(h.calls).toContain('dbMigrate')
     // No raw bucket and no CORS: nothing uploads.
-    expect(h.calls).not.toContain('ensureBucket:openvod-raw')
-    expect(h.calls).toContain('ensureBucket:openvod-transcoded')
-    expect(h.calls).not.toContain('applyBucketCors:openvod-raw')
+    expect(h.calls).not.toContain('ensureBucket:clipmux-raw')
+    expect(h.calls).toContain('ensureBucket:clipmux-transcoded')
+    expect(h.calls).not.toContain('applyBucketCors:clipmux-raw')
     expect(report.complete).toBe(true)
   })
 })

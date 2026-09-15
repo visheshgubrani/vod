@@ -1,8 +1,10 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { Loader2, Building2, ArrowRight } from "lucide-react";
+import { Loader2, ArrowRight } from "lucide-react";
 import {
   useSession,
   createOrganization,
@@ -12,8 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import Link from "next/link";
-import Image from "next/image";
+import { APP_NAME } from "@/lib/site";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -98,10 +99,13 @@ export default function OnboardingPage() {
   // Show loading state
   if (sessionPending || orgsPending) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
+      <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-4">
-          <Loader2 className="w-8 h-8 text-primary animate-spin" />
-          <p className="text-sm text-muted-foreground">Loading...</p>
+          <Loader2
+            className="size-8 animate-spin text-ember"
+            aria-hidden="true"
+          />
+          <p className="dash-body text-muted-foreground">Loading...</p>
         </div>
       </div>
     );
@@ -112,39 +116,45 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+    <div className="flex min-h-screen items-center justify-center bg-background px-5 py-12 sm:px-6">
       <div className="w-full max-w-md">
         {/* Header */}
-        <div className="text-center mb-8">
-          <div className="mb-2">
-            <Link href="/" className="flex items-center gap-1.5 justify-center">
+        <div className="mb-8 text-center">
+          <div className="mb-8 flex justify-center">
+            <Link
+              href="/"
+              className="flex items-center gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
               <Image
                 src="/logo.svg"
-                alt="OpenVOD logo"
+                alt="ClipMux logo"
                 width={36}
                 height={36}
-                className="h-12 w-auto"
+                className="h-8 w-auto"
                 priority
               />
-              {/* <span className="text-2xl tracking-wider text-purple-200 font-dashboard-heading">
-                OpenVOD
-              </span> */}
+              <span className="text-[17px] font-semibold tracking-[-0.02em] text-foreground">
+                {APP_NAME}
+              </span>
             </Link>
           </div>
-          <h1 className="text-2xl mt-4 font-medium text-foreground mb-1.5">
+          <h1 className="dash-title text-foreground">
             Create Your Organization
           </h1>
-          <p className="text-muted-foreground">
+          <p className="dash-body mt-2 text-muted-foreground">
             Set up your workspace to start managing videos
           </p>
         </div>
 
         {/* Form Card */}
-        <div className="glass rounded-md p-4 lg:p-6">
-          <form onSubmit={handleSubmit} className="space-y-7">
+        <div className="dash-panel p-5 sm:p-6">
+          <form onSubmit={handleSubmit} className="space-y-6">
             {/* Error Banner */}
             {error && (
-              <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+              <div
+                role="alert"
+                className="rounded-xl border border-failed/30 bg-failed/10 px-4 py-3 text-sm text-danger"
+              >
                 {error}
               </div>
             )}
@@ -160,15 +170,16 @@ export default function OnboardingPage() {
                 onChange={(e) => handleNameChange(e.target.value)}
                 disabled={isLoading}
                 autoFocus
-                className="mt-2 rounded-md bg-muted-foreground/20"
               />
             </div>
 
             {/* URL Slug */}
             <div className="space-y-2">
               <Label htmlFor="slug">URL Slug</Label>
-              <div className="flex items-center gap-2 mt-2">
-                <span className="text-sm text-accent font-medium">openvod.dev/</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[15px] font-medium text-muted-foreground">
+                  clipmux.com/
+                </span>
                 <Input
                   id="slug"
                   type="text"
@@ -183,29 +194,25 @@ export default function OnboardingPage() {
                     })
                   }
                   disabled={isLoading}
-                  className="flex-1 rounded-md bg-muted-foreground/20 h-10"
+                  className="flex-1"
                 />
               </div>
-              <p className="text-xs text-muted-foreground/80">
+              <p className="dash-meta">
                 This will be used in your organization&apos;s URL
               </p>
             </div>
 
             {/* Submit Button */}
-            <Button
-              type="submit"
-              className="w-full mt-3 lg:text-base text-sm"
-              disabled={isLoading}
-            >
+            <Button type="submit" size="lg" className="w-full" disabled={isLoading}>
               {isLoading ? (
                 <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <Loader2 className="size-5 animate-spin" aria-hidden="true" />
                   Creating...
                 </>
               ) : (
                 <>
                   Continue to Dashboard
-                  <ArrowRight className="w-5 h-5" />
+                  <ArrowRight className="size-5" aria-hidden="true" />
                 </>
               )}
             </Button>
@@ -213,7 +220,7 @@ export default function OnboardingPage() {
         </div>
 
         {/* Footer */}
-        <p className="text-center text-xs text-muted-foreground/80 mt-8">
+        <p className="dash-meta mt-8 text-center">
           You can invite team members after creating your organization
         </p>
       </div>

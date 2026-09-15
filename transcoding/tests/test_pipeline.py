@@ -12,10 +12,10 @@ from typing import Dict, List
 
 import pytest
 
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.encoding.failures import build_process_error
-from openvod_transcoder.encoding.probe import CapabilityReport, ChainProbe, EncoderProbe
-from openvod_transcoder.errors import (
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.encoding.failures import build_process_error
+from clipmux_transcoder.encoding.probe import CapabilityReport, ChainProbe, EncoderProbe
+from clipmux_transcoder.errors import (
     ERROR_EMPTY_FILE,
     ERROR_ENCODER_FAILED,
     ERROR_MISSING_RENDITION,
@@ -24,12 +24,12 @@ from openvod_transcoder.errors import (
     CancelledError,
     TranscodeError,
 )
-from openvod_transcoder.options import ProcessingOptions
-from openvod_transcoder import pipeline as pipeline_module
-from openvod_transcoder.pipeline import output_prefix, run_pipeline
-from openvod_transcoder.progress import ProgressUpdate
-from openvod_transcoder.transfer import TransferError, TransferStats
-from openvod_transcoder.video.analysis import VideoMetadata
+from clipmux_transcoder.options import ProcessingOptions
+from clipmux_transcoder import pipeline as pipeline_module
+from clipmux_transcoder.pipeline import output_prefix, run_pipeline
+from clipmux_transcoder.progress import ProgressUpdate
+from clipmux_transcoder.transfer import TransferError, TransferStats
+from clipmux_transcoder.video.analysis import VideoMetadata
 
 
 # ── fakes ────────────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ class FakeFfmpeg:
             self.failures += 1
             raise self.error
         if on_progress is not None:
-            from openvod_transcoder.ffmpeg_progress import FfmpegProgress
+            from clipmux_transcoder.ffmpeg_progress import FfmpegProgress
 
             on_progress(FfmpegProgress(out_time_seconds=30.0, speed=1.5), 0.5)
             on_progress(FfmpegProgress(out_time_seconds=60.0, speed=1.5), 1.0)
@@ -270,9 +270,9 @@ def patched(monkeypatch):
     monkeypatch.setattr(pipeline_module, "preflight_source", fake_preflight)
     monkeypatch.setattr(pipeline_module, "validate_encoded_rendition", fake_validate)
 
-    import openvod_transcoder.video.poster as poster_module
-    import openvod_transcoder.video.transcription as transcription_module
-    import openvod_transcoder.video.chapters as chapters_module
+    import clipmux_transcoder.video.poster as poster_module
+    import clipmux_transcoder.video.transcription as transcription_module
+    import clipmux_transcoder.video.chapters as chapters_module
 
     monkeypatch.setattr(poster_module, "generate_poster", fake_poster)
     monkeypatch.setattr(transcription_module, "transcribe_to_vtt", fake_transcribe)
@@ -829,7 +829,7 @@ def _mixed_backend_behavior(label, attempt, cmd):
     if label == "encode-720p-nvenc":
         return cuda_filter_error()
     if label == "encode-720p-nvenc+software-decode":
-        from openvod_transcoder.errors import ERROR_ENCODER_FAILED, TranscodeError
+        from clipmux_transcoder.errors import ERROR_ENCODER_FAILED, TranscodeError
 
         # The encoder itself gives up: proof, recorded once, that NVENC cannot
         # finish this job — every later rendition skips it and lands on the CPU.
@@ -895,8 +895,8 @@ class TestSegmentDurationIsResolvedOnce:
 
 class TestResourceBounds:
     def _candidates(self):
-        from openvod_transcoder.encoding.backends import CPU_BACKEND, NVENC_BACKEND
-        from openvod_transcoder.encoding.selection import BackendCandidate
+        from clipmux_transcoder.encoding.backends import CPU_BACKEND, NVENC_BACKEND
+        from clipmux_transcoder.encoding.selection import BackendCandidate
 
         return {
             "cpu": [BackendCandidate(CPU_BACKEND, gpu_decode=False)],
@@ -979,8 +979,8 @@ class TestOutputValidation:
 
 class TestManifestReferences:
     def test_a_dangling_playlist_reference_is_a_packaging_failure(self, tmp_path):
-        from openvod_transcoder.pipeline import validate_manifest_references
-        from openvod_transcoder.result import build_inventory
+        from clipmux_transcoder.pipeline import validate_manifest_references
+        from clipmux_transcoder.result import build_inventory
 
         output_dir = tmp_path / "output"
         (output_dir / "video_720p").mkdir(parents=True)
@@ -996,8 +996,8 @@ class TestManifestReferences:
         assert caught.value.code == ERROR_PACKAGING_FAILED
 
     def test_resolvable_references_pass(self, tmp_path):
-        from openvod_transcoder.pipeline import validate_manifest_references
-        from openvod_transcoder.result import build_inventory
+        from clipmux_transcoder.pipeline import validate_manifest_references
+        from clipmux_transcoder.result import build_inventory
 
         output_dir = tmp_path / "output"
         (output_dir / "video_720p").mkdir(parents=True)
@@ -1075,7 +1075,7 @@ class TestPayloadKeyPrefix:
         assert payload["outputs"]["subtitles"] == "videos/vid-1/subtitles.vtt"
 
     def test_prefix_slashes_are_normalised(self, tmp_path, source, patched):
-        from openvod_transcoder.result import prefixed_path
+        from clipmux_transcoder.result import prefixed_path
 
         assert prefixed_path("/videos/v/", "/playlist.m3u8") == "videos/v/playlist.m3u8"
         assert prefixed_path("", "playlist.m3u8") == "playlist.m3u8"

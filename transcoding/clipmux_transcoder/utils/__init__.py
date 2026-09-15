@@ -1,6 +1,6 @@
 """Utility modules for the transcoding pipeline."""
-from openvod_transcoder.utils.cmd import run_cmd
-from openvod_transcoder.utils.network import (
+from clipmux_transcoder.utils.cmd import run_cmd
+from clipmux_transcoder.utils.network import (
     send_callback,
     send_heartbeat,
     is_public_host,

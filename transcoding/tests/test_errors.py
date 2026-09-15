@@ -1,7 +1,7 @@
 """Tests for the typed error taxonomy."""
 import pytest
 
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_TRANSCODE_FAILED,
     TranscodeError,
     classify_error,

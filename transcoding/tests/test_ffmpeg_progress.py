@@ -1,13 +1,14 @@
 """FFmpeg progress decoding, stall classification and publication ordering."""
 import subprocess
+import sys
 import threading
 import time
 
 import pytest
 
-from openvod_transcoder.errors import CancelledError, FFmpegProcessError
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.ffmpeg_progress import (
+from clipmux_transcoder.errors import CancelledError, FFmpegProcessError
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.ffmpeg_progress import (
     FfmpegProgress,
     StallPolicy,
     advance_progress,
@@ -16,7 +17,7 @@ from openvod_transcoder.ffmpeg_progress import (
     progress_fraction,
     run_ffmpeg,
 )
-from openvod_transcoder.transfer.base import (
+from clipmux_transcoder.transfer.base import (
     content_type_for,
     is_playlist,
     order_for_publication,
@@ -234,6 +235,61 @@ def _patch_popen(monkeypatch, process):
 
 
 class TestRunFfmpeg:
+    def test_logs_position_speed_and_idle_time_even_after_progress_stops(self, monkeypatch, capsys):
+        process = FakeProcess([
+            "out_time_us=600000000", "speed=12x", "progress=continue",
+        ], exit_on_eof=False)
+        _patch_popen(monkeypatch, process)
+        token = CancellationToken()
+        current = 0.0
+        idle_polls = 0
+
+        def poll():
+            nonlocal current, idle_polls
+            if current >= 31:
+                idle_polls += 1
+                current = 31.0 if idle_polls == 1 else 62.0
+                if idle_polls == 3:
+                    token.cancel("test finished")
+            return 0 if process.terminated else None
+
+        def progress(*_):
+            nonlocal current
+            current = 31.0
+
+        monkeypatch.setattr(process, "poll", poll)
+        with pytest.raises(CancelledError):
+            run_ffmpeg(
+                ["ffmpeg"], label="encode-480p", duration=2400,
+                on_progress=progress, cancellation=token,
+                clock=lambda: current, poll_interval=0.001,
+            )
+        logs = capsys.readouterr().out
+        assert "position=600.0s/2400.0s (25.0%) speed=12.00x" in logs
+        assert "elapsed=62s no_advance=62s" in logs
+        assert logs.count("position=") == 2
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    def test_reaps_process_that_exits_after_closing_progress(self, exit_code):
+        # Pipe EOF and process exit are separate events. The child deliberately
+        # stays alive after EOF, then exits without producing another event.
+        cmd = [sys.executable, "-c", (
+            "import os,sys,time; "
+            "print('out_time_us=1000000\\nprogress=end', flush=True); "
+            "os.close(1); time.sleep(0.2); "
+            "print('late encoder diagnostic', file=sys.stderr, flush=True); "
+            f"sys.exit({exit_code})"
+        )]
+        kwargs = dict(label="exit-after-eof", stall=StallPolicy(1.0), poll_interval=0.01)
+        if exit_code:
+            with pytest.raises(FFmpegProcessError, match="late encoder diagnostic") as caught:
+                run_ffmpeg(cmd, **kwargs)
+            assert caught.value.returncode == 1
+        else:
+            result = run_ffmpeg(cmd, **kwargs)
+            assert result.returncode == 0
+            assert "late encoder diagnostic" in result.stderr
+
     def test_appends_progress_pipe_so_callers_cannot_forget_it(self, monkeypatch):
         process = FakeProcess(["frame=1", "out_time_us=1000000", "progress=end"])
         calls = _patch_popen(monkeypatch, process)
@@ -277,8 +333,8 @@ class TestRunFfmpeg:
         fallback policy entirely; classified as a filter failure it advances to
         the hybrid path, which does not use that filter.
         """
-        from openvod_transcoder.encoding.failures import FAILURE_FILTER
-        from openvod_transcoder.errors import is_fallback_eligible
+        from clipmux_transcoder.encoding.failures import FAILURE_FILTER
+        from clipmux_transcoder.errors import is_fallback_eligible
 
         stderr = (
             "[AVFilterGraph @ 0x55d1] Error initializing filter 'scale_cuda' with args "
@@ -294,7 +350,7 @@ class TestRunFfmpeg:
         assert is_fallback_eligible(caught.value) is True
 
     def test_corrupt_media_is_not_fallback_eligible(self, monkeypatch):
-        from openvod_transcoder.errors import is_fallback_eligible
+        from clipmux_transcoder.errors import is_fallback_eligible
 
         process = FakeProcess(
             ["progress=end"], returncode=1, stderr="Invalid data found when processing input"
@@ -320,8 +376,8 @@ class TestRunFfmpeg:
 
 class TestStallError:
     def test_a_stalled_encoder_is_reported_as_stalled_not_failed(self, monkeypatch):
-        from openvod_transcoder.errors import ERROR_STALLED
-        from openvod_transcoder.ffmpeg_progress import StallError
+        from clipmux_transcoder.errors import ERROR_STALLED
+        from clipmux_transcoder.ffmpeg_progress import StallError
 
         process = FakeProcess(["out_time_us=1000000", "progress=continue"], exit_on_eof=False)
         _patch_popen(monkeypatch, process)
@@ -391,7 +447,7 @@ class _BlockingIterable:
 
 class TestWatchdogIsIndependentOfStdout:
     def test_a_silent_process_is_terminated_by_the_stall_watchdog(self, monkeypatch):
-        from openvod_transcoder.ffmpeg_progress import StallError
+        from clipmux_transcoder.ffmpeg_progress import StallError
 
         process = SilentProcess()
         _patch_popen(monkeypatch, process)

@@ -8,8 +8,8 @@ that separates the two. That signal is forward progress in FFmpeg's own
 `-progress` stream — not elapsed time, and not the heartbeat (whose thread can
 be perfectly healthy while the encoder is stuck).
 
-Two properties of this module were added after a real failure and are worth
-stating plainly, because the obvious implementation has neither:
+Three properties of this module were added after real failures and are worth
+stating plainly, because a simple output-reading loop misses them:
 
 1. **The watchdog does not depend on stdout.** An earlier version evaluated
    cancellation and the stall deadline *inside* the loop that read FFmpeg's
@@ -20,6 +20,9 @@ stating plainly, because the obvious implementation has neither:
 2. **Only movement resets the deadline.** Progress counts when the timestamp or
    the frame counter goes *past* the best value seen so far. Repeated identical
    blocks are not progress, however many of them arrive.
+3. **EOF is not process exit.** Once stdout closes, keep polling the child on
+   every watchdog tick. EOF arrives only once; checking exit only at that instant
+   can strand an already-finished encode until the stall deadline.
 
 Parsing notes that matter:
 
@@ -41,15 +44,18 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.encoding.failures import build_process_error
-from openvod_transcoder.errors import ERROR_STALLED, CancelledError, TranscodeError
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.encoding.failures import build_process_error
+from clipmux_transcoder.errors import ERROR_STALLED, CancelledError, TranscodeError
 
 _TIMESTAMP = re.compile(r"^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$")
 
 # How often FFmpeg is asked for a progress block. 1s is fine-grained enough for
 # a useful ETA and coarse enough not to matter for throughput.
 PROGRESS_INTERVAL_SECONDS = 1.0
+# Log often enough to diagnose an idle container without printing every frame
+# or exposing input paths, command arguments, or media metadata.
+PROGRESS_LOG_INTERVAL_SECONDS = 30.0
 
 
 def parse_timestamp(value: str) -> Optional[float]:
@@ -296,10 +302,13 @@ def run_ffmpeg(
                     print(f"[FFMPEG] {label}: process ignored SIGKILL")
 
     last_activity = now()
+    last_log = started
+    latest = FfmpegProgress()
     best_time: Optional[float] = None
     best_frame: Optional[int] = None
     stall_reason = ""
     cancelled = False
+    stdout_closed = False
 
     try:
         while True:
@@ -309,7 +318,29 @@ def run_ffmpeg(
                 cancelled = True
                 break
 
-            if policy.enabled and (now() - last_activity) > policy.timeout_seconds:
+            # Drain all queued progress before observing exit, then keep polling
+            # after EOF: the child may still be releasing encoder resources when
+            # its pipe closes. No second EOF will arrive to wake us up.
+            if stdout_closed and process.poll() is not None:
+                break
+
+            current = now()
+            if current - last_log >= PROGRESS_LOG_INTERVAL_SECONDS:
+                position = f"{best_time:.1f}s" if best_time is not None else "unknown"
+                if duration and duration > 0:
+                    fraction = progress_fraction(best_time, duration)
+                    position += f"/{duration:.1f}s ({fraction:.1%})"
+                speed = f"{latest.speed:.2f}x" if latest.speed is not None else "unknown"
+                state = "finishing" if stdout_closed or latest.ended else "encoding"
+                print(
+                    f"[FFMPEG] {label}: position={position} speed={speed} "
+                    f"elapsed={current - started:.0f}s no_advance={current - last_activity:.0f}s "
+                    f"state={state}",
+                    flush=True,
+                )
+                last_log = current
+
+            if policy.enabled and (current - last_activity) > policy.timeout_seconds:
                 stall_reason = (
                     f"no encoder progress for {policy.timeout_seconds:.0f}s "
                     f"(last position {best_time if best_time is not None else -1.0:.1f}s)"
@@ -323,14 +354,12 @@ def run_ffmpeg(
                 continue
 
             if item is _EOF:
-                # A process can close stdout before exiting. Keep supervising
-                # it rather than blocking forever in wait() below.
-                if process.poll() is not None:
-                    break
+                stdout_closed = True
                 continue
 
             decoded = item
             assert isinstance(decoded, FfmpegProgress)
+            latest = decoded
             moved, best_time, best_frame = advance_progress(best_time, best_frame, decoded)
             if moved:
                 last_activity = now()

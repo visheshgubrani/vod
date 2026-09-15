@@ -121,7 +121,7 @@ function clientOptions(url: string, max: number) {
   return {
     max,
     idle_timeout: 5,
-    connection: { application_name: 'openvod-integration-test' },
+    connection: { application_name: 'clipmux-integration-test' },
     // `DROP DATABASE`/`DROP TABLE IF EXISTS` emit notices that postgres-js
     // prints to stdout, drowning the reporter.
     onnotice: () => {},

@@ -331,7 +331,7 @@ export async function attemptDelivery(
         'X-Webhook-Signature': `sha256=${signature}`,
         'X-Webhook-Id': delivery.eventId,
         'X-Webhook-Attempt': String(delivery.attempts),
-        'User-Agent': 'OpenVOD-Webhooks/1.0',
+        'User-Agent': 'ClipMux-Webhooks/1.0',
       },
       body,
       signal: AbortSignal.timeout(10_000),

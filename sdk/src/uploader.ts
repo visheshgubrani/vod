@@ -1,5 +1,5 @@
 /**
- * OpenVOD uploader — the client half of the public upload API.
+ * ClipMux uploader — the client half of the public upload API.
  *
  * Talks to `/v1/upload/{create,parts,complete,abort}` with a short-lived
  * upload token, so no storage credential ever reaches the browser.
@@ -18,7 +18,7 @@
  */
 
 import {
-    OpenVodError,
+    ClipMuxError,
     UploadAbortedError,
     codeForResponse,
     isRetryableCode,
@@ -29,7 +29,7 @@ import type {
     CompleteUploadResponse,
     CompletedPart,
     CreateUploadResponse,
-    OpenVodUploaderConfig,
+    ClipMuxUploaderConfig,
     PartsWindow,
     ReUploadState,
     UploadOptions,
@@ -146,7 +146,7 @@ export class UploadSession {
     private currentProgress: UploadProgress
 
     constructor(
-        private readonly uploader: OpenVodUploaderInternals,
+        private readonly uploader: ClipMuxUploaderInternals,
         file: UploadSource,
         options: UploadOptions = {},
         resumeState?: ReUploadState,
@@ -171,13 +171,13 @@ export class UploadSession {
 
         if (resumeState) {
             if (resumeState.version !== STATE_VERSION) {
-                throw new OpenVodError(
+                throw new ClipMuxError(
                     `Unsupported upload state version: ${resumeState.version}`,
                     { code: 'PART_CONFIG_INVALID' },
                 )
             }
             if (resumeState.fileSize !== file.size) {
-                throw new OpenVodError(
+                throw new ClipMuxError(
                     `The file is ${file.size} bytes but the saved upload was for ${resumeState.fileSize} bytes`,
                     { code: 'PART_CONFIG_INVALID' },
                 )
@@ -226,7 +226,7 @@ export class UploadSession {
      *
      * Resolves once `/complete` succeeds. Rejects with
      * `UploadAbortedError` after `cancel()`/an aborted signal, or with
-     * `OpenVodError` for anything the API reported.
+     * `ClipMuxError` for anything the API reported.
      */
     async run(): Promise<UploadResult> {
         try {
@@ -406,7 +406,7 @@ export class UploadSession {
             !Number.isInteger(create.part_count) ||
             create.part_count <= 0
         ) {
-            throw new OpenVodError('Server returned an invalid part configuration', {
+            throw new ClipMuxError('Server returned an invalid part configuration', {
                 code: 'PART_CONFIG_INVALID',
             })
         }
@@ -448,7 +448,7 @@ export class UploadSession {
         // disagreed with the plan this session is slicing, the parts would be
         // the wrong bytes — fail loudly now instead of at /complete.
         if (window.part_size !== this.partSize || window.part_count !== this.partCount) {
-            throw new OpenVodError(
+            throw new ClipMuxError(
                 `Server part plan changed mid-upload (${window.part_size}×${window.part_count} vs ${this.partSize}×${this.partCount})`,
                 { code: 'PART_CONFIG_INVALID' },
             )
@@ -523,7 +523,7 @@ export class UploadSession {
 
                     const url = urlsByNumber.get(part.partNumber)
                     if (!url) {
-                        throw new OpenVodError(`No presigned URL for part ${part.partNumber}`, {
+                        throw new ClipMuxError(`No presigned URL for part ${part.partNumber}`, {
                             code: 'PART_CONFIG_INVALID',
                         })
                     }
@@ -542,14 +542,14 @@ export class UploadSession {
                             await fetchWindow()
                             continue
                         }
-                        throw new OpenVodError(
+                        throw new ClipMuxError(
                             `Part ${part.partNumber} rejected (${response.status}) after refreshing its URL`,
                             { code: 'PART_URL_REJECTED', status: response.status },
                         )
                     }
 
                     if (!response.ok) {
-                        throw new OpenVodError(
+                        throw new ClipMuxError(
                             `Part ${part.partNumber} upload failed: ${response.status}`,
                             {
                                 code: 'HTTP',
@@ -579,7 +579,7 @@ export class UploadSession {
             }
 
             throw lastError ||
-                new OpenVodError(`Part ${part.partNumber} failed after retries`, { code: 'HTTP' })
+                new ClipMuxError(`Part ${part.partNumber} failed after retries`, { code: 'HTTP' })
         }
 
         while (queue.length > 0 || inFlight.size > 0) {
@@ -629,7 +629,7 @@ export class UploadSession {
      * and clean up, is the honest failure mode.
      */
     private async requestJson<T>(path: string, body: unknown): Promise<T> {
-        let lastError: OpenVodError | null = null
+        let lastError: ClipMuxError | null = null
 
         for (let attempt = 0; attempt <= this.uploader.maxRetries; attempt++) {
             if (attempt > 0 && lastError) await this.uploader.backoff(attempt - 1, lastError)
@@ -638,7 +638,7 @@ export class UploadSession {
             try {
                 response = await this.uploader.jsonRequest(path, body)
             } catch (cause) {
-                lastError = new OpenVodError(`${path} request failed: ${describe(cause)}`, {
+                lastError = new ClipMuxError(`${path} request failed: ${describe(cause)}`, {
                     code: 'NETWORK',
                     retryable: true,
                     cause,
@@ -649,7 +649,7 @@ export class UploadSession {
             if (!response.ok) {
                 const serverMessage = await readServerError(response)
                 const code = codeForResponse(response.status, serverMessage)
-                lastError = new OpenVodError(serverMessage, {
+                lastError = new ClipMuxError(serverMessage, {
                     code,
                     status: response.status,
                     requestId: response.headers.get('x-request-id') ?? undefined,
@@ -663,7 +663,7 @@ export class UploadSession {
             try {
                 return (await response.json()) as T
             } catch (cause) {
-                throw new OpenVodError(`${path} returned a non-JSON response`, {
+                throw new ClipMuxError(`${path} returned a non-JSON response`, {
                     code: 'HTTP',
                     status: response.status,
                     cause,
@@ -671,12 +671,12 @@ export class UploadSession {
             }
         }
 
-        throw lastError ?? new OpenVodError(`${path} failed`, { code: 'HTTP' })
+        throw lastError ?? new ClipMuxError(`${path} failed`, { code: 'HTTP' })
     }
 }
 
 /** The slice of the uploader a session needs — keeps the two files decoupled. */
-export interface OpenVodUploaderInternals {
+export interface ClipMuxUploaderInternals {
     fetchImpl: typeof fetch
     delayImpl: (ms: number) => Promise<void>
     concurrency: number
@@ -688,7 +688,7 @@ export interface OpenVodUploaderInternals {
     backoff(attempt: number, error: unknown): Promise<void>
 }
 
-export class OpenVodUploader implements OpenVodUploaderInternals {
+export class ClipMuxUploader implements ClipMuxUploaderInternals {
     readonly fetchImpl: typeof fetch
     readonly delayImpl: (ms: number) => Promise<void>
     readonly concurrency: number
@@ -700,10 +700,10 @@ export class OpenVodUploader implements OpenVodUploaderInternals {
     private readonly uploadToken: string
     private readonly retryDelay: number
 
-    constructor(config: OpenVodUploaderConfig) {
-        if (!config.baseUrl) throw new OpenVodError('baseUrl is required', { code: 'HTTP' })
+    constructor(config: ClipMuxUploaderConfig) {
+        if (!config.baseUrl) throw new ClipMuxError('baseUrl is required', { code: 'HTTP' })
         if (!config.uploadToken) {
-            throw new OpenVodError('uploadToken is required', { code: 'UPLOAD_TOKEN_INVALID' })
+            throw new ClipMuxError('uploadToken is required', { code: 'UPLOAD_TOKEN_INVALID' })
         }
 
         this.baseUrl = config.baseUrl.replace(/\/+$/, '') // strip trailing slashes
@@ -759,7 +759,7 @@ export class OpenVodUploader implements OpenVodUploaderInternals {
         return this.abortRequest(key, uploadId, fileId)
     }
 
-    // ───────────────────── OpenVodUploaderInternals ─────────────────────
+    // ───────────────────── ClipMuxUploaderInternals ─────────────────────
 
     async abortRequest(
         key: string,
@@ -774,7 +774,7 @@ export class OpenVodUploader implements OpenVodUploaderInternals {
         if (!response.ok) {
             const serverMessage = await readServerError(response)
             const code = codeForResponse(response.status, serverMessage)
-            throw new OpenVodError(serverMessage, { code, status: response.status })
+            throw new ClipMuxError(serverMessage, { code, status: response.status })
         }
         return (await response.json()) as { aborted: boolean }
     }
@@ -800,9 +800,9 @@ export class OpenVodUploader implements OpenVodUploaderInternals {
     async backoff(attempt: number, error: unknown): Promise<void> {
         let delayMs = this.retryDelay * 2 ** attempt
 
-        if (error instanceof OpenVodError && error.retryAfterMs !== undefined) {
+        if (error instanceof ClipMuxError && error.retryAfterMs !== undefined) {
             delayMs = error.retryAfterMs
-        } else if (error instanceof OpenVodError && isRetryableCode(error.code)) {
+        } else if (error instanceof ClipMuxError && isRetryableCode(error.code)) {
             delayMs += Math.floor(Math.random() * this.retryDelay)
         }
 

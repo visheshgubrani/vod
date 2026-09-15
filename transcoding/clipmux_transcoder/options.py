@@ -19,8 +19,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional, Sequence
 
-from openvod_transcoder.config import DEFAULT_MAX_HEIGHT, PROCESSING_PLAN_VERSION
-from openvod_transcoder.planning import POLICY_CAPPED
+from clipmux_transcoder.config import DEFAULT_MAX_HEIGHT, PROCESSING_PLAN_VERSION
+from clipmux_transcoder.planning import POLICY_CAPPED
 
 # Provider identifiers — the stored value, never re-resolved at run time.
 PROVIDER_MODAL = "modal"

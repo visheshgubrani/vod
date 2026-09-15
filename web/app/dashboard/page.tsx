@@ -16,6 +16,7 @@ import { DashboardOverviewSkeleton } from "@/components/dashboard/page-skeletons
 import { StatsCards } from "@/components/dashboard/stats-cards";
 import { VideosTable, Video } from "@/components/dashboard/videos-table";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
@@ -179,14 +180,34 @@ export default function DashboardPage() {
     <div className="w-full space-y-8">
       {/* Page Header */}
       <DashboardPageHeader
-        title="Dashboard"
-        description="Manage your videos and monitor usage"
+        title="Library"
+        description="Every asset in this organization, with its processing state and playback policy."
+        actions={
+          <label className="relative block w-full sm:w-72">
+            <span className="sr-only">Search videos</span>
+            <Search
+              className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-faint-foreground"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search by title"
+              className="h-11 w-full rounded-[10px] border border-border bg-background pl-10 pr-3 text-[15px] text-foreground transition-colors placeholder:text-muted-foreground focus:border-ember focus:outline-none focus:ring-2 focus:ring-ember/30"
+            />
+          </label>
+        }
       />
 
       {/* Error Banner */}
       {error && (
-        <div className="p-3 rounded-sm bg-destructive/10 border border-destructive/20 text-destructive text-sm">
-          {error}
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-xl border border-failed/35 bg-failed/10 p-4 text-sm text-danger"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <p>{error}</p>
         </div>
       )}
 
@@ -198,20 +219,16 @@ export default function DashboardPage() {
         processingVideos={processingCount}
       />
 
-      {/* Recent Videos Section */}
-      <div className="pt-4 space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-lg font-semibold text-foreground">Videos</h2>
-          <div className="relative w-full sm:max-w-sm">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search videos"
-              className="h-10 w-full rounded-sm border border-border bg-card/60 pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
-            />
-          </div>
+      {/* Video list */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="dash-section-title text-foreground">
+            {searchQuery ? "Search results" : "All videos"}
+          </h2>
+          <p className="dash-meta">
+            {filteredVideos.length}{" "}
+            {filteredVideos.length === 1 ? "asset" : "assets"}
+          </p>
         </div>
 
         <VideosTable
@@ -223,25 +240,32 @@ export default function DashboardPage() {
         />
 
         {filteredVideos.length > 0 && (
-          <div className="flex flex-col gap-5 sm:gap-3 rounded-sm px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm font-medium text-muted-foreground">
-              Showing {rangeStart}-{rangeEnd} of {filteredVideos.length} videos
+          <nav
+            aria-label="Pagination"
+            className="flex flex-col gap-4 pt-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <p className="dash-meta">
+              Showing{" "}
+              <span className="font-mono text-foreground">
+                {rangeStart}–{rangeEnd}
+              </span>{" "}
+              of <span className="font-mono text-foreground">{filteredVideos.length}</span>
             </p>
-            <div className="min-w-[88px] rounded-sm font-medium bg-muted/30 px-3 py-1 text-center text-xs text-foreground/50">
-              Page {currentPage} of {totalPages}
-            </div>
-            <div className="flex md:flex-row flex-col sm:w-fit w-full items-center gap-2 self-end sm:self-auto">
+            <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
                 disabled={currentPage === 1}
-                className="rounded-sm sm:w-fit w-full border hover:border-mauve-300/40 hover:bg-muted border-mauve-300/60"
+                className="flex-1 sm:flex-none"
               >
-                <ChevronLeft className="h-4 w-4" />
+                <ChevronLeft className="size-4" aria-hidden="true" />
                 Previous
               </Button>
-
+              <span className="dash-meta px-2 whitespace-nowrap">
+                Page <span className="font-mono text-foreground">{currentPage}</span> of{" "}
+                <span className="font-mono text-foreground">{totalPages}</span>
+              </span>
               <Button
                 variant="outline"
                 size="sm"
@@ -249,61 +273,33 @@ export default function DashboardPage() {
                   setCurrentPage((page) => Math.min(totalPages, page + 1))
                 }
                 disabled={currentPage === totalPages}
-                className="rounded-sm sm:w-fit w-full bg-accent/50 hover:bg-accent/60"
+                className="flex-1 sm:flex-none"
               >
                 Next
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className="size-4" aria-hidden="true" />
               </Button>
             </div>
-          </div>
+          </nav>
         )}
       </div>
 
-      {videoToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="glass mx-4 w-full max-w-md rounded-sm p-4 md:p-6">
-            <div className="mb-4 flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-sm bg-destructive/20">
-                <AlertTriangle className="h-5 w-5 text-destructive" />
-              </div>
-              <h2 className="text-xl font-bold text-foreground">
-                Delete Video
-              </h2>
-            </div>
-            <p className="mb-6 text-muted-foreground">
-              Are you sure you want to delete &quot;{videoToDelete.title}
-              &quot;? This action cannot be undone.
-            </p>
-            <div className="flex gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setVideoToDelete(null)}
-                className="flex-1 rounded-sm"
-                disabled={isDeleting}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleDelete}
-                disabled={isDeleting}
-                className="flex-1 rounded-sm bg-destructive hover:bg-destructive/90"
-              >
-                {isDeleting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Deleting...
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={videoToDelete !== null}
+        title="Delete this video?"
+        description={
+          <>
+            <span className="font-medium text-foreground">
+              {videoToDelete?.title}
+            </span>{" "}
+            and its transcoded outputs will be removed. This cannot be undone.
+          </>
+        }
+        confirmLabel="Delete video"
+        busyLabel="Deleting…"
+        busy={isDeleting}
+        onConfirm={handleDelete}
+        onCancel={() => setVideoToDelete(null)}
+      />
     </div>
   );
 }

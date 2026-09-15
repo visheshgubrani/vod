@@ -13,14 +13,14 @@ optional enrichment, packaging, output validation, and the artifact inventory.
 What it does not own, and takes as a seam instead:
 
 - **Execution** — the caller supplies ``work_dir`` and drives the lifecycle.
-- **Encoding** — chosen through :mod:`openvod_transcoder.encoding` from a
+- **Encoding** — chosen through :mod:`clipmux_transcoder.encoding` from a
   capability report, not from an environment variable read deep in a helper.
 - **Transfer** — the caller supplies a transfer; the engine never reads storage
   credentials. This is what makes "the agent holds no R2 keys" structural
   rather than a promise.
 
 The module imports without Modal, CUDA, boto3 or Whisper: optional dependencies
-load inside the code path that needs them, so `import openvod_transcoder` works
+load inside the code path that needs them, so `import clipmux_transcoder` works
 on a bare machine.
 """
 from __future__ import annotations
@@ -32,17 +32,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from openvod_transcoder.cancellation import CancellationToken
-from openvod_transcoder.config import R2_PREFIX
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.cancellation import CancellationToken
+from clipmux_transcoder.config import R2_PREFIX
+from clipmux_transcoder.encoding.backends import (
     EncoderBackend,
     RenderSpec,
     build_audio_command,
     build_video_command,
     source_gpu_path_supported,
 )
-from openvod_transcoder.encoding.failures import FAILURE_SESSION, marks_backend_unusable
-from openvod_transcoder.encoding.probe import (
+from clipmux_transcoder.encoding.failures import FAILURE_SESSION, marks_backend_unusable
+from clipmux_transcoder.encoding.probe import (
     CapabilityReport,
     ChainProbe,
     detect_capabilities,
@@ -50,7 +50,7 @@ from openvod_transcoder.encoding.probe import (
     toolchain_identity,
     toolchain_versions,
 )
-from openvod_transcoder.encoding.selection import (
+from clipmux_transcoder.encoding.selection import (
     BackendCandidate,
     FallbackState,
     WorkerEncoderState,
@@ -58,11 +58,11 @@ from openvod_transcoder.encoding.selection import (
     describe_chain,
     select_chain,
 )
-from openvod_transcoder.encoding.validation import (
+from clipmux_transcoder.encoding.validation import (
     validate_encoded_rendition,
     validate_manifest_references,
 )
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_AUDIO_ONLY_UNSUPPORTED,
     ERROR_EMPTY_FILE,
     ERROR_MISSING_RENDITION,
@@ -73,11 +73,11 @@ from openvod_transcoder.errors import (
     TranscodeError,
     is_fallback_eligible,
 )
-from openvod_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
-from openvod_transcoder.options import ProcessingOptions
-from openvod_transcoder.packaging import choose_segment_duration, package_with_shaka
-from openvod_transcoder.planning import plan_audio, plan_renditions
-from openvod_transcoder.progress import (
+from clipmux_transcoder.ffmpeg_progress import StallPolicy, run_ffmpeg
+from clipmux_transcoder.options import ProcessingOptions
+from clipmux_transcoder.packaging import choose_segment_duration, package_with_shaka
+from clipmux_transcoder.planning import plan_audio, plan_renditions
+from clipmux_transcoder.progress import (
     STAGE_ANALYZE,
     STAGE_COMPLETE,
     STAGE_PACKAGE,
@@ -90,7 +90,7 @@ from openvod_transcoder.progress import (
     ProgressUpdate,
     RenditionProgress,
 )
-from openvod_transcoder.result import (
+from clipmux_transcoder.result import (
     Artifact,
     EnrichmentStatus,
     PipelineResult,
@@ -98,10 +98,10 @@ from openvod_transcoder.result import (
     RenditionReport,
     build_inventory,
 )
-from openvod_transcoder.snapshot import SourceSnapshot
-from openvod_transcoder.transfer import ArtifactTransfer, TransferStats
-from openvod_transcoder.utils.cmd import run_cmd
-from openvod_transcoder.video.analysis import VideoMetadata, get_video_metadata, parse_ffprobe
+from clipmux_transcoder.snapshot import SourceSnapshot
+from clipmux_transcoder.transfer import ArtifactTransfer, TransferStats
+from clipmux_transcoder.utils.cmd import run_cmd
+from clipmux_transcoder.video.analysis import VideoMetadata, get_video_metadata, parse_ffprobe
 
 # Codes where a different *encode* attempt cannot plausibly help. Anything not
 # listed is treated as fallback-eligible only if `is_fallback_eligible` says so.
@@ -214,7 +214,7 @@ def run_pipeline(
     poster_generated = False
     if metadata.has_video:
         try:
-            from openvod_transcoder.video.poster import generate_poster
+            from clipmux_transcoder.video.poster import generate_poster
 
             generate_poster(str(source_path), str(output_dir / "poster.jpg"), metadata.duration)
             poster_generated = True
@@ -358,7 +358,7 @@ def _assert_hdr_supported(metadata: VideoMetadata) -> None:
     format probe recognises; anything else reaching here means the recognised
     transfer function has no tested mapping.
     """
-    from openvod_transcoder.encoding.backends import SUPPORTED_HDR_TRANSFERS
+    from clipmux_transcoder.encoding.backends import SUPPORTED_HDR_TRANSFERS
 
     transfer = (metadata.color_transfer or "").lower()
     if transfer and transfer not in SUPPORTED_HDR_TRANSFERS:
@@ -916,7 +916,7 @@ def _run_transcription(
         status.status = "skipped"
         return status
     try:
-        from openvod_transcoder.video.transcription import transcribe_to_vtt
+        from clipmux_transcoder.video.transcription import transcribe_to_vtt
 
         token.raise_if_cancelled()
         transcribe_to_vtt(
@@ -953,7 +953,7 @@ def _run_chapters(
     try:
         import json
 
-        from openvod_transcoder.video.chapters import generate_chapters
+        from clipmux_transcoder.video.chapters import generate_chapters
 
         with open(output_dir / subtitle.url, "r", encoding="utf-8") as handle:
             vtt_content = handle.read()
@@ -1015,7 +1015,7 @@ def _validate_package(
 
 
 def _raise_on_transfer_failure(stats: TransferStats) -> None:
-    from openvod_transcoder.errors import ERROR_PARTIAL_UPLOAD
+    from clipmux_transcoder.errors import ERROR_PARTIAL_UPLOAD
 
     if stats.complete:
         return

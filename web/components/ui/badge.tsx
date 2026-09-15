@@ -12,10 +12,16 @@ import { cn } from "@/lib/utils";
  * to roughly one in twelve men.
  */
 const VARIANTS = {
-  default: "border-transparent bg-primary text-primary-foreground",
-  secondary: "border-transparent bg-secondary text-secondary-foreground",
-  destructive: "border-transparent bg-destructive text-white",
-  outline: "text-foreground",
+  default: "border-transparent bg-brand text-brand-foreground",
+  secondary: "border-border bg-panel-strong text-foreground",
+  destructive: "border-transparent bg-destructive text-destructive-foreground",
+  outline: "border-border bg-transparent text-muted-foreground",
+  /* Tinted status pills — readable on the charcoal panels at 13px. */
+  ready: "border-ready/35 bg-ready/10 text-ready",
+  processing: "border-processing/35 bg-processing/10 text-processing",
+  failed: "border-failed/35 bg-failed/10 text-failed",
+  uploading: "border-info/35 bg-info/10 text-info",
+  neutral: "border-border bg-panel-strong text-muted-foreground",
 } as const;
 
 export type BadgeVariant = keyof typeof VARIANTS;
@@ -29,7 +35,7 @@ export function Badge({
     <span
       data-slot="badge"
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[13px] font-medium whitespace-nowrap",
         VARIANTS[variant],
         className,
       )}

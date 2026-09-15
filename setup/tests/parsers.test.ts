@@ -17,7 +17,7 @@ import {
 describe('analyticsTokenTemplateUrl', () => {
   it('opens Cloudflare token creation with Account Analytics Read selected', () => {
     expect(analyticsTokenTemplateUrl()).toBe(
-      'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22account_analytics%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=OpenVOD%20Analytics',
+      'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22account_analytics%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=ClipMux%20Analytics',
     )
   })
 })
@@ -190,7 +190,7 @@ describe('r2BucketAlreadyExists', () => {
   it('treats wrangler r2 bucket info exit 0 as an existing bucket', () => {
     expect(
       r2BucketAlreadyExists(0, `{
-  "name": "openvod-raw",
+  "name": "clipmux-raw",
   "created": "2025-06-07T15:55:22.222Z"
 }`),
     ).toBe(true)

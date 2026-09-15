@@ -1,44 +1,54 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
-export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-    variant?: "primary" | "secondary" | "ghost" | "outline";
-    size?: "sm" | "md" | "lg";
-    asChild?: boolean;
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: "primary" | "secondary" | "ghost" | "outline" | "destructive";
+  size?: "sm" | "md" | "lg";
+  asChild?: boolean;
 }
 
+/*
+ * Every size clears the 44px minimum touch target, including `sm` — a compact
+ * button is narrower, not shorter.
+ */
+const sizeStyles = {
+  sm: "h-11 gap-1.5 px-4 text-sm",
+  md: "h-11 gap-2 px-5 text-[15px]",
+  lg: "h-12 gap-2 px-6 text-base",
+} as const;
+
+const variantStyles = {
+  primary:
+    "bg-brand text-brand-foreground hover:bg-brand-hover active:bg-brand-hover",
+  secondary:
+    "border border-border bg-panel-strong text-foreground hover:border-muted-foreground/40",
+  ghost: "text-foreground hover:bg-panel-strong",
+  outline:
+    "border border-border bg-transparent text-foreground hover:border-muted-foreground/40 hover:bg-panel-strong/60",
+  destructive:
+    "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+} as const;
+
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-    ({ className, variant = "primary", size = "md", children, ...props }, ref) => {
-        const baseStyles =
-            "inline-flex items-center justify-center gap-2 font-semibold rounded-full transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 disabled:pointer-events-none";
-
-        const variants = {
-            primary:
-                "bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-90 shadow-lg hover:shadow-xl glow",
-            secondary:
-                "bg-muted text-foreground hover:bg-muted/80 border border-border",
-            ghost:
-                "text-foreground hover:bg-muted/50",
-            outline:
-                "border border-border text-foreground hover:bg-muted/30 hover:border-primary/50",
-        };
-
-        const sizes = {
-            sm: "h-9 px-4 text-sm",
-            md: "h-11 px-6 text-base",
-            lg: "h-14 px-8 text-lg",
-        };
-
-        return (
-            <button
-                className={cn(baseStyles, variants[variant], sizes[size], className)}
-                ref={ref}
-                {...props}
-            >
-                {children}
-            </button>
-        );
-    }
+  ({ className, variant = "primary", size = "md", children, ...props }, ref) => {
+    return (
+      <button
+        className={cn(
+          "inline-flex items-center justify-center rounded-[10px] font-semibold whitespace-nowrap transition-colors duration-200",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "disabled:pointer-events-none disabled:opacity-45",
+          variantStyles[variant],
+          sizeStyles[size],
+          className,
+        )}
+        ref={ref}
+        {...props}
+      >
+        {children}
+      </button>
+    );
+  },
 );
 
 Button.displayName = "Button";

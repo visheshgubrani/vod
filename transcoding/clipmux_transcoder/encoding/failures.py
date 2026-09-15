@@ -45,7 +45,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_ENCODER_FAILED,
     ERROR_INSUFFICIENT_DISK,
     ERROR_SOURCE_MISSING,

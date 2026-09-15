@@ -3,8 +3,8 @@ import subprocess
 
 import pytest
 
-from openvod_transcoder.config import EncodingProfile
-from openvod_transcoder.encoding.backends import (
+from clipmux_transcoder.config import EncodingProfile
+from clipmux_transcoder.encoding.backends import (
     BACKEND_CPU,
     BACKEND_NVENC,
     BACKEND_VAAPI,
@@ -21,7 +21,7 @@ from openvod_transcoder.encoding.backends import (
     source_gpu_path_supported,
     video_filter_chain,
 )
-from openvod_transcoder.encoding.probe import (
+from clipmux_transcoder.encoding.probe import (
     CapabilityReport,
     ChainProbe,
     EncoderProbe,
@@ -32,7 +32,7 @@ from openvod_transcoder.encoding.probe import (
     preflight_source,
     probe_backend,
 )
-from openvod_transcoder.encoding.selection import (
+from clipmux_transcoder.encoding.selection import (
     BackendCandidate,
     FallbackState,
     WorkerEncoderState,
@@ -40,13 +40,13 @@ from openvod_transcoder.encoding.selection import (
     describe_chain,
     select_chain,
 )
-from openvod_transcoder.errors import (
+from clipmux_transcoder.errors import (
     ERROR_ENCODER_UNAVAILABLE,
     ERROR_EMPTY_FILE,
     ERROR_PACKAGING_FAILED,
     TranscodeError,
 )
-from openvod_transcoder.video.analysis import VideoMetadata
+from clipmux_transcoder.video.analysis import VideoMetadata
 
 
 class Traits:
@@ -592,7 +592,7 @@ class TestProbeBackend:
         assert "not found" in probe.reason
 
     def test_vaapi_command_initialises_the_named_device(self):
-        from openvod_transcoder.encoding.probe import synthetic_command
+        from clipmux_transcoder.encoding.probe import synthetic_command
 
         cmd = synthetic_command("ffmpeg", VAAPI_BACKEND)
         assert cmd[cmd.index("-init_hw_device") + 1] == "vaapi=va:/dev/dri/renderD128"

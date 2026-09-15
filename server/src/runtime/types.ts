@@ -1,7 +1,7 @@
 /**
  * The runtime seam: what the application needs from whichever platform runs it.
  *
- * OpenVOD serves the same Hono app from two very different places — Cloudflare
+ * ClipMux serves the same Hono app from two very different places — Cloudflare
  * Workers (no TCP sockets, bindings instead of env vars, `ctx.waitUntil`, an
  * Analytics Engine binding) and Node (`@hono/node-server`, `process.env`, real
  * sockets, no bindings). Before this module the app discovered which one it was
@@ -29,7 +29,7 @@ import type {
   DbTransport,
   EnvLike,
   LogLevel,
-  OpenVodConfig,
+  ClipMuxConfig,
   RuntimeName,
   TranscodeProvider,
 } from '../lib/config'
@@ -135,7 +135,7 @@ export type RuntimeCapabilities = {
   readonly runtime: RuntimeName
   readonly shape: DeploymentShape
   /** Validated configuration, resolved once. */
-  readonly config: OpenVodConfig
+  readonly config: ClipMuxConfig
   /**
    * The deployment's string environment, resolved once.
    *

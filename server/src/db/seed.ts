@@ -38,8 +38,8 @@ const run = async () => {
     .insert(organization)
     .values({
       id: newOrgId,
-      name: 'OpenVOD Local',
-      slug: 'openvod-local', // Unique slug
+      name: 'ClipMux Local',
+      slug: 'clipmux-local', // Unique slug
       createdAt: new Date(),
     })
     .onConflictDoNothing()

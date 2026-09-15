@@ -27,7 +27,7 @@ const app = new Hono<{ Variables: ApiKeyVariables }>()
 
 // JWT token expiration (customizable per request)
 const DEFAULT_EXPIRATION = '4h'
-const JWT_ISSUER = 'openvod'
+const JWT_ISSUER = 'clipmux'
 const JWT_AUDIENCE = 'playback'
 const DEFAULT_ALLOWED_DOMAINS = ['*']
 const DEFAULT_ALLOW_NO_REFERRER = true

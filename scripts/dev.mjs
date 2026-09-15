@@ -46,8 +46,8 @@ const SERVICES = {
   'api:workers': { label: 'server dev:workers', args: ['--filter', 'vod-api', 'dev:workers'] },
   'web:workers': { label: 'web dev:workers', args: ['--filter', 'web', 'dev:workers'] },
   delivery: { label: 'delivery dev', args: ['--filter', 'delivery', 'dev'] },
-  sdk: { label: 'sdk dev', args: ['--filter', '@openvod/uploader', 'dev'] },
-  player: { label: 'player dev', args: ['--filter', '@openvod/player', 'dev'] },
+  sdk: { label: 'sdk dev', args: ['--filter', '@clipmux/uploader', 'dev'] },
+  player: { label: 'player dev', args: ['--filter', '@clipmux/player', 'dev'] },
   'api:start': { label: 'server start', args: ['--filter', 'vod-api', 'start'] },
   'web:start': { label: 'web start', args: ['--filter', 'web', 'start'] },
 }

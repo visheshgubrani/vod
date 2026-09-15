@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# OpenVOD OS / package-manager detection — the single detector for both languages.
+# ClipMux OS / package-manager detection — the single detector for both languages.
 #
 # Sourced by scripts/bootstrap.sh, which has to decide what to install *before*
 # any Node exists; the TypeScript wizard consumes the same verdict instead of
@@ -10,7 +10,7 @@
 #
 # Everything here is read-only: detection never installs, never escalates and
 # never writes. `ov_run_pkg` is the one function that runs anything, and it
-# refuses unless the run is root or has passwordless sudo (OPENVOD_NO_SUDO=1
+# refuses unless the run is root or has passwordless sudo (CLIPMUX_NO_SUDO=1
 # refuses outright).
 #
 # Bash 3.2 compatible on purpose: that is what macOS ships as /bin/bash, and the
@@ -78,7 +78,7 @@ ov_manager_for() {
 
 ov_detect_os() {
   local os_release id like uname_s
-  uname_s="${OPENVOD_UNAME_OVERRIDE:-$(uname -s 2>/dev/null || printf 'unknown')}"
+  uname_s="${CLIPMUX_UNAME_OVERRIDE:-$(uname -s 2>/dev/null || printf 'unknown')}"
   case "$uname_s" in
     Darwin) OV_OS='macos' ;;
     Linux) OV_OS='linux' ;;
@@ -88,7 +88,7 @@ ov_detect_os() {
   if [ "$OV_OS" = 'macos' ]; then
     OV_FAMILY='mac'
   elif [ "$OV_OS" = 'linux' ]; then
-    os_release="${OPENVOD_OS_RELEASE_FILE:-/etc/os-release}"
+    os_release="${CLIPMUX_OS_RELEASE_FILE:-/etc/os-release}"
     id="$(ov_read_os_key "$os_release" ID || printf '')"
     like="$(ov_read_os_key "$os_release" ID_LIKE || printf '')"
     OV_DISTRO_ID="$id"
@@ -102,7 +102,7 @@ ov_detect_os() {
 
 ov_detect_privileges() {
   OV_NO_SUDO=0
-  [ "${OPENVOD_NO_SUDO:-0}" = '1' ] && OV_NO_SUDO=1
+  [ "${CLIPMUX_NO_SUDO:-0}" = '1' ] && OV_NO_SUDO=1
 
   OV_IS_ROOT=0
   if [ "$(id -u 2>/dev/null || printf '1')" = '0' ]; then OV_IS_ROOT=1; fi
@@ -127,7 +127,7 @@ ov_detect_all() {
 }
 
 ov_pkg_table() {
-  printf '%s' "${OPENVOD_PKG_TABLE:-$(dirname "${BASH_SOURCE[0]}")/pkg-commands.tsv}"
+  printf '%s' "${CLIPMUX_PKG_TABLE:-$(dirname "${BASH_SOURCE[0]}")/pkg-commands.tsv}"
 }
 
 # ov_pkg_command CAPABILITY — the install command for this family, or nothing.

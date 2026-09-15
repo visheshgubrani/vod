@@ -1,10 +1,10 @@
-# OpenVOD API — LOCAL DEVELOPMENT config. Copy to server/.dev.vars.
+# ClipMux API — LOCAL DEVELOPMENT config. Copy to server/.dev.vars.
 #
 # Read by `pnpm dev` (the Node runtime), the Workers runtime (`pnpm dev:workers`),
 # migrations, the seed script and the drizzle CLI. Real env vars always win over
 # this file.
 #
-# This file is for developing OpenVOD. A *deployment* is configured by the root
+# This file is for developing ClipMux. A *deployment* is configured by the root
 # `.env` for Docker Compose (see .env.example) or by `wrangler secret put` for
 # the Workers runtime — never by committing this file.
 DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev
@@ -30,7 +30,7 @@ CORS_ORIGINS=
 # `pnpm dev`. Modal's cloud cannot reach localhost, so without a public URL
 # videos strand in `processing` and the DB status never flips to
 # `ready`/`failed`. The transcoder allows callbacks only to hosts listed in its
-# own ALLOWED_CALLBACK_HOSTS (the openvod-creds Modal secret) — update that too,
+# own ALLOWED_CALLBACK_HOSTS (the clipmux-creds Modal secret) — update that too,
 # or the callback is blocked before it is sent. `--deploy` derives it from
 # BACKEND_URL for you.
 BACKEND_URL=http://localhost:8787

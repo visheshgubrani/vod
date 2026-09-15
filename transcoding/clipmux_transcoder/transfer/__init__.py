@@ -1,5 +1,5 @@
 """Transfer implementations for the two supported execution environments."""
-from openvod_transcoder.transfer.base import (
+from clipmux_transcoder.transfer.base import (
     ArtifactTransfer,
     NullTransfer,
     TransferError,

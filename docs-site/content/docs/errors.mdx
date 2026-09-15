@@ -1,9 +1,9 @@
 ---
 title: Errors & status codes
-description: Every error shape OpenVOD can return — HTTP statuses, SDK error codes, webhook signature failures and transcode failure codes — and what to do about each one.
+description: Every error shape ClipMux can return — HTTP statuses, SDK error codes, webhook signature failures and transcode failure codes — and what to do about each one.
 ---
 
-Everything OpenVOD fails with is enumerable. This page is the catalogue: match on a
+Everything ClipMux fails with is enumerable. This page is the catalogue: match on a
 stable `code`, never on a message.
 
 There are four families, and they show up in different places:
@@ -11,9 +11,9 @@ There are four families, and they show up in different places:
 | Family | Arrives as | Defined by |
 | --- | --- | --- |
 | [HTTP statuses](#http-statuses) | The response your first `fetch` reads | The API |
-| [Server SDK codes](#server-sdk-codes) | `error.code` from a thrown `OpenVodError` | `@openvod/server` |
-| [Uploader codes](#uploader-codes) | `error.code` from a thrown `OpenVodError` | `@openvod/uploader` |
-| [Webhook reasons](#webhook-signature-failures) | `error.reason` from a thrown `WebhookSignatureError` | `@openvod/server` |
+| [Server SDK codes](#server-sdk-codes) | `error.code` from a thrown `ClipMuxError` | `@clipmux/server` |
+| [Uploader codes](#uploader-codes) | `error.code` from a thrown `ClipMuxError` | `@clipmux/uploader` |
+| [Webhook reasons](#webhook-signature-failures) | `error.reason` from a thrown `WebhookSignatureError` | `@clipmux/server` |
 | [Transcode failure codes](#transcode-failure-codes) | `failureCode` on a `video.failed` webhook | The transcoder |
 
 ## The error body
@@ -59,7 +59,7 @@ the only thing that ties your failed request to the server's logs.
 
 ## Server SDK codes
 
-`@openvod/server` throws `OpenVodError` with a `code`. `isRetryableCode(code)` and
+`@clipmux/server` throws `ClipMuxError` with a `code`. `isRetryableCode(code)` and
 `error.retryable` agree with the table.
 
 | `code` | Status | Meaning | Retry? |
@@ -76,12 +76,12 @@ the only thing that ties your failed request to the server's logs.
 | `HTTP` | any other | Unclassified non-2xx. | Depends on `retryable`. |
 
 ```ts
-import { OpenVod, OpenVodError } from '@openvod/server'
+import { ClipMux, ClipMuxError } from '@clipmux/server'
 
 try {
   await vod.playback.createToken(videoId, { viewerUserAgent })
 } catch (error) {
-  if (error instanceof OpenVodError) {
+  if (error instanceof ClipMuxError) {
     // Branch on the code. The message is for humans.
     if (error.code === 'VIDEO_NOT_READY') return waitForReady(videoId)
     if (error.retryable) return retryAfter(error.retryAfterMs ?? 1000)
@@ -93,7 +93,7 @@ try {
 
 ## Uploader codes
 
-`@openvod/uploader` throws `OpenVodError` for failures and `UploadAbortedError`
+`@clipmux/uploader` throws `ClipMuxError` for failures and `UploadAbortedError`
 for cancellation. The two are disjoint: **cancellation is not a failure**, so
 `isUploadAbortedError(error)` is the check, not a message match.
 
@@ -113,13 +113,13 @@ for cancellation. The two are disjoint: **cancellation is not a failure**, so
 | `HTTP` | Any other non-2xx. | Depends on `retryable`. |
 
 ```ts
-import { OpenVodError, isUploadAbortedError } from '@openvod/uploader'
+import { ClipMuxError, isUploadAbortedError } from '@clipmux/uploader'
 
 try {
   await uploader.upload(file, { onProgress })
 } catch (error) {
   if (isUploadAbortedError(error)) return // the user cancelled — not an error
-  if (error instanceof OpenVodError) {
+  if (error instanceof ClipMuxError) {
     console.error(error.code, error.requestId)
   }
 }

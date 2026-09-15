@@ -1,8 +1,8 @@
 {
-  "name": "openvod-example-nextjs",
+  "name": "clipmux-example-nextjs",
   "version": "0.1.0",
   "private": true,
-  "description": "Runnable Next.js (app router) integration example for OpenVOD: browser upload, playback, token refresh and webhooks",
+  "description": "Runnable Next.js (app router) integration example for ClipMux: browser upload, playback, token refresh and webhooks",
   "license": "Apache-2.0",
   "packageManager": "pnpm@12.3.4",
   "engines": {
@@ -15,9 +15,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@openvod/player": "workspace:*",
-    "@openvod/server": "workspace:*",
-    "@openvod/uploader": "workspace:*",
+    "@clipmux/player": "workspace:*",
+    "@clipmux/server": "workspace:*",
+    "@clipmux/uploader": "workspace:*",
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"

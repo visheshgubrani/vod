@@ -1,6 +1,6 @@
 ---
 title: Video endpoints
-description: Read, list, update and delete videos through the OpenVOD API — the Video object, status transitions, and soft-delete semantics.
+description: Read, list, update and delete videos through the ClipMux API — the Video object, status transitions, and soft-delete semantics.
 ---
 
 All four endpoints require the **API key** (`Authorization: Bearer sk_live_…`).
@@ -62,8 +62,8 @@ webhook, so prefer the webhook and reconcile with this endpoint. See
 | **Path** | The video id |
 
 ```bash
-curl "$OPENVOD_API_URL/v1/video/8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY"
+curl "$CLIPMUX_API_URL/v1/video/8c4f0f4e-2f2a-4a5e-9a1d-2b3c4d5e6f70" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
 ```
 
 **`200`**
@@ -96,8 +96,8 @@ organization, or it has been deleted. A deleted video stays a `404` forever.
 | `limit` | `50` | **Capped at 100.** A larger value is silently clamped, not rejected. |
 
 ```bash
-curl "$OPENVOD_API_URL/v1/videos?status=ready&limit=20" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY"
+curl "$CLIPMUX_API_URL/v1/videos?status=ready&limit=20" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
 ```
 
 **`200`**
@@ -139,8 +139,8 @@ curl "$OPENVOD_API_URL/v1/videos?status=ready&limit=20" \
 | `playback_policy` | `"public"` \| `"signed"` | `playbackPolicy` also accepted. Any other value is ignored. |
 
 ```bash
-curl -X PATCH "$OPENVOD_API_URL/v1/video/$VIDEO_ID" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY" \
+curl -X PATCH "$CLIPMUX_API_URL/v1/video/$VIDEO_ID" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "title": "Keynote 2025", "playback_policy": "signed" }'
 ```
@@ -187,8 +187,8 @@ disabled keeps paying for them — see
 [Configuration](/configuration#maintenance-and-sweeper).
 
 ```bash
-curl -X DELETE "$OPENVOD_API_URL/v1/video/$VIDEO_ID" \
-  -H "Authorization: Bearer $OPENVOD_API_KEY"
+curl -X DELETE "$CLIPMUX_API_URL/v1/video/$VIDEO_ID" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
 ```
 
 **`200`**
