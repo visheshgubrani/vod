@@ -1,0 +1,52 @@
+# Package install commands, ONE definition shared by the launcher (scripts/lib/detect.sh)
+# and the wizard (setup/src/system.ts). Format, one row per line:
+#
+#   capability|family|command
+#
+# `family` is what `ov_family`/`familyFor` resolve from /etc/os-release (or `mac`)
+# and must match on both sides; the test in setup/tests/system.test.ts asserts that.
+#
+# Rules for this file:
+#   * commands are repo data — no user-supplied value is ever interpolated into one;
+#   * they run through `sh -c` (or `sudo sh -c`), so they are written as shell;
+#   * every row is non-interactive (`-y`, `--noconfirm`, `--non-interactive`,
+#     `--no-cache`) because the wizard must never block on a package manager prompt;
+#   * only packages whose names are stable across the family live here. Docker is
+#     deliberately absent: the only reliable cross-distro path is Docker's own
+#     repository/installer, so it is reported with instructions instead of being
+#     installed with a guessed package name (see setup/src/system.ts).
+curl|debian|apt-get install -y curl ca-certificates
+curl|rpm|dnf install -y curl
+curl|arch|pacman -S --noconfirm curl
+curl|suse|zypper --non-interactive install curl
+curl|alpine|apk add --no-cache curl
+curl|mac|brew install curl
+git|debian|apt-get install -y git
+git|rpm|dnf install -y git
+git|arch|pacman -S --noconfirm git
+git|suse|zypper --non-interactive install git
+git|alpine|apk add --no-cache git
+git|mac|brew install git
+# Distro Node is often older than engines.node (Debian 12 ships 18, Ubuntu 24.04
+# ships 18): the launcher tries nvm first and re-checks the version afterwards.
+node|debian|apt-get install -y nodejs npm
+node|rpm|dnf install -y nodejs npm
+node|arch|pacman -S --noconfirm nodejs npm
+node|suse|zypper --non-interactive install nodejs npm
+node|alpine|apk add --no-cache nodejs npm
+node|mac|brew install node@22
+python3|debian|apt-get install -y python3 python3-venv python3-pip
+python3|rpm|dnf install -y python3 python3-pip
+python3|arch|pacman -S --noconfirm python python-pip
+python3|suse|zypper --non-interactive install python3 python3-pip
+python3|alpine|apk add --no-cache python3 py3-pip
+python3|mac|brew install python@3.12
+# Informational: only needed to run the transcoder agent natively. The agent image
+# builds and pins its own FFmpeg (transcoding/toolchain/), and the Modal pipeline
+# brings its own, so an installed host FFmpeg is never what produces the output.
+ffmpeg|debian|apt-get install -y ffmpeg
+ffmpeg|rpm|dnf install -y ffmpeg
+ffmpeg|arch|pacman -S --noconfirm ffmpeg
+ffmpeg|suse|zypper --non-interactive install ffmpeg
+ffmpeg|alpine|apk add --no-cache ffmpeg
+ffmpeg|mac|brew install ffmpeg

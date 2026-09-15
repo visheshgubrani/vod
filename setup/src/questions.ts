@@ -1,31 +1,37 @@
 /**
- * Interactive decision flow (clack TUI). Every question falls back to a
- * default on Enter; every secret is collected with askPassword and only ever
- * stored in .dev.vars files, never echoed.
+ * Interactive decision flow (clack TUI), in two passes:
  *
- * Each credential prompt is preceded by the page that creates it — for the
- * provider the user actually chose, not a generic list of everything OpenVOD
- * can talk to. The links live in links.ts so they can be tested in one place.
+ *   1. `askChoices`   — how this installation is shaped. Decisions only, and
+ *                       always asked before anything is installed or collected.
+ *   2. `askCredentials` — the values those decisions require. Each credential
+ *                       prompt is preceded by the page that creates it, for the
+ *                       provider the user actually chose (links live in
+ *                       links.ts so they can be tested in one place).
+ *
+ * Conditional follow-ups (uploads, queue, AI) are sub-prompts of the step they
+ * belong to, so the step counter never claims a question that was skipped.
  */
 
 import type {
+  ConfigTarget,
+  DbAnswers,
   DbKind,
   Prefill,
+  QueueAnswers,
   QueueKind,
+  RateLimitAnswers,
   RateLimitKind,
   RuntimeKind,
   WizardAnswers,
 } from './types'
 import { DEFAULT_ANSWERS } from './types'
 import { linksNote } from './links'
-import { askConfirm, askPassword, askSelect, askText, note, step } from './ui'
+import { probeTcp } from './probe'
+import { logWarn, note, askConfirm, askPassword, askSelect, askText, step } from './ui'
 
 const POSTGRES_URL_RE = /^postgres(ql)?:\/\/\S+/
 const HTTP_URL_RE = /^https?:\/\/\S+/
 const REDIS_URL_RE = /^rediss?:\/\/\S+/
-
-/** Six decisions, in the order the wizard asks them. */
-const TOTAL_STEPS = 6
 
 const URL_HINTS = {
   postgres: 'must be a postgres:// or postgresql:// URL',
@@ -55,38 +61,64 @@ function requireUrl(message: string, kind: keyof typeof URL_HINTS): Promise<stri
 
 export interface AskContext {
   prefill: Prefill
+  /** Which configuration this run owns — decides which questions apply. */
+  target: ConfigTarget
   /** Account id discovered from an existing wrangler login, if any. */
   accountIdDefault?: string
 }
 
-export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
-  const prefill = ctx.prefill
+/** The decisions, before any value has been collected. */
+export interface Choices {
+  target: ConfigTarget
+  runtime: RuntimeKind
+  dbKind: DbKind
+  transcodeProvider: 'modal' | 'self-hosted'
+  /** Only meaningful (and only asked) for the self-hosted provider. */
+  uploadsEnabled: boolean
+  queueKind: QueueKind
+  rateLimitKind: RateLimitKind
+  /** Whether to collect a Groq key (Modal provider only). */
+  wantGroq: boolean
+}
+
+export async function askChoices(ctx: AskContext): Promise<Choices> {
+  const { prefill, target } = ctx
+  // Numbered steps: runtime (dev only), Postgres, transcoder, rate limits.
+  const total = target === 'dev' ? 4 : 3
+  let index = 0
 
   // ── 1. Runtime ─────────────────────────────────────────────────────────
-  step(1, TOTAL_STEPS, 'Where the API runs')
-  const runtime: RuntimeKind =
-    prefill.runtime ??
-    (await askSelect<RuntimeKind>(
-      'Where should the OpenVOD API run?',
-      [
-        {
-          value: 'workers',
-          label: 'Cloudflare Workers (managed)',
-          hint: 'DB_DRIVER=neon-http — deploy with wrangler; Postgres must be Neon',
-        },
-        {
-          value: 'node',
-          label: 'Node (self-hosted: Docker, VPS, or `pnpm dev`)',
-          hint: 'DB_DRIVER=pg — any Postgres; Redis rate limiting available',
-        },
-      ],
-      'workers',
-    ))
+  // A Compose deployment is always the Node runtime, so the question only
+  // exists for the dev target.
+  let runtime: RuntimeKind = 'node'
+  if (target === 'dev') {
+    index += 1
+    step(index, total, 'Where the API runs')
+    runtime =
+      prefill.runtime ??
+      (await askSelect<RuntimeKind>(
+        'Where should the OpenVOD API run?',
+        [
+          {
+            value: 'workers',
+            label: 'Cloudflare Workers (managed)',
+            hint: 'DB_DRIVER=neon-http — deploy with wrangler; Postgres must be Neon',
+          },
+          {
+            value: 'node',
+            label: 'Node on this machine (`pnpm dev`, a VPS, a process manager)',
+            hint: 'DB_DRIVER=pg — any Postgres; Redis rate limiting available',
+          },
+        ],
+        'workers',
+      ))
+  }
 
   // ── 2. Postgres ────────────────────────────────────────────────────────
-  step(2, TOTAL_STEPS, 'Postgres')
+  index += 1
+  step(index, total, 'Postgres')
   // A --db prefill only applies when it is valid for the chosen runtime
-  // (workers ⇒ neon only; compose ⇒ local/existing); otherwise fall back.
+  // (workers ⇒ neon only; node ⇒ local/existing); otherwise fall back.
   const prefillDbValid =
     prefill.dbKind !== undefined &&
     (prefill.dbKind === 'neon' ? runtime === 'workers' : runtime === 'node')
@@ -95,61 +127,98 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
     (runtime === 'workers'
       ? 'neon'
       : await askSelect<DbKind>(
-          'Which Postgres should the Node API use?',
-          [
-            {
-              value: 'local',
-              label: 'Compose Postgres (recommended)',
-              hint: 'container-internal URL is set by docker-compose.yml',
-            },
-            { value: 'existing', label: 'I already have a Postgres server' },
-          ],
+          target === 'deploy'
+            ? 'Which Postgres should the Compose stack use?'
+            : 'Which Postgres should the Node API use?',
+          target === 'deploy'
+            ? [
+                {
+                  value: 'local',
+                  label: 'The bundled Postgres service (recommended)',
+                  hint: 'created and configured by docker-compose.yml',
+                },
+                { value: 'existing', label: 'I already have a Postgres server' },
+              ]
+            : [
+                {
+                  value: 'local',
+                  label: 'The dev Postgres from `pnpm dev:infra` (recommended)',
+                  hint: 'localhost:5433, started by docker-compose.dev.yml',
+                },
+                { value: 'existing', label: 'I already have a Postgres server' },
+              ],
           'local',
         ))
 
-  let dbUrl: string | undefined
-  if (dbKind === 'neon') {
-    note(
-      'Workers use the neon-http driver, so DATABASE_URL must be a Neon project URL.\n\n' +
-        linksNote(['neon']),
-      'Postgres (Neon)',
-    )
-    dbUrl = await requireUrl('Paste the Neon project DATABASE_URL:', 'postgres')
-  } else if (dbKind === 'existing') {
-    dbUrl = await requireUrl(
-      'Paste your Postgres DATABASE_URL (reachable from your docker host):',
-      'postgres',
-    )
-  }
-
-  // ── 3. Transcode queue ─────────────────────────────────────────────────
-  step(3, TOTAL_STEPS, 'How transcode jobs are dispatched')
-  const queueKind: QueueKind =
-    prefill.queueKind ??
-    (await askSelect<QueueKind>(
-      'How should transcode jobs reach the Modal pipeline?',
+  // ── 3. Transcoder ──────────────────────────────────────────────────────
+  index += 1
+  step(index, total, 'Where videos are encoded')
+  const transcodeProvider =
+    prefill.transcodeProvider ??
+    (await askSelect<'modal' | 'self-hosted'>(
+      'How should OpenVOD transcode?',
       [
         {
-          value: 'direct',
-          label: 'Direct HTTP dispatch (recommended)',
-          hint: 'no extra service — the API calls the Modal endpoint directly',
+          value: 'modal',
+          label: 'Modal (GPU in the cloud — nothing to install here)',
+          hint: 'FFmpeg/Shaka/Whisper on Modal; uploads come from the raw R2 bucket',
         },
         {
-          value: 'qstash',
-          label: 'QStash (durable retries + queueing)',
-          hint: 'requires a QStash token',
+          value: 'self-hosted',
+          label: 'This machine (Docker, your own CPU/GPU)',
+          hint: 'the agent reads files from folders you mount — no GPU rental',
         },
       ],
-      'direct',
+      'modal',
     ))
-  let queueToken: string | undefined
-  if (queueKind === 'qstash') {
-    note(linksNote(['qstash']), 'Where to get it')
-    queueToken = await askPassword('Paste your QStash token:')
+
+  // Conditional sub-prompt: a local-only installation may have no uploads at
+  // all, which is what makes it valid without a raw bucket.
+  let uploadsEnabled = true
+  if (transcodeProvider === 'self-hosted') {
+    uploadsEnabled =
+      prefill.uploadsEnabled ??
+      (await askConfirm(
+        'Will people also upload files from the browser? (no = only files already on this machine)',
+        true,
+      ))
+    if (!uploadsEnabled) {
+      note(
+        'No raw upload bucket is needed then. The transcoder agent reads the\n' +
+          'folders you mount, and playback still uses Cloudflare R2 + the delivery worker.',
+        'Local-only installation',
+      )
+    }
   }
 
-  // ── 4. Rate limiting ───────────────────────────────────────────────────
-  step(4, TOTAL_STEPS, 'Where rate limits are stored')
+  // ── 4. How transcode jobs are dispatched ───────────────────────────────
+  // Only the Modal path uses a dispatch transport; self-hosted work is queued in
+  // the database and claimed by an agent, so the question would be noise.
+  let queueKind: QueueKind = 'direct'
+  if (transcodeProvider === 'modal') {
+    queueKind =
+      prefill.queueKind ??
+      (await askSelect<QueueKind>(
+        'How should transcode jobs reach the Modal pipeline?',
+        [
+          {
+            value: 'direct',
+            label: 'Direct HTTP dispatch (recommended)',
+            hint: 'no extra service — the API calls the Modal endpoint directly',
+          },
+          {
+            value: 'qstash',
+            label: 'QStash (durable retries + queueing)',
+            hint: 'requires a QStash token',
+          },
+        ],
+        'direct',
+      ))
+  }
+
+  // ── 5. Rate limiting ───────────────────────────────────────────────────
+  index += 1
+  step(index, total, 'Where rate limits are stored')
   const rateLimitKind: RateLimitKind =
     prefill.rateLimitKind ??
     (await askSelect<RateLimitKind>(
@@ -177,9 +246,107 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
       ],
       'memory',
     ))
+
+  // ── 6. AI subtitles and chapters ───────────────────────────────────────
+  // Modal-only: the prebuilt agent image ships neither Whisper nor the Groq
+  // client, so offering it for the local provider would be a promise the
+  // installation cannot keep (see docs/known-gaps.md).
+  let wantGroq = false
+  if (transcodeProvider === 'modal') {
+    wantGroq = await askConfirm(
+      'Enable AI subtitles/chapters with a Groq API key? (optional)',
+      false,
+    )
+    if (wantGroq) {
+      note(
+        linksNote(['groq']) +
+          '\n\nSkipping it now is fine — the AI steps are simply left out of the pipeline.',
+        'Where to get it',
+      )
+    }
+  } else {
+    note(
+      'AI subtitles and chapters are not included in the prebuilt transcoder\n' +
+        'image (it ships neither Whisper nor the Groq client), so they are not\n' +
+        'offered for the local provider yet — see docs/known-gaps.md.',
+      'Local AI is not available yet',
+    )
+  }
+
+  return {
+    target,
+    runtime,
+    dbKind,
+    transcodeProvider,
+    uploadsEnabled,
+    queueKind,
+    rateLimitKind,
+    wantGroq,
+  }
+}
+
+/**
+ * Collect the values the choices require, and return a complete answers object.
+ *
+ * Everything is conditional on the choices: a self-hosted installation with no
+ * uploads is never asked for a raw bucket, a self-hosted one is never asked for
+ * a QStash token, and a Modal one always is (when QStash was chosen).
+ */
+export async function askCredentials(
+  choices: Choices,
+  options: { accountIdDefault?: string } = {},
+): Promise<WizardAnswers> {
+  const { target, runtime, dbKind, transcodeProvider, uploadsEnabled, queueKind, rateLimitKind } =
+    choices
+  const needsRawBucket = uploadsEnabled || transcodeProvider === 'modal'
+
+  // ── Postgres ───────────────────────────────────────────────────────────
+  let dbUrl: string | undefined
+  if (dbKind === 'neon') {
+    note(
+      'Workers use the neon-http driver, so DATABASE_URL must be a Neon project URL.\n\n' +
+        linksNote(['neon']),
+      'Postgres (Neon)',
+    )
+    dbUrl = await requireUrl('Paste the Neon project DATABASE_URL:', 'postgres')
+  } else if (dbKind === 'existing') {
+    dbUrl = await requireUrl(
+      target === 'deploy'
+        ? 'Paste your Postgres DATABASE_URL (reachable from the containers):'
+        : 'Paste your Postgres DATABASE_URL (reachable from this machine):',
+      'postgres',
+    )
+  }
+
+  if (dbUrl !== undefined) {
+    // Advisory only: a private network or a paused Neon branch is not a reason to
+    // refuse a value the user just pasted. The API reports the real problem.
+    const reachable = await probeTcp(dbUrl, 5432)
+    if (!reachable.found) {
+      logWarn(`Postgres at ${reachable.detail ?? 'that address'} did not answer — the value is kept as pasted`)
+    }
+  }
+
+  // ── Queue ──────────────────────────────────────────────────────────────
+  let queueToken: string | undefined
+  if (queueKind === 'qstash') {
+    note(linksNote(['qstash']), 'Where to get it')
+    queueToken = await askPassword('Paste your QStash token:')
+  }
+
+  // ── Rate limiting ──────────────────────────────────────────────────────
   let redisUrl: string | undefined
   if (rateLimitKind === 'redis') {
-    redisUrl = await requireUrl('Paste your Redis URL:', 'redis')
+    const suggestion =
+      target === 'deploy' ? 'redis://redis:6379 (the bundled service)' : 'redis://localhost:6382'
+    redisUrl = await requireUrl(`Paste your Redis URL (e.g. ${suggestion}):`, 'redis')
+  }
+
+  if (redisUrl !== undefined) {
+    const reachable = await probeTcp(redisUrl, 6379)
+    if (!reachable.found) {
+      logWarn(`Redis at ${reachable.detail ?? 'that address'} did not answer — the value is kept as pasted`)
+    }
   }
 
   let upstashUrl: string | undefined
@@ -190,47 +357,43 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
     upstashToken = await askPassword('Paste the Upstash Redis token:')
   }
 
-  // ── 5. Optional Groq ───────────────────────────────────────────────────
-  step(5, TOTAL_STEPS, 'AI subtitles and chapters (optional)')
-  const wantGroq = await askConfirm(
-    'Enable AI subtitles/chapters with a Groq API key? (optional)',
-    false,
-  )
+  // ── AI ─────────────────────────────────────────────────────────────────
   let groqApiKey: string | undefined
-  if (wantGroq) {
-    note(
-      linksNote(['groq']) +
-        '\n\nSkipping it now is fine — the AI steps are simply left out of the pipeline.',
-      'Where to get it',
-    )
+  if (choices.wantGroq) {
     groqApiKey = await askPassword('Paste your GROQ_API_KEY:')
   }
 
-  // ── 6. Origins, buckets and Cloudflare credentials ─────────────────────
-  step(6, TOTAL_STEPS, 'Cloudflare — storage, delivery and credentials')
+  // ── Storage, origins and Cloudflare credentials ────────────────────────
   const frontendUrl = await askText('Dashboard origin (CORS + FRONTEND_URL):', {
     initialValue: DEFAULT_ANSWERS.frontendUrl,
     validate: (value) =>
       HTTP_URL_RE.test(value) ? undefined : 'must be an absolute http(s) URL',
   })
-  const rawBucket = await askText('Raw upload bucket name (Cloudflare R2):', {
-    initialValue: DEFAULT_ANSWERS.rawBucket,
-    validate: (value) => (value.trim() ? undefined : 'bucket name is required'),
-  })
+
+  let rawBucket = DEFAULT_ANSWERS.rawBucket
+  if (needsRawBucket) {
+    rawBucket = await askText('Raw upload bucket name (Cloudflare R2):', {
+      initialValue: DEFAULT_ANSWERS.rawBucket,
+      validate: (value) => (value.trim() ? undefined : 'bucket name is required'),
+    })
+  }
   const transcodedBucket = await askText('Transcoded bucket name (Cloudflare R2):', {
     initialValue: DEFAULT_ANSWERS.transcodedBucket,
     validate: (value) => (value.trim() ? undefined : 'bucket name is required'),
   })
 
-  note(
-    'Storage (R2 buckets) and the delivery worker are Cloudflare-only in this\n' +
-      'release — and the transcoder runs on Modal. Wrangler can create the buckets\n' +
-      'for you during the deploy phase, but it cannot mint S3 API tokens.\n\n' +
-      linksNote(['r2ApiTokens', 'cfAccountId', 'modal']),
-    'What this step needs',
-  )
+  const storageNote = needsRawBucket
+    ? 'Storage (R2 buckets) and the delivery worker are Cloudflare-only in this\n' +
+      'release. Wrangler can create the buckets for you during the deploy phase,\n' +
+      'but it cannot mint S3 API tokens.\n\n' +
+      linksNote(['r2ApiTokens', 'cfAccountId'])
+    : 'Delivery is still Cloudflare: the transcoded bucket and the delivery worker\n' +
+      'are how anyone plays the video. No raw bucket is needed — nothing uploads.\n\n' +
+      linksNote(['r2ApiTokens', 'cfAccountId'])
+  note(storageNote, 'What this step needs')
+
   const accountId = await askText('Cloudflare account id (32-hex):', {
-    initialValue: ctx.accountIdDefault,
+    initialValue: options.accountIdDefault,
     placeholder: 'e.g. a1b2c3d4e5f60718293a4b5c6d7e8f90',
     validate: (value) =>
       value.trim()
@@ -244,16 +407,26 @@ export async function askQuestions(ctx: AskContext): Promise<WizardAnswers> {
   })
   const r2SecretAccessKey = await askPassword('R2 Secret Access Key:')
 
+  const db: DbAnswers = { kind: dbKind, ...(dbUrl !== undefined ? { url: dbUrl } : {}) }
+  const queue: QueueAnswers = {
+    kind: queueKind,
+    ...(queueToken !== undefined ? { token: queueToken } : {}),
+  }
+  const rateLimit: RateLimitAnswers = {
+    kind: rateLimitKind,
+    ...(redisUrl !== undefined ? { url: redisUrl } : {}),
+    ...(upstashUrl !== undefined ? { restUrl: upstashUrl } : {}),
+    ...(upstashToken !== undefined ? { token: upstashToken } : {}),
+  }
+
   return {
+    target,
     runtime,
-    db: { kind: dbKind, ...(dbUrl !== undefined ? { url: dbUrl } : {}) },
-    queue: { kind: queueKind, ...(queueToken !== undefined ? { token: queueToken } : {}) },
-    rateLimit: {
-      kind: rateLimitKind,
-      ...(redisUrl !== undefined ? { url: redisUrl } : {}),
-      ...(upstashUrl !== undefined ? { restUrl: upstashUrl } : {}),
-      ...(upstashToken !== undefined ? { token: upstashToken } : {}),
-    },
+    db,
+    queue,
+    rateLimit,
+    transcodeProvider,
+    uploadsEnabled,
     accountId: accountId.trim(),
     r2AccessKeyId: r2AccessKeyId.trim(),
     r2SecretAccessKey: r2SecretAccessKey.trim(),

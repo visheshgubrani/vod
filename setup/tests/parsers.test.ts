@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   analyticsTokenTemplateUrl,
-  isModalCliAuthed,
+  modalAuthState,
+  MODAL_MIN_VERSION,
   parseAccountId,
+  parseModalClientVersion,
   parseModalImageId,
-  parseModalProfileName,
   parseModalSecretNames,
   parseModalUrl,
+  parseModalWorkspace,
   parseWorkersUrl,
   r2BucketAlreadyExists,
+  versionAtLeast,
 } from '../src/parsers'
 
 describe('analyticsTokenTemplateUrl', () => {
@@ -87,37 +90,73 @@ Image build for im-6HTht0cndtn9TUeynzZNjs failed. See build logs for more detail
   })
 })
 
-describe('isModalCliAuthed', () => {
-  it('treats modal token info exit 0 as authenticated', () => {
-    expect(isModalCliAuthed({ tokenInfo: { code: 0 } })).toBe(true)
+describe('modalAuthState', () => {
+  it('is authenticated when modal token info exits 0', () => {
+    expect(modalAuthState({ code: 0, output: 'Token: ak-…\nWorkspace: acme (ac-1)\n' })).toBe(
+      'authenticated',
+    )
   })
 
-  it('is not authenticated when token info fails and profile current is empty', () => {
-    expect(
-      isModalCliAuthed({
-        tokenInfo: { code: 1 },
-        profileCurrent: { code: 1, stdout: '' },
-      }),
-    ).toBe(false)
+  it('is NOT authenticated when token info fails, even though profile current succeeds with "default"', () => {
+    // The regression this whole function exists for. `modal profile current`
+    // prints the default profile name and exits 0 with no token at all, and
+    // treating that as a login made the deploy skip `modal setup` and then die
+    // inside `modal secret create` with "Token missing".
+    const realWorldOutput =
+      '│ Token missing. Could not authenticate client. If you have token credentials, │\n' +
+      '│ see modal.com/docs/sdk/py/latest/config for setup help. If you are a new     │\n' +
+      '│ user, register an account at modal.com, then run `modal token new`.          │'
+    expect(modalAuthState({ code: 1, output: realWorldOutput })).toBe('unauthenticated')
   })
 
-  it('falls back to a non-empty profile current when token info is missing', () => {
-    expect(
-      isModalCliAuthed({
-        tokenInfo: { code: 2 },
-        profileCurrent: { code: 0, stdout: 'vkiez384\n' },
-      }),
-    ).toBe(true)
+  it('treats a rejected or revoked token as unauthenticated', () => {
+    expect(modalAuthState({ code: 1, output: 'Error: Unauthorized' })).toBe('unauthenticated')
+    expect(modalAuthState({ code: 1, output: 'Invalid token' })).toBe('unauthenticated')
+  })
+
+  it('is unverified — never authenticated — when the probe times out or cannot run', () => {
+    expect(modalAuthState({ code: null, output: '', timedOut: true })).toBe('unverified')
+    expect(modalAuthState({ code: null, output: 'spawn modal ENOENT' })).toBe('unverified')
+  })
+
+  it('is unverified for an unrecognised failure, so the caller asks instead of assuming', () => {
+    // An older CLI without `token info` exits non-zero with a usage error; that
+    // is not evidence of a login, and it is not evidence of a missing token.
+    expect(modalAuthState({ code: 2, output: "No such command 'token info'." })).toBe('unverified')
   })
 })
 
-describe('parseModalProfileName', () => {
-  it('returns the first token from profile current stdout', () => {
-    expect(parseModalProfileName('vkiez384\n')).toBe('vkiez384')
+describe('parseModalWorkspace', () => {
+  it('reads the workspace name out of modal token info', () => {
+    const output = [
+      'Token: ak-EXAMPLEONLY',
+      'Workspace: vkiez384 (ac-LrYRZIkNkTyXAArq4m1lk6)',
+      'User: vkiez384 (us-oMjGAztXqSQXmA1yyTnC1p)',
+      'Created at: 2026-09-13 16:57:06 IST',
+    ].join('\n')
+    expect(parseModalWorkspace(output)).toBe('vkiez384')
   })
 
-  it('returns null when stdout is blank', () => {
-    expect(parseModalProfileName('  \n')).toBeNull()
+  it('returns null when there is no workspace line', () => {
+    expect(parseModalWorkspace('Token missing.')).toBeNull()
+    expect(parseModalWorkspace('Workspace:    ')).toBeNull()
+  })
+})
+
+describe('modal CLI version gate', () => {
+  it('parses the version modal --version prints', () => {
+    expect(parseModalClientVersion('modal client version: 1.5.5')).toBe('1.5.5')
+    expect(parseModalClientVersion('nonsense')).toBeNull()
+  })
+
+  it('compares dotted versions numerically, not lexically', () => {
+    expect(versionAtLeast('1.5.5', MODAL_MIN_VERSION)).toBe(true)
+    expect(versionAtLeast('1.5.0', MODAL_MIN_VERSION)).toBe(true)
+    expect(versionAtLeast('1.10.0', MODAL_MIN_VERSION)).toBe(true)
+    expect(versionAtLeast('1.9.0', MODAL_MIN_VERSION)).toBe(true)
+    expect(versionAtLeast('0.73.1', MODAL_MIN_VERSION)).toBe(false)
+    expect(versionAtLeast('1.4.9', MODAL_MIN_VERSION)).toBe(false)
+    expect(versionAtLeast(null, MODAL_MIN_VERSION)).toBe(false)
   })
 })
 

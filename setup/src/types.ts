@@ -13,6 +13,22 @@
  * still accepted from older `--answers` files (see parsers.ts).
  */
 export type RuntimeKind = 'workers' | 'node'
+/**
+ * Which configuration this run owns.
+ *
+ * OpenVOD keeps two of them, and they are not interchangeable:
+ *
+ * - `dev`    — `server/.dev.vars` + `delivery/.dev.vars`: running the API on
+ *              this machine (`pnpm dev`), or deploying it as a Cloudflare
+ *              Worker.
+ * - `deploy` — the root `.env`: the Docker Compose stack on a server.
+ *
+ * A run touches exactly one, and uses it for choices, credentials, deployment
+ * and verification. Writing both (which is what the wizard used to do for the
+ * Node runtime) is how a Compose deployment ended up reading a `.env` the
+ * wizard had stopped updating.
+ */
+export type ConfigTarget = 'dev' | 'deploy'
 export type DbKind = 'neon' | 'local' | 'existing'
 export type QueueKind = 'direct' | 'qstash'
 /** `redis` is a plain Redis over TCP: Node runtime only, no hosted vendor. */
@@ -44,6 +60,8 @@ export interface RateLimitAnswers {
  * delivery/.dev.vars. Credentials are never echoed once collected.
  */
 export interface WizardAnswers {
+  /** Which configuration file(s) this run owns. Omitted means 'dev'. */
+  target?: ConfigTarget
   /** API runtime: Cloudflare Worker (default) or Node (Docker/VPS/local). */
   runtime: RuntimeKind
   db: DbAnswers
@@ -90,4 +108,6 @@ export interface Prefill {
   dbKind?: DbKind
   queueKind?: QueueKind
   rateLimitKind?: RateLimitKind
+  transcodeProvider?: 'modal' | 'self-hosted'
+  uploadsEnabled?: boolean
 }

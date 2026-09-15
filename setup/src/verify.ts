@@ -129,6 +129,82 @@ export function lintEnvFiles(
   return { rows, failed }
 }
 
+/**
+ * Lint the root `.env` — the Docker Compose deployment config.
+ *
+ * A different file answers different questions than `.dev.vars`, so it gets its
+ * own rules: the bundled Postgres/Redis are configured through `POSTGRES_*`,
+ * `DATABASE_URL` and `REDIS_URL` may both be blank, and the delivery worker's
+ * secret lives here rather than in a mirror file.
+ */
+export function lintDeployEnv(env: Record<string, string>): { rows: CheckRow[]; failed: boolean } {
+  const rows: CheckRow[] = []
+  let failed = false
+
+  const check = (key: string, label: string) => {
+    const ok = isSet(env[key])
+    if (!ok) failed = true
+    rows.push({ ok, text: `${label} (${key})`, key })
+  }
+  const advisory = (key: string, label: string) => {
+    rows.push({ ok: isSet(env[key]), advisory: true, text: `${label} (${key})`, key })
+  }
+
+  const externalDb = (env['DATABASE_URL'] ?? '').trim()
+  if (externalDb === '') {
+    const bundledOk = isSet(env['POSTGRES_USER']) && isSet(env['POSTGRES_PASSWORD']) && isSet(env['POSTGRES_DB'])
+    if (!bundledOk) failed = true
+    rows.push({
+      ok: bundledOk,
+      text: 'Bundled Postgres (POSTGRES_USER/PASSWORD/DB) — or an external DATABASE_URL',
+      key: 'DATABASE_URL',
+    })
+    advisory('POSTGRES_PASSWORD', 'Bundled Postgres password')
+  } else {
+    const ok = /^postgres(ql)?:\/\//.test(externalDb)
+    if (!ok) failed = true
+    rows.push({ ok, text: 'External Postgres URL (DATABASE_URL)', key: 'DATABASE_URL' })
+  }
+  advisory('REDIS_URL', 'Rate-limit Redis (blank = bundled redis service)')
+
+  check('BETTER_AUTH_SECRET', 'Auth secret (>=32 chars)')
+  check('JWT_SECRET', 'Playback JWT secret (>=32 chars)')
+  check('INTERNAL_SWEEP_SECRET', 'Sweeper secret (generated)')
+  check('TRANSCODE_INGEST_SECRET', 'Transcode ingest secret (generated)')
+  check('FRONTEND_URL', 'Dashboard origin')
+  check('NEXT_PUBLIC_API_BASE_URL', 'Dashboard → API base URL (baked at build time)')
+  check('ACCOUNT_ID', 'Cloudflare account id')
+  check('R2_ACCESS_KEY_ID', 'R2 access key id')
+  check('R2_SECRET_ACCESS_KEY', 'R2 secret access key')
+  check('TRANSCODED_BUCKET_NAME', 'Transcoded bucket')
+
+  const provider = (env['TRANSCODE_PROVIDER'] ?? 'modal').trim().toLowerCase()
+  const selfHosted = provider === 'self-hosted' || provider === 'selfhosted' || provider === 'local'
+  const uploadsOn = (env['UPLOADS_ENABLED'] ?? 'true').trim().toLowerCase() !== 'false'
+
+  if (selfHosted && !uploadsOn) {
+    advisory('RAW_BUCKET_NAME', 'Raw bucket (not needed: uploads are off)')
+  } else {
+    check('RAW_BUCKET_NAME', 'Raw bucket')
+  }
+  if (selfHosted) {
+    advisory('MODAL_WEBHOOK_URL', 'Modal webhook URL (optional: self-hosted provider)')
+  } else {
+    check('MODAL_WEBHOOK_URL', 'Modal webhook URL')
+  }
+  advisory('DELIVERY_URL', 'Delivery worker base URL')
+
+  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET'] as const) {
+    const value = env[key]
+    if (isSet(value) && value.trim().length < MIN_SECRET_LENGTH) {
+      failed = true
+      rows.push({ ok: false, text: `${key} shorter than 32 chars`, key })
+    }
+  }
+
+  return { rows, failed }
+}
+
 export function renderCheckRows(rows: CheckRow[]): string[] {
   return rows.map((row) => {
     const icon = row.ok ? '✓' : row.advisory ? '○' : '✗'

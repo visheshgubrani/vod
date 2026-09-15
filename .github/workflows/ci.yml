@@ -324,6 +324,39 @@ jobs:
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "no ambient environment reads outside the composition roots"
 
+  # The launcher runs before anything else on a new machine, in the shell macOS
+  # actually ships, and it is the one place a mistake is unrecoverable for the
+  # user (a half-installed toolchain). shellcheck catches the class of bug that
+  # only shows up on someone else's distro; the real Bash 3.2 run catches the one
+  # shellcheck cannot see — bashisms that macOS's /bin/bash (3.2) rejects.
+  launcher:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck the launcher
+        run: |
+          # Run from scripts/ so the `source=lib/detect.sh` directive resolves.
+          docker run --rm -v "$PWD/scripts:/w:ro" -w /w \
+            koalaman/shellcheck:stable -x bootstrap.sh lib/detect.sh
+      - name: No bash-4-only syntax in the launcher
+        run: |
+          # Supplementary to the 3.2 run below: a fast, explicit list of the
+          # constructs that silently break on macOS.
+          if grep -nE 'declare[[:space:]]+-A|mapfile|readarray|local[[:space:]]+-n|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)' \
+            scripts/bootstrap.sh scripts/lib/detect.sh; then
+            echo "bash-4-only syntax found — macOS ships bash 3.2 as /bin/bash"
+            exit 1
+          fi
+      - name: Run the detector under real Bash 3.2
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -w /w bash:3.2 bash -c '
+            set -e
+            . scripts/lib/detect.sh
+            ov_detect_all
+            ov_dump
+            OPENVOD_NO_SUDO=1 bash -c ". scripts/lib/detect.sh; ov_detect_all; ov_run_pkg python3 && exit 1; exit 0"
+          '
+
   branding-gate:
     runs-on: ubuntu-latest
     steps:

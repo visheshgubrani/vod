@@ -135,26 +135,30 @@ cd vod
 The wizard:
 
 <Steps>
-  <Step>Checks Node and pnpm against what the repository pins, installing them via nvm or corepack when missing. It keeps going when they are already present.</Step>
+  <Step>Checks Node and pnpm against what the repository pins, installing them when missing — nvm first, then the distribution's package with the version re-checked. It keeps going when they are already present.</Step>
   <Step>Installs workspace dependencies at the root — never inside a package.</Step>
-  <Step>Asks how you want to run the API — **Cloudflare Workers** (`DB_DRIVER=neon-http`) or **Node via Docker Compose** (`pg`) — and which optional services to enable: QStash queueing and a rate-limit store.</Step>
-  <Step>Walks through every key with a step counter and a link to the console page for each one.</Step>
-  <Step>Writes `server/.dev.vars` and `delivery/.dev.vars`, sharing one `JWT_SECRET`. Secrets are generated locally and the files are `chmod 600`.</Step>
+  <Step>Asks how you want the installation shaped: the API runtime (**Cloudflare Workers**, `DB_DRIVER=neon-http`, or **Node**, `pg`), Postgres, the **transcoder** (Modal, or this machine via the self-hosted Docker agent), browser uploads, QStash queueing (Modal only), a rate-limit store, and AI subtitles/chapters (Modal only).</Step>
+  <Step>Checks the machine against those choices and offers to install what it is allowed to. Read-only modes (`--doctor`, `--check`) and headless runs install nothing; system packages are only ever installed with root or passwordless sudo — otherwise the exact command is printed.</Step>
+  <Step>Walks through the keys those choices require, each with a link to the console page that creates it.</Step>
+  <Step>Writes the configuration for one target: `server/.dev.vars` + `delivery/.dev.vars` (`dev`), sharing one `JWT_SECRET`. Secrets already in the file are reused, new ones are generated locally, and the files are `chmod 600`.</Step>
 </Steps>
 
-Re-running it is safe. With `server/.dev.vars` already written it offers
+Re-running it is safe. With the target's configuration already written it offers
 **verify / reconfigure / deploy** instead of overwriting anything.
 
 ```bash
-./scripts/bootstrap.sh --check     # re-verify an existing configuration
-./scripts/bootstrap.sh --force     # regenerate; unrelated keys are preserved
+./scripts/bootstrap.sh --check              # re-verify an existing configuration
+./scripts/bootstrap.sh --doctor             # report only; installs and writes nothing
+./scripts/bootstrap.sh --force              # regenerate; unmanaged keys and secrets are preserved
+./scripts/bootstrap.sh --target deploy      # configure the Compose stack's root .env instead
 ```
 
-<Callout type="info" title="The wizard writes development files, not deployment config">
-  `server/.dev.vars` and `delivery/.dev.vars` are **development** configuration. A
-  Compose deployment is configured by `.env` at the repo root
-  (`cp .env.example .env`). The wizard does not write it. See
-  [Configuration](/configuration).
+<Callout type="info" title="One run owns one configuration">
+  `dev` is `server/.dev.vars` + `delivery/.dev.vars` (local development, or
+  deploying the API as a Worker); `deploy` is `.env` at the repo root (the Docker
+  Compose stack). A run touches exactly one of them, and uses it for its choices,
+  credentials, deploy and verification — when both exist, the wizard asks which.
+  See [Configuration](/configuration).
 </Callout>
 
 ## 5. Migrate

@@ -27,8 +27,11 @@ docs/          Maintainer-facing markdown: cross-service contracts
                (deployment-shapes.md), operator guides (deploy.md,
                self-hosted-transcoding.md), build recipe
                (transcoding-toolchain.md) and known-gaps.md
-scripts/       bootstrap.sh launcher (toolchain + wizard exec)
-setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
+scripts/       bootstrap.sh launcher (toolchain + wizard exec) and lib/ —
+               detect.sh (OS/package-manager verdict, the one detector) and
+               pkg-commands.tsv (install commands, read by bash AND the wizard)
+setup/         openvod-setup — interactive bootstrap wizard (TS, clack + chalk + ora):
+               choices → system requirements → credentials → opt-in deploy
 ```
 
 ## Commands (workspace)
@@ -172,6 +175,20 @@ expected values from literals/worked examples (never re-derived from code).
   which Compose reads for both interpolation and the `api`/`maintenance`
   container environment; do not document or wire `.dev.vars` as deployment
   config.
+- **Bootstrap / wizard changes**: `scripts/bootstrap.sh` parses the mode first —
+  `--help`, `--doctor`, `--check`, `--answers` and any run without a TTY install
+  nothing (no nvm, no corepack, no `pnpm install`). The wizard owns one
+  *configuration target* per run (`dev` = `server/.dev.vars` +
+  `delivery/.dev.vars`; `deploy` = the root `.env`), and that target is used for
+  its choices, credentials, deploy and verification — never write both. Secrets
+  already in the target file are reused (`--rotate-secrets` is the explicit
+  opt-in). OS detection lives once, in `scripts/lib/detect.sh`, and package
+  commands once, in `scripts/lib/pkg-commands.tsv` (read by bash and by
+  `setup/src/system.ts`); the privilege policy is shared too — escalate only as
+  root or with passwordless sudo, print the command otherwise, never prompt for a
+  password. The deploy phase is a step graph over an injected `DeployPort`
+  (`setup/src/deploy.ts`): independent steps continue after a failure, dependent
+  steps are blocked, and an incomplete deployment exits nonzero.
 - **Runtime axes**: choosable vs fixed behavior is decided in
   `server/src/runtime/deployment.ts`, wired in `node.ts`/`workers.ts`. Adding a
   runtime-specific capability means adding a port there — not branching on the

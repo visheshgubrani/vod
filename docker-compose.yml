@@ -201,6 +201,13 @@ services:
     volumes:
       - openvod_transcoder_scratch:/var/lib/openvod-transcoder
       - ${OPENVOD_MEDIA_DIR:-./media}:/media:ro
+    # The agent polls the API, so OPENVOD_API_URL has to resolve *from inside the
+    # container*: the service name only works when the bundled api service is the
+    # API. For a Workers API use its public URL; for `pnpm dev` on this machine
+    # use http://host.docker.internal:<port> — which is why this mapping exists
+    # (Docker Desktop provides it, plain Linux Docker does not).
+    extra_hosts:
+      - host.docker.internal:host-gateway
     # NVIDIA hosts: uncomment, and note the `video` capability — without it the
     # driver is visible but no encode session can be created.
     #   deploy:

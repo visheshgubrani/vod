@@ -44,26 +44,89 @@ export function parseModalImageId(text: string): string | null {
   return match ? match[0] : null
 }
 
-/** Exit codes and stdout from Modal CLI auth probes (no I/O). */
-export interface ModalAuthProbes {
-  tokenInfo: { code: number | null }
-  profileCurrent?: { code: number | null; stdout: string }
+/**
+ * Outcome of a Modal auth probe.
+ *
+ * Three outcomes, because collapsing the last two is the bug that broke every
+ * fresh install: `modal profile current` prints the *default profile name* and
+ * exits 0 even with no token at all, so anything short of "exit 0 from
+ * `token info`" must never be reported as authenticated. A probe that cannot
+ * tell (timeout, spawn failure, unrecognised error) is `unverified` — the
+ * caller asks, instead of assuming either way.
+ */
+export type ModalAuthState = 'authenticated' | 'unauthenticated' | 'unverified'
+
+export interface ModalAuthProbe {
+  code: number | null
+  /** Combined stdout + stderr. Inspected only — never printed (it holds the token). */
+  output?: string
+  timedOut?: boolean
 }
 
 /**
- * True when the Modal CLI reports an active token. `token info` exit 0 is
- * the current CLI; older CLIs fall back to a non-empty `profile current`.
+ * What the CLI says when the credentials are missing or rejected.
+ *
+ * Matched case-insensitively against the probe output. Modal 1.5.x prints
+ * "Token missing. Could not authenticate client."; the rest cover the variants
+ * a rejected or revoked token produces. Anything else is `unverified` on
+ * purpose: guessing "authenticated" here is what made `modal secret create`
+ * fail after a login the wizard believed had already happened.
  */
-export function isModalCliAuthed(probes: ModalAuthProbes): boolean {
-  if (probes.tokenInfo.code === 0) return true
-  const profile = probes.profileCurrent
-  return profile !== undefined && profile.code === 0 && profile.stdout.trim() !== ''
+const MODAL_AUTH_FAILURE_MARKERS = [
+  'token missing',
+  'could not authenticate',
+  'not authenticated',
+  'no token',
+  'token is not set',
+  'invalid token',
+  'unauthorized',
+  'authentication failed',
+] as const
+
+export function modalAuthState(probe: ModalAuthProbe): ModalAuthState {
+  if (probe.timedOut === true || probe.code === null) return 'unverified'
+  if (probe.code === 0) return 'authenticated'
+  const text = (probe.output ?? '').toLowerCase()
+  return MODAL_AUTH_FAILURE_MARKERS.some((marker) => text.includes(marker))
+    ? 'unauthenticated'
+    : 'unverified'
 }
 
-/** Active profile name from `modal profile current` stdout, or null. */
-export function parseModalProfileName(stdout: string): string | null {
-  const name = stdout.trim()
-  return name === '' ? null : name.split(/\s+/)[0]
+/**
+ * Workspace name from `modal token info`, or null.
+ *
+ * The same output prints the token itself, so this is the *only* value read out
+ * of it; callers never log the captured text.
+ */
+export function parseModalWorkspace(text: string): string | null {
+  const match = /^\s*workspace:\s*(.+)$/im.exec(text)
+  if (!match) return null
+  const name = match[1].split('(')[0].trim()
+  return name === '' ? null : name
+}
+
+/** Minimum Modal CLI the wizard drives — the version `requirements-deploy.txt` pins. */
+export const MODAL_MIN_VERSION = '1.5.0'
+
+/** `modal --version` → "1.5.5" (it prints "modal client version: 1.5.5"). */
+export function parseModalClientVersion(text: string): string | null {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text)
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : null
+}
+
+/** True when `actual` is at least `minimum` (both dotted numeric). */
+export function versionAtLeast(actual: string | null, minimum: string): boolean {
+  if (actual === null) return false
+  const parse = (value: string): number[] =>
+    value.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const a = parse(actual)
+  const b = parse(minimum)
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const left = a[i] ?? 0
+    const right = b[i] ?? 0
+    if (left !== right) return left > right
+  }
+  return true
 }
 
 function secretNameFromUnknown(value: unknown): string | null {

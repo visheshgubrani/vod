@@ -86,7 +86,7 @@ not bind a production hostname for you.
 ## Path A — Cloudflare Workers
 
 ```bash
-./scripts/bootstrap.sh     # wizard: choose the Workers runtime, paste R2/Neon keys
+./scripts/bootstrap.sh --target dev   # wizard: Workers runtime, R2/Neon keys
 pnpm db:migrate           # against the Neon URL; db:push cannot create the cleanup trigger
 cd server && pnpm exec wrangler deploy
 cd ../delivery && pnpm exec wrangler deploy
@@ -132,15 +132,16 @@ slash) and restart the API. Rebuild the web image after changing
 - Modal: `GET /healthz`
 - Dashboard: `/setup` and the cluster-health strip consume `/health/config`
 
-`./scripts/bootstrap.sh --check` checks `.dev.vars` without printing secrets and
-optionally probes `/health/config`.
+`./scripts/bootstrap.sh --check` checks the selected target's configuration
+without printing secrets (`--target deploy` checks the root `.env`; when both
+exist, say which) and optionally probes `/health/config`.
 
 ## JWT parity
 
 The API mints playback tokens (`iss: openvod`, `aud: playback`). The delivery
 worker verifies them with the **same** `JWT_SECRET`. The bootstrap wizard
-mirrors that secret into `delivery/.dev.vars`; `./scripts/bootstrap.sh --check`
-warns if they diverge. A Workers deployment sets it with
+mirrors that secret into `delivery/.dev.vars` (the `dev` target);
+`./scripts/bootstrap.sh --check --target dev` warns if they diverge. A Workers deployment sets it with
 `wrangler secret put JWT_SECRET`; a Compose deployment sets it in `.env`.
 
 ## Modal

@@ -61,17 +61,33 @@ const RATE_LIMIT_LABELS: Record<WizardAnswers['rateLimit']['kind'], string> = {
   upstash: 'Upstash Redis (shared, hosted)',
 }
 
+const PROVIDER_LABELS: Record<'modal' | 'self-hosted', string> = {
+  modal: 'Modal (GPU in the cloud)',
+  'self-hosted': 'this machine (Docker agent)',
+}
+
 /** One-line summary of the decisions for the final confirmation. */
 export function summaryText(answers: WizardAnswers): string {
+  const target = answers.target ?? 'dev'
+  const provider: 'modal' | 'self-hosted' =
+    answers.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+  const uploads = answers.uploadsEnabled !== false
   const lines = [
+    `Configuration: ${target === 'deploy' ? 'deploy — root .env (Docker Compose)' : 'dev — server/.dev.vars'}`,
     `API runtime: ${answers.runtime === 'workers' ? 'Cloudflare Workers (neon-http)' : 'Node (pg)'}`,
-    `Postgres: ${answers.db.kind === 'neon' ? 'Neon URL' : answers.db.kind === 'local' ? 'local dev Postgres (pnpm dev:infra)' : 'existing Postgres URL'}`,
-    `Queue: ${answers.queue.kind === 'direct' ? 'direct HTTP → Modal' : 'QStash'}`,
+    `Postgres: ${answers.db.kind === 'neon' ? 'Neon URL' : answers.db.kind === 'local' ? 'the bundled/dev Postgres' : 'existing Postgres URL'}`,
+    `Transcoding: ${PROVIDER_LABELS[provider]}`,
+    ...(provider === 'modal'
+      ? [`Queue: ${answers.queue.kind === 'direct' ? 'direct HTTP → Modal' : 'QStash'}`]
+      : []),
     `Rate limiting: ${RATE_LIMIT_LABELS[answers.rateLimit.kind]}`,
-    `Buckets: ${answers.rawBucket} / ${answers.transcodedBucket} (Cloudflare R2 — always required)`,
+    `Browser uploads: ${uploads ? 'enabled (raw bucket required)' : 'disabled (local files only)'}`,
+    `Buckets: ${uploads ? `${answers.rawBucket} / ` : ''}${answers.transcodedBucket} (Cloudflare R2)`,
     `Delivery worker: Cloudflare (always required for playback)`,
     `Dashboard origin: ${answers.frontendUrl}`,
-    `Groq AI: ${answers.groqApiKey ? 'configured' : 'skipped'}`,
+    ...(provider === 'modal'
+      ? [`Groq AI: ${answers.groqApiKey ? 'configured' : 'skipped'}`]
+      : []),
   ]
   return lines.join('\n')
 }

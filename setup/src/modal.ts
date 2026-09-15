@@ -1,19 +1,37 @@
 /**
- * Modal operations: CLI install (existing binary → uv tool → pipx → a
- * private venv, which sidesteps PEP 668 "externally-managed" pip errors),
- * auth preflight, secrets, and `modal deploy main.py`.
+ * Modal operations: preparing the deploy environment, auth preflight, secrets,
+ * and `modal deploy main.py`.
  *
- * python3 is only required when no Modal CLI exists yet; the wizard explains
- * exactly what to install when even the venv route fails.
+ * There is exactly ONE Modal CLI in this flow: `transcoding/.venv/bin/modal`,
+ * prepared from `requirements-deploy.txt` (which pins `modal>=1.5.0`). Login,
+ * secret writes and deploy all go through that same binary — a global uv/pipx
+ * `modal` used for login and the venv's used for deploy were two environments
+ * sharing one token file, so a profile, a `MODAL_CONFIG_PATH` or a version
+ * difference between them surfaced as "authenticated a moment ago, cannot
+ * authenticate now". uv is preferred for building it because uv can provision
+ * its own interpreter, which makes the Modal path work with no system python3.
+ *
+ * Nothing here is fatal to a deployment on its own: the caller catches, records
+ * the step as skipped, and carries on with the provider-independent steps.
  */
 
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { WizardError } from './errors'
-import { isModalCliAuthed, parseModalImageId, parseModalProfileName, parseModalSecretNames, parseModalUrl } from './parsers'
+import {
+  MODAL_MIN_VERSION,
+  modalAuthState,
+  parseModalClientVersion,
+  parseModalImageId,
+  parseModalSecretNames,
+  parseModalUrl,
+  parseModalWorkspace,
+  versionAtLeast,
+  type ModalAuthState,
+} from './parsers'
+import { providerLink } from './links'
 import { findOnPath, runCapture, runInherit } from './runners'
-import { logInfo, logStep, logWarn, withSpinner } from './ui'
+import { askSelect, logInfo, logStep, logSuccess, logWarn, withSpinner } from './ui'
 
 /** Repo-relative dir of the Modal pipeline (a python dir, not a pnpm pkg). */
 const TRANSCODING = 'transcoding'
@@ -33,7 +51,7 @@ export const MODAL_GROQ_SECRET = 'openvod-groq-creds'
 /** Pre-rename secret names, offered for deletion so a workspace has one set. */
 export const LEGACY_MODAL_SECRETS: readonly string[] = ['r2-creds', 'groq-creds']
 
-/** `modal` inside transcoding/.venv — used for deploy so main.py can import boto3. */
+/** `modal` inside transcoding/.venv — the only Modal CLI this wizard drives. */
 export function transcodingVenvModalBin(root: string): string {
   return join(root, TRANSCODING, '.venv', 'bin', 'modal')
 }
@@ -43,27 +61,21 @@ export function transcodingDeployRequirements(root: string): string {
   return join(root, TRANSCODING, 'requirements-deploy.txt')
 }
 
-/** Absolute path to a usable `modal` binary, or null. */
-export async function findModalBin(): Promise<string | null> {
-  const onPath = findOnPath('modal')
-  if (onPath) return onPath
-  for (const candidate of [
-    join(homedir(), '.local', 'bin', 'modal'),
-    join(homedir(), '.local', 'share', 'openvod', 'modal-venv', 'bin', 'modal'),
-  ]) {
-    if (existsSync(candidate)) return candidate
-  }
-  return null
-}
-
-async function modalVersionOk(bin: string): Promise<boolean> {
+/** `modal --version` inside the prepared venv, or null when it does not run. */
+async function modalClientVersion(bin: string): Promise<string | null> {
   const result = await runCapture([bin, '--version'], { timeoutMs: 30_000 })
-  return result.code === 0
+  if (result.code !== 0) return null
+  return parseModalClientVersion(result.stdout + result.stderr)
 }
 
 /**
- * Ensure transcoding/.venv has the local hydrate deps (boto3, fastapi, modal).
- * `uv tool` / pipx Modal is isolated and cannot import main.py otherwise.
+ * Ensure transcoding/.venv has the local hydrate deps (boto3, fastapi, modal)
+ * and return the `modal` binary inside it.
+ *
+ * uv first (it can fetch its own Python), then a system `python3 -m venv`.
+ * A venv that exists but does not carry a supported Modal CLI is an error the
+ * caller reports with the one command that fixes it, not a silent fallback to
+ * some other `modal` on PATH.
  */
 export async function ensureTranscodingDeployEnv(root: string): Promise<string> {
   const venvDir = join(root, TRANSCODING, '.venv')
@@ -71,20 +83,37 @@ export async function ensureTranscodingDeployEnv(root: string): Promise<string> 
   const modalBin = transcodingVenvModalBin(root)
   const requirements = transcodingDeployRequirements(root)
 
-  const python = findOnPath('python3')
-  if (!python) {
-    throw new WizardError(
-      'python3 is missing — needed to create transcoding/.venv for modal deploy.\n' +
-        'Install python3, then re-run, or: cd transcoding && python3 -m venv .venv && .venv/bin/pip install -r requirements-deploy.txt',
-    )
+  const uv = findOnPath('uv')
+  if (uv !== null) {
+    for (const args of [
+      [uv, 'venv', '--allow-existing', venvDir],
+      [uv, 'venv', venvDir],
+    ]) {
+      const created = await runCapture(args, { timeoutMs: 300_000 })
+      if (created.code !== 0) continue
+      const installed = await runCapture(
+        [uv, 'pip', 'install', '--python', venvPython, '-q', '-r', requirements],
+        { timeoutMs: 600_000 },
+      )
+      if (installed.code === 0) break
+    }
   }
 
   if (!existsSync(venvPython)) {
+    const python = findOnPath('python3')
+    if (!python) {
+      throw new WizardError(
+        'neither uv nor python3 is available to build transcoding/.venv for modal deploy.\n' +
+          'Install one of them and re-run, or deploy the pipeline yourself:\n' +
+          '  cd transcoding && python3 -m venv .venv && .venv/bin/pip install -r requirements-deploy.txt',
+      )
+    }
     const venvOk = await runCapture([python, '-m', 'venv', venvDir], { timeoutMs: 120_000 })
     if (venvOk.code !== 0) {
       throw new WizardError(
         `could not create transcoding/.venv: ${venvOk.stderr.trim()}\n` +
-          'Create it yourself: cd transcoding && python3 -m venv .venv',
+          'Create it yourself: cd transcoding && python3 -m venv .venv\n' +
+          '(on Debian/Ubuntu the python3-venv package provides this)',
       )
     }
   }
@@ -100,92 +129,92 @@ export async function ensureTranscodingDeployEnv(root: string): Promise<string> 
     )
   }
 
-  if (!(await modalVersionOk(modalBin))) {
+  const version = await modalClientVersion(modalBin)
+  if (version === null) {
     throw new WizardError(
-      `modal binary at ${modalBin} does not run — install Modal into transcoding/.venv and re-run`,
+      `the modal binary at ${modalBin} does not run — reset the environment and re-run:\n` +
+        `  rm -rf transcoding/.venv && cd transcoding && python3 -m venv .venv && .venv/bin/pip install -r requirements-deploy.txt`,
+    )
+  }
+  if (!versionAtLeast(version, MODAL_MIN_VERSION)) {
+    throw new WizardError(
+      `the Modal CLI in transcoding/.venv is ${version}, but this wizard needs >= ${MODAL_MIN_VERSION} ` +
+        '(it drives `modal token info`, which older CLIs do not have).\n' +
+        `Reset it: rm -rf transcoding/.venv && cd transcoding && python3 -m venv .venv && .venv/bin/pip install -r requirements-deploy.txt`,
     )
   }
   return modalBin
 }
 
 /**
- * Install the Modal CLI when missing, trying uv tool → pipx → private venv.
- * Returns the bin path. Throws WizardError with manual instructions when
- * nothing works or python3 is unavailable.
+ * One line describing a probe outcome, without ever echoing the token.
+ *
+ * `unverified` is deliberately not phrased as a failure: a timed-out probe is a
+ * question, not an answer, and the caller asks the user rather than assuming.
  */
-export async function installModalCli(): Promise<string> {
-  // 1. uv (fast, isolated)
-  if (findOnPath('uv')) {
-    const result = await runCapture(['uv', 'tool', 'install', 'modal'], { timeoutMs: 600_000 })
-    if (result.code === 0) {
-      const bin = await findModalBin()
-      if (bin) return bin
-    }
+export function describeModalAuth(status: ModalAuthStatus): string {
+  const where = status.workspace ? ` (workspace ${status.workspace})` : ''
+  switch (status.state) {
+    case 'authenticated':
+      return `Modal CLI authenticated${where}`
+    case 'unauthenticated':
+      return 'Modal CLI is not authenticated (no token, or the token was rejected)'
+    case 'unverified':
+      return 'could not verify the Modal CLI login (the probe timed out or returned something unexpected)'
   }
-  // 2. pipx
-  if (findOnPath('pipx')) {
-    const result = await runCapture(['pipx', 'install', 'modal'], { timeoutMs: 600_000 })
-    if (result.code === 0) {
-      const bin = await findModalBin()
-      if (bin) return bin
-    }
-  }
-  // 3. private venv (works on externally-managed distros)
-  const python = findOnPath('python3')
-  if (!python) {
-    throw new WizardError(
-      'Modal CLI is not installed and python3 is missing.\n' +
-        'Install it any way you like, e.g. brew install python, then re-run;\n' +
-        'or run yourself: pipx install modal  (or: pip install modal && modal setup)',
-    )
-  }
-  const venvDir = join(homedir(), '.local', 'share', 'openvod', 'modal-venv')
-  const venvOk = await runCapture([python, '-m', 'venv', venvDir], { timeoutMs: 120_000 })
-  if (venvOk.code !== 0) {
-    throw new WizardError(
-      `could not create a python venv at ${venvDir}: ${venvOk.stderr.trim()}\n` +
-        'Install the Modal CLI yourself (pipx install modal) and re-run.',
-    )
-  }
-  const pip = join(venvDir, 'bin', 'pip')
-  const pipResult = await runCapture([pip, 'install', '-q', 'modal'], { timeoutMs: 600_000 })
-  if (pipResult.code !== 0) {
-    throw new WizardError(
-      `pip install modal failed: ${pipResult.stderr.trim()}\n` +
-        'Install the Modal CLI yourself (pipx install modal) and re-run.',
-    )
-  }
-  const bin = join(venvDir, 'bin', 'modal')
-  if (!(await modalVersionOk(bin))) {
-    throw new WizardError(`modal binary at ${bin} does not run — install Modal CLI and re-run`)
-  }
-  return bin
 }
 
 export interface ModalAuthStatus {
-  authed: boolean
-  profile: string | null
+  state: ModalAuthState
+  /** Workspace the token belongs to, when the CLI reports one. Never the token. */
+  workspace: string | null
 }
 
-/** Auth check: current CLI `token info`; older CLIs fall back to `profile current`. */
-export async function modalAuthed(bin: string): Promise<ModalAuthStatus> {
-  const tokenInfo = await runCapture([bin, 'token', 'info'], { timeoutMs: 60_000 })
-  const profile = await runCapture([bin, 'profile', 'current'], { timeoutMs: 60_000 })
+/**
+ * Auth preflight, as three distinguishable outcomes.
+ *
+ * `unverified` is the one that matters: a timed-out or crashed probe used to be
+ * indistinguishable from a successful login, which is how a deploy walked into
+ * `modal secret create` with no credentials at all.
+ */
+export async function modalAuthStatusFor(bin: string): Promise<ModalAuthStatus> {
+  const result = await runCapture([bin, 'token', 'info'], { timeoutMs: 60_000 })
+  const output = result.stdout + result.stderr
   return {
-    authed: isModalCliAuthed({
-      tokenInfo: { code: tokenInfo.code },
-      profileCurrent: { code: profile.code, stdout: profile.stdout },
+    state: modalAuthState({
+      code: result.code,
+      output,
+      timedOut: result.timedOut,
     }),
-    profile: parseModalProfileName(profile.stdout),
+    workspace: parseModalWorkspace(result.stdout),
   }
 }
 
-/** Run the interactive `modal setup` flow (prints its own sign-in URL). */
+/**
+ * Browser login: `modal setup` prints its own sign-in URL (and works over SSH
+ * by asking you to open the URL yourself).
+ */
 export async function runModalSetup(bin: string): Promise<boolean> {
   logStep('Running modal setup — approve it in your browser when it opens')
   const code = await runInherit([bin, 'setup'])
   if (code !== 0) {
-    logWarn(`modal setup did not complete (exit ${String(code)}) — run it yourself: modal setup`)
+    logWarn(`modal setup did not complete (exit ${String(code)})`)
+    return false
+  }
+  return true
+}
+
+/**
+ * Headless login: paste a token id + secret from modal.com/settings/tokens.
+ *
+ * Deliberately argument-free — `modal token set` prompts for both values, so
+ * they never appear in this process's argv (and therefore never in `ps`).
+ */
+export async function runModalTokenSet(bin: string): Promise<boolean> {
+  logStep('Running modal token set — paste the token id and secret when prompted')
+  const code = await runInherit([bin, 'token', 'set'])
+  if (code !== 0) {
+    logWarn(`modal token set did not complete (exit ${String(code)})`)
     return false
   }
   return true
@@ -258,37 +287,19 @@ export function secretCreateJsonArgs(
   return args
 }
 
-/** Inline `NAME KEY=value …` form, for Modal CLIs without `--from-json`. */
-export function secretCreateValueArgs(
-  name: string,
-  values: Record<string, string>,
-  force: boolean,
-): string[] {
-  const args = ['secret', 'create']
-  if (force) args.push('--force')
-  args.push(name)
-  for (const [key, value] of Object.entries(values)) args.push(`${key}=${value}`)
-  return args
-}
-
-/** True when a Modal CLI failure looks like "this version has no --from-json". */
-export function modalRejectsFromJson(output: string): boolean {
-  const text = (output ?? '').toLowerCase()
-  return (
-    text.includes('--from-json') ||
-    text.includes('no such option') ||
-    text.includes('unrecognized option') ||
-    text.includes('unexpected extra argument')
-  )
-}
-
 export interface PutModalSecretOptions {
   force?: boolean
   /** Private temp dir for the 0600 JSON payload. */
   tempDir: string
 }
 
-/** Create a Modal secret unless it already exists. Pass force to overwrite. */
+/**
+ * Create a Modal secret unless it already exists. Pass force to overwrite.
+ *
+ * Values go through a 0600 file (`--from-json`) and never through argv: the
+ * inline `NAME KEY=value` form would put R2 keys and the ingest secret in the
+ * process table, and the venv pins `modal>=1.5.0`, so the flag always exists.
+ */
 export async function putModalSecret(
   bin: string,
   name: string,
@@ -310,19 +321,13 @@ export async function putModalSecret(
     await withSpinner(
       `Creating Modal secret ${name}…`,
       async () => {
-        let result = await runCapture([bin, ...secretCreateJsonArgs(name, jsonPath, overwrite)], {
+        const result = await runCapture([bin, ...secretCreateJsonArgs(name, jsonPath, overwrite)], {
           timeoutMs: 120_000,
         })
-        if (result.code !== 0 && modalRejectsFromJson(result.stderr + result.stdout)) {
-          logInfo(`this Modal CLI does not accept --from-json — retrying with inline values`)
-          result = await runCapture([bin, ...secretCreateValueArgs(name, values, overwrite)], {
-            timeoutMs: 120_000,
-          })
-        }
         if (result.code !== 0) {
           throw new WizardError(
             `modal secret create "${name}" failed: ${result.stderr.trim()}\n` +
-              `Re-run with: modal secret create ${name} KEY=value …`,
+              `Re-run with: ${bin} secret create --from-json <file> ${name}`,
           )
         }
       },
@@ -339,17 +344,13 @@ export async function putModalSecret(
 
 /**
  * Deploy the GPU pipeline. First image build can take several minutes.
- * Uses transcoding/.venv so local imports (boto3, fastapi) resolve; a global
- * uv/pipx `modal` cannot see those packages.
- * Streams Modal output live (a spinner would hide image-build logs).
- * Returns the parsed modal.run URL (null when unparseable).
+ *
+ * `bin` is the already-prepared `transcoding/.venv/bin/modal` — the same binary
+ * that authenticated, so the deploy cannot run against a different token file
+ * or CLI version than the login did. Streams Modal output live (a spinner would
+ * hide image-build logs). Returns the parsed modal.run URL (null when unparseable).
  */
-export async function deployModalPipeline(root: string): Promise<string | null> {
-  const bin = await withSpinner(
-    'Preparing transcoding/.venv (boto3, fastapi, modal)…',
-    () => ensureTranscodingDeployEnv(root),
-    'transcoding/.venv ready for modal deploy',
-  )
+export async function deployModalPipeline(root: string, bin: string): Promise<string | null> {
   logStep('Deploying the Modal pipeline (first image build can take several minutes)…')
   const result = await runCapture([bin, 'deploy', 'main.py'], {
     cwd: join(root, TRANSCODING),
@@ -508,4 +509,87 @@ export function openvodCredsFromEnv(
   if (rawBucket !== '') values.ALLOWED_SOURCE_BUCKETS = rawBucket
 
   return { values, problems, advisories }
+}
+
+type ModalLoginChoice = 'browser' | 'tokens' | 'skip'
+
+/**
+ * Log in, or decide not to.
+ *
+ * Both login paths are interactive and run with inherited stdio: `modal setup`
+ * prints its own sign-in URL, `modal token set` prompts for the id and secret
+ * (argument-free on purpose — a token passed in argv is visible in `ps`).
+ * Whatever happens, the probe is repeated afterwards; the result is the only
+ * thing that counts as success.
+ */
+export async function modalLogin(bin: string): Promise<ModalAuthStatus> {
+  const link = providerLink('modalTokens')
+  const choice = await askSelect<ModalLoginChoice>(
+    'How would you like to log in to Modal?',
+    [
+      {
+        value: 'browser',
+        label: 'Open the browser — modal setup',
+        hint: 'creates or selects a token for this machine',
+      },
+      {
+        value: 'tokens',
+        label: 'Paste a token id + secret — modal token set',
+        hint: `${link.label} — ${link.url}`,
+      },
+      {
+        value: 'skip',
+        label: 'Skip Modal — finish the deployment later',
+        hint: 'nothing is uploaded',
+      },
+    ],
+    'browser',
+  )
+
+  if (choice === 'browser') await runModalSetup(bin)
+  else if (choice === 'tokens') await runModalTokenSet(bin)
+  else return { state: 'unauthenticated', workspace: null }
+
+  return modalAuthStatusFor(bin)
+}
+
+/**
+ * Prepare the Modal environment and get an authenticated CLI, or explain why
+ * the Modal steps are being skipped.
+ *
+ * Returns null when Modal cannot be used — never throws, because a Modal
+ * problem must not stop the delivery worker, the API or the migrations.
+ */
+export async function prepareModalEnvironment(root: string): Promise<string | null> {
+  let bin: string
+  try {
+    bin = await withSpinner(
+      'Preparing transcoding/.venv (boto3, fastapi, modal)…',
+      () => ensureTranscodingDeployEnv(root),
+      'transcoding/.venv ready for modal deploy',
+    )
+  } catch (error) {
+    logWarn(
+      `could not prepare the Modal environment: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    logInfo('Skipping Modal — deploy the pipeline yourself: see docs/deploy.md')
+    return null
+  }
+
+  const status = await modalAuthStatusFor(bin)
+  if (status.state === 'authenticated') {
+    logSuccess(describeModalAuth(status))
+    return bin
+  }
+
+  logWarn(describeModalAuth(status))
+  const retried = await modalLogin(bin)
+  if (retried.state === 'authenticated') {
+    logSuccess(describeModalAuth(retried))
+    return bin
+  }
+
+  logWarn(`${describeModalAuth(retried)} — skipping the Modal steps`)
+  logInfo(`Finish later with: ./scripts/bootstrap.sh --deploy  (or: ${bin} setup)`)
+  return null
 }

@@ -1,14 +1,15 @@
 /**
- * Filesystem helpers for the .dev.vars pair. All writes are mode 0600 and
- * never print values. Regeneration (--force) preserves keys the wizard does
- * not own (OAuth clients, sweeper tuning, …); deploy-phase upserts edit the
- * file in place without touching anything else.
+ * Filesystem helpers for the two configuration targets. All writes are mode
+ * 0600 and never print values. Regeneration preserves keys the wizard does not
+ * own (OAuth clients, sweeper tuning, …) and, for secrets, values that are
+ * already there — see `secretSetFor`.
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { EnvFileExistsError, parseEntriesAsMap, renderEnvFile, upsertEnvText } from './envfile'
 import { deployKeySet, deliveryKeySet, serverKeySet, type EntryList } from './mapping'
+import type { ConfigTarget } from './types'
 import { WizardError } from './errors'
 
 export function serverVarsPath(root: string): string {
@@ -30,6 +31,21 @@ export function deployEnvPath(root: string): string {
   return join(root, '.env')
 }
 
+/**
+ * The one file a run owns, and the delivery mirror when the target has one.
+ *
+ * `deploy` has no delivery mirror: a Compose deployment reads its JWT secret
+ * from `.env`, and `delivery/.dev.vars` is only used by `wrangler dev`.
+ */
+export function primaryConfigPath(root: string, target: ConfigTarget): string {
+  return target === 'deploy' ? deployEnvPath(root) : serverVarsPath(root)
+}
+
+/** Keys whose values the wizard may rewrite in the primary file. */
+function primaryKeySet(target: ConfigTarget): ReadonlySet<string> {
+  return target === 'deploy' ? deployKeySet() : serverKeySet()
+}
+
 function writePrivate(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, content, { encoding: 'utf8', mode: 0o600 })
@@ -40,20 +56,31 @@ function writePrivate(path: string, content: string): void {
   }
 }
 
+export interface TargetWrites {
+  /** server/.dev.vars (dev) or the root .env (deploy). */
+  primary: EntryList
+  /** delivery/.dev.vars — dev target only. */
+  delivery?: EntryList
+}
+
 /**
- * Write both env files. Throws EnvFileExistsError when a target exists and
- * force is false; with force, unknown pre-existing keys are preserved.
+ * Write the target's configuration. Throws EnvFileExistsError when a target
+ * file exists and force is false; with force, pre-existing keys the wizard does
+ * not own are preserved verbatim.
  */
-export function writeEnvPair(
+export function writeTargetConfig(
   root: string,
-  serverEntries: EntryList,
-  deliveryEntries: EntryList,
+  target: ConfigTarget,
+  writes: TargetWrites,
   force: boolean,
-): void {
+): string[] {
   const targets: Array<[string, EntryList, ReadonlySet<string>]> = [
-    [serverVarsPath(root), serverEntries, serverKeySet()],
-    [deliveryVarsPath(root), deliveryEntries, deliveryKeySet()],
+    [primaryConfigPath(root, target), writes.primary, primaryKeySet(target)],
   ]
+  if (target === 'dev' && writes.delivery !== undefined) {
+    targets.push([deliveryVarsPath(root), writes.delivery, deliveryKeySet()])
+  }
+
   for (const [path] of targets) {
     if (existsSync(path) && !force) throw new EnvFileExistsError(path)
   }
@@ -61,47 +88,44 @@ export function writeEnvPair(
     const existing = existsSync(path) ? readFileSync(path, 'utf8') : undefined
     writePrivate(path, renderEnvFile(entries, existing, keySet))
   }
+  return targets.map(([path]) => path)
 }
 
-/** In-place upsert into an existing server/.dev.vars (post-deploy URLs…). */
-export function upsertServerEnv(root: string, updates: EntryList): void {
-  const path = serverVarsPath(root)
+/** In-place upsert into the target's primary file (post-deploy URLs…). */
+export function upsertTargetConfig(
+  root: string,
+  target: ConfigTarget,
+  updates: EntryList,
+): void {
+  const path = primaryConfigPath(root, target)
   if (!existsSync(path)) {
     throw new WizardError(
-      `${path} is missing — run the wizard configure step first (./scripts/bootstrap.sh)`,
+      `${path} is missing — run the wizard configure step first (./scripts/bootstrap.sh --target ${target})`,
     )
   }
   writePrivate(path, upsertEnvText(readFileSync(path, 'utf8'), updates))
 }
 
-/**
- * Write the deployment `.env` when none exists.
- *
- * Returns true when it wrote one. Never overwrites: an operator's deployment
- * config (real domains, real secrets, image tags) must not be replaced by the
- * wizard's localhost defaults.
- */
-export function ensureDeployEnv(root: string, entries: EntryList): boolean {
-  const path = deployEnvPath(root)
-  if (existsSync(path)) return false
-  writePrivate(path, renderEnvFile(entries))
-  return true
+/** Parsed primary config for the target, or undefined when it is absent. */
+export function readTargetConfig(
+  root: string,
+  target: ConfigTarget,
+): Record<string, string> | undefined {
+  const path = primaryConfigPath(root, target)
+  return existsSync(path) ? parseEntriesAsMap(readFileSync(path, 'utf8')) : undefined
 }
 
 /**
- * Upsert values the *deployment* also needs into the root `.env`.
+ * Which targets exist on disk.
  *
- * A no-op when there is no `.env` (a Workers-only install never has one). The
- * deploy phase discovers DELIVERY_URL, MODAL_WEBHOOK_URL and the API's own URL
- * at deploy time, and a Compose deployment reads those from `.env` — writing
- * only server/.dev.vars would leave it with relative playback URLs and no Modal
- * endpoint while the wizard reported success.
+ * Both at once is the normal state for a machine that develops *and* deploys:
+ * the wizard then has to ask which one a run owns instead of guessing.
  */
-export function upsertDeployEnv(root: string, updates: EntryList): boolean {
-  const path = deployEnvPath(root)
-  if (!existsSync(path)) return false
-  writePrivate(path, upsertEnvText(readFileSync(path, 'utf8'), updates))
-  return true
+export function existingTargets(root: string): ConfigTarget[] {
+  const found: ConfigTarget[] = []
+  if (existsSync(serverVarsPath(root)) || existsSync(deliveryVarsPath(root))) found.push('dev')
+  if (existsSync(deployEnvPath(root))) found.push('deploy')
+  return found
 }
 
 export function readDeployEnv(root: string): Record<string, string> | undefined {

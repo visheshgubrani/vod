@@ -10,14 +10,13 @@ import {
   legacySecretsPresent,
   MODAL_CREDS_SECRET,
   MODAL_GROQ_SECRET,
-  modalRejectsFromJson,
   modalSecretWritePlan,
   openvodCredsFromEnv,
   secretCreateJsonArgs,
-  secretCreateValueArgs,
   transcodingDeployRequirements,
   transcodingVenvModalBin,
 } from '../src/modal'
+import { MODAL_MIN_VERSION } from '../src/parsers'
 
 const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
 
@@ -48,6 +47,15 @@ describe('transcoding/requirements-deploy.txt', () => {
       .map((line) => line.trim())
       .filter((line) => line !== '' && !line.startsWith('#'))
     expect(packages).toEqual(['boto3', 'requests', 'fastapi', 'modal>=1.5.0'])
+  })
+
+  it('pins the same minimum the version gate enforces', () => {
+    // The gate refuses a venv whose `modal` is older than MODAL_MIN_VERSION, so
+    // the two must agree: a requirements bump that misses the gate would let an
+    // unsupported CLI through to a deploy.
+    const requirements = readFileSync(transcodingDeployRequirements(repoRoot), 'utf8')
+    const pinned = /modal>=(\d+\.\d+\.\d+)/.exec(requirements)
+    expect(pinned?.[1]).toBe(MODAL_MIN_VERSION)
   })
 })
 
@@ -100,21 +108,6 @@ describe('secretCreateJsonArgs', () => {
       '/tmp/x/g.json',
       'openvod-groq-creds',
     ])
-  })
-})
-
-describe('secretCreateValueArgs', () => {
-  it('keeps the inline form for Modal CLIs without --from-json', () => {
-    expect(secretCreateValueArgs('openvod-creds', { TRANSCODE_INGEST_SECRET: 'x' }, false)).toEqual(
-      ['secret', 'create', 'openvod-creds', 'TRANSCODE_INGEST_SECRET=x'],
-    )
-  })
-})
-
-describe('modalRejectsFromJson', () => {
-  it('recognises an old CLI that does not know the flag', () => {
-    expect(modalRejectsFromJson('Error: No such option: --from-json')).toBe(true)
-    expect(modalRejectsFromJson('Usage: modal secret create …')).toBe(false)
   })
 })
 

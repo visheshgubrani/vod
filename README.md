@@ -32,14 +32,24 @@ catalogue and the configuration reference. This README remains the shortest path
 to a running installation; the docs site is where the detail lives.
 
 **Fastest path to a deployment:** `./scripts/bootstrap.sh` — installs Node +
-pnpm when missing (via nvm), installs workspace deps, and runs an interactive
-wizard that writes `server/.dev.vars` + `delivery/.dev.vars` (local
-development config) for the architecture you pick (API runtime, Postgres,
-queue, rate limiting). Re-run with `--deploy` when you are ready: Cloudflare +
-Modal logins, R2 buckets/CORS, worker + GPU pipeline deploys and secret
-uploads. You still paste an **R2 S3 API token** (Wrangler cannot mint those)
-and a **Postgres URI** unless you deploy with Compose, which runs its own
-Postgres.
+pnpm when missing (nvm first, then the distro package), installs workspace deps,
+and runs an interactive wizard in three phases: **choices** (API runtime,
+Postgres, transcoder, queue, rate-limit store, AI), **requirements** (what those
+choices need on this machine, with permission-aware installs), then
+**credentials**. It writes one *configuration target* per run — `dev`
+(`server/.dev.vars` + `delivery/.dev.vars`) or `deploy` (the root `.env` for
+Docker Compose). Re-run with `--deploy` when you are ready: Cloudflare + Modal
+logins, R2 buckets/CORS, worker + GPU pipeline deploys and secret uploads; a
+deployment that does not finish exits nonzero and lists what is left. You still
+paste an **R2 S3 API token** (Wrangler cannot mint those) and a **Postgres URI**
+unless the stack runs its own Postgres.
+
+`./scripts/bootstrap.sh --doctor` reports what this machine has and what the
+current configuration needs — read-only, no installs, safe on someone else's
+machine. Read-only and headless modes (`--doctor`, `--check`, `--answers`, and
+any run without a TTY) install nothing at all; an interactive run installs
+user-scoped toolchain pieces and system packages only with root or passwordless
+sudo (never by prompting for a password — it prints the command instead).
 
 **Fastest path for a contributor:** `pnpm install && pnpm dev:infra &&
 pnpm db:migrate && pnpm dev` — Postgres + Redis in Docker, then the API on the
@@ -65,8 +75,9 @@ raw bucket needs, and what each key unlocks — is the
 | An **R2 API token** (S3 credentials) | API, Modal, and uploads talk to R2 over the S3 API | R2 → Manage R2 API Tokens |
 | Cloudflare login | Deploy the delivery worker (always) and the API worker (Workers path) | wrangler is a pinned local devDependency — `pnpm exec wrangler login`, never a global `npx wrangler` |
 | [Postgres](https://neon.tech) **or** Docker | Metadata, auth, video rows | Neon serverless URL, or the `postgres` service inside the Compose stack |
-| [Modal](https://modal.com) account | GPU transcoding (FFmpeg / Shaka / Whisper) | the `--deploy` phase installs the Modal CLI (uv/pipx/venv) and runs `modal setup` |
-| Node 22 + pnpm 12 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both via nvm when missing |
+| [Modal](https://modal.com) account (only for the Modal transcoder) | GPU transcoding (FFmpeg / Shaka / Whisper) | `--deploy` prepares `transcoding/.venv` (uv, else `python3 -m venv`) and runs `modal setup` — or `modal token set` when a browser login is not possible |
+| Docker (Compose v2) | The Compose stack, the dev Postgres/Redis, and the self-hosted transcoder agent | `./scripts/bootstrap.sh --doctor` checks the daemon, not just the binary; Docker is installed by Docker's own instructions, never with a guessed package name |
+| Node 22 + pnpm 12 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both when missing (nvm first, then the distro package, re-checking the version) |
 
 **Delivery and storage are fixed, not choices.** Signed playback is always the
 Cloudflare Worker in `delivery/` in front of your R2 transcoded bucket — there
@@ -106,29 +117,49 @@ reference, including which variables are fatal on which runtime, is
 
 ## Setup
 
-The wizard configures **local development** files (`server/.dev.vars`,
-`delivery/.dev.vars`); deploying is a separate step, and the Compose stack is
-configured by `.env` at the repo root. The same command configures either path:
-it checks/installs Node + pnpm (nvm) when missing, installs workspace deps, then
-runs an interactive wizard that asks how you want to run the API —
-**Cloudflare Workers** (default, `DB_DRIVER=neon-http`) or **Node via Docker
-Compose** (`pg`) — and which optional services to enable: **QStash** queueing
-(default: direct HTTP to Modal) and a **rate-limit store** (default: in-memory;
-Upstash on Workers, `REDIS_URL` on Node).
+There are two configurations, and **one run owns exactly one of them**:
+
+| Target | Files | For |
+| --- | --- | --- |
+| `dev` (default) | `server/.dev.vars` + `delivery/.dev.vars` | running the API here (`pnpm dev`), or deploying it as a Cloudflare Worker |
+| `deploy` | the root `.env` | the Docker Compose stack on a server |
+
+When both exist the wizard asks which one this run owns; headless runs must say
+(`--target`). Secrets (`JWT_SECRET`, `BETTER_AUTH_SECRET`, …) are **reused** from
+the target file when it already has them — regenerating them would invalidate
+playback tokens and lock you out of a database whose volume still holds the old
+password. `--rotate-secrets` replaces them deliberately.
+
+The wizard runs in phases: **choices** (how the installation is shaped),
+**requirements** (what the machine needs for those choices, with an offer to
+install what it is allowed to), **credentials** (only what the choices require),
+then the opt-in **deploy**.
 
 ```bash
-./scripts/bootstrap.sh                     # interactive configure (writes .dev.vars)
-./scripts/bootstrap.sh --force             # regenerate; unrelated keys preserved
+./scripts/bootstrap.sh                     # interactive configure
+./scripts/bootstrap.sh --target deploy     # configure the Compose stack instead
+./scripts/bootstrap.sh --doctor            # report only: installs nothing
+./scripts/bootstrap.sh --force             # regenerate; unmanaged keys + secrets preserved
 ./scripts/bootstrap.sh --answers env.json  # headless configure (see --help)
 ./scripts/bootstrap.sh --deploy            # provision & deploy: CF + Modal logins,
                                            # R2 buckets/CORS, pipeline + worker deploys
-./scripts/bootstrap.sh --check [api-url]   # verify .dev.vars without printing secrets
+./scripts/bootstrap.sh --check [api-url]   # verify the config without printing secrets
 ```
+
+Choices the wizard asks about: the **API runtime** (Cloudflare Workers,
+`DB_DRIVER=neon-http`, or Node, `pg`), **Postgres** (Neon, the bundled/dev
+container, or your own URL), the **transcoder** (**Modal**, GPU in the cloud, or
+**this machine**, the self-hosted Docker agent), browser **uploads** (a local-only
+installation needs no raw bucket), **QStash** queueing (Modal only — self-hosted
+work is queued in the database), a **rate-limit store** (in-memory, Upstash, or
+your own Redis on Node) and **AI subtitles/chapters** (Modal only — the agent
+image does not ship Whisper or the Groq client yet, see
+[docs/known-gaps.md](docs/known-gaps.md)).
 
 You will paste two things from dashboards (the CLIs cannot create them):
 
 1. **R2 S3 API token** — [Manage API Tokens](https://dash.cloudflare.com/?to=/:account/r2/api-tokens), Object Read & Write on both buckets.
-2. **DATABASE_URL** — [Neon](https://console.neon.tech) (skip if you chose the Compose runtime).
+2. **DATABASE_URL** — [Neon](https://console.neon.tech) (skip if you chose the bundled/dev Postgres).
 
 Then open `/setup` on the dashboard. The rest of this section is the same
 flow if you prefer to do it by hand.

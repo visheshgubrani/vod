@@ -56,6 +56,36 @@ file is only useful if it is current.
   `POST /api/webhooks/deliveries/:id/replay` exist; `web/app/dashboard/webhooks`
   does not render them yet.
 
+## Bootstrap and local transcoding
+
+- **No Windows launcher.** `scripts/bootstrap.sh` is Unix-only (macOS + Linux)
+  and exits with a WSL pointer on Git Bash/MSYS/Cygwin. A PowerShell installer
+  would have to reproduce the toolchain ladder (node/pnpm, `corepack`, the
+  workspace install) and the wizard's `pnpm exec` calls — deferred until the Unix
+  path has settled.
+- **AI subtitles/chapters do not work with the self-hosted transcoder yet.** The
+  agent image (`transcoding/Dockerfile.agent`) installs `requests` and the engine
+  only: neither `faster-whisper` (subtitles) nor the `groq` client (chapters), both
+  of which `transcoding/openvod_transcoder/pipeline.py` reaches for when the job
+  asks for them. Making it real is three changes that must land together: an
+  opt-in `OPENVOD_AGENT_EXTRAS=1` build arg installing `.[transcription,chapters]`
+  (CI keeps building the extras-free image, which is what keeps the image small),
+  the Whisper model pre-baked the way the Modal image does it, and
+  `GROQ_API_KEY` passed through to the `transcoder` compose service. The wizard
+  therefore asks about Groq **only** for the Modal provider and warns if a
+  headless answers file sets the key on a self-hosted install.
+- **The wizard cannot verify R2 S3 keys.** It checks presence and format; only a
+  real S3 request proves them, and neither wrangler (OAuth) nor the wizard
+  (no SigV4) makes one. `--deploy` and `GET /health/config` are the first real
+  proof.
+- **Neither Neon nor QStash is provisioned automatically.** Both are paste-a-value
+  steps with a console link: provisioning them would mean storing a vendor API key
+  in the wizard, for accounts the operator creates anyway.
+- **The delivery worker's bucket is global.** `delivery/wrangler.jsonc` holds one
+  `bucket_name`, so two configurations with different transcoded buckets cannot
+  both be deployed by this tooling — whichever deploys last wins, and the deploy
+  report says which bucket is now in effect.
+
 ## Deferred by release
 
 Per the agreed roadmap these were explicitly deferred, not forgotten.

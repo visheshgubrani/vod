@@ -6,9 +6,14 @@
  */
 
 import type {
+  ConfigTarget,
   DbAnswers,
+  DbKind,
   QueueAnswers,
+  QueueKind,
   RateLimitAnswers,
+  RateLimitKind,
+  RuntimeKind,
   SecretSet,
   WizardAnswers,
 } from './types'
@@ -29,7 +34,17 @@ export const COMPOSE_LOCAL_DATABASE_URL = DEV_LOCAL_DATABASE_URL
 /** The dev Redis `pnpm dev:infra` publishes, for the `redis` rate-limit choice. */
 export const DEV_LOCAL_REDIS_URL = 'redis://localhost:6382'
 
-/** Canonical key order for server/.dev.vars (mirrors .dev.vars.example). */
+/**
+ * Canonical key order for server/.dev.vars (mirrors .dev.vars.example).
+ *
+ * The three provider keys belong here even though they are not in the
+ * `.example` file: this set decides which pre-existing keys a regeneration may
+ * rewrite. Leaving them out meant a `--force` run wrote the new
+ * `TRANSCODE_PROVIDER` as a canonical line *and* preserved the old one as an
+ * unknown key — and since the parser takes the last occurrence, the stale value
+ * silently won. `wrangler secret bulk` reads this list too, so an omission also
+ * kept the provider flag out of a deployed Worker.
+ */
 export const SERVER_KEY_ORDER = [
   'DATABASE_URL',
   'DB_DRIVER',
@@ -47,6 +62,9 @@ export const SERVER_KEY_ORDER = [
   'QSTASH_TOKEN',
   'MODAL_WEBHOOK_URL',
   'TRANSCODE_INGEST_SECRET',
+  'TRANSCODE_PROVIDER',
+  'SELF_HOSTED_ENABLED',
+  'UPLOADS_ENABLED',
   'JWT_SECRET',
   'DELIVERY_URL',
   'INTERNAL_SWEEP_SECRET',
@@ -166,54 +184,166 @@ export function plainRedisUrl(rateLimit: RateLimitAnswers): string {
   return rateLimit.kind === 'redis' ? (rateLimit.url ?? '').trim() : ''
 }
 
+/** Whether browser/SDK uploads are accepted. Omitted means true. */
+export function uploadsEnabled(answers: WizardAnswers): boolean {
+  return answers.uploadsEnabled !== false
+}
+
+/** The transcoder that new jobs use. Omitted means Modal. */
+export function transcodeProvider(answers: WizardAnswers): 'modal' | 'self-hosted' {
+  return answers.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+}
+
 /**
- * Hard validation problems that block env generation. Empty when the answers
- * are usable. (Pattern quirks — e.g. a non-32-hex account id — surface as
- * confirm-time warnings via warningsFor().)
+ * Whether a raw upload bucket is part of this installation.
+ *
+ * A raw bucket exists to serve *uploads*. A local-only installation — the
+ * self-hosted provider with uploads switched off — needs none, and writing the
+ * default bucket name anyway would make the wizard provision a bucket nobody
+ * writes to (and tell the operator to create it).
  */
-export function validateAnswers(answers: WizardAnswers): string[] {
+export function needsRawBucket(answers: WizardAnswers): boolean {
+  return uploadsEnabled(answers) || transcodeProvider(answers) === 'modal'
+}
+
+/** The RAW_BUCKET_NAME value to write, or '' when the bucket is not used. */
+export function rawBucketValue(answers: WizardAnswers): string {
+  return needsRawBucket(answers) ? answers.rawBucket.trim() : ''
+}
+
+/**
+ * `SELF_HOSTED_ENABLED` as written to the environment.
+ *
+ * Three states, and the difference matters: `true`, an explicit `false` (the
+ * documented rollback, which must survive a regeneration), and unset (`''`,
+ * meaning "follow the provider"). Serialising an explicit false as blank turned
+ * it back into "follow the provider", which re-enabled local submission on the
+ * very installation that had switched it off.
+ */
+export function selfHostedEnabledValue(answers: WizardAnswers): string {
+  if (answers.selfHostedEnabled === true) return 'true'
+  if (answers.selfHostedEnabled === false) return 'false'
+  return ''
+}
+
+/**
+ * The decisions a run makes, as the choice stage knows them.
+ *
+ * Deliberately not `WizardAnswers`: compatibilities must be checkable *before*
+ * any credential exists — that is what keeps a combination that cannot work
+ * from starting an installation.
+ */
+export interface ChoiceShape {
+  target?: ConfigTarget
+  runtime: RuntimeKind
+  dbKind?: DbKind
+  transcodeProvider?: 'modal' | 'self-hosted'
+  uploadsEnabled?: boolean
+  queueKind?: QueueKind
+  rateLimitKind?: RateLimitKind
+}
+
+/**
+ * Hard validation problems that block env generation, split by when they can be
+ * checked.
+ *
+ * `validateChoices` runs before anything is installed (a combination that
+ * cannot work must not start installing packages), `validateCredentials` after
+ * the values have been collected. `validateAnswers` is both, for one-shot
+ * callers such as the headless answers path.
+ */
+export function validateChoices(shape: ChoiceShape): string[] {
   const problems: string[] = []
 
-  if (answers.runtime !== 'workers' && answers.runtime !== 'node') {
-    problems.push(`runtime must be "workers" or "node", got "${String(answers.runtime)}"`)
+  if (shape.target !== undefined && shape.target !== 'dev' && shape.target !== 'deploy') {
+    problems.push(`target must be "dev" or "deploy", got "${String(shape.target)}"`)
+  }
+  if (shape.runtime !== 'workers' && shape.runtime !== 'node') {
+    problems.push(`runtime must be "workers" or "node", got "${String(shape.runtime)}"`)
   }
 
-  const db = answers.db
-  if (!db || typeof db !== 'object') {
-    problems.push('db must be an object: { kind, url? }')
+  const dbKind = shape.dbKind
+  if (dbKind !== 'neon' && dbKind !== 'local' && dbKind !== 'existing') {
+    problems.push(`db.kind must be "neon", "local" or "existing", got "${String(dbKind)}"`)
   } else {
-    if (answers.runtime === 'workers' && db.kind !== 'neon') {
+    if (shape.runtime === 'workers' && dbKind !== 'neon') {
       problems.push('runtime "workers" requires db.kind "neon" (the neon-http driver)')
     }
-    if (answers.runtime === 'node' && db.kind !== 'local' && db.kind !== 'existing') {
+    if (shape.runtime === 'node' && dbKind !== 'local' && dbKind !== 'existing') {
       problems.push('runtime "node" requires db.kind "local" or "existing"')
     }
-    if (db.kind !== 'local' && !db.url?.trim()) {
+  }
+
+  if (shape.queueKind !== 'direct' && shape.queueKind !== 'qstash') {
+    problems.push('queue.kind must be "direct" or "qstash"')
+  }
+
+  const rateLimitKind = shape.rateLimitKind
+  if (rateLimitKind !== 'memory' && rateLimitKind !== 'redis' && rateLimitKind !== 'upstash') {
+    problems.push('rateLimit.kind must be "memory", "redis" or "upstash"')
+  } else if (rateLimitKind === 'redis' && shape.runtime === 'workers') {
+    // A TCP socket is impossible on Workers. Refusing here is the point: the
+    // alternative is a deployment whose limits are silently per-isolate.
+    problems.push('rateLimit "redis" is not available on the Workers runtime — use "upstash"')
+  }
+
+  if (
+    shape.transcodeProvider !== undefined &&
+    shape.transcodeProvider !== 'modal' &&
+    shape.transcodeProvider !== 'self-hosted'
+  ) {
+    problems.push(
+      `transcodeProvider must be "modal" or "self-hosted", got "${String(shape.transcodeProvider)}"`,
+    )
+  }
+  if (shape.transcodeProvider !== 'self-hosted' && shape.uploadsEnabled === false) {
+    // Modal reads its input from the raw bucket, so there is nothing for it to
+    // transcode: uploads off is only meaningful for the self-hosted provider.
+    problems.push(
+      'transcodeProvider "modal" requires uploads (Modal ingests from the raw bucket) — ' +
+        'use "self-hosted" for a local-only installation',
+    )
+  }
+
+  return problems
+}
+
+/** `validateChoices` for a complete answers object. */
+export function validateChoicesOf(answers: WizardAnswers): string[] {
+  return validateChoices({
+    ...(answers.target !== undefined ? { target: answers.target } : {}),
+    runtime: answers.runtime,
+    ...(answers.db?.kind !== undefined ? { dbKind: answers.db.kind } : {}),
+    ...(answers.transcodeProvider !== undefined
+      ? { transcodeProvider: answers.transcodeProvider }
+      : {}),
+    ...(answers.uploadsEnabled !== undefined ? { uploadsEnabled: answers.uploadsEnabled } : {}),
+    ...(answers.queue?.kind !== undefined ? { queueKind: answers.queue.kind } : {}),
+    ...(answers.rateLimit?.kind !== undefined ? { rateLimitKind: answers.rateLimit.kind } : {}),
+  })
+}
+
+export function validateCredentials(answers: WizardAnswers): string[] {
+  const problems: string[] = []
+
+  const db = answers.db
+  if (db && typeof db === 'object' && db.kind !== 'local') {
+    if (!db.url?.trim()) {
       problems.push(`db.kind "${String(db.kind)}" requires a db.url`)
-    } else if (db.kind !== 'local' && !/^postgres(ql)?:\/\/\S+/.test(db.url ?? '')) {
+    } else if (!/^postgres(ql)?:\/\/\S+/.test(db.url)) {
       problems.push('db.url must be a postgres:// or postgresql:// URL')
     }
   }
 
-  if (!answers.queue || (answers.queue.kind !== 'direct' && answers.queue.kind !== 'qstash')) {
-    problems.push('queue.kind must be "direct" or "qstash"')
-  } else if (answers.queue.kind === 'qstash' && !answers.queue.token?.trim()) {
+  if (answers.queue?.kind === 'qstash' && !answers.queue.token?.trim()) {
     problems.push('queue.kind "qstash" requires a queue.token')
   }
 
-  const rateLimitKinds: Array<RateLimitAnswers['kind']> = ['memory', 'redis', 'upstash']
-  if (!answers.rateLimit || !rateLimitKinds.includes(answers.rateLimit.kind)) {
-    problems.push('rateLimit.kind must be "memory", "redis" or "upstash"')
-  } else if (answers.rateLimit.kind === 'redis') {
+  if (answers.rateLimit?.kind === 'redis') {
     if (!/^rediss?:\/\/\S+/.test(answers.rateLimit.url ?? '')) {
       problems.push('rateLimit "redis" requires a redis:// or rediss:// rateLimit.url')
     }
-    if (answers.runtime === 'workers') {
-      // A TCP socket is impossible on Workers. Refusing here is the point: the
-      // alternative is a deployment whose limits are silently per-isolate.
-      problems.push('rateLimit "redis" is not available on the Workers runtime — use "upstash"')
-    }
-  } else if (answers.rateLimit.kind === 'upstash') {
+  } else if (answers.rateLimit?.kind === 'upstash') {
     if (!/^https?:\/\/\S+/.test(answers.rateLimit.restUrl ?? '')) {
       problems.push('rateLimit "upstash" requires an https rateLimit.restUrl')
     }
@@ -226,16 +356,23 @@ export function validateAnswers(answers: WizardAnswers): string[] {
     ['accountId', 'accountId'],
     ['r2AccessKeyId', 'r2AccessKeyId'],
     ['r2SecretAccessKey', 'r2SecretAccessKey'],
-    ['rawBucket', 'rawBucket'],
     ['transcodedBucket', 'transcodedBucket'],
   ] as const) {
     if (!answers[key]?.trim()) problems.push(`${label} is required`)
+  }
+  if (needsRawBucket(answers) && !answers.rawBucket?.trim()) {
+    problems.push('rawBucket is required (uploads are enabled, or the provider is Modal)')
   }
   if (!/^https?:\/\/\S+/.test(answers.frontendUrl ?? '')) {
     problems.push('frontendUrl must be an absolute http(s) URL')
   }
 
   return problems
+}
+
+/** Both stages, for callers that validate a complete answers object at once. */
+export function validateAnswers(answers: WizardAnswers): string[] {
+  return [...validateChoicesOf(answers), ...validateCredentials(answers)]
 }
 
 /** Non-blocking sanity warnings shown in the final summary. */
@@ -247,14 +384,25 @@ export function warningsFor(answers: WizardAnswers): string[] {
   if (answers.rawBucket === answers.transcodedBucket) {
     warnings.push('raw and transcoded bucket names are identical — keep them distinct')
   }
+  // The agent image ships neither faster-whisper nor the Groq client, so a Groq
+  // key on a self-hosted install buys nothing today. Saying so here is the
+  // difference between an operator waiting for subtitles that never appear and
+  // an operator choosing Modal.
+  if (transcodeProvider(answers) === 'self-hosted' && (answers.groqApiKey ?? '').trim() !== '') {
+    warnings.push(
+      'GROQ_API_KEY is set, but AI subtitles/chapters are not available for the ' +
+        'self-hosted provider yet (the agent image ships neither Whisper nor the Groq ' +
+        'client — see docs/known-gaps.md). Use the Modal provider for AI enrichment.',
+    )
+  }
   return warnings
 }
 
 /**
- * Build the full ordered env entries for server/.dev.vars. Optional values
- * are written as blank lines so users can fill them in later.
+ * Build the full ordered env entries for the `dev` target (server/.dev.vars).
+ * Optional values are written as blank lines so users can fill them in later.
  */
-export function buildServerEntries(
+export function buildDevConfig(
   answers: WizardAnswers,
   secrets: SecretSet,
 ): EntryList {
@@ -277,15 +425,15 @@ export function buildServerEntries(
     // Which engine new jobs use. Written explicitly so the choice is visible in
     // the file rather than implied by a default that may change later. `modal`
     // keeps an existing installation's behaviour identical.
-    ['TRANSCODE_PROVIDER', answers.transcodeProvider ?? 'modal'],
-    // Blank means "follow the provider". Set to `false` to roll back: it stops
-    // accepting new self-hosted submissions and cancels nothing.
-    ['SELF_HOSTED_ENABLED', answers.selfHostedEnabled ? 'true' : ''],
+    ['TRANSCODE_PROVIDER', transcodeProvider(answers)],
+    // Blank means "follow the provider"; `false` is the documented rollback and
+    // survives a regeneration.
+    ['SELF_HOSTED_ENABLED', selfHostedEnabledValue(answers)],
     // Whether browser/SDK uploads are accepted. The raw bucket is required by
     // *uploading*, not by transcoding, so turning this off is what makes a
     // local-only installation valid without one.
-    ['UPLOADS_ENABLED', answers.uploadsEnabled === false ? 'false' : 'true'],
-    ['RAW_BUCKET_NAME', answers.rawBucket.trim()],
+    ['UPLOADS_ENABLED', uploadsEnabled(answers) ? 'true' : 'false'],
+    ['RAW_BUCKET_NAME', rawBucketValue(answers)],
     ['TRANSCODED_BUCKET_NAME', answers.transcodedBucket.trim()],
     ['CLOUDFLARE_ANALYTICS_TOKEN', ''],
     ['QSTASH_TOKEN', queueToken],
@@ -303,7 +451,7 @@ export function buildServerEntries(
 }
 
 /**
- * Build the deployment `.env` for docker-compose.yml.
+ * Build the deployment `.env` for docker-compose.yml (the `deploy` target).
  *
  * The bundled Postgres and Redis are used by default: `DATABASE_URL` and
  * `REDIS_URL` are left blank so the compose file composes them from the
@@ -314,7 +462,7 @@ export function buildServerEntries(
  * in front. They are baked into the dashboard bundle at build time, so changing
  * them means rebuilding `web` — see .env.example.
  */
-export function buildDeployEnvEntries(
+export function buildDeployConfig(
   answers: WizardAnswers,
   secrets: SecretSet,
 ): EntryList {
@@ -350,13 +498,13 @@ export function buildDeployEnvEntries(
     ['ACCOUNT_ID', answers.accountId.trim()],
     ['R2_ACCESS_KEY_ID', answers.r2AccessKeyId.trim()],
     ['R2_SECRET_ACCESS_KEY', answers.r2SecretAccessKey.trim()],
-    ['RAW_BUCKET_NAME', answers.rawBucket.trim()],
+    ['RAW_BUCKET_NAME', rawBucketValue(answers)],
     ['TRANSCODED_BUCKET_NAME', answers.transcodedBucket.trim()],
     ['CLOUDFLARE_ANALYTICS_TOKEN', ''],
     ['DELIVERY_URL', ''],
-    ['TRANSCODE_PROVIDER', answers.transcodeProvider ?? 'modal'],
-    ['SELF_HOSTED_ENABLED', answers.selfHostedEnabled ? 'true' : ''],
-    ['UPLOADS_ENABLED', answers.uploadsEnabled === false ? 'false' : 'true'],
+    ['TRANSCODE_PROVIDER', transcodeProvider(answers)],
+    ['SELF_HOSTED_ENABLED', selfHostedEnabledValue(answers)],
+    ['UPLOADS_ENABLED', uploadsEnabled(answers) ? 'true' : 'false'],
     ['MODAL_WEBHOOK_URL', ''],
     ['QSTASH_TOKEN', qstashToken(answers.queue)],
     ['UPSTASH_REDIS_REST_URL', redis.url],
@@ -377,14 +525,24 @@ export function buildDeliveryEntries(secrets: SecretSet): EntryList {
 }
 
 /**
- * Reconstruct answers from an existing parsed server env — used for the
- * "--deploy with existing .dev.vars" flow, where we must not regenerate the
- * file (no --force) but still need bucket names/account/runtime to drive the
+ * Reconstruct answers from an existing parsed config — used for the
+ * "--deploy with an existing file" flow, where we must not regenerate the file
+ * (no --force) but still need bucket names/account/provider to drive the
  * provision & deploy phase.
+ *
+ * The provider flags are read, not assumed: a `self-hosted` installation that
+ * was reconfigured through `--deploy` used to be read back as `modal`, and the
+ * deploy phase then tried to provision a Modal pipeline for a machine that
+ * never uses one. A file written before the flags existed reads as modal with
+ * uploads on, which is what those installations do.
  */
-export function deriveAnswersFromEnv(env: Record<string, string>): WizardAnswers {
+export function deriveAnswersFromConfig(
+  target: ConfigTarget,
+  env: Record<string, string>,
+): WizardAnswers {
   const driver = env['DB_DRIVER']
-  const runtime: WizardAnswers['runtime'] = driver === 'pg' ? 'node' : 'workers'
+  const runtime: WizardAnswers['runtime'] =
+    target === 'deploy' ? 'node' : driver === 'pg' ? 'node' : 'workers'
   const dbUrl = (env['DATABASE_URL'] ?? '').trim()
 
   const db: DbAnswers =
@@ -408,7 +566,16 @@ export function deriveAnswersFromEnv(env: Record<string, string>): WizardAnswers
     return { kind: 'memory' }
   })()
 
+  const providerRaw = (env['TRANSCODE_PROVIDER'] ?? '').trim().toLowerCase()
+  const transcodeProvider: 'modal' | 'self-hosted' =
+    providerRaw === 'self-hosted' || providerRaw === 'selfhosted' || providerRaw === 'local'
+      ? 'self-hosted'
+      : 'modal'
+  const selfHostedRaw = (env['SELF_HOSTED_ENABLED'] ?? '').trim().toLowerCase()
+  const uploadsRaw = (env['UPLOADS_ENABLED'] ?? '').trim().toLowerCase()
+
   return {
+    target,
     runtime,
     db,
     queue,
@@ -418,7 +585,15 @@ export function deriveAnswersFromEnv(env: Record<string, string>): WizardAnswers
     r2SecretAccessKey: (env['R2_SECRET_ACCESS_KEY'] ?? '').trim(),
     rawBucket: (env['RAW_BUCKET_NAME'] ?? '').trim(),
     transcodedBucket: (env['TRANSCODED_BUCKET_NAME'] ?? '').trim(),
+    transcodeProvider,
+    ...(selfHostedRaw === '' ? {} : { selfHostedEnabled: selfHostedRaw === 'true' || selfHostedRaw === '1' }),
+    uploadsEnabled: uploadsRaw === '' ? true : uploadsRaw !== 'false',
     frontendUrl: (env['FRONTEND_URL'] ?? '').trim() || (env['CORS_ORIGINS'] ?? '').trim(),
     groqApiKey: (env['GROQ_API_KEY'] ?? '').trim() || undefined,
   }
+}
+
+/** @deprecated Kept for callers that predate the dev/deploy split; use deriveAnswersFromConfig. */
+export function deriveAnswersFromEnv(env: Record<string, string>): WizardAnswers {
+  return deriveAnswersFromConfig('dev', env)
 }

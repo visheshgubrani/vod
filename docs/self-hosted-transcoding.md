@@ -63,12 +63,14 @@ In the dashboard: **Settings → Transcoders → Pair a machine**. You get a
 single-use code, valid for 15 minutes.
 
 ```bash
-docker run --rm -it \
-  -v /srv/media:/media:ro \
-  -v openvod-scratch:/var/lib/openvod-transcoder \
-  openvod-transcoder \
-  pair --api https://api.example.com --code XXXX-XXXX-XX
+docker compose --profile transcoder run --rm --no-deps transcoder \
+  --api https://api.example.com pair --code XXXX-XXXX-XX
 ```
+
+`--api` is a **global** option on the agent's CLI, so it comes *before* `pair`:
+`pair --api …` is an argparse error. `--no-deps` keeps `docker compose run` from
+starting the bundled `api`/`postgres`/`redis` services — drop it only when the
+API you are pairing with *is* the Compose `api` service.
 
 Pairing runs a real encode probe first, so a machine that cannot encode fails
 here rather than on your first import. The credential is written to
@@ -101,6 +103,22 @@ damage it.
 
 ---
 
+### What the agent container must be able to reach
+
+The agent polls the API, so `OPENVOD_API_URL` has to work **from inside the
+container**, which is a different address per case:
+
+| API runs… | `OPENVOD_API_URL` |
+| --- | --- |
+| in this Compose stack | `http://api:4080` (the default) |
+| on Cloudflare Workers | its public URL, e.g. `https://api.example.com` |
+| on this machine (`pnpm dev`) | `http://host.docker.internal:8787` |
+
+`docker-compose.yml` maps `host.docker.internal` to the host gateway on Linux as
+well as Docker Desktop, so the last row works on both. An agent that pairs but
+never claims a job is almost always this: the container resolved the default
+service name and got nothing.
+
 ## 4. Check it, then run it
 
 ```bash
@@ -122,6 +140,16 @@ docker compose --profile transcoder up -d
 ```
 
 ---
+
+### AI subtitles and chapters do not work here yet
+
+The self-hosted agent image installs the engine and nothing heavy: no
+`faster-whisper` (subtitles) and no `groq` client (chapters), so an import asking
+for either fails at the enrichment step. The Modal provider does ship both. See
+[docs/known-gaps.md](./known-gaps.md) for the three changes that make local AI
+real (an opt-in `OPENVOD_AGENT_EXTRAS=1` build arg, the pre-baked model, and the
+`GROQ_API_KEY` passthrough) — until they land, the bootstrap wizard asks about
+Groq only for Modal and warns if a headless answers file sets it here.
 
 ## 5. Import
 

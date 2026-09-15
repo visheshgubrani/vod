@@ -1,61 +1,33 @@
 /**
- * Opt-in provision & deploy phase. Order matters: Modal deploys first so the
- * API secrets include MODAL_WEBHOOK_URL; the delivery worker must always be
- * deployed (playback is Cloudflare-only); compose boots Postgres+API+web
- * locally. Every step preflights and tolerates re-runs (resume-safe).
+ * The provision & deploy phase, as a dependency-aware step graph.
  *
- * This module performs network/auth actions only when invoked explicitly
- * (--deploy or the interactive "deploy now" choice) — never during the plain
- * configure flow.
+ * Three rules shape this file:
+ *
+ *   1. **Independent steps continue after a failure.** A Modal workspace that
+ *      refuses to deploy must not stop the delivery worker, the API or the
+ *      migrations — those are the pieces that make the installation usable, and
+ *      the operator can finish Modal later with one command.
+ *   2. **Dependent steps are skipped, not attempted.** Refreshing the Modal
+ *      callback allowlist without an API URL, or deploying the delivery worker
+ *      without a patched `wrangler.jsonc`, produces a confident-looking
+ *      deployment that cannot work.
+ *   3. **An incomplete requested deployment is a failure.** The report is
+ *      returned, every unfinished step carries the command that finishes it, and
+ *      the caller exits nonzero — "some of it worked" is not success.
+ *
+ * Every side effect goes through `DeployPort`, so the ordering is testable with
+ * a fake port (see setup/tests/deploy.test.ts). Network and auth actions happen
+ * only when this runs, which is only when the user asked for a deploy.
  */
 
-import type { WizardAnswers } from './types'
-import { SERVER_KEY_ORDER } from './mapping'
-import { WizardError } from './errors'
-import {
-  applyBucketCors,
-  browserUploadCorsOrigins,
-  cfAccountId,
-  dbMigrate,
-  deployWorker,
-  ensureBucket,
-  ensureCfLogin,
-  makeTempDir,
-  patchDeliveryBucket,
-  putWorkerSecrets,
-  type TempDir,
-} from './cloudflare'
-import {
-  deleteModalSecret,
-  deployModalPipeline,
-  findModalBin,
-  forceOverwriteModalSecret,
-  installModalCli,
-  legacySecretsPresent,
-  listModalSecretNames,
-  modalAuthed,
-  MODAL_CREDS_SECRET,
-  MODAL_GROQ_SECRET,
-  openvodCredsFromEnv,
-  putModalSecret,
-  runModalSetup,
-} from './modal'
-import { analyticsTokenTemplateUrl } from './parsers'
-import { findOnPath, runInherit } from './runners'
-import { readServerEnv, upsertDeployEnv, upsertServerEnv } from './envio'
 import type { EntryList } from './mapping'
-import {
-  askConfirm,
-  askPassword,
-  logInfo,
-  logStep,
-  logSuccess,
-  logWarn,
-  note,
-  printCheckRows,
-  withSpinner,
-} from './ui'
-import { lintServerEnv, maskSecret } from './verify'
+import { SERVER_KEY_ORDER, transcodeProvider, uploadsEnabled } from './mapping'
+import type { ConfigTarget, WizardAnswers } from './types'
+import { WizardError } from './errors'
+import { pairingCommand } from './pairing'
+import { primaryConfigPath } from './envio'
+import { openvodCredsFromEnv, MODAL_CREDS_SECRET } from './modal'
+import { bucketCorsOrigins, createDeployPort, type DeployPort } from './deployPort'
 
 export interface DeployResult {
   apiUrl: string | null
@@ -63,495 +35,464 @@ export interface DeployResult {
   modalUrl: string | null
 }
 
-/** Keys whose *values* must never be echoed; everything else in the secret is
- * configuration (bucket names, allowlisted hosts) and is safe to show. */
-const CREDS_SECRET_KEYS = new Set([
-  'R2_ACCESS_KEY_ID',
-  'R2_SECRET_ACCESS_KEY',
-  'TRANSCODE_INGEST_SECRET',
-])
+export type DeployStepId =
+  | 'cf-login'
+  | 'buckets'
+  | 'delivery-config'
+  | 'modal'
+  | 'delivery-worker'
+  | 'delivery-secret'
+  | 'migrate'
+  | 'api'
+  | 'modal-callbacks'
+  | 'report'
 
-/**
- * Show exactly what was uploaded, masked where it matters.
- *
- * The bucket names and callback hosts are the values most likely to be wrong,
- * and they are not secrets — printing them is what turns "secrets should match
- * the env" from a promise into something the operator can verify.
- */
-function reportCredsPayload(values: Record<string, string>): void {
-  const lines = Object.entries(values).map(([key, value]) =>
-    CREDS_SECRET_KEYS.has(key) ? `${key} = ${maskSecret(value)}` : `${key} = ${value}`,
+export type DeployStepStatus = 'ok' | 'skipped' | 'failed' | 'blocked'
+
+export interface DeployStepResult {
+  id: DeployStepId
+  label: string
+  status: DeployStepStatus
+  detail?: string
+  /** What to run to finish this step by hand. */
+  resume?: string
+}
+
+export interface DeployReport {
+  target: ConfigTarget
+  configPath: string
+  steps: DeployStepResult[]
+  /** False when a requested step did not happen (failed or blocked). */
+  complete: boolean
+  result: DeployResult
+}
+
+/** Steps that did not happen. */
+export function unfinishedSteps(report: DeployReport): DeployStepResult[] {
+  return report.steps.filter((step) => step.status === 'failed' || step.status === 'blocked')
+}
+
+/** The report as printable lines — what happened, and what is left. */
+export function deployReportLines(report: DeployReport): string[] {
+  const icon: Record<DeployStepStatus, string> = {
+    ok: '✓',
+    skipped: '○',
+    failed: '✗',
+    blocked: '✗',
+  }
+  const lines = report.steps.map((step) => {
+    const detail = step.detail !== undefined && step.detail !== '' ? ` — ${step.detail}` : ''
+    return `${icon[step.status]} ${step.label}${detail}`
+  })
+  const unfinished = unfinishedSteps(report)
+  if (unfinished.length > 0) {
+    lines.push('', 'Not finished:')
+    for (const step of unfinished) {
+      lines.push(`  · ${step.label}${step.detail !== undefined ? ` (${step.detail})` : ''}`)
+      if (step.resume !== undefined) lines.push(`      ${step.resume}`)
+    }
+  }
+  return lines
+}
+
+/** One line summarising how much of the requested deployment happened. */
+export function deploySummaryLine(report: DeployReport): string {
+  const unfinished = unfinishedSteps(report)
+  if (unfinished.length === 0) {
+    return 'Deployment complete.'
+  }
+  return (
+    `Deployment incomplete — ${unfinished.length} step${unfinished.length === 1 ? '' : 's'} did not finish. ` +
+    'The list below says what is left and how to finish it.'
   )
-  note(lines.join('\n'), `${MODAL_CREDS_SECRET} (built from server/.dev.vars)`)
 }
 
-/**
- * Offer to remove the pre-rename secrets from the workspace.
- *
- * `transcoding/main.py` now references only the new names, so the old ones are
- * dead weight that makes a workspace confusing — but deleting cloud resources
- * is not a decision the wizard gets to make on its own.
- */
-async function cleanUpLegacySecrets(modalBin: string): Promise<void> {
-  let existing: string[]
-  try {
-    existing = await listModalSecretNames(modalBin)
-  } catch {
-    return
-  }
-  const legacy = legacySecretsPresent(existing)
-  if (legacy.length === 0) return
-
-  logWarn(`this Modal workspace still has the pre-rename secret(s): ${legacy.join(', ')}`)
-  const remove = await askConfirm(
-    `Delete ${legacy.join(', ')}? The new secrets replace them and nothing references them any more.`,
-    true,
-  )
-  if (!remove) {
-    logInfo(`left in place — remove them with: modal secret delete ${legacy.join(' ')}`)
-    return
-  }
-  for (const name of legacy) {
-    if (await deleteModalSecret(modalBin, name)) {
-      logSuccess(`Deleted legacy Modal secret ${name}`)
-    } else {
-      logWarn(`could not delete ${name} — run: modal secret delete ${name}`)
-    }
-  }
+const RESUME: Record<DeployStepId, string | undefined> = {
+  'cf-login': 'pnpm --filter vod-api exec wrangler login',
+  buckets: './scripts/bootstrap.sh --deploy   (re-run; bucket creation is idempotent)',
+  'delivery-config': './scripts/bootstrap.sh --deploy   (re-run)',
+  modal: 'cd transcoding && .venv/bin/modal setup && .venv/bin/modal deploy main.py',
+  'delivery-worker': 'cd delivery && pnpm exec wrangler deploy',
+  'delivery-secret': 'cd delivery && pnpm exec wrangler secret put JWT_SECRET',
+  migrate: 'pnpm db:migrate   (dev target) or pnpm docker:migrate   (deploy target)',
+  api: 'pnpm docker:up   (deploy target) or: cd server && pnpm exec wrangler deploy',
+  'modal-callbacks': './scripts/bootstrap.sh --deploy   (re-run once the API URL is known)',
+  report: undefined,
 }
 
-async function probeHealth(baseUrl: string | null): Promise<void> {
-  if (!baseUrl) return
-  const url = `${baseUrl.replace(/\/+$/, '')}/health/config`
-  logInfo(`Probing ${url} …`)
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(20_000) })
-    if (!response.ok) {
-      logWarn(`GET ${url} returned HTTP ${response.status} — check the deployment`)
-      return
-    }
-    const body = (await response.json()) as {
-      ready?: boolean
-      problems?: string[]
-      advisories?: string[]
-    }
-    if (body.ready) {
-      logSuccess('API reports ready: true — open the dashboard /setup page to create an org')
-    } else {
-      logWarn(`API reports ready: false${body.problems?.length ? ` — ${body.problems.join('; ')}` : ''}`)
-    }
-  } catch {
-    logWarn(`could not reach ${url} (is the API up?) — re-check with: curl ${url}`)
-  }
+interface StepSpec {
+  id: DeployStepId
+  label: string
+  dependsOn: readonly DeployStepId[]
 }
 
-/**
- * Run the full provision & deploy phase. Reads .dev.vars at the start for the
- * shared secrets (JWT, ingest secret) and upserts URLs as deploys succeed, so
- * the files always reflect reality.
- */
-/**
- * Write deploy-phase values into every config file this runtime reads.
- *
- * `server/.dev.vars` is always updated (it is the local record of what was
- * deployed). A Compose deployment reads the root `.env` instead, so a Node
- * deployment mirrors into it as well — see `upsertDeployEnv`.
- */
-function makeEnvWriter(
-  root: string,
-  runtime: WizardAnswers['runtime'],
-): (updates: EntryList) => void {
-  return (updates) => {
-    upsertServerEnv(root, updates)
-    if (runtime === 'node') {
-      upsertDeployEnv(root, updates)
-    }
-  }
-}
-
+/** Run the whole phase. `port` is injected so tests can drive a fake. */
 export async function runDeployPhase(
   root: string,
   answers: WizardAnswers,
-): Promise<DeployResult> {
-  const serverEnv = readServerEnv(root)
-  const writeEnv = makeEnvWriter(root, answers.runtime)
-  if (!serverEnv) {
-    throw new WizardError(
-      'server/.dev.vars is missing — configure the environment first (./scripts/bootstrap.sh)',
-    )
+  port?: DeployPort,
+): Promise<DeployReport> {
+  const target: ConfigTarget = answers.target ?? 'dev'
+  const configPath = primaryConfigPath(root, target)
+  const io = port ?? createDeployPort({ root, target })
+  const provider = transcodeProvider(answers)
+  const wantsModal = provider === 'modal'
+  const wantsUploads = uploadsEnabled(answers)
+
+  const steps: DeployStepResult[] = []
+  const failed = new Set<DeployStepId>()
+  /** Blocked is not failed — but it propagates exactly the same way. */
+  const blocked = new Set<DeployStepId>()
+  const result: DeployResult = { apiUrl: null, deliveryUrl: null, modalUrl: null }
+  let modalBin: string | null = null
+  let uploadedCallbackHosts: string | null = null
+  let apiConfigured = false
+
+  const record = (step: DeployStepResult): boolean => {
+    steps.push(step)
+    if (step.status === 'failed') failed.add(step.id)
+    if (step.status === 'blocked') blocked.add(step.id)
+    return step.status === 'ok' || step.status === 'skipped'
   }
 
-  const result: DeployResult = { apiUrl: null, deliveryUrl: null, modalUrl: null }
-  /** What the last upload put into ALLOWED_CALLBACK_HOSTS, so step 6 can tell
-   * whether the API host that emerged during the deploy is already in it. */
-  let uploadedCallbackHosts: string | null = null
-  const temp: TempDir = makeTempDir()
+  const labelOf = (id: DeployStepId): string =>
+    steps.find((step) => step.id === id)?.label ?? id
+
+  /** Run one step, or record why it did not run. */
+  const step = async (
+    spec: StepSpec,
+    work: () => Promise<string | void> | string | void,
+  ): Promise<boolean> => {
+    // Transitive on purpose: a step whose dependency was itself blocked must not
+    // be attempted. Without this, a failed Cloudflare login blocked the bucket
+    // step and then the delivery worker deployed anyway, against whatever
+    // account wrangler happened to still be pointed at.
+    const blocker = spec.dependsOn.find((id) => failed.has(id) || blocked.has(id))
+    if (blocker !== undefined) {
+      return record({
+        id: spec.id,
+        label: spec.label,
+        status: 'blocked',
+        detail: `${labelOf(blocker)} did not complete`,
+        ...(RESUME[spec.id] !== undefined ? { resume: RESUME[spec.id] } : {}),
+      })
+    }
+    io.log.step(spec.label)
+    try {
+      const detail = await work()
+      return record({
+        id: spec.id,
+        label: spec.label,
+        status: 'ok',
+        ...(typeof detail === 'string' ? { detail } : {}),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      io.log.warn(`${spec.label}: ${message}`)
+      return record({
+        id: spec.id,
+        label: spec.label,
+        status: 'failed',
+        detail: message,
+        ...(RESUME[spec.id] !== undefined ? { resume: RESUME[spec.id] } : {}),
+      })
+    }
+  }
+
+  const skip = (spec: StepSpec, detail: string): void => {
+    record({ id: spec.id, label: spec.label, status: 'skipped', detail })
+  }
+
   try {
-    logInfo('Deploy phase — idempotent: if anything interrupts you, re-run to resume.')
+    const initial = io.readConfig()
+    if (!initial) {
+      throw new WizardError(
+        `${configPath} is missing — configure it first (./scripts/bootstrap.sh --target ${target})`,
+      )
+    }
+    io.log.info('Deploy phase — idempotent: if anything interrupts you, re-run to resume.')
 
     // ── 1. Cloudflare auth + account ─────────────────────────────────────
-    logStep('Cloudflare — checking wrangler login')
-    const loggedAccountId = await ensureCfLogin(root)
-    if (!loggedAccountId) {
-      throw new WizardError(
-        'wrangler login did not complete. Run ./scripts/bootstrap.sh --deploy again after logging in (pnpm exec wrangler login from server/).',
-      )
-    }
-    const effectiveAccountId = answers.accountId.trim() || loggedAccountId
-    if (effectiveAccountId !== loggedAccountId) {
-      logWarn(
-        `env ACCOUNT_ID (${effectiveAccountId}) differs from the logged-in account (${loggedAccountId}) — provisioning uses ${loggedAccountId}`,
-      )
-    }
-    if (effectiveAccountId !== serverEnv['ACCOUNT_ID']) {
-      writeEnv([['ACCOUNT_ID', effectiveAccountId]])
-      logInfo('ACCOUNT_ID in server/.dev.vars updated to the logged-in account')
-    }
-    writeEnv([['SWEEP_ENABLED', 'true']])
-
-    const currentEnv = readServerEnv(root)
-    if (!currentEnv) throw new WizardError('server/.dev.vars disappeared during deploy setup')
-    if (!currentEnv['CLOUDFLARE_ANALYTICS_TOKEN']?.trim()) {
-      const addAnalytics = await askConfirm(
-        'Set up optional Cloudflare usage analytics now?',
-        false,
-      )
-      if (addAnalytics) {
-        logInfo(
-          `Open this Cloudflare token template, create the token, then paste it here:\n${analyticsTokenTemplateUrl()}`,
-        )
-        const analyticsToken = await askPassword('Cloudflare Account Analytics Read token')
-        if (!analyticsToken) {
-          throw new WizardError(
-            'Cloudflare analytics token was empty — re-run --deploy and paste the token when prompted',
-          )
-        }
-        writeEnv([['CLOUDFLARE_ANALYTICS_TOKEN', analyticsToken]])
-        logSuccess('Cloudflare analytics token saved')
+    await step({ id: 'cf-login', label: 'Cloudflare login & account', dependsOn: [] }, async () => {
+      const loggedIn = await io.ensureCfLogin()
+      if (!loggedIn) {
+        throw new Error('wrangler login did not complete — approve it in the browser and re-run')
       }
-    }
+      const effective = answers.accountId.trim() || loggedIn
+      if (effective !== loggedIn) {
+        io.log.warn(
+          `env ACCOUNT_ID (${effective}) differs from the logged-in account (${loggedIn}) — provisioning uses ${loggedIn}`,
+        )
+      }
+      io.writeConfig([
+        ['ACCOUNT_ID', effective],
+        ['SWEEP_ENABLED', 'true'],
+      ])
 
-    // ── 2. Buckets + CORS + delivery config ─────────────────────────────
+      const current = io.readConfig() ?? {}
+      if (!current['CLOUDFLARE_ANALYTICS_TOKEN']?.trim()) {
+        const token = await io.offerAnalyticsToken()
+        if (token !== null) {
+          io.writeConfig([['CLOUDFLARE_ANALYTICS_TOKEN', token]])
+          io.log.success('Cloudflare analytics token saved')
+        }
+      }
+      return `account ${loggedIn}`
+    })
+
+    // ── 2. Buckets + CORS ────────────────────────────────────────────────
     //
-    // The raw bucket exists to serve *uploads*, not transcoding, so provisioning
-    // it is conditional on uploads being enabled. A local-only installation —
-    // self-hosted provider, uploads off — needs no raw bucket, no CORS policy
-    // and no Modal account, and creating them anyway is not a harmless
-    // no-op: it puts an unused public bucket on the owner's account.
-    const wantsUploads = answers.uploadsEnabled !== false
-    const wantsModal = (answers.transcodeProvider ?? 'modal') === 'modal'
-
-    if (wantsUploads) {
-      logStep(`Creating R2 buckets (${answers.rawBucket}, ${answers.transcodedBucket})`)
-      await ensureBucket(root, answers.rawBucket)
-      logSuccess(`R2 bucket ${answers.rawBucket} ready`)
-      await ensureBucket(root, answers.transcodedBucket)
-      logSuccess(`R2 bucket ${answers.transcodedBucket} ready`)
-
-      logStep(`Applying S3 CORS to ${answers.rawBucket} for browser uploads`)
-      await applyBucketCors(
-        root,
-        answers.rawBucket,
-        browserUploadCorsOrigins(answers.frontendUrl),
-        temp,
-      )
-      logSuccess('CORS policy applied (GET/PUT/HEAD, ETag exposed)')
-    } else {
-      logStep('Browser uploads are disabled — provisioning only the transcoded bucket')
-      await ensureBucket(root, answers.transcodedBucket)
-      logSuccess(`R2 bucket ${answers.transcodedBucket} ready`)
-      logInfo(
-        'No raw bucket and no CORS policy were created. Files on your machines ' +
-          'are read directly by the transcoder agent.',
-      )
-    }
-
-    logStep('Pointing delivery/wrangler.jsonc at the transcoded bucket')
-    const patched = patchDeliveryBucket(root, answers.transcodedBucket)
-    logSuccess(patched ? 'delivery/wrangler.jsonc updated' : 'delivery/wrangler.jsonc already correct')
-
-    // ── 3. Modal CLI + auth + secrets + deploy ──────────────────────────
-    if (!wantsModal) {
-      logStep('Provider is self-hosted — skipping Modal deployment entirely')
-      logInfo(
-        'Pair a machine to start encoding:\n' +
-          '  docker compose --profile transcoder run --rm transcoder \\\n' +
-          '    pair --api <your API URL> --code <CODE FROM THE DASHBOARD>',
-      )
-      await finishDeployWithoutModal(root, answers, temp)
-      return result
-    }
-
-    let modalBin = await findModalBin()
-    if (!modalBin) {
-      const install = await askConfirm(
-        'Modal CLI is not installed. Install it now (uv tool → pipx → python venv)?',
-        true,
-      )
-      if (install) {
-        modalBin = await withSpinner(
-          'Installing the Modal CLI…',
-          () => installModalCli(),
-          'Modal CLI installed',
-        )
-      }
-      else logWarn('Skipping Modal — deploy the pipeline yourself: see README "Deploy the transcoder"')
-    }
-
-    if (modalBin) {
-      const status = await modalAuthed(modalBin)
-      let authed = status.authed
-      if (authed) {
-        logSuccess(
-          `Modal CLI authenticated${status.profile ? ` (profile ${status.profile})` : ''}`,
-        )
-      } else {
-        const setup = await askConfirm(
-          'Modal CLI is not authenticated. Run modal setup now (opens your browser)?',
-          true,
-        )
-        if (setup) {
-          const setupOk = await runModalSetup(modalBin)
-          if (setupOk) {
-            authed = true
-            logSuccess('Modal CLI authenticated after setup')
-          } else {
-            const retry = await modalAuthed(modalBin)
-            authed = retry.authed
-            if (authed) {
-              logSuccess(
-                `Modal CLI authenticated${retry.profile ? ` (profile ${retry.profile})` : ''}`,
-              )
-            }
-          }
-        } else {
-          logWarn('Skipping Modal auth — run `modal setup` yourself, then re-run --deploy')
+    // The raw bucket exists to serve *uploads*, not transcoding, so it is only
+    // provisioned when uploads are on. Creating one anyway is not harmless: it
+    // puts an unused bucket on the owner's account.
+    await step(
+      {
+        id: 'buckets',
+        label: wantsUploads
+          ? `R2 buckets (${answers.rawBucket}, ${answers.transcodedBucket}) + CORS`
+          : `R2 bucket (${answers.transcodedBucket})`,
+        dependsOn: ['cf-login'],
+      },
+      async () => {
+        if (wantsUploads) {
+          await io.ensureBucket(answers.rawBucket)
+          io.log.success(`R2 bucket ${answers.rawBucket} ready`)
         }
-      }
-      if (authed) {
-        const current = readServerEnv(root)
-        if (!current) throw new WizardError('server/.dev.vars disappeared during Modal setup')
-
-        await cleanUpLegacySecrets(modalBin)
-
-        // Built from server/.dev.vars, never from the in-memory answers: a
-        // bucket or callback host edited by hand has to reach the transcoder,
-        // and a stale answer silently pointing at the wrong bucket is the kind
-        // of bug that only shows up as a failed encode.
-        const creds = openvodCredsFromEnv(current)
-        if (creds.problems.length > 0) {
-          throw new WizardError(
-            `the ${MODAL_CREDS_SECRET} Modal secret is built from server/.dev.vars, ` +
-              'and that file is incomplete:\n  - ' +
-              creds.problems.join('\n  - ') +
-              '\nRe-run ./scripts/bootstrap.sh to fix the environment, then --deploy again.',
-          )
+        await io.ensureBucket(answers.transcodedBucket)
+        io.log.success(`R2 bucket ${answers.transcodedBucket} ready`)
+        if (wantsUploads) {
+          await io.applyBucketCors(answers.rawBucket, bucketCorsOrigins(answers.frontendUrl))
+          return 'raw + transcoded, browser-upload CORS applied'
         }
-        for (const advisory of creds.advisories) logWarn(advisory)
-
-        logStep(`Uploading Modal secrets (${MODAL_CREDS_SECRET}, ${MODAL_GROQ_SECRET})`)
-        await putModalSecret(modalBin, MODAL_CREDS_SECRET, creds.values, {
-          force: forceOverwriteModalSecret(MODAL_CREDS_SECRET),
-          tempDir: temp.path,
-        })
-        uploadedCallbackHosts = creds.values['ALLOWED_CALLBACK_HOSTS'] ?? null
-        reportCredsPayload(creds.values)
-        await putModalSecret(
-          modalBin,
-          MODAL_GROQ_SECRET,
-          { GROQ_API_KEY: answers.groqApiKey?.trim() || 'unused' },
-          { tempDir: temp.path },
-        )
-        logSuccess(`Modal secrets ${MODAL_CREDS_SECRET} + ${MODAL_GROQ_SECRET} ready`)
-
-        const modalUrl = await deployModalPipeline(root)
-        if (modalUrl) {
-          writeEnv([['MODAL_WEBHOOK_URL', modalUrl]])
-          result.modalUrl = modalUrl
-          logSuccess(`MODAL_WEBHOOK_URL=${modalUrl}`)
-        } else {
-          logWarn(
-            'modal deploy finished but no *.modal.run URL was parsed — paste the URL into server/.dev.vars (MODAL_WEBHOOK_URL)',
-          )
-        }
-      }
-    }
-
-    // ── 4. Delivery worker (always Cloudflare) ───────────────────────────
-    const deliveryUrl = await deployWorker(root, 'delivery')
-    if (deliveryUrl) {
-      writeEnv([['DELIVERY_URL', deliveryUrl]])
-      result.deliveryUrl = deliveryUrl
-      logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
-    } else {
-      logWarn('delivery deploy finished but no workers.dev URL was parsed — set DELIVERY_URL by hand')
-    }
-    const jwt = readServerEnv(root)?.['JWT_SECRET']
-    if (jwt) {
-      logStep('Uploading delivery JWT_SECRET')
-      await putWorkerSecrets(root, 'delivery', [['JWT_SECRET', jwt]], temp)
-      logSuccess('Delivery JWT_SECRET uploaded')
-    }
-
-    // ── 5. API runtime ───────────────────────────────────────────────────
-    if (answers.runtime === 'node') {
-      if (!findOnPath('docker')) {
-        throw new WizardError(
-          'docker was not found — the Node runtime deploys with Docker Compose. Install Docker and re-run with --deploy.',
-        )
-      }
-      // The deployment stack is configured by the root `.env`, not by
-      // server/.dev.vars — the two files answer different questions.
-      logStep('docker compose run --rm migrate (apply migrations)')
-      const migrate = await runInherit(['docker', 'compose', 'run', '--rm', 'migrate'], {
-        cwd: root,
-      })
-      if (migrate !== 0) {
-        throw new WizardError(
-          'docker compose run --rm migrate failed — check the compose logs and re-run',
-        )
-      }
-      logStep('docker compose up -d (Postgres + Redis + API + dashboard)')
-      const code = await runInherit(['docker', 'compose', 'up', '-d'], { cwd: root })
-      if (code !== 0) {
-        throw new WizardError('docker compose up failed — check the compose logs and re-run')
-      }
-      logStep('Recreating the API container with generated deployment URLs')
-      const apiCode = await runInherit(
-        ['docker', 'compose', 'up', '-d', '--force-recreate', '--no-deps', 'api'],
-        { cwd: root },
-      )
-      if (apiCode !== 0) {
-        throw new WizardError('API container recreation failed — check the compose logs and re-run')
-      }
-      result.apiUrl = 'http://localhost:8787'
-      logSuccess('Compose is up — API http://localhost:8787 · dashboard http://localhost:3000')
-    } else {
-      const databaseUrl = serverEnv['DATABASE_URL'] ?? ''
-      if (!databaseUrl) throw new WizardError('DATABASE_URL missing from server/.dev.vars')
-      await dbMigrate(root, databaseUrl)
-
-      const apiUrl = await deployWorker(root, 'server')
-      if (apiUrl) {
-        writeEnv([
-          ['BETTER_AUTH_URL', apiUrl],
-          ['BACKEND_URL', apiUrl],
-        ])
-        result.apiUrl = apiUrl
-        logSuccess(`API deployed: ${apiUrl}`)
-      } else {
-        logWarn('API deploy finished but no workers.dev URL was parsed')
-      }
-
-      const updated = readServerEnv(root)
-      if (!updated) throw new WizardError('server/.dev.vars disappeared mid-deploy')
-      const secretEntries = ([...SERVER_KEY_ORDER, 'SWEEP_ENABLED'] as readonly string[]).map((key) => [
-        key,
-        updated[key] ?? '',
-      ]) as Array<readonly [string, string]>
-      logStep('Uploading API secrets (wrangler secret bulk)')
-      await putWorkerSecrets(root, 'server', secretEntries, temp)
-      logSuccess('API secrets uploaded')
-    }
-
-    // ── 6. Refresh Modal callback hosts once the API host is known ───────
-    //
-    // The API builds `callbackUrl` from BACKEND_URL (server/src/utils/queue.ts),
-    // so that is the host the transcoder has to be allowed to call. Using
-    // BETTER_AUTH_URL here — which keeps pointing at localhost — silently
-    // blocked every callback for a tunnelled or deployed API.
-    // `uploadedCallbackHosts !== null` means step 3 actually uploaded the secret
-    // (Modal was authenticated) — without that guard this step would fail the
-    // whole deploy on a workspace the user deliberately skipped Modal in.
-    if (modalBin && wantsModal && uploadedCallbackHosts !== null) {
-      const env = readServerEnv(root)
-      if (env) {
-        const refreshed = openvodCredsFromEnv(env)
-        const hosts = refreshed.values['ALLOWED_CALLBACK_HOSTS'] ?? null
-        if (refreshed.problems.length === 0 && hosts !== null && hosts !== uploadedCallbackHosts) {
-          logStep(`Refreshing ALLOWED_CALLBACK_HOSTS on the ${MODAL_CREDS_SECRET} Modal secret`)
-          await putModalSecret(modalBin, MODAL_CREDS_SECRET, refreshed.values, {
-            force: true,
-            tempDir: temp.path,
-          })
-          uploadedCallbackHosts = hosts
-          logSuccess(`${MODAL_CREDS_SECRET} ALLOWED_CALLBACK_HOSTS set to ${hosts}`)
-        } else if (refreshed.advisories.length > 0 && hosts !== uploadedCallbackHosts) {
-          for (const advisory of refreshed.advisories) logWarn(advisory)
-        }
-      }
-    }
-
-    // ── 7. Local env report + health probe ───────────────────────────────
-    const finalEnv = readServerEnv(root)
-    if (finalEnv) {
-      const { rows, failed } = lintServerEnv(finalEnv)
-      printCheckRows(rows)
-      if (failed) {
-        logWarn('Some BYOK keys are still missing — see the rows above and server/.dev.vars.example')
-      }
-    }
-    await probeHealth(result.apiUrl ?? serverEnv['BETTER_AUTH_URL'] ?? null)
-    return result
-  } finally {
-    temp.cleanup()
-  }
-}
-
-/**
- * Finish a deploy that has no Modal component.
- *
- * Everything except the Modal steps still has to happen — the delivery worker,
- * the API secrets and the health probe are all provider-independent — so this
- * shares the tail of the main phase rather than returning early with an
- * unfinished deployment.
- */
-async function finishDeployWithoutModal(
-  root: string,
-  answers: WizardAnswers,
-  temp: TempDir,
-): Promise<void> {
-  const result: DeployResult = { apiUrl: null, deliveryUrl: null, modalUrl: null }
-  const writeEnv = makeEnvWriter(root, answers.runtime)
-
-  // The delivery worker is Cloudflare in every configuration, including a
-  // local-only one: it is how a player gets signed bytes. Skipping it here would
-  // produce an installation that transcodes perfectly and cannot play anything.
-  logStep('Deploying the delivery worker')
-  try {
-    const deliveryUrl = await deployWorker(root, 'delivery')
-    if (deliveryUrl) {
-      writeEnv([['DELIVERY_URL', deliveryUrl]])
-      result.deliveryUrl = deliveryUrl
-      logSuccess(`Delivery worker deployed: ${deliveryUrl}`)
-    } else {
-      logWarn('delivery deploy finished but no workers.dev URL was parsed — set DELIVERY_URL by hand')
-    }
-    const jwt = readServerEnv(root)?.['JWT_SECRET']
-    if (jwt) {
-      logStep('Uploading delivery JWT_SECRET')
-      await putWorkerSecrets(root, 'delivery', [['JWT_SECRET', jwt]], temp)
-      logSuccess('Delivery JWT_SECRET uploaded')
-    }
-  } catch (error) {
-    logWarn(
-      `Delivery deployment failed: ${error instanceof Error ? error.message : String(error)}. ` +
-        'Playback will not work until it is deployed.',
+        return 'transcoded only — uploads are off, so no raw bucket and no CORS policy'
+      },
     )
-  }
 
-  logStep('Checking configuration')
-  const env = readServerEnv(root)
-  if (env) {
-    const { rows, failed } = lintServerEnv(env)
-    printCheckRows(rows)
-    if (failed) {
-      logWarn('Some keys are still missing — see the rows above and server/.dev.vars.example')
+    // ── 3. Delivery worker config ────────────────────────────────────────
+    await step(
+      {
+        id: 'delivery-config',
+        label: 'Point delivery/wrangler.jsonc at the transcoded bucket',
+        dependsOn: ['cf-login'],
+      },
+      () => {
+        const patched = io.patchDeliveryBucket(answers.transcodedBucket)
+        return patched ? 'updated' : 'already correct'
+      },
+    )
+
+    // ── 4. Modal (only when it is the provider) ──────────────────────────
+    if (wantsModal) {
+      await step(
+        { id: 'modal', label: 'Modal environment, secrets & deploy', dependsOn: ['cf-login'] },
+        async () => {
+          modalBin = await io.prepareModal()
+          if (modalBin === null) {
+            throw new Error('Modal is not usable (not installed, not authenticated, or skipped)')
+          }
+          await io.cleanLegacySecrets(modalBin)
+
+          const config = io.readConfig()
+          if (!config) throw new Error(`${configPath} disappeared during the Modal step`)
+          // Built from the config file, never from the in-memory answers: a
+          // bucket or callback host edited by hand has to reach the transcoder,
+          // and a stale answer silently pointing at the wrong bucket is the kind
+          // of bug that only shows up as a failed encode.
+          const creds = openvodCredsFromEnv(config)
+          if (creds.problems.length > 0) {
+            throw new Error(
+              `the ${MODAL_CREDS_SECRET} Modal secret is built from ${configPath}, and that ` +
+                `file is incomplete:\n  - ` +
+                creds.problems.join('\n  - '),
+            )
+          }
+          for (const advisory of creds.advisories) io.log.warn(advisory)
+
+          const uploaded = await io.uploadModalSecrets(modalBin, creds, answers.groqApiKey)
+          uploadedCallbackHosts = uploaded.callbackHosts
+
+          const modalUrl = await io.deployModal(modalBin)
+          if (modalUrl === null) {
+            throw new Error(
+              'modal deploy finished but no *.modal.run URL was parsed — set MODAL_WEBHOOK_URL by hand',
+            )
+          }
+          result.modalUrl = modalUrl
+          io.writeConfig([['MODAL_WEBHOOK_URL', modalUrl]])
+          return modalUrl
+        },
+      )
+    } else {
+      skip(
+        { id: 'modal', label: 'Modal environment, secrets & deploy', dependsOn: [] },
+        'self-hosted provider — nothing to deploy to Modal',
+      )
     }
-  }
 
-  await probeHealth(env?.['BETTER_AUTH_URL'] ?? null)
-  void answers
-  void temp
-  return
+    // ── 5. Delivery worker (always Cloudflare) ───────────────────────────
+    //
+    // In every configuration, including a local-only one: it is how a player
+    // gets signed bytes, and skipping it produces an installation that
+    // transcodes perfectly and cannot play anything.
+    await step(
+      { id: 'delivery-worker', label: 'Deploy the delivery worker', dependsOn: ['delivery-config'] },
+      async () => {
+        const url = await io.deployWorker('delivery')
+        if (url === null) {
+          throw new Error('no workers.dev URL was parsed — set DELIVERY_URL by hand')
+        }
+        result.deliveryUrl = url
+        io.writeConfig([['DELIVERY_URL', url]])
+        return url
+      },
+    )
+
+    await step(
+      {
+        id: 'delivery-secret',
+        label: 'Upload the delivery JWT secret',
+        dependsOn: ['delivery-worker'],
+      },
+      async () => {
+        const jwt = io.readConfig()?.['JWT_SECRET']
+        if (!jwt) throw new Error('JWT_SECRET is missing from the configuration')
+        await io.putWorkerSecrets('delivery', [['JWT_SECRET', jwt]])
+        return 'JWT_SECRET uploaded'
+      },
+    )
+
+    // ── 6. Migrations ────────────────────────────────────────────────────
+    //
+    // Exactly one migration path per run, decided by the target: a `deploy` run
+    // migrates the Compose database, a Workers run migrates the database in its
+    // own config file, and a dev/Node run leaves migrations to `pnpm db:migrate`.
+    if (target === 'deploy') {
+      await step(
+        {
+          id: 'migrate',
+          label: 'Apply migrations (docker compose run --rm migrate)',
+          dependsOn: [],
+        },
+        async () => {
+          if (!io.hasDocker()) {
+            throw new Error('docker was not found — the deploy target runs the Compose stack')
+          }
+          await io.composeMigrate()
+          return 'migrations applied to the Compose database'
+        },
+      )
+    } else if (answers.runtime === 'workers') {
+      await step({ id: 'migrate', label: 'Apply migrations to DATABASE_URL', dependsOn: [] }, async () => {
+        const databaseUrl = io.readConfig()?.['DATABASE_URL'] ?? ''
+        if (!databaseUrl) throw new Error(`DATABASE_URL is missing from ${configPath}`)
+        await io.dbMigrate(databaseUrl)
+        return 'migrations applied'
+      })
+    } else {
+      skip(
+        { id: 'migrate', label: 'Apply migrations', dependsOn: [] },
+        'dev target with the Node runtime — run `pnpm db:migrate` yourself',
+      )
+    }
+
+    // ── 7. API ───────────────────────────────────────────────────────────
+    if (target === 'deploy') {
+      await step({ id: 'api', label: 'Bring up the Compose stack', dependsOn: ['migrate'] }, async () => {
+        await io.composeUp()
+        result.apiUrl = 'http://localhost:8787'
+        apiConfigured = true
+        return 'API http://localhost:8787 · dashboard http://localhost:3000'
+      })
+    } else if (answers.runtime === 'workers') {
+      await step(
+        {
+          id: 'api',
+          label: 'Deploy the API worker + secrets',
+          // A Workers deploy needs wrangler auth as well as a migrated database.
+          dependsOn: ['migrate', 'cf-login'],
+        },
+        async () => {
+          const apiUrl = await io.deployWorker('server')
+          if (apiUrl !== null) {
+            io.writeConfig([
+              ['BETTER_AUTH_URL', apiUrl],
+              ['BACKEND_URL', apiUrl],
+            ])
+            result.apiUrl = apiUrl
+          } else {
+            io.log.warn('API deploy finished but no workers.dev URL was parsed')
+          }
+          const updated = io.readConfig()
+          if (!updated) throw new Error(`${configPath} disappeared mid-deploy`)
+          const entries: EntryList = ([...SERVER_KEY_ORDER, 'SWEEP_ENABLED'] as readonly string[]).map(
+            (key) => [key, updated[key] ?? ''] as const,
+          )
+          await io.putWorkerSecrets('server', entries)
+          apiConfigured = true
+          return apiUrl ?? 'deployed (URL not parsed)'
+        },
+      )
+    } else {
+      skip(
+        { id: 'api', label: 'Deploy the API', dependsOn: [] },
+        'dev target with the Node runtime — the API runs here via `pnpm dev`',
+      )
+      apiConfigured = true
+    }
+
+    // ── 8. Refresh the Modal callback allowlist ──────────────────────────
+    //
+    // The API builds `callbackUrl` from BACKEND_URL, so that is the host the
+    // transcoder must be allowed to call. Doing it only once the API host is
+    // known is the point: an early allowlist would contain localhost and
+    // silently refuse every callback.
+    if (wantsModal && modalBin !== null && apiConfigured) {
+      await step(
+        { id: 'modal-callbacks', label: 'Refresh Modal callback hosts', dependsOn: ['modal', 'api'] },
+        async () => {
+          const config = io.readConfig()
+          if (!config) throw new Error(`${configPath} disappeared mid-deploy`)
+          const creds = openvodCredsFromEnv(config)
+          const bin = modalBin as string
+          const updated = await io.refreshModalCallbacks(bin, creds, uploadedCallbackHosts)
+          if (updated === uploadedCallbackHosts) return 'already correct'
+          uploadedCallbackHosts = updated
+          return updated ?? 'unchanged'
+        },
+      )
+    } else {
+      skip(
+        { id: 'modal-callbacks', label: 'Refresh Modal callback hosts', dependsOn: [] },
+        wantsModal ? 'the Modal step was skipped' : 'self-hosted provider',
+      )
+    }
+
+    // ── 9. Report ────────────────────────────────────────────────────────
+    await step(
+      { id: 'report', label: 'Configuration check & health probe', dependsOn: [] },
+      async () => {
+        const { rows, failed: lintFailed } = io.lintConfig()
+        io.log.info(
+          rows
+            .map((row) => `${row.ok ? '✓' : row.advisory ? '○' : '✗'} ${row.text}`)
+            .join('\n'),
+        )
+        if (lintFailed) {
+          io.log.warn(`Some keys are still missing — see the rows above and ${configPath}`)
+        }
+        const probeUrl = result.apiUrl ?? io.readConfig()?.['BETTER_AUTH_URL'] ?? null
+        await io.probeHealth(probeUrl)
+        if (provider === 'self-hosted') {
+          io.log.info(`Pair a machine to start encoding:\n  ${pairingCommand(result.apiUrl ?? undefined)}`)
+        }
+        return lintFailed ? 'configuration incomplete' : 'configuration looks complete'
+      },
+    )
+
+    const report: DeployReport = { target, configPath, steps, complete: true, result }
+    report.complete = unfinishedSteps(report).length === 0
+    return report
+  } finally {
+    io.cleanup()
+  }
 }

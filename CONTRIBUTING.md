@@ -43,7 +43,7 @@ pnpm typecheck        # type-check every package
 2. Local configuration is one file per service, each with a committed template:
    `cp server/.dev.vars.example server/.dev.vars`,
    `cp delivery/.dev.vars.example delivery/.dev.vars` and
-   `cp web/.env.example web/.env` (`./scripts/bootstrap.sh` writes the first two
+   `cp web/.env.example web/.env` (`./scripts/bootstrap.sh --target dev` writes the first two
    for you). `server/.dev.vars` is **development-only**: `pnpm dev`,
    `pnpm dev:workers`, migrations, the seed script and the drizzle CLI load it
    through `server/src/lib/load-local-env.ts`, and real env vars always win. A
@@ -132,7 +132,7 @@ pnpm typecheck        # type-check every package
        ever sent: set `ALLOWED_CALLBACK_HOSTS=<your-tunnel-host>` (hostname
        only, no scheme) on the `openvod-creds` Modal secret the transcoder
        deploys with, then redeploy if the secret is read at container start.
-       `./scripts/bootstrap.sh --deploy` derives that allowlist from
+       `./scripts/bootstrap.sh --deploy --target dev` derives that allowlist from
        `BACKEND_URL`, so setting `BACKEND_URL` before deploying does this for
        you.
    4. Check the URL answers before uploading anything:
