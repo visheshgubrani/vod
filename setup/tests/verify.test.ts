@@ -91,6 +91,20 @@ describe('lintEnvFiles + renderCheckRows', () => {
     expect(lines[0]).toMatch(/^✓/)
     expect(lines.some((line) => line.includes('○'))).toBe(true)
   })
+
+  it('uses a row hint instead of "missing or placeholder" when one is set', () => {
+    // A configured-but-unreachable database is not a missing key, and saying so
+    // sent the reader looking for a value that was already in the file.
+    const [line] = renderCheckRows([
+      { ok: false, text: 'dev Postgres is not running', hint: 'run: pnpm dev:infra' },
+    ])
+    expect(line).toBe('✗ dev Postgres is not running — run: pnpm dev:infra')
+  })
+
+  it('keeps the generic suffix for rows without a hint', () => {
+    const [line] = renderCheckRows([{ ok: false, text: 'Raw bucket (RAW_BUCKET_NAME)' }])
+    expect(line).toBe('✗ Raw bucket (RAW_BUCKET_NAME) — missing or placeholder')
+  })
 })
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -79,6 +79,17 @@ file is only useful if it is current.
 
 ## Bootstrap and local transcoding
 
+- **`dist/` is gitignored, so a checkout can be source-new and build-old.** `web`
+  imports `@clipmux/uploader` and `@clipmux/player` from their built output, and
+  nothing tracked in git proves that output matches `src/`. `scripts/dev.mjs`
+  rebuilds a package whose `dist/` is older than any file in its `src/` before
+  the dev servers start (and stops if that build fails), which covers
+  `pnpm dev`/`dev:workers`/`dev:all`/`start`. It does **not** cover
+  `pnpm dev:example` or a bare `next dev` in `web/` — those still need
+  `pnpm --filter @clipmux/{uploader,player,server} build` first, which is what
+  the README and CONTRIBUTING say. A `prepare`/`postinstall` build was rejected:
+  it would run a full tsup + dts pass on every `pnpm install`, including in CI
+  jobs that never build the dashboard.
 - **No Windows launcher.** `scripts/bootstrap.sh` is Unix-only (macOS + Linux)
   and exits with a WSL pointer on Git Bash/MSYS/Cygwin. A PowerShell installer
   would have to reproduce the toolchain ladder (node/pnpm, `corepack`, the
@@ -102,6 +113,24 @@ file is only useful if it is current.
 - **Neither Neon nor QStash is provisioned automatically.** Both are paste-a-value
   steps with a console link: provisioning them would mean storing a vendor API key
   in the wizard, for accounts the operator creates anyway.
+- **`checks.database` and `--check` prove configuration shape, not connectivity.**
+  `server/src/lib/config.ts` regex-matches `DATABASE_URL`, so `GET /health/config`
+  reports `database: true` and `ready: true` while every real query fails — the
+  health route even swallows the query error on purpose so a missing table cannot
+  take down the endpoint the wizard reads. A live probe there would run on every
+  `/health/config` call, which is why it was not added. The wizard covers the
+  local case instead: `setup/src/devInfra.ts` inspects the dev container and
+  probes host reachability, so `--check --target dev` and an interactive dev run
+  report an unusable dev Postgres by name. A *remote* `DATABASE_URL`
+  (`db.kind: "existing"` or Neon) is still only checked for shape and TCP.
+- **A busy dev port is not detected by `up --wait`.** Docker can create
+  `clipmux-dev-postgres` and fail to programme its port mapping while the
+  container's own health check still passes, so `pnpm dev:infra` can exit `0`
+  with nothing of ours listening on 5433, and `DATABASE_URL` reaches whichever
+  server does hold the port. Compose cannot report this, which is why the wizard
+  re-inspects the container *after* starting it rather than trusting the exit
+  code, and why `docker ps --filter publish=5433` is the first debugging step in
+  the README.
 - **The delivery worker's bucket is global.** `delivery/wrangler.jsonc` holds one
   `bucket_name`, so two configurations with different transcoded buckets cannot
   both be deployed by this tooling — whichever deploys last wins, and the deploy

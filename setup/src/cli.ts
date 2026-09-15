@@ -62,6 +62,16 @@ import { systemShapeFromAnswers } from './system'
 import { cfAccountId } from './cloudflare'
 import { deployReportLines, deploySummaryLine, runDeployPhase } from './deploy'
 import { lintDeployEnv, lintEnvFiles, type CheckRow } from './verify'
+import {
+  DEV_PG_PORT,
+  devInfraChoice,
+  inspectDevInfra,
+  migrateDevDb,
+  quickFixFor,
+  remediationFor,
+  startDevInfra,
+  type DevDbVerdict,
+} from './devInfra'
 import { summaryText } from './display'
 import { linksNote, type LinkKind } from './links'
 import { agentApiUrlNote, pairingCommand } from './pairing'
@@ -74,6 +84,8 @@ import {
   formatCheckRow,
   intro,
   isTty,
+  logError,
+  logInfo,
   logStep,
   logSuccess,
   logWarn,
@@ -430,12 +442,131 @@ function lintTarget(root: string, target: ConfigTarget): { rows: CheckRow[]; fai
   return lintEnvFiles(readTargetConfig(root, 'dev'), readDeliveryEnv(root))
 }
 
+/** One plain-text line describing a dev-database verdict, for a log or a row. */
+export function describeDevDb(verdict: DevDbVerdict): string {
+  switch (verdict.kind) {
+    case 'reachable':
+      return `dev Postgres is reachable on localhost:${DEV_PG_PORT}`
+    case 'not-running':
+      return `dev Postgres is not running (localhost:${DEV_PG_PORT})`
+    case 'unreachable':
+      return `dev Postgres is running but localhost:${DEV_PG_PORT} does not answer`
+    case 'container-not-attached':
+      return verdict.owner === null
+        ? 'dev Postgres is running but Docker never attached it to a network'
+        : `dev Postgres is running but Docker never attached it — port ${DEV_PG_PORT} is held by ${verdict.owner.name}`
+    case 'port-held-elsewhere':
+      return verdict.owner === null
+        ? `another server answers localhost:${DEV_PG_PORT}`
+        : `port ${DEV_PG_PORT} is held by ${verdict.owner.name}${verdict.owner.project === null ? '' : ` (project "${verdict.owner.project}")`}`
+  }
+}
+
+/**
+ * Start the local infrastructure and migrate, when the user says yes.
+ *
+ * The wizard used to end at "next steps: run these two commands", which is how a
+ * dev target ended up configured against a Postgres that was never startable
+ * (another project holding port 5433) and a schema that was never created. The
+ * order is the point: identify a blocker *before* starting, because
+ * `docker compose up --wait` reports success for a container it could not attach
+ * to the network, and verify *after* starting rather than trusting the exit code.
+ */
+async function maybeStartDevInfra(root: string, answers: WizardAnswers): Promise<void> {
+  if (!devInfraChoice(answers)) return
+
+  const label = 'Start the dev Postgres + Redis now and apply migrations?'
+  if (!(await askConfirm(label, true))) {
+    logInfo(
+      'start it yourself, then migrate:  pnpm dev:infra && pnpm db:migrate\n' +
+        'the wizard re-checks this on the next run',
+    )
+    return
+  }
+
+  const before = await inspectDevInfra(root)
+  if (before.verdict.kind === 'container-not-attached' || before.verdict.kind === 'port-held-elsewhere') {
+    logWarn(describeDevDb(before.verdict))
+    note(remediationFor(before.verdict).join('\n'), `Port ${DEV_PG_PORT} is not available`)
+    return
+  }
+
+  logStep('Starting the dev containers (docker compose -f docker-compose.dev.yml up -d --wait)')
+  const started = await startDevInfra(root)
+  if (!started.ok) {
+    if (started.portAllocated) {
+      const owners = (await inspectDevInfra(root)).owners
+      const who = owners.length > 0 ? ` by ${owners.map((o) => o.name).join(', ')}` : ''
+      logWarn(`port ${DEV_PG_PORT} is already allocated${who}`)
+    } else {
+      logWarn(`docker compose up failed — ${started.output.split(/\r?\n/).slice(-3).join(' ')}`)
+    }
+    logInfo(`check it yourself with:  docker compose -f docker-compose.dev.yml up -d`)
+  }
+
+  // Always re-read the machine after starting: "it exited zero" and "the host can
+  // reach the database" are different claims, and only the second one matters.
+  const status = await inspectDevInfra(root)
+  if (status.verdict.kind !== 'reachable') {
+    logWarn(describeDevDb(status.verdict))
+    note(remediationFor(status.verdict).join('\n'), 'The dev Postgres is not usable yet')
+    logInfo('the configuration was still written — fix the database, then:  pnpm db:migrate')
+    return
+  }
+
+  logSuccess('dev Postgres + Redis are up')
+  logStep('Applying migrations (pnpm db:migrate)')
+  if (await migrateDevDb(root)) {
+    logSuccess('migrations applied')
+  } else {
+    logError('migrations failed — run `pnpm db:migrate` once the database is reachable')
+  }
+}
+
+/**
+ * The dev database as a verification row.
+ *
+ * `lintServerEnv` can only see that DATABASE_URL *looks* like a Postgres URL, so
+ * a machine where port 5433 belongs to another project's server passed every
+ * check and failed at the first query. This is the missing question. Returns
+ * null when the chosen database is not this workspace's local container.
+ */
+async function localDatabaseRow(
+  root: string,
+  target: ConfigTarget,
+): Promise<{ row: CheckRow; verdict: DevDbVerdict } | null> {
+  if (target !== 'dev') return null
+  const env = readTargetConfig(root, 'dev')
+  if (!env || deriveAnswersFromConfig('dev', env).db.kind !== 'local') return null
+  const status = await inspectDevInfra(root)
+  const verdict = status.verdict
+  return {
+    row: {
+      ok: verdict.kind === 'reachable',
+      text: describeDevDb(verdict),
+      // The generic "missing or placeholder" suffix is wrong for a database that
+      // is configured and still unreachable, so this row carries its own.
+      ...(verdict.kind === 'reachable' ? {} : { hint: quickFixFor(verdict) }),
+    },
+    verdict,
+  }
+}
+
 async function runCheck(
   root: string,
   target: ConfigTarget,
   checkUrl: string | undefined,
 ): Promise<boolean> {
   const { rows, failed } = lintTarget(root, target)
+  const db = await localDatabaseRow(root, target)
+  if (db !== null) rows.push(db.row)
+  if (db !== null && !db.row.ok) {
+    // Before the rows, so the one failure the env rows cannot see gets the
+    // explanation and the fix rather than a bare ✗ at the bottom of a list.
+    logWarn(describeDevDb(db.verdict))
+    note(remediationFor(db.verdict).join('\n'), 'The dev Postgres is not usable')
+  }
+  const dbFailed = db !== null && !db.row.ok
   printCheckRows(rows)
   if (failed) {
     const kinds = missingLinkKinds(rows)
@@ -474,14 +605,14 @@ async function runCheck(
         // eslint-disable-next-line no-console
         console.log(color.muted(`○ ${advisory}`))
       }
-      return Boolean(body.ready)
+      return Boolean(body.ready) && !dbFailed
     } catch {
       // eslint-disable-next-line no-console
       console.log(color.fail(`✗ could not reach ${base}/health/config`))
       return false
     }
   }
-  return !failed
+  return !failed && !dbFailed
 }
 
 /**
@@ -881,11 +1012,20 @@ async function main(): Promise<void> {
       } else {
         // 'verify' and 'next' are read-only: report, then print next steps.
         if (action === 'verify') await runCheck(root, target, undefined)
+        if (action === 'next' && target === 'dev') await runCheck(root, target, undefined)
         note(nextStepsText(answers), 'Next steps')
         outro('Done')
         return
       }
     }
+  }
+
+  if (target === 'dev' && !deployNow) {
+    // The dev target is the one that needs containers on this machine, and the
+    // one whose setup used to end in two commands the user had to remember.
+    // Before the deploy question, not after: the local environment is what
+    // `pnpm dev` needs, and it is the option the wizard recommends first.
+    await maybeStartDevInfra(root, answers)
   }
 
   if (deployNow) {

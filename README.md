@@ -409,7 +409,7 @@ scripts/       bootstrap.sh launcher (toolchain + wizard exec)
 
 ```bash
 pnpm install
-pnpm dev:infra                # dev Postgres (:5433) + Redis (:6379), waits for health
+pnpm dev:infra                # dev Postgres (:5433) + Redis (:6382), waits for health
 pnpm db:migrate               # apply migrations to the dev database
 pnpm dev                      # API on Node (:8787) + web (:3000)
 pnpm dev:workers              # same pair, API under wrangler dev (:8787) — needs DB_DRIVER=neon-http
@@ -420,7 +420,8 @@ pnpm dev:infra:down           # stop dev infra, keep data
 pnpm dev:infra:reset          # stop dev infra and drop the dev database volume
 pnpm db:up / pnpm db:down     # dev Postgres only (compatibility aliases)
 pnpm start                    # built artifacts: bundled Node API (PORT, :4080) + next start
-pnpm test                     # server/delivery/sdk/player/server-sdk/setup suites
+pnpm test                     # packages + scripts (node --test)
+pnpm test:scripts             # scripts/ only: the dev runner's stale-build preflight
 pnpm --filter vod-api test
 pnpm --filter ./delivery test
 pnpm --filter ./sdk test
@@ -443,9 +444,30 @@ database is used is `DATABASE_URL` in `server/.dev.vars`.
 (project `clipmux-dev`) and waits for both health checks; that file has no API
 or web service, because application code runs on the host. Rows live in the
 named volume `clipmux_dev_postgres` and survive `dev:infra:down`; only
-`dev:infra:reset` drops them. If you ran the previous stack, a stale container
-named `vod-postgres-dev` may still hold port 5433 — `docker rm -f vod-postgres-dev`.
-The old dev database volume is not used by the new dev compose file.
+`dev:infra:reset` drops them. The old dev database volume is not used by the new
+dev compose file.
+
+**Port 5433 must be free.** The dev Postgres publishes `5433:5432` on the host,
+so another project's Postgres already bound to 5433 is the most common failure
+here — and it is a quiet one: Docker creates `clipmux-dev-postgres`, cannot
+programme the port mapping, and leaves the container *created but unattached*.
+The container's own health check still passes, so `up -d --wait` can exit `0`
+and report `Healthy` while nothing of ours listens on 5433. `DATABASE_URL` then
+reaches the other server, and the API fails with
+`database "vod_dev" does not exist` (`3D000`) on its first query. Find and stop
+the holder, then recreate ours so the port binds:
+
+```bash
+docker ps --filter publish=5433        # names the container holding the port
+docker compose -f docker-compose.dev.yml rm -sf postgres && pnpm dev:infra
+pnpm db:migrate
+```
+
+`./scripts/bootstrap.sh --check --target dev` reports this case by name, and an
+interactive `./scripts/bootstrap.sh --target dev` run offers to start the dev
+containers and apply migrations itself. (The previous stack's container was
+named `vod-postgres-dev`; `docker rm -f vod-postgres-dev` if one is still
+around.)
 
 `pnpm dev` and `docker compose up -d` both want ports 8787/3000 — run the dev
 setup or the deployment stack, not both. (The dev compose file has no `api`/
@@ -455,6 +477,18 @@ are pinned in `server/wrangler.jsonc` (:8787) and `delivery/wrangler.jsonc`
 `next dev` quietly moves to :3001 when :3000 is taken (check
 `FRONTEND_URL`/`CORS_ORIGINS` then), and `next start` fails outright with
 `EADDRINUSE`.
+
+**Workspace packages are built before the dashboard starts.** `web` imports
+`@clipmux/uploader` and `@clipmux/player` from their `dist/`, which is
+gitignored — so a clone, a branch switch, or a rename inside `sdk/` leaves a
+stale build behind, and the symptom is a Next compile error in the browser
+("Export ClipMuxUploader doesn't exist in target module") that reads like a
+source bug. `node scripts/dev.mjs` checks every package's `src/` against its
+`dist/` and rebuilds the stale ones before starting anything; if a build fails
+it stops with the failing filter named. `pnpm dev:all` additionally watches
+`sdk`/`player`, and `pnpm dev:example` needs
+`pnpm --filter @clipmux/{uploader,player,server} build` because it is not part
+of that preflight.
 
 `pnpm start` builds first (`pnpm start:prepare`), so re-run it after changing
 `NEXT_PUBLIC_*` values — Next inlines them at build time. The dev servers need

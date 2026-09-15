@@ -35,7 +35,8 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = path.resolve(__dirname, '..')
+/** The repo root, exported so tests can build paths the module will resolve. */
+export const REPO_ROOT = path.resolve(__dirname, '..')
 
 const GRACE_MS = 5000
 const NEXT_LOCK = path.join(REPO_ROOT, 'web', '.next', 'dev', 'lock')
@@ -57,6 +58,47 @@ const PRESETS = {
   'dev:workers': ['api:workers', 'web:workers'],
   'dev:all': ['api', 'web', 'delivery', 'sdk', 'player'],
   start: ['api:start', 'web:start'],
+}
+
+/**
+ * Workspace packages the app imports from their *built* output.
+ *
+ * `@clipmux/uploader` and `@clipmux/player` resolve to `dist/`, and `dist/` is
+ * gitignored — so a fresh clone, a branch switch, or a rename inside `sdk/`
+ * leaves the dashboard compiling against an older build. Nothing here rebuilds
+ * it: the failure arrives as a Next compile error in the browser ("Export
+ * ClipMuxUploader doesn't exist in target module") with no hint that a build is
+ * what is missing. These are checked before any service starts.
+ *
+ * `@clipmux/server` is build-only (the dashboard never imports it) but is
+ * included for the presets that already build the other two, so `pnpm dev:all`
+ * and `examples/` agree.
+ */
+const WORKSPACE_PACKAGES = {
+  sdk: { filter: '@clipmux/uploader', label: 'sdk' },
+  player: { filter: '@clipmux/player', label: 'player' },
+  'server-sdk': { filter: '@clipmux/server', label: 'server-sdk' },
+}
+
+/** The packages each preset must have built before its services start. */
+const PRESET_PACKAGES = {
+  dev: ['sdk', 'player'],
+  'dev:workers': ['sdk', 'player'],
+  'dev:all': ['sdk', 'player', 'server-sdk'],
+  // `pnpm start` runs `next build`, which consumes the same two packages.
+  start: ['sdk', 'player'],
+}
+
+/** Every package, for tests and for callers that want the whole set. */
+export const PACKAGE_FILTERS = Object.entries(WORKSPACE_PACKAGES).map(([dir, pkg]) => ({
+  dir,
+  ...pkg,
+}))
+
+/** The workspace packages this preset must have built. */
+function packagesFor(preset) {
+  const dirs = PRESET_PACKAGES[preset] ?? []
+  return dirs.map((dir) => ({ dir, ...WORKSPACE_PACKAGES[dir] }))
 }
 
 // Substrings that identify a stale dev process owned by this repo. Matched
@@ -183,6 +225,112 @@ async function killTree(rootPids, signal) {
   }
 }
 
+/* ── stale workspace builds ─────────────────────────────────────────────────
+ *
+ * Everything below is pure except `realFs` and `runBuild`, so the decisions are
+ * testable without touching the disk (see scripts/dev.test.mjs).
+ */
+
+const IGNORED_SOURCE_SUFFIXES = ['~', '.swp', '.tmp']
+
+/** Newest mtime under a source tree, and whether the tree has a source file. */
+function newestSourceTime(dir, fs) {
+  const prefix = dir.endsWith('/') ? dir : `${dir}/`
+  let newest = 0
+  let found = false
+  for (const file of fs.readdir(dir)) {
+    if (!file.startsWith(prefix)) continue
+    if (IGNORED_SOURCE_SUFFIXES.some((suffix) => file.endsWith(suffix))) continue
+    found = true
+    newest = Math.max(newest, fs.mtime(file))
+  }
+  return { newest, found }
+}
+
+/**
+ * Which packages must be rebuilt before the services start.
+ *
+ * A package is stale when its build output is missing, or older than any source
+ * file. The source tree is scanned, not just the entrypoint: the rename that
+ * broke the dashboard touched `sdk/src/errors.ts`, while `index.ts` re-exported
+ * it unchanged.
+ */
+export function preflightWorkspaceBuilds(packages, fs = realFs) {
+  const stale = []
+  for (const pkg of packages) {
+    if (pkg.hasBuild === false) continue
+    const entry = path.join(REPO_ROOT, pkg.dir, 'dist', 'index.js')
+    const source = newestSourceTime(path.join(REPO_ROOT, pkg.dir, 'src'), fs)
+    if (!source.found) continue
+    if (!fs.exists(entry)) {
+      stale.push({ ...pkg, reason: 'missing' })
+      continue
+    }
+    if (source.newest > fs.mtime(entry)) {
+      stale.push({ ...pkg, reason: 'stale' })
+    }
+  }
+  return stale
+}
+
+const realFs = {
+  exists: (file) => fs.existsSync(file),
+  mtime: (file) => fs.statSync(file).mtimeMs,
+  readdir: (dir) => {
+    const out = []
+    const walk = (current) => {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === 'dist') continue
+          walk(full)
+        } else {
+          out.push(full)
+        }
+      }
+    }
+    walk(dir)
+    return out
+  },
+}
+
+/** `pnpm --filter <pkg> build`, streamed so a tsup error is visible. */
+async function runBuild(entry) {
+  console.log(`[dev] building ${entry.label} (its dist is out of date with src/)`)
+  const child = spawn('pnpm', ['--filter', entry.filter, 'build'], {
+    cwd: REPO_ROOT,
+    env: process.env,
+    stdio: 'inherit',
+  })
+  return await new Promise((resolve) => {
+    child.on('error', () => resolve(1))
+    child.on('exit', (code) => resolve(code ?? 1))
+  })
+}
+
+/**
+ * Build every stale package, or refuse to start.
+ *
+ * Refusing is deliberate: starting the dashboard against a stale build produces
+ * a browser-side compile error that reads like a source bug, and a half-working
+ * dev loop is worse than a clear stop.
+ */
+async function ensureWorkspaceBuilds(packages, options = {}) {
+  const { fs: filesystem = realFs, build = runBuild } = options
+  const stale = preflightWorkspaceBuilds(packages, filesystem)
+  for (const entry of stale) {
+    const code = await build(entry)
+    if (code !== 0) {
+      const names = stale.map((item) => item.filter).join(', ')
+      throw new Error(
+        `build failed for ${entry.filter} (${entry.reason}). The dashboard imports ` +
+          `${names} from their built dist/, so it cannot start until they build. ` +
+          `Run it yourself to see the error: pnpm --filter ${entry.filter} build`,
+      )
+    }
+  }
+}
+
 async function cleanupStale() {
   let all
   try {
@@ -233,12 +381,27 @@ function pipeWithPrefix(child, label) {
   }
 }
 
-async function run(preset) {
-  const keys = PRESETS[preset] ?? (SERVICES[preset] ? [preset] : null)
+export async function run(preset, options = {}) {
+  const keys = options.services ?? PRESETS[preset] ?? (SERVICES[preset] ? [preset] : null)
   if (!keys) usage()
 
-  if (keys.includes('web') || keys.includes('web:workers') || keys.includes('web:start')) {
-    await clearStaleNextLock()
+  const webSelected = keys.some((key) => key === 'web' || key === 'web:workers' || key === 'web:start')
+
+  // Before the dashboard compiles anything: a stale dist makes Next report a
+  // missing export as if the source were wrong. Runs for every preset that
+  // starts the dashboard, including `start` (which runs `next build`).
+  const packages = options.packages ?? packagesFor(preset)
+  if (webSelected && packages.length > 0) {
+    await ensureWorkspaceBuilds(packages, {
+      ...(options.fs !== undefined ? { fs: options.fs } : {}),
+      ...(options.runBuild !== undefined ? { build: options.runBuild } : {}),
+    })
+  }
+  if (webSelected) await clearStaleNextLock()
+
+  if (options.startServices !== undefined) {
+    await options.startServices()
+    return
   }
 
   const children = new Map() // key -> ChildProcess
@@ -297,12 +460,20 @@ async function run(preset) {
   }
 }
 
-const arg = process.argv[2]
-if (!arg) usage()
-if (arg === 'cleanup' || arg === 'clean' || arg === '--cleanup') {
-  await cleanupStale()
-} else if (arg === '-h' || arg === '--help' || arg === 'help') {
-  usage(0)
-} else {
-  await run(arg)
+async function main(argv) {
+  const arg = argv[2]
+  if (!arg) usage()
+  if (arg === 'cleanup' || arg === 'clean' || arg === '--cleanup') {
+    await cleanupStale()
+  } else if (arg === '-h' || arg === '--help' || arg === 'help') {
+    usage(0)
+  } else {
+    await run(arg)
+  }
+}
+
+// Only when executed, not when imported by scripts/dev.test.mjs — importing
+// this module must not start services or print usage.
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  await main(process.argv)
 }

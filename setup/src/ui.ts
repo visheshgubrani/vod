@@ -90,6 +90,7 @@ export function printOk(message: string): void {
 
 export function formatCheckRow(row: CheckRow): string {
   if (row.ok) return `${chalk.green('✓')} ${row.text}`
+  if (row.hint !== undefined) return `${chalk.red('✗')} ${row.text}${chalk.red(` — ${row.hint}`)}`
   if (row.advisory) {
     return `${chalk.dim('○')} ${row.text}${chalk.dim(' — optional / advisory')}`
   }

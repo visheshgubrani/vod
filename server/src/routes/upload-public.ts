@@ -23,6 +23,7 @@ import {
     incrementUploadTokenUsage,
 } from '../middleware/uploadToken'
 import { db } from '../lib/database'
+import { buildRawObjectKey } from '../lib/rawObjectKey'
 import { uploadToken, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { headObjectSize, r2 } from '../utils/R2'
@@ -53,15 +54,6 @@ const MIN_PART_SIZE = 5 * 1024 * 1024
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
 const MAX_PARTS = 10000
 const MAX_PARTS_PER_REQUEST = 100
-
-const getUploadKey = (
-    organizationId: string | null | undefined,
-    filename: string,
-) => {
-    const fileId = crypto.randomUUID()
-    const key = `${organizationId || 'org_default'}/raw/${fileId}/${filename}`
-    return { fileId, key }
-}
 
 const resolvePartConfig = (size: number, requestedPartSize?: number) => {
     if (!Number.isFinite(size) || size <= 0) {
@@ -301,7 +293,7 @@ app.post('/create', async (c) => {
         return c.json({ error: message }, 400)
     }
 
-    const { fileId, key } = getUploadKey(organizationId, filename)
+    const { fileId, key } = buildRawObjectKey(organizationId, filename)
 
     // Create video record
     await db.insert(video).values({

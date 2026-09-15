@@ -8,6 +8,12 @@ export interface CheckRow {
   /** Advisory rows (○) never fail the run. */
   advisory?: boolean
   text: string
+  /**
+   * Replaces the generic "missing or placeholder" suffix on a failing row.
+   * For rows that are not about a missing key — a running-but-unreachable
+   * database, say — that suffix explains nothing.
+   */
+  hint?: string
   /** The env key behind the row, so callers can point at where to get it. */
   key?: string
 }
@@ -208,7 +214,13 @@ export function lintDeployEnv(env: Record<string, string>): { rows: CheckRow[]; 
 export function renderCheckRows(rows: CheckRow[]): string[] {
   return rows.map((row) => {
     const icon = row.ok ? '✓' : row.advisory ? '○' : '✗'
-    const suffix = row.advisory ? ' — optional / advisory' : row.ok ? '' : ' — missing or placeholder'
+    const suffix = row.ok
+      ? ''
+      : row.hint !== undefined
+        ? ` — ${row.hint}`
+        : row.advisory
+          ? ' — optional / advisory'
+          : ' — missing or placeholder'
     return `${icon} ${row.text}${suffix}`
   })
 }

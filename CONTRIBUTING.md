@@ -53,19 +53,31 @@ pnpm typecheck        # type-check every package
 
 3. Start the local infrastructure, then a runtime:
    - `pnpm dev:infra` — dev Postgres (host port **5433**, database `vod_dev`)
-     and Redis (host port **6379**) from `docker-compose.dev.yml` (project
+     and Redis (host port **6382**) from `docker-compose.dev.yml` (project
      `clipmux-dev`), waiting for both health checks. `pnpm dev:infra:down`
      stops them and keeps the data; `pnpm dev:infra:reset` also drops the
      Postgres volume (`clipmux_dev_postgres`). `pnpm db:up` / `pnpm db:down`
-     are kept as Postgres-only compatibility aliases. If you ran the previous
-     stack, a stale container named `vod-postgres-dev` may still hold port
-     5433: `docker rm -f vod-postgres-dev`.
+     are kept as Postgres-only compatibility aliases. Port 5433 must be free: if
+     another project's Postgres already holds it, Docker creates
+     `clipmux-dev-postgres` without a network endpoint, the container still
+     reports `Healthy`, `up --wait` can still exit `0`, and `DATABASE_URL`
+     silently reaches the *other* server — which is where
+     `database "vod_dev" does not exist` comes from. Identify the holder with
+     `docker ps --filter publish=5433`, stop it, then
+     `docker compose -f docker-compose.dev.yml rm -sf postgres && pnpm dev:infra`.
+     (The previous stack's container was named `vod-postgres-dev`.) An
+     interactive `./scripts/bootstrap.sh --target dev` offers to start this
+     infra and migrate for you, and `--check --target dev` names a blocked port.
    - `pnpm db:migrate` once (and after pulling new migrations) — it reads
      `DATABASE_URL` from `server/.dev.vars`, so it targets that local database.
    - `pnpm dev` — API on the **Node** runtime (`tsx watch`, port 8787) and web
      (Next.js, port 3000) in parallel, with prefixed logs. This is the default
      because it works with the dev Postgres out of the box. `API_PORT=…` moves
-     just the API if 8787 is taken.
+     just the API if 8787 is taken. The runner first rebuilds any workspace
+     package whose `dist/` is older than its `src/` (the dashboard imports
+     `@clipmux/uploader`/`@clipmux/player` from `dist/`, which is gitignored),
+     and stops with the failing filter named if a build breaks — otherwise a
+     stale build surfaces as a Next compile error in the browser.
    - `pnpm dev:workers` — the same pair with the API under `wrangler dev`, for
      Workers semantics. It needs `DB_DRIVER=neon-http` and a Neon URL **by
      design**: the Workers runtime cannot hold a Postgres TCP connection across
