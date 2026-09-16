@@ -93,6 +93,57 @@ link working, keep the filename.
 for every page, so MDX files do not import them. Add a new Fumadocs component
 there rather than importing per page.
 
+## Styling
+
+There is **no `tailwind.config.ts`** — deliberately. Fumadocs ships its own
+Tailwind preset and CSS entry points, and `app/global.css` is the single place
+this site overrides them. It holds four things, in order:
+
+1. **Tokens.** `:root` / `.dark` define the brand palette, then map it onto the
+   `--color-fd-*` namespace Fumadocs reads. The values are the dashboard's
+   (`web/app/globals.css`), transcribed by hand: the apps deploy independently
+   and deliberately do not import from one another, so a change in one is a
+   change to make in the other. The mapping is intentionally unlayered so it
+   beats the `@theme` defaults in `fumadocs-ui/css/lib/default-colors.css`.
+2. **Shell geometry**, on `.clipmux-shell`. That class is applied through
+   `containerProps` in `lib/layout.shared.tsx`, which is the one `DocsLayout` this
+   site renders.
+3. **Prose** — heading rhythm, inline code, code blocks and tables, all scoped to
+   `#nd-page .prose`.
+4. **Chrome** — the sidebar rail, its section labels and footer, and the TOC.
+
+### Four things that will bite you
+
+- **Two `!important`s are load-bearing, not laziness.** Fumadocs sizes the
+  sidebar and TOC with arbitrary-property utilities
+  (`md:layout:[--fd-sidebar-width:268px]`, `xl:layout:[--fd-toc-width:268px]`) and
+  paints the active sidebar entry with `data-[active=true]:text-fd-primary`. All
+  three live in `@layer utilities`, so unlayered rules here lose to them. The same
+  applies to `#nd-sidebar`'s own width: Fumadocs' `w-(--fd-sidebar-width)` utility
+  wins on the rail and stretches it across both of its grid columns, whatever the
+  variable says.
+- **The grid template is overridden on purpose.** Fumadocs sizes the article
+  column as `calc(var(--fd-layout-width, 97rem) - sidebar - toc)`. When the
+  viewport is *narrower* than `--fd-layout-width`, the sidebar spans two flexible
+  columns and grows past its own width — a 329px rail out of a 248px variable. The
+  `grid-template-columns` rules on `.clipmux-shell` replace that `calc()` with
+  `minmax(0, 1fr)` per breakpoint so the article absorbs the difference.
+- **`table-layout: fixed` on `table` is a fix, not a preference.** These pages put
+  long inline code and prose in adjacent cells; under `auto` the browser collapses
+  the first column to roughly its own padding.
+- **The site is dark-only and `next-themes` is disabled.** `app/layout.tsx` pins
+  `dark` on `<html>` and passes `theme={{ enabled: false }}` to `RootProvider`.
+  Left on, `RootProvider` defaults to `theme="system"` and rewrites the class on
+  the first visit, so a visitor whose OS prefers light gets the light tokens while
+  the code blocks stay dark. Enabling a theme toggle later means deleting that
+  prop, giving `<html>` a class the script can remove, and checking the code-block
+  palette in both modes.
+
+Syntax highlighting is configured in `source.config.ts` as an inline Shiki theme
+(`clipmux`), so the code surface matches `--code-surface` and the token colours
+match the marketing site's `.tok-*` palette. It is plain data rather than an
+imported theme bundle, which keeps the build free of an extra package.
+
 ## Gotchas
 
 - **The root `.gitignore` allowlists this directory.** A new **top-level**

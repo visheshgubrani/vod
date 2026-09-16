@@ -17,7 +17,7 @@ export function DocsPageView({ page }: { page: DocsSourcePage }) {
     <DocsPage toc={page.data.toc} full={page.data.full}>
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
-      <div className="flex items-center gap-2 border-b pb-6">
+      <div className="clipmux-page-actions flex items-center gap-2 border-b pb-5">
         <LLMCopyButton markdownUrl={getMarkdownUrl(page)} />
         <ViewOptions
           markdownUrl={getMarkdownUrl(page)}

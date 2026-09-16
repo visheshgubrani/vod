@@ -1,16 +1,11 @@
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import './global.css';
-import { Commissioner, Geist_Mono, Inter } from 'next/font/google';
+import { Geist_Mono, Manrope } from 'next/font/google';
 import type { Metadata, Viewport } from 'next';
 
-const inter = Inter({
-  variable: '--font-inter',
-  display: 'swap',
-  subsets: ['latin'],
-});
-
-const commissioner = Commissioner({
-  variable: '--font-commissioner',
+/** The dashboard and marketing site both set Manrope; the docs follow them. */
+const manrope = Manrope({
+  variable: '--font-manrope',
   display: 'swap',
   subsets: ['latin'],
 });
@@ -30,18 +25,24 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#704fd5',
+  themeColor: '#171715',
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {
   return (
     <html
       lang="en"
-      className={`dark scroll-smooth ${inter.variable} ${commissioner.variable} ${geistMono.variable}`}
+      className={`dark scroll-smooth ${manrope.variable} ${geistMono.variable}`}
       suppressHydrationWarning
     >
       <body className="clipmux-docs flex min-h-screen flex-col antialiased">
-        <RootProvider>{children}</RootProvider>
+        {/*
+          The docs are dark-only, so `next-themes` is switched off. Left on, its
+          default `theme="system"` rewrites the class on `<html>` on the first
+          visit — a visitor whose OS prefers light would get the light tokens in
+          `app/global.css` while the code-block palette stayed dark.
+        */}
+        <RootProvider theme={{ enabled: false }}>{children}</RootProvider>
       </body>
     </html>
   );
