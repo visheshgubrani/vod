@@ -27,6 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { DashboardPageHeader } from "@/components/dashboard/page-header";
 import { DashboardAnalyticsSkeleton } from "@/components/dashboard/page-skeletons";
+import { PlaybackAnalyticsNotice } from "@/components/dashboard/playback-analytics-notice";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -37,9 +38,9 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { API_BASE_URL } from "@/lib/api-base";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
+const API_URL = API_BASE_URL;
 
 type DateRangeDays = 7 | 30 | 90;
 
@@ -496,6 +497,8 @@ export default function AnalyticsPage() {
           </div>
         }
       />
+
+      <PlaybackAnalyticsNotice />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatPanel

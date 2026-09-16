@@ -72,7 +72,7 @@ the web image after changing one.
 | `ACCOUNT_ID` | Cloudflare account id. |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 S3 API token. Required when uploads are enabled or the provider is Modal. |
 | `RAW_BUCKET_NAME` / `TRANSCODED_BUCKET_NAME` | The two R2 buckets. See [Quickstart](/quickstart#create-two-r2-buckets). |
-| `CLOUDFLARE_ANALYTICS_TOKEN` | Read access to Analytics Engine SQL. Optional; without it analytics read as `none`. |
+| `CLOUDFLARE_ANALYTICS_TOKEN` | **Read** access to Analytics Engine SQL. Optional; without it analytics read as `none`. Recording playback telemetry is separate and needs the Workers runtime — a Node or container API has no Analytics Engine binding, so the playback views stay at zero and say so. |
 | `GROQ_API_KEY` | Optional. Faster Whisper transcription. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | Optional OAuth providers. |
 

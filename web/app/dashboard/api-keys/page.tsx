@@ -25,8 +25,14 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { API_BASE_URL, apiOrigin } from "@/lib/api-base";
 
-const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787";
+/**
+ * Dashboard CRUD base (`<origin>/api`). The public API base used in the snippet
+ * below is the origin, not this value — it is a different surface.
+ */
+const API_URL = API_BASE_URL;
+const PUBLIC_API_URL = apiOrigin(API_BASE_URL);
 
 interface ApiKey {
   id: string;
@@ -493,7 +499,7 @@ export default function ApiKeysPage() {
         </p>
         <pre className="dash-code-block mt-4 overflow-x-auto p-4">
           <code className="text-foreground">{`curl -H "Authorization: Bearer sk_live_xxxxx" \\
-  ${API_URL}/v1/videos`}</code>
+  ${PUBLIC_API_URL}/v1/videos`}</code>
         </pre>
       </section>
 

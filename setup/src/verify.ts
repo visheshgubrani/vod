@@ -18,7 +18,14 @@ export interface CheckRow {
   key?: string
 }
 
-const MIN_SECRET_LENGTH = 32
+/**
+ * The minimum length a generated secret may have.
+ *
+ * Exported so the deploy phase's own guard cannot drift from the lint rule:
+ * they must agree on what "the secret is usable" means, or a deploy passes lint
+ * and fails the upload (or worse, the reverse).
+ */
+export const MIN_SECRET_LENGTH = 32
 
 function isSet(value: string | undefined): boolean {
   if (value === undefined || value.trim() === '') return false
@@ -92,6 +99,13 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
 /**
  * Compare delivery JWT against the server JWT. serverJwt may be undefined
  * when the server file itself is missing.
+ *
+ * Scope note, because the wording matters: this compares the two *local* files
+ * only. The deployed delivery worker's secret is write-only — `wrangler secret`
+ * cannot read it back — so no local check can establish that the Worker is keyed
+ * to match the API. The rows say which files they compared for that reason; a
+ * bare "matches the API" reads as a verification of the deployment that this
+ * function never performed.
  */
 export function lintDeliveryMirror(
   serverJwt: string | undefined,
@@ -99,21 +113,30 @@ export function lintDeliveryMirror(
 ): CheckRow[] {
   if (!deliveryEnv) {
     return [
-      { ok: false, text: 'delivery/.dev.vars missing (JWT_SECRET must match the API)', key: 'JWT_SECRET' },
+      {
+        ok: false,
+        text: 'delivery/.dev.vars missing (its JWT_SECRET must match the API — local files only)',
+        key: 'JWT_SECRET',
+      },
     ]
   }
   const dJwt = deliveryEnv['JWT_SECRET']
-  if (!isSet(serverJwt) || !isSet(dJwt)) {
+  if (!isSet(serverJwt) || !isSet(dJwt) || serverJwt !== dJwt) {
     return [
-      { ok: false, text: 'delivery/.dev.vars JWT_SECRET does not match the API', key: 'JWT_SECRET' },
+      {
+        ok: false,
+        text: 'delivery/.dev.vars JWT_SECRET does not match the API (local files only)',
+        key: 'JWT_SECRET',
+      },
     ]
   }
-  if (serverJwt !== dJwt) {
-    return [
-      { ok: false, text: 'delivery/.dev.vars JWT_SECRET does not match the API', key: 'JWT_SECRET' },
-    ]
-  }
-  return [{ ok: true, text: 'delivery/.dev.vars JWT_SECRET matches the API', key: 'JWT_SECRET' }]
+  return [
+    {
+      ok: true,
+      text: 'delivery/.dev.vars JWT_SECRET matches the API (local files only)',
+      key: 'JWT_SECRET',
+    },
+  ]
 }
 
 /** Full report for both files given as parsed maps. */

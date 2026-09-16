@@ -27,10 +27,43 @@ export const WAE_MAX_DATA_POINTS_PER_INVOCATION = 250
 
 /**
  * Viewer identity for uniq counts: prefer authenticated userId (blob8),
- * otherwise fall back to sessionId (blob3). Matches pre-migration ClickHouse:
- * uniq(ifNull(user_id, toString(session_id))).
+ * otherwise fall back to sessionId (blob3). Both branches are Strings, which is
+ * what the pre-migration ClickHouse `uniq(ifNull(...))` became once NULL left
+ * the picture (see the dialect note below).
  */
 export const VIEWER_IDENTITY_SQL = `if(blob8 = '', blob3, blob8)`
+
+/**
+ * Cloudflare Analytics Engine SQL is a *restricted* ClickHouse dialect, and the
+ * restrictions are not the ones ClickHouse habits predict:
+ *
+ * - `IF()` requires its 2nd and 3rd arguments to have the same type. Both
+ *   `if(cond, blob3, NULL)` (String vs Null) and `if(cond, 0, 1.5)` (Integer vs
+ *   Double) are rejected with a 422 before the query runs. There is no implicit
+ *   promotion, and a float literal such as `0.0` is how a Double is written.
+ * - `NULL` cannot be combined with `OR` either
+ *   (`cannot combine the Boolean and Null types with the OR operator`).
+ * - `toFloat64`, `nullIf`, `coalesce`, `ifNull`, `uniq` and `uniqCombined` do
+ *   not exist (`unknown function call`). `count(DISTINCT ...)` does.
+ *
+ * So a "no value" branch has to be a *typed* placeholder, which is what this
+ * sentinel is for. `count(DISTINCT ...)` counts the sentinel as one value, so it
+ * must not be a sessionId a player could send; `__cm_none__` is not a UUID and
+ * the player only ever sends the opaque id it generated itself.
+ */
+export const NO_SESSION_SENTINEL = '__cm_none__'
+
+/**
+ * `blob3`, or a non-colliding sentinel when `condition` is false — never NULL,
+ * because Analytics Engine rejects `if(cond, blob3, NULL)` outright.
+ *
+ * Used inside `count(DISTINCT ...)` to count sessions matching a predicate:
+ * distinct sessionIds are unaffected by the sentinel, which contributes at most
+ * one bogus value when no session matches.
+ */
+export function sessionIdOrNone(condition: string): string {
+  return `if(${condition}, blob3, '${NO_SESSION_SENTINEL}')`
+}
 
 export function escapeSqlString(value: string): string {
   return value.replace(/'/g, "''")
@@ -72,11 +105,40 @@ export async function queryAnalyticsEngine<T = Record<string, unknown>>(
   if (!response.ok) {
     const errorText = await response.text()
     console.error('Analytics Engine SQL error:', response.status, errorText)
-    throw new Error(`Analytics Engine query failed: ${response.status}`)
+    throw new AnalyticsEngineQueryError(response.status, errorText)
   }
 
   const result = (await response.json()) as { data: T[] }
   return result.data ?? []
+}
+
+/**
+ * An Analytics Engine SQL failure that keeps the reason.
+ *
+ * The response body ("Input was invalid: the 2nd and 3rd arguments to IF() ...")
+ * is the only thing that says *why* a query was rejected, and it used to reach
+ * the server console alone — a dashboard consumer saw a bare 500 and had to go
+ * find the operator. The reason is a parse error about our own SQL: no
+ * credential, tenant data or user input is in it.
+ */
+export class AnalyticsEngineQueryError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+  ) {
+    super(`Analytics Engine query failed: ${status}`)
+    this.name = 'AnalyticsEngineQueryError'
+  }
+}
+
+/**
+ * The upstream reason for a caught Analytics Engine failure, for a route's
+ * response body — or undefined for anything else that reached the catch.
+ */
+export function analyticsErrorDetail(error: unknown): { detail: string } | undefined {
+  return error instanceof AnalyticsEngineQueryError && error.detail
+    ? { detail: error.detail.slice(0, 300) }
+    : undefined
 }
 
 export function parseDays(param: string | undefined, fallback = 30): number {

@@ -14,7 +14,9 @@
  * Session-authenticated: these routes use the dashboard cookie, not an API key.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
+import { API_BASE_URL } from "@/lib/api-base";
+
+const API_BASE = API_BASE_URL;
 
 export type AgentHealth = {
   id: string;

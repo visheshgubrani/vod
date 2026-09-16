@@ -3,6 +3,7 @@ import {
   test,
   type BrowserContext,
   type Page,
+  type Request,
 } from "@playwright/test";
 import { existsSync } from "node:fs";
 
@@ -215,5 +216,76 @@ test.describe("video detail", () => {
     const copy = page.getByRole("button", { name: /^Copy / }).first();
     const box = await copy.boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44);
+  });
+});
+
+/**
+ * The two organization-scoped settings pages.
+ *
+ * They are asserted through the *requests*, not the markup, because their
+ * failure mode is invisible in the DOM: a base URL missing its `/api` prefix
+ * asks the origin for `/keys` and `/webhooks`, those 404 without CORS headers,
+ * and the page renders exactly the same error banner it would for any other
+ * failed fetch. Watching the request path is what tells the two apart.
+ */
+test.describe("settings pages", () => {
+  const SETTINGS_PATHS = new Set([
+    "/keys",
+    "/api/keys",
+    "/webhooks",
+    "/api/webhooks",
+  ]);
+
+  /**
+   * Open a settings page and return the settings request paths it made, or
+   * null when the captured session is unusable (the caller skips, matching the
+   * rest of this suite).
+   */
+  const openSettingsPage = async (
+    path: string,
+    heading: string,
+  ): Promise<string[] | null> => {
+    const requested: string[] = [];
+    const record = (request: Request) => {
+      const url = new URL(request.url());
+      if (request.method() === "GET" && SETTINGS_PATHS.has(url.pathname)) {
+        requested.push(url.pathname);
+      }
+    };
+    page.on("request", record);
+
+    await page.goto(path);
+    try {
+      await expect(
+        page.getByRole("heading", { level: 1, name: heading }),
+      ).toBeVisible({ timeout: 30_000 });
+      return requested;
+    } catch {
+      test.skip(
+        true,
+        "The captured session is expired or rate-limited — recapture it (see e2e/README.md).",
+      );
+      return null;
+    } finally {
+      page.off("request", record);
+    }
+  };
+
+  test("API keys fetches /api/keys, not the origin's /keys", async () => {
+    const requested = await openSettingsPage("/dashboard/api-keys", "API keys");
+    if (!requested) return;
+
+    expect(requested).toContain("/api/keys");
+    expect(requested).not.toContain("/keys");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("webhooks fetches /api/webhooks, not the origin's /webhooks", async () => {
+    const requested = await openSettingsPage("/dashboard/webhooks", "Webhooks");
+    if (!requested) return;
+
+    expect(requested).toContain("/api/webhooks");
+    expect(requested).not.toContain("/webhooks");
+    await expect(page.getByRole("alert")).toHaveCount(0);
   });
 });

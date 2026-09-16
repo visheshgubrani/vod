@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { apiOrigin } from "@/lib/api-base";
+import { API_BASE_URL, apiOrigin } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -30,9 +30,7 @@ const CHECK_LABELS: Record<keyof HealthConfig["checks"], string> = {
   delivery: "Delivery worker URL (advisory)",
 };
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
-const HEALTH_CONFIG_URL = `${apiOrigin(API_BASE)}/health/config`;
+const HEALTH_CONFIG_URL = `${apiOrigin(API_BASE_URL)}/health/config`;
 
 /** Inline command/env token inside body copy. */
 function Code({ children }: { children: React.ReactNode }) {

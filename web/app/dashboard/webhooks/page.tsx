@@ -27,8 +27,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import { API_BASE_URL } from "@/lib/api-base";
 
-const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787";
+const API_URL = API_BASE_URL;
 
 interface WebhookEndpoint {
   id: string;

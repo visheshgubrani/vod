@@ -55,16 +55,29 @@ function logPlaybackBindingDebug(
 }
 
 /**
- * Generate a signed JWT for video playback
+ * Generate a signed JWT for video playback.
+ *
+ * Exported for testing: whether this token can be verified by the delivery
+ * worker is the entire point of minting it, and that property is invisible from
+ * the route — a token signed with the wrong key is still well-formed, and the
+ * only symptom is a 401 far away, in another service.
  */
-async function generatePlaybackToken(
+export async function generatePlaybackToken(
   videoId: string,
   organizationId: string,
   expiresIn: string = TOKEN_EXPIRATION,
   bindingClaims: PlaybackBindingClaims,
   restrictions: PlaybackRestrictionsClaims = DEFAULT_RESTRICTIONS,
-  /** See the note in routes/api.ts: the caller resolves the signing key. */
-  jwtSecret: string = '',
+  /**
+   * See the note in routes/api.ts: the caller resolves the signing key.
+   *
+   * Deliberately has no default. It used to default to `''`, and the call site
+   * below was written against that default — so every signed video served
+   * through `GET /api/video/:id` was signed with an empty key and rejected 401
+   * by the delivery worker, which holds the real one. A missing key must be a
+   * compile error, never a silently self-consistent empty-string signature.
+   */
+  jwtSecret: string,
 ): Promise<string> {
   const secret = new TextEncoder().encode(jwtSecret)
   const claims = {
@@ -161,6 +174,9 @@ app.get('/:id', async (c) => {
       TOKEN_EXPIRATION,
       bindingClaims,
       restrictions,
+      // Resolved from the runtime config, exactly as the sibling `/token` route
+      // does — this argument is what the delivery worker verifies against.
+      requirePlaybackJwtSecret(c.var.runtime.config),
     )
     playbackUrl = `${playbackUrl}?token=${token}`
   }

@@ -20,7 +20,7 @@ already running on ports 3000 and 3004.
 |---|---|---|---|
 | `marketing` | `specs/marketing.spec.ts` | nothing | Hero copy and CTAs, the tour link moving focus, the missing-clip and refused-autoplay fallbacks, tab semantics and copy feedback, anchor offsets under the sticky header, FAQ and no-JavaScript content, reduced motion, no horizontal overflow at 360–1440px |
 | `web` | `specs/web-smoke.spec.ts` | nothing | The public surfaces render without overflow, login fields are labelled and every control clears 44px, `/dashboard` still guards unauthenticated visitors, and the **retired palette appears nowhere in the built CSS** |
-| `dashboard` | `specs/dashboard.spec.ts` | `E2E_STORAGE_STATE` | Thumbnail and row sizing, the row-actions menu, the delete confirmation (including Escape), search, the upload dialog, the 248px rail and 32px padding, the mobile drawer's focus behaviour, and playback-first video detail |
+| `dashboard` | `specs/dashboard.spec.ts` | `E2E_STORAGE_STATE` | Thumbnail and row sizing, the row-actions menu, the delete confirmation (including Escape), search, the upload dialog, the 248px rail and 32px padding, the mobile drawer's focus behaviour, playback-first video detail, and that the API keys / webhooks pages fetch from the `/api` base rather than the origin |
 
 `marketing` runs against the placeholder-free checkout on purpose: `public/media`
 is supplied separately, so the *missing asset* path is the default state and has

@@ -2,12 +2,10 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertCircle, CheckCircle2, HelpCircle, XCircle } from "lucide-react";
-import { apiOrigin } from "@/lib/api-base";
+import { API_BASE_URL, apiOrigin } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
-const ORIGIN = apiOrigin(API_BASE);
+const ORIGIN = apiOrigin(API_BASE_URL);
 const CONFIG_URL = `${ORIGIN}/health/config`;
 const HEALTH_URL = `${ORIGIN}/health`;
 const POLL_INTERVAL_MS = 30_000;

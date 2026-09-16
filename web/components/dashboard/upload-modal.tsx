@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { API_BASE_URL, apiOrigin } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 
 interface UploadModalProps {
@@ -32,16 +33,13 @@ interface UploadModalProps {
   onUploadComplete?: (fileId: string, key: string) => void;
 }
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
-
 /**
  * The public API lives at the **origin root** (`/v1/upload/...`), while
  * `NEXT_PUBLIC_API_BASE_URL` points at the dashboard's own `/api` prefix. The
  * uploader SDK takes the origin, so the suffix is stripped here rather than
  * asking the deployment for a second URL that could drift from this one.
  */
-const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, "");
+const API_ORIGIN = apiOrigin(API_BASE_URL);
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
 

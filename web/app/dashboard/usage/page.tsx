@@ -33,9 +33,9 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
+import { API_BASE_URL } from "@/lib/api-base";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
+const API_URL = API_BASE_URL;
 const VIDEOS_PER_PAGE = 10;
 const BANDWIDTH_PERIOD_DAYS = 30;
 

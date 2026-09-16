@@ -113,6 +113,13 @@ they are what the wizard and Compose actually read. The full environment
 reference, including which variables are fatal on which runtime, is
 [docs-site/content/docs/configuration.mdx](docs-site/content/docs/configuration.mdx).
 
+One capability behaves differently enough to say here: `CLOUDFLARE_ANALYTICS_TOKEN`
+is **read** access. Playback telemetry is **written** through the Analytics Engine
+binding, which exists on Cloudflare Workers only, so a Node API (`pnpm dev`, or
+the Compose deployment) reads analytics and records none — the dashboard says so
+rather than showing a zero. See
+[docs/deployment-shapes.md](docs/deployment-shapes.md#analytics-has-two-independent-halves).
+
 ---
 
 ## Setup

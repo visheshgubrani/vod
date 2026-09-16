@@ -42,10 +42,11 @@ import {
   DashboardSectionSkeleton,
   DashboardVideoDetailSkeleton,
 } from "@/components/dashboard/page-skeletons";
+import { PlaybackAnalyticsNotice } from "@/components/dashboard/playback-analytics-notice";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { API_BASE_URL } from "@/lib/api-base";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8787/api";
+const API_URL = API_BASE_URL;
 
 interface VideoDetailPageProps {
   params: Promise<{
@@ -804,6 +805,7 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
           </TabsList>
 
           <TabsContent value="analytics">
+            <PlaybackAnalyticsNotice className="mb-8" />
             {analyticsLoading ? (
               <div className="space-y-4">
                 <DashboardSectionSkeleton className="h-36" />

@@ -74,6 +74,31 @@ describe('lintDeliveryMirror', () => {
   it('rejects a missing delivery file', () => {
     expect(lintDeliveryMirror('j'.repeat(40), undefined)[0]?.ok).toBe(false)
   })
+
+  /**
+   * The row renders directly beneath the deploy report, where "matches the API"
+   * reads as "the deployed Worker is keyed correctly". It cannot mean that: a
+   * Cloudflare secret is write-only, so this only ever compares the two local
+   * files. Over-claiming here is what hides a worker that was never keyed.
+   */
+  it('does not claim to have verified anything but the local files', () => {
+    const jwt = 'j'.repeat(40)
+    const rows = [
+      ...lintDeliveryMirror(jwt, { JWT_SECRET: jwt }),
+      ...lintDeliveryMirror(jwt, { JWT_SECRET: 'k'.repeat(40) }),
+      ...lintDeliveryMirror(jwt, undefined),
+    ]
+
+    for (const row of rows) {
+      const rendered = renderCheckRows([row])[0] ?? ''
+      expect(rendered).toContain('local')
+      expect(rendered.toLowerCase()).not.toContain('verified')
+    }
+    // The pass/fail meaning is unchanged; only the claim is narrowed.
+    expect(renderCheckRows([rows[0]!])[0]).toContain('✓')
+    expect(renderCheckRows([rows[1]!])[0]).toContain('✗')
+    expect(renderCheckRows([rows[2]!])[0]).toContain('✗')
+  })
 })
 
 describe('lintEnvFiles + renderCheckRows', () => {

@@ -4,13 +4,27 @@ import { video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { db } from '../lib/database'
 import {
+  analyticsErrorDetail,
   escapeSqlString,
   getAnalyticsConfig,
   parseIntWithBounds,
   parseOptionalIntWithBounds,
   queryAnalyticsEngine,
-  VIEWER_IDENTITY_SQL,
 } from '../lib/analytics-engine'
+import {
+  contentScoreSql,
+  dailyViewsSql,
+  demographicsSql,
+  generalSql,
+  orgDemographicsSql,
+  orgGrowthSql,
+  orgHeroStatsSql,
+  retentionSql,
+  techHealthSeekSql,
+  techHealthSummarySql,
+  techHealthTopErrorsSql,
+  topVideosSql,
+} from '../lib/playbackAnalyticsSql'
 import { requireAuth } from '../middleware/auth'
 import type { Bindings } from '../types'
 
@@ -35,6 +49,20 @@ async function isVideoOwnedByOrganization(
     .limit(1)
 
   return rows.length > 0
+}
+
+/**
+ * The failure response for every endpoint below.
+ *
+ * Analytics Engine rejects a query at parse time with a 422 whose body is the
+ * only description of what is wrong with it ("the 2nd and 3rd arguments to IF()
+ * ..."). That text used to stay in the server console, so a dashboard consumer
+ * saw an unexplained 500; `analyticsErrorDetail` carries it to the caller as
+ * `detail`, which is the reason our own SQL was refused and contains no secret.
+ */
+function analyticsFailure(c: Context, error: unknown, message: string) {
+  console.error(`${message}:`, error)
+  return c.json({ error: message, ...analyticsErrorDetail(error) }, 500)
 }
 
 function requireActiveOrganizationId(c: Context): string | null {
@@ -102,11 +130,6 @@ function getConfigOrError(c: Context) {
   return { config, errorResponse: null }
 }
 
-function daysFilter(days: number | null): string {
-  if (days === null) return ''
-  return `AND timestamp > NOW() - INTERVAL '${days}' DAY`
-}
-
 // =============================================================================
 // 1. General Stats (Hero Cards)
 // =============================================================================
@@ -125,18 +148,7 @@ app.get('/general', async (c) => {
       total_watch_time: number
       error_events: number
       total_events: number
-    }>(
-      `SELECT
-        sum(if(blob1 = 'play', _sample_interval, 0)) as views,
-        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_views,
-        sum(_sample_interval * double1) as total_watch_time,
-        sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
-        sum(_sample_interval) as total_events
-      FROM playback_events
-      WHERE blob2 = '${videoId}'`,
-      config.accountId,
-      config.apiToken,
-    )
+    }>(generalSql(videoId), config.accountId, config.apiToken)
 
     const row = rows[0] || {
       views: 0,
@@ -160,8 +172,7 @@ app.get('/general', async (c) => {
       errorRate: totalEvents > 0 ? errorEvents / totalEvents : 0,
     })
   } catch (error) {
-    console.error('General stats error:', error)
-    return c.json({ error: 'Failed to fetch general stats' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch general stats')
   }
 })
 
@@ -180,19 +191,7 @@ app.get('/retention', async (c) => {
     const rows = await queryAnalyticsEngine<{
       bucket: number
       viewers: number
-    }>(
-      `SELECT
-        floor(double2 / 5) * 5 as bucket,
-        count(DISTINCT blob3) as viewers
-      FROM playback_events
-      WHERE blob2 = '${videoId}'
-        AND double1 > 0
-      GROUP BY bucket
-      ORDER BY bucket ASC
-      LIMIT 200`,
-      config.accountId,
-      config.apiToken,
-    )
+    }>(retentionSql(videoId), config.accountId, config.apiToken)
 
     return c.json(
       rows.map((r) => ({
@@ -201,8 +200,7 @@ app.get('/retention', async (c) => {
       })),
     )
   } catch (error) {
-    console.error('Retention graph error:', error)
-    return c.json({ error: 'Failed to fetch retention data' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch retention data')
   }
 })
 
@@ -222,19 +220,7 @@ app.get('/daily-views', async (c) => {
       date: string
       views: number
       total_watch_time: number
-    }>(
-      `SELECT
-        toStartOfDay(timestamp) as date,
-        sum(if(blob1 = 'play', _sample_interval, 0)) as views,
-        sum(_sample_interval * double1) as total_watch_time
-      FROM playback_events
-      WHERE blob2 = '${videoId}'
-        AND timestamp > NOW() - INTERVAL '30' DAY
-      GROUP BY date
-      ORDER BY date ASC`,
-      config.accountId,
-      config.apiToken,
-    )
+    }>(dailyViewsSql(videoId), config.accountId, config.apiToken)
 
     return c.json(
       rows.map((r) => ({
@@ -244,8 +230,7 @@ app.get('/daily-views', async (c) => {
       })),
     )
   } catch (error) {
-    console.error('Daily views error:', error)
-    return c.json({ error: 'Failed to fetch daily views' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch daily views')
   }
 })
 
@@ -261,28 +246,15 @@ app.get('/demographics', async (c) => {
 
   try {
     const videoId = escapeSqlString(validated.videoId)
+    const { countries: countriesSql, devices: devicesSql } = demographicsSql(videoId)
     const [countries, devices] = await Promise.all([
       queryAnalyticsEngine<{ country: string; viewers: number }>(
-        `SELECT
-          blob4 as country,
-          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers
-        FROM playback_events
-        WHERE blob2 = '${videoId}'
-        GROUP BY country
-        ORDER BY viewers DESC
-        LIMIT 5`,
+        countriesSql,
         config.accountId,
         config.apiToken,
       ),
       queryAnalyticsEngine<{ device: string; viewers: number }>(
-        `SELECT
-          blob5 as device,
-          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers
-        FROM playback_events
-        WHERE blob2 = '${videoId}'
-        GROUP BY device
-        ORDER BY viewers DESC
-        LIMIT 5`,
+        devicesSql,
         config.accountId,
         config.apiToken,
       ),
@@ -299,8 +271,7 @@ app.get('/demographics', async (c) => {
       })),
     })
   } catch (error) {
-    console.error('Demographics error:', error)
-    return c.json({ error: 'Failed to fetch demographics' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch demographics')
   }
 })
 
@@ -329,17 +300,7 @@ app.get('/video/content-score', async (c) => {
       unique_viewers: number
       total_watch_seconds: number
       avg_watch_seconds: number
-    }>(
-      `SELECT
-        count(DISTINCT blob3) as total_sessions,
-        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
-        sum(_sample_interval * double1) as total_watch_seconds,
-        if(count(DISTINCT blob3) = 0, 0, sum(_sample_interval * double1) / count(DISTINCT blob3)) as avg_watch_seconds
-      FROM playback_events
-      WHERE blob2 = '${videoId}'`,
-      config.accountId,
-      config.apiToken,
-    )
+    }>(contentScoreSql(videoId), config.accountId, config.apiToken)
 
     const score = rows[0] || {
       total_sessions: 0,
@@ -361,8 +322,7 @@ app.get('/video/content-score', async (c) => {
       durationSeconds,
     })
   } catch (error) {
-    console.error('Video content score error:', error)
-    return c.json({ error: 'Failed to fetch video content score' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch video content score')
   }
 })
 
@@ -400,41 +360,14 @@ app.get('/video/tech-health', async (c) => {
         total_events: number
         error_events: number
         sessions_with_errors: number
-      }>(
-        `SELECT
-          count(DISTINCT blob3) as total_sessions,
-          sum(_sample_interval) as total_events,
-          sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
-          count(DISTINCT if(blob1 = 'error' OR blob7 != '', blob3, NULL)) as sessions_with_errors
-        FROM playback_events
-        WHERE blob2 = '${videoId}'`,
-        config.accountId,
-        config.apiToken,
-      ),
+      }>(techHealthSummarySql(videoId), config.accountId, config.apiToken),
       queryAnalyticsEngine<{
         seek_events: number
         sessions_with_seek: number
         raw_total_sessions: number
-      }>(
-        `SELECT
-          sum(if(blob1 = 'seeking', _sample_interval, 0)) as seek_events,
-          count(DISTINCT if(blob1 = 'seeking', blob3, NULL)) as sessions_with_seek,
-          count(DISTINCT blob3) as raw_total_sessions
-        FROM playback_events
-        WHERE blob2 = '${videoId}'`,
-        config.accountId,
-        config.apiToken,
-      ),
+      }>(techHealthSeekSql(videoId), config.accountId, config.apiToken),
       queryAnalyticsEngine<{ error_code: string; count: number }>(
-        `SELECT
-          if(blob7 = '', 'unknown', blob7) as error_code,
-          sum(_sample_interval) as count
-        FROM playback_events
-        WHERE blob2 = '${videoId}'
-          AND (blob1 = 'error' OR blob7 != '')
-        GROUP BY error_code
-        ORDER BY count DESC
-        LIMIT 5`,
+        techHealthTopErrorsSql(videoId),
         config.accountId,
         config.apiToken,
       ),
@@ -483,8 +416,7 @@ app.get('/video/tech-health', async (c) => {
       })),
     })
   } catch (error) {
-    console.error('Video tech health error:', error)
-    return c.json({ error: 'Failed to fetch video tech health' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch video tech health')
   }
 })
 
@@ -510,19 +442,7 @@ app.get('/organization/hero-stats', async (c) => {
       unique_viewers: number
       error_events: number
       total_events: number
-    }>(
-      `SELECT
-        sum(if(blob1 = 'play', _sample_interval, 0)) as total_views,
-        sum(_sample_interval * double1) as total_watch_seconds,
-        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
-        sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
-        sum(_sample_interval) as total_events
-      FROM playback_events
-      WHERE index1 = '${orgId}'
-      ${daysFilter(days)}`,
-      config.accountId,
-      config.apiToken,
-    )
+    }>(orgHeroStatsSql(orgId, days), config.accountId, config.apiToken)
 
     const row = rows[0] || {
       total_views: 0,
@@ -547,8 +467,7 @@ app.get('/organization/hero-stats', async (c) => {
       errorRatePercent: errorRate * 100,
     })
   } catch (error) {
-    console.error('Organization hero stats error:', error)
-    return c.json({ error: 'Failed to fetch organization hero stats' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch organization hero stats')
   }
 })
 
@@ -573,20 +492,7 @@ app.get('/organization/growth', async (c) => {
       views: number
       unique_viewers: number
       watch_seconds: number
-    }>(
-      `SELECT
-        toStartOfDay(timestamp) as date,
-        sum(if(blob1 = 'play', _sample_interval, 0)) as views,
-        count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
-        sum(_sample_interval * double1) as watch_seconds
-      FROM playback_events
-      WHERE index1 = '${orgId}'
-        AND timestamp > NOW() - INTERVAL '${days}' DAY
-      GROUP BY date
-      ORDER BY date ASC`,
-      config.accountId,
-      config.apiToken,
-    )
+    }>(orgGrowthSql(orgId, days), config.accountId, config.apiToken)
 
     return c.json({
       days,
@@ -602,8 +508,7 @@ app.get('/organization/growth', async (c) => {
       }),
     })
   } catch (error) {
-    console.error('Organization growth error:', error)
-    return c.json({ error: 'Failed to fetch organization growth data' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch organization growth data')
   }
 })
 
@@ -623,42 +528,18 @@ app.get('/organization/demographics', async (c) => {
 
   try {
     const orgId = escapeSqlString(organizationId)
+    const { countries: countriesSql, devices: devicesSql } = orgDemographicsSql(orgId, days)
     const [countries, devices] = await Promise.all([
       queryAnalyticsEngine<{
         country: string
         viewers: number
         sessions: number
-      }>(
-        `SELECT
-          if(blob4 = '', 'Unknown', blob4) as country,
-          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers,
-          count(DISTINCT blob3) as sessions
-        FROM playback_events
-        WHERE index1 = '${orgId}'
-          AND timestamp > NOW() - INTERVAL '${days}' DAY
-        GROUP BY country
-        ORDER BY viewers DESC
-        LIMIT 8`,
-        config.accountId,
-        config.apiToken,
-      ),
+      }>(countriesSql, config.accountId, config.apiToken),
       queryAnalyticsEngine<{
         device_type: string
         viewers: number
         sessions: number
-      }>(
-        `SELECT
-          blob5 as device_type,
-          count(DISTINCT ${VIEWER_IDENTITY_SQL}) as viewers,
-          count(DISTINCT blob3) as sessions
-        FROM playback_events
-        WHERE index1 = '${orgId}'
-          AND timestamp > NOW() - INTERVAL '${days}' DAY
-        GROUP BY device_type
-        ORDER BY viewers DESC`,
-        config.accountId,
-        config.apiToken,
-      ),
+      }>(devicesSql, config.accountId, config.apiToken),
     ])
 
     return c.json({
@@ -675,8 +556,7 @@ app.get('/organization/demographics', async (c) => {
       })),
     })
   } catch (error) {
-    console.error('Organization demographics error:', error)
-    return c.json({ error: 'Failed to fetch organization demographics' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch organization demographics')
   }
 })
 
@@ -698,23 +578,7 @@ async function getTopVideosLeaderboard(
     total_watch_seconds: number
     error_events: number
     total_events: number
-  }>(
-    `SELECT
-      blob2 as video_id,
-      sum(if(blob1 = 'play', _sample_interval, 0)) as views,
-      count(DISTINCT ${VIEWER_IDENTITY_SQL}) as unique_viewers,
-      sum(_sample_interval * double1) as total_watch_seconds,
-      sum(if(blob1 = 'error', _sample_interval, 0)) as error_events,
-      sum(_sample_interval) as total_events
-    FROM playback_events
-    WHERE index1 = '${orgId}'
-    ${daysFilter(days)}
-    GROUP BY video_id
-    ORDER BY views DESC
-    LIMIT ${limit}`,
-    accountId,
-    apiToken,
-  )
+  }>(topVideosSql(orgId, days, limit), accountId, apiToken)
 
   if (results.length === 0) return []
 
@@ -767,8 +631,7 @@ app.get('/organization/top-videos', async (c) => {
     )
     return c.json(leaderboard)
   } catch (error) {
-    console.error('Organization top videos error:', error)
-    return c.json({ error: 'Failed to fetch organization top videos' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch organization top videos')
   }
 })
 
@@ -794,8 +657,7 @@ app.get('/top-videos', async (c) => {
     )
     return c.json(leaderboard)
   } catch (error) {
-    console.error('Top videos error:', error)
-    return c.json({ error: 'Failed to fetch top videos' }, 500)
+    return analyticsFailure(c, error, 'Failed to fetch top videos')
   }
 })
 

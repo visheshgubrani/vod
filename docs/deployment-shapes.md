@@ -59,7 +59,7 @@ instead of turning into a boot crash loop.
 | `SELF_HOSTED_ENABLED` | `false` stops new self-hosted submissions while accepted jobs drain; it never moves a local file to Modal. |
 | `UPLOADS_ENABLED` | `false` makes upload routes return 403, which is what lets a local-only install be valid without a raw bucket. |
 | `QSTASH_TOKEN` | Set selects QStash dispatch; unset selects direct HTTP. |
-| `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` | Enable the Analytics Engine SQL reader used by the usage dashboard. |
+| `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` | Enable the Analytics Engine SQL reader used by the usage dashboard. The reader is an ordinary HTTPS call, so it works on both runtimes. |
 | `DELIVERY_URL` | The single delivery base URL everywhere — playback URLs and the transcode completion callback both read it. Without it, playback URLs are returned relative. |
 | `TRANSCODE_INGEST_SECRET` | Signs outbound dispatch and verifies inbound callbacks. It wins over the legacy alias `MODAL_WEBHOOK_SECRET` in **both** directions. |
 
@@ -126,6 +126,48 @@ where the runtime's capabilities, not our preferences, decide. This is why
 `pnpm dev` (Node) works with the local dev Postgres out of the box and
 `pnpm dev:workers` needs `DB_DRIVER=neon-http` with a Neon URL **by design**,
 not as a workaround.
+
+## Analytics has two independent halves
+
+Reading and writing playback telemetry are separate capabilities, and only one
+of them is runtime-independent:
+
+| Half | Needs | Where it works |
+| --- | --- | --- |
+| **Read** (`analyticsRead: 'cloudflare-sql'`) | `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN`, and the dataset to already exist | Both runtimes — it is an HTTPS call to the SQL API |
+| **Write** (`analyticsWrite: 'workers-analytics-engine'`) | The `PLAYBACK_ANALYTICS` binding (`server/wrangler.jsonc`) | Workers only |
+
+The consequence is worth stating plainly, because it looks like a bug: under
+`pnpm dev` the dashboard can read `playback_events` but nothing writes it —
+`POST /api/playback/journal` answers `501`, and the playback dashboards sit at
+zero no matter how much you watch. It is not the reports that are wrong; the
+dataset is empty. The dashboard says so: `analyticsWrite: 'none'` renders a
+notice on the analytics views rather than leaving a zero to be misread.
+
+Two things do *not* fix it, and both are easy to assume:
+
+- **`wrangler dev`, in any local mode.** Analytics Engine supports local
+  simulation but **not** remote binding connections, so a locally-run Worker
+  writes to a simulator and `playback_events` stays empty. Only
+  `wrangler dev --remote` (or a real deploy) writes to the dataset, and that
+  needs a reachable cloud database — the local dev Postgres is not one, and
+  `DB_DRIVER=pg` on Workers is a fatal boot error here by design.
+- **A Compose deployment.** It runs the API on Node, so a self-hosted Compose
+  install has no playback analytics at all — the wizard now says so during
+  deploy. Bandwidth analytics still work there, because the delivery worker is
+  always deployed and meters its own egress.
+
+The verification path is therefore one deployed API Worker
+(`cd server && pnpm exec wrangler deploy`, which carries the binding from
+`server/wrangler.jsonc`): `GET /health/config` must report
+`analyticsWrite: 'workers-analytics-engine'`, and the first
+`POST /api/playback/journal` creates the dataset on demand — datasets appear on
+first write, so an empty `playback_events` before a deploy is expected rather
+than evidence of a broken token.
+
+Bandwidth is independent of all this: the delivery worker is *always* a
+Cloudflare Worker and meters into `bandwidth_usage`, so `GET /api/usage/bandwidth`
+reports real numbers on both runtimes as soon as the delivery worker is deployed.
 
 ## Where to go next
 

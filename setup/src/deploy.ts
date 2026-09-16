@@ -28,6 +28,7 @@ import { pairingCommand } from './pairing'
 import { primaryConfigPath } from './envio'
 import { clipmuxCredsFromEnv, MODAL_CREDS_SECRET } from './modal'
 import { bucketCorsOrigins, createDeployPort, type DeployPort } from './deployPort'
+import { MIN_SECRET_LENGTH } from './verify'
 
 export interface DeployResult {
   apiUrl: string | null
@@ -104,6 +105,31 @@ export function deploySummaryLine(report: DeployReport): string {
   return (
     `Deployment incomplete — ${unfinished.length} step${unfinished.length === 1 ? '' : 's'} did not finish. ` +
     'The list below says what is left and how to finish it.'
+  )
+}
+
+/**
+ * What a wizard-selected shape cannot do, said once, at the moment it is chosen.
+ *
+ * Playback telemetry is written through the Analytics Engine *binding*, which
+ * exists on Cloudflare Workers only. A Node API (a Compose container, or
+ * `pnpm dev` locally) therefore reads analytics and records none, and the
+ * dashboard shows honest zeros for every view metric. Nothing about the install
+ * is broken — but nothing in the deploy output used to say so, which is how this
+ * arrived as a bug report.
+ *
+ * Deliberately an advisory and not a step: it is a capability of the chosen
+ * shape, not a step that failed. Bandwidth analytics keep working either way,
+ * because the delivery worker is always deployed and meters its own egress.
+ */
+export function playbackAnalyticsAdvisory(shape: 'compose' | 'local'): string {
+  const recovery =
+    shape === 'compose'
+      ? 'Deploy the API as a Worker instead (`cd server && pnpm exec wrangler deploy`) if you need playback telemetry.'
+      : '`pnpm dev:workers` runs the API on Workers — it needs a reachable cloud database (Neon + DB_DRIVER=neon-http), not the local dev Postgres.'
+  return (
+    'Playback analytics will not be recorded: writing them needs the Analytics Engine ' +
+    `PLAYBACK_ANALYTICS binding, and this API runs on Node. ${recovery}`
   )
 }
 
@@ -354,8 +380,18 @@ export async function runDeployPhase(
         dependsOn: ['delivery-worker'],
       },
       async () => {
-        const jwt = io.readConfig()?.['JWT_SECRET']
-        if (!jwt) throw new Error('JWT_SECRET is missing from the configuration')
+        const jwt = io.readConfig()?.['JWT_SECRET'] ?? ''
+        // Length and blankness are checked *here*, not only in lintServerEnv:
+        // `putWorkerSecrets` drops empty values and returns without an error, so
+        // without this guard the step would report "JWT_SECRET uploaded" for a
+        // worker that received no signing key — a deploy report asserting the
+        // exact opposite of the truth, and every signed video 401s.
+        if (jwt.trim().length < MIN_SECRET_LENGTH) {
+          throw new Error(
+            `JWT_SECRET is missing or shorter than ${MIN_SECRET_LENGTH} characters — ` +
+              'the delivery worker cannot verify playback tokens without it',
+          )
+        }
         await io.putWorkerSecrets('delivery', [['JWT_SECRET', jwt]])
         return 'JWT_SECRET uploaded'
       },
@@ -403,6 +439,7 @@ export async function runDeployPhase(
         apiConfigured = true
         return 'API http://localhost:8787 · dashboard http://localhost:3000'
       })
+      io.log.warn(playbackAnalyticsAdvisory('compose'))
     } else if (answers.runtime === 'workers') {
       await step(
         {
@@ -437,6 +474,7 @@ export async function runDeployPhase(
         { id: 'api', label: 'Deploy the API', dependsOn: [] },
         'dev target with the Node runtime — the API runs here via `pnpm dev`',
       )
+      io.log.warn(playbackAnalyticsAdvisory('local'))
       apiConfigured = true
     }
 

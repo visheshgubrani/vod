@@ -101,8 +101,24 @@ app.post('/journal', async (c) => {
     // The sink is a capability, not a binding lookup: Node has no Analytics
     // Engine binding at all, which is a fact about the runtime rather than a
     // per-request surprise.
+    //
+    // The 501 is deliberate and stays 501: the player's journal flush is
+    // fire-and-forget, so a status code is the only place a developer sees that
+    // telemetry was dropped. (It is also what surfaced this the first time — the
+    // dashboard's Network tab, not a log.) The message names the binding because
+    // "not configured" reads like a missing secret, and this is not that: no
+    // value of ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN can write a data point.
     if (!c.var.runtime.analytics.canWritePlayback) {
-      return c.json({ error: 'Playback analytics not configured' }, 501)
+      return c.json(
+        {
+          error: 'Playback analytics not configured',
+          message:
+            'This API has no Analytics Engine write sink: writing playback telemetry needs the ' +
+            'PLAYBACK_ANALYTICS binding, which exists on Cloudflare Workers only. The API is ' +
+            'running on a runtime (Node or a container) that cannot record it.',
+        },
+        501,
+      )
     }
 
     // Cap before scheduling so the response reflects what will actually be written

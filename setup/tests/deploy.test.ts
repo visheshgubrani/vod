@@ -63,15 +63,23 @@ interface Harness {
   port: DeployPort
   calls: string[]
   config: Record<string, string>
+  /** Every secret upload, as (package, entries) — the payload matters, not just the call. */
+  secrets: Array<{ pkg: 'server' | 'delivery'; entries: EntryList }>
+  /** Warn lines, because an advisory nobody sees is not an advisory. */
+  warnings: string[]
   failOn: (call: string, message?: string) => void
   modalAvailable: boolean
 }
 
 function harness(config: Record<string, string> = credsEnv()): Harness {
   const calls: string[] = []
+  const secrets: Harness['secrets'] = []
+  const warnings: string[] = []
   const failures = new Map<string, string>()
   const state: Harness = {
     calls,
+    secrets,
+    warnings,
     config: { ...config },
     modalAvailable: true,
     failOn: (call, message = `${call} failed`) => failures.set(call, message),
@@ -86,7 +94,12 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
   }
 
   state.port = {
-    log: { step: () => {}, success: () => {}, warn: () => {}, info: () => {} },
+    log: {
+      step: () => {},
+      success: () => {},
+      warn: (message) => void warnings.push(message),
+      info: () => {},
+    },
     confirm: async () => true,
     askPassword: async () => '',
     ensureCfLogin: async () => run('ensureCfLogin', 'a1b2c3d4e5f60718293a4b5c6d7e8f90'),
@@ -112,7 +125,10 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
           ? 'https://clipmux-delivery.acme.workers.dev'
           : 'https://clipmux-api.acme.workers.dev',
       ),
-    putWorkerSecrets: async (pkg) => void run(`putWorkerSecrets:${pkg}`, undefined),
+    putWorkerSecrets: async (pkg, entries) => {
+      secrets.push({ pkg, entries })
+      run(`putWorkerSecrets:${pkg}`, undefined)
+    },
     dbMigrate: async () => void run('dbMigrate', undefined),
     composeMigrate: async () => void run('composeMigrate', undefined),
     composeUp: async () => void run('composeUp', undefined),
@@ -174,6 +190,43 @@ describe('runDeployPhase — Modal + Workers (dev target)', () => {
     expect(h.config['MODAL_WEBHOOK_URL']).toContain('modal.run')
     expect(h.config['DELIVERY_URL']).toContain('workers.dev')
   })
+})
+
+describe('runDeployPhase — the delivery JWT secret must actually be uploaded', () => {
+  it('sends the configured secret to the delivery worker', async () => {
+    const h = harness()
+    const report = await runDeployPhase('/repo', answers(), h.port)
+
+    const upload = h.secrets.find((entry) => entry.pkg === 'delivery')
+    expect(upload?.entries).toEqual([['JWT_SECRET', SECRET]])
+    expect(report.steps.find((step) => step.id === 'delivery-secret')?.status).toBe('ok')
+  })
+
+  // `putWorkerSecrets` drops empty values and returns early *without an error*,
+  // so the step used to unwrap it and report "JWT_SECRET uploaded" for a worker
+  // that received no signing key at all — a deploy report asserting the exact
+  // opposite of the truth, and every signed video 401s.
+  for (const [label, value] of [
+    ['missing', undefined],
+    ['blank', ''],
+    ['whitespace-only', '   '],
+    ['shorter than 32 characters', 'tooshort'],
+  ] as const) {
+    it(`fails the step when JWT_SECRET is ${label}`, async () => {
+      const env = credsEnv()
+      if (value === undefined) delete env['JWT_SECRET']
+      else env['JWT_SECRET'] = value
+      const h = harness(env)
+
+      const report = await runDeployPhase('/repo', answers(), h.port)
+
+      expect(report.steps.find((step) => step.id === 'delivery-secret')?.status).toBe('failed')
+      expect(report.complete).toBe(false)
+      // Nothing was uploaded for delivery, so nothing may claim it was.
+      expect(h.secrets.filter((entry) => entry.pkg === 'delivery')).toEqual([])
+      expect(h.calls).not.toContain('putWorkerSecrets:delivery')
+    })
+  }
 })
 
 describe('runDeployPhase — failures', () => {
@@ -279,6 +332,31 @@ describe('runDeployPhase — deploy target', () => {
     expect(report.result.apiUrl).toBe('http://localhost:8787')
     expect(report.complete).toBe(true)
   })
+
+  it('says playback analytics will not be recorded, and how to change that', async () => {
+    // A Compose deployment is complete and healthy and still cannot record
+    // playback telemetry: writing it needs the Analytics Engine binding, which
+    // only a Worker has. Nothing else in the deploy output distinguishes that
+    // from "analytics works", so the advisory is the deliverable.
+    const h = harness()
+    await runDeployPhase(
+      '/repo',
+      answers({
+        target: 'deploy',
+        runtime: 'node',
+        db: { kind: 'local' },
+        transcodeProvider: 'self-hosted',
+        uploadsEnabled: false,
+      }),
+      h.port,
+    )
+
+    const advisory = h.warnings.find((line) => line.includes('Playback analytics'))
+    expect(advisory).toBeDefined()
+    expect(advisory).toContain('PLAYBACK_ANALYTICS')
+    // It must point somewhere, not just report the gap.
+    expect(advisory).toContain('wrangler deploy')
+  })
 })
 
 describe('runDeployPhase — dev target with the Node runtime', () => {
@@ -296,6 +374,25 @@ describe('runDeployPhase — dev target with the Node runtime', () => {
     expect(report.steps.find((step) => step.id === 'api')?.status).toBe('skipped')
     expect(report.steps.find((step) => step.id === 'migrate')?.status).toBe('skipped')
     expect(report.complete).toBe(true)
+    // Same capability gap as Compose, different recovery: this API can become a
+    // Worker without giving up the local database story.
+    expect(
+      h.warnings.some(
+        (line) => line.includes('Playback analytics') && line.includes('dev:workers'),
+      ),
+    ).toBe(true)
+  })
+
+  it('stays quiet when the API is a Worker, because writes work there', async () => {
+    const h = harness()
+    await runDeployPhase(
+      '/repo',
+      answers({ runtime: 'workers', db: { kind: 'neon', url: 'postgresql://user:pass@ep-x.aws.neon.tech/vod' } }),
+      h.port,
+    )
+
+    expect(h.calls).toContain('deployWorker:server')
+    expect(h.warnings.some((line) => line.includes('Playback analytics'))).toBe(false)
   })
 })
 

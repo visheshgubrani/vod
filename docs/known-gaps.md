@@ -59,6 +59,29 @@ file is only useful if it is current.
   on its own, but a long serial run against a development API can drop the
   session part-way and skip the rest. This guard is pre-existing behaviour that
   the redesign left alone; retrying once before redirecting would fix it.
+- **The Analytics Engine SQL dialect is proven by a credential-gated suite, not
+  by CI.** `tests/lib/analyticsEngineSql.live.test.ts` sends every dashboard query
+  to the real SQL API and skips without `ACCOUNT_ID`/`CLOUDFLARE_ANALYTICS_TOKEN`;
+  CI provides neither. `tests/lib/playbackAnalyticsSql.test.ts` covers the
+  portable half — the `IF()` typing rules — so a restriction nobody has hit yet
+  (or a function the dialect lacks, e.g. `toFloat64`, `nullIf`, `coalesce`,
+  `uniq`) can still reach a deployed environment before anyone sees it. Run the
+  live suite by hand before changing these queries. It exists because of a real
+  regression: the read path was ported from ClickHouse, which accepts
+  `if(cond, blob3, NULL)`, and Analytics Engine refuses it with a 422.
+- **Nothing writes playback telemetry outside the Workers runtime, and that is a
+  permanent shape of the current design.** Writing needs the Analytics Engine
+  binding, so a Node API — `pnpm dev`, and every Compose self-hosted install —
+  records no playback events at all. This is now stated where it is felt: the
+  deploy wizard warns when it selects a Node API, `/health/config` reports
+  `analyticsWrite: 'none'`, and the dashboard renders a notice on the analytics
+  views instead of leaving a zero to be misread as "nobody watched". Two
+  alternatives were considered and are deliberately not implemented: a
+  purpose-built writer Worker plus a Node adapter that posts batches to it, and
+  metering playback from the delivery worker (which already has the binding and
+  the `org_id`/`video_id` claims) at the cost of losing player-level events
+  (seek/pause/error) and per-heartbeat watch time. See
+  `docs/deployment-shapes.md`.
 
 ## Marketing assets
 

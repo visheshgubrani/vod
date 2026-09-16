@@ -467,13 +467,16 @@ export function parseOriginList(value: string | undefined): string[] {
 
 /**
  * Fail-closed accessor for the playback JWT secret.
- * Throws when unset/short — callers must never sign with `"undefined"`.
+ * Throws when unset/blank — callers must never sign with `"undefined"`.
  *
  * Takes the *resolved* config, so it cannot disagree with the validation
  * `loadConfig` already performed, and cannot reach a second environment.
  */
 export function requirePlaybackJwtSecret(config: ClipMuxConfig): string {
-  if (!config.jwtSecret) {
+  // `trim()` is load-bearing: a whitespace-only value is truthy, and signing
+  // with it produces a token that looks valid here and is rejected by the
+  // delivery worker, which holds the real key. Fail at mint time instead.
+  if (!config.jwtSecret || !config.jwtSecret.trim()) {
     throw new Error('JWT_SECRET is not configured (must be at least 32 characters)')
   }
   return config.jwtSecret
