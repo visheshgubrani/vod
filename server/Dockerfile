@@ -22,7 +22,6 @@ COPY server ./server
 ENV NODE_ENV=production
 ENV PORT=4080
 ENV HOSTNAME=0.0.0.0
-ENV DB_DRIVER=pg
 
 WORKDIR /repo/server
 

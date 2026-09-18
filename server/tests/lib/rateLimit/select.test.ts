@@ -11,9 +11,7 @@ import {
 /**
  * Rate-limit store selection.
  *
- * Precedence is a deployment decision (`REDIS_URL` → Upstash REST → in-memory),
- * and the Workers runtime must never be handed a TCP store: the failure mode is
- * the worst kind — limits that appear to work and are silently per-isolate.
+ * Precedence is a deployment decision (`REDIS_URL` → Upstash REST → in-memory).
  */
 
 describe('resolveRateLimitConfig', () => {
@@ -23,45 +21,21 @@ describe('resolveRateLimitConfig', () => {
       UPSTASH_REDIS_REST_TOKEN: 'token',
     }
 
-    expect(resolveRateLimitConfig({ ...upstash }, 'node').store).toBe('upstash')
+    expect(resolveRateLimitConfig({ ...upstash }).store).toBe('upstash')
     expect(
-      resolveRateLimitConfig({ ...upstash, REDIS_URL: 'redis://localhost:6379' }, 'node').store,
+      resolveRateLimitConfig({ ...upstash, REDIS_URL: 'redis://localhost:6379' }).store,
     ).toBe('redis')
-    expect(resolveRateLimitConfig({}, 'node').store).toBe('memory')
-  })
-
-  it('refuses a TCP Redis on Workers and says what to use instead', () => {
-    const config = resolveRateLimitConfig({ REDIS_URL: 'redis://localhost:6379' }, 'workers')
-
-    expect(config.store).toBe('memory')
-    expect(config.problems.join('\n')).toMatch(/UPSTASH_REDIS_REST_URL/)
-  })
-
-  it('falls back to Upstash on Workers when both are configured', () => {
-    const config = resolveRateLimitConfig(
-      {
-        REDIS_URL: 'redis://localhost:6379',
-        UPSTASH_REDIS_REST_URL: 'https://x.upstash.io',
-        UPSTASH_REDIS_REST_TOKEN: 'token',
-      },
-      'workers',
-    )
-
-    expect(config.store).toBe('upstash')
-    expect(config.problems).toHaveLength(1)
+    expect(resolveRateLimitConfig({}).store).toBe('memory')
   })
 
   it('ignores half-configured Upstash rather than building a client without a token', () => {
-    const config = resolveRateLimitConfig(
-      { UPSTASH_REDIS_REST_URL: 'https://x.upstash.io' },
-      'node',
-    )
+    const config = resolveRateLimitConfig({ UPSTASH_REDIS_REST_URL: 'https://x.upstash.io' })
     expect(config.store).toBe('memory')
     expect(config.upstash).toBeNull()
   })
 
   it('carries the documented defaults', () => {
-    const { policies, prefix } = resolveRateLimitConfig({}, 'node')
+    const { policies, prefix } = resolveRateLimitConfig({})
 
     expect(prefix).toBe('vod-app:ratelimit')
     expect(policies.auth).toMatchObject({ requests: 30, windowMs: 60_000 })
@@ -70,10 +44,10 @@ describe('resolveRateLimitConfig', () => {
   })
 
   it('lets an operator override a limit without disabling the others', () => {
-    const { policies } = resolveRateLimitConfig(
-      { RATE_LIMIT_API_MAX: '5', RATE_LIMIT_API_WINDOW: '30 s' },
-      'node',
-    )
+    const { policies } = resolveRateLimitConfig({
+      RATE_LIMIT_API_MAX: '5',
+      RATE_LIMIT_API_WINDOW: '30 s',
+    })
 
     expect(policies.api).toMatchObject({ requests: 5, windowMs: 30_000 })
     expect(policies.auth.requests).toBe(30)
@@ -102,7 +76,7 @@ describe('resolveRateLimitScope', () => {
 
 describe('createRateLimiterFactory', () => {
   it('caches one limiter per scope so its window survives across calls', async () => {
-    const factory = createRateLimiterFactory(resolveRateLimitConfig({}, 'node'))
+    const factory = createRateLimiterFactory(resolveRateLimitConfig({}))
     const first = factory('api')
     expect(factory('api')).toBe(first)
 

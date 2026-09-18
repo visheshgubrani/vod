@@ -72,14 +72,15 @@ export function escapeSqlString(value: string): string {
 /**
  * Credentials for the Analytics Engine SQL API, or null when unconfigured.
  *
- * Takes the resolved configuration: the read path is an ordinary HTTPS call that
- * works on both runtimes, so the only question is whether the token exists. It
- * used to be called both with and without a `c.env` argument from two routes,
- * which resolved the same credentials two different ways.
+ * Takes the resolved configuration: the read path is an ordinary HTTPS call, so
+ * the only question is whether the token exists.
  */
 export function getAnalyticsConfig(
-  config: Pick<ClipMuxConfig, 'accountId' | 'cloudflareAnalyticsToken'>,
+  config: Pick<ClipMuxConfig, 'accountId' | 'cloudflareAnalyticsToken'> & {
+    analyticsEnabled?: boolean
+  },
 ): { accountId: string; apiToken: string } | null {
+  if (config.analyticsEnabled === false) return null
   const accountId = config.accountId
   const apiToken = config.cloudflareAnalyticsToken
   if (!accountId || !apiToken) return null

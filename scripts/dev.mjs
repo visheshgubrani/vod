@@ -20,7 +20,6 @@
  *
  * Usage (via root package.json):
  *   node scripts/dev.mjs dev          # api (tsx watch :8787) + web (next :3000)
- *   node scripts/dev.mjs dev:workers  # api under wrangler + web
  *   node scripts/dev.mjs dev:all      # + delivery (:8788) + sdk/player watch
  *   node scripts/dev.mjs start        # production artifacts (api + web)
  *   node scripts/dev.mjs cleanup      # kill stale dev processes + stale lock
@@ -44,8 +43,6 @@ const NEXT_LOCK = path.join(REPO_ROOT, 'web', '.next', 'dev', 'lock')
 const SERVICES = {
   api: { label: 'server dev', args: ['--filter', 'vod-api', 'dev'] },
   web: { label: 'web dev', args: ['--filter', 'web', 'dev'] },
-  'api:workers': { label: 'server dev:workers', args: ['--filter', 'vod-api', 'dev:workers'] },
-  'web:workers': { label: 'web dev:workers', args: ['--filter', 'web', 'dev:workers'] },
   delivery: { label: 'delivery dev', args: ['--filter', 'delivery', 'dev'] },
   sdk: { label: 'sdk dev', args: ['--filter', '@clipmux/uploader', 'dev'] },
   player: { label: 'player dev', args: ['--filter', '@clipmux/player', 'dev'] },
@@ -55,7 +52,6 @@ const SERVICES = {
 
 const PRESETS = {
   dev: ['api', 'web'],
-  'dev:workers': ['api:workers', 'web:workers'],
   'dev:all': ['api', 'web', 'delivery', 'sdk', 'player'],
   start: ['api:start', 'web:start'],
 }
@@ -83,7 +79,6 @@ const WORKSPACE_PACKAGES = {
 /** The packages each preset must have built before its services start. */
 const PRESET_PACKAGES = {
   dev: ['sdk', 'player'],
-  'dev:workers': ['sdk', 'player'],
   'dev:all': ['sdk', 'player', 'server-sdk'],
   // `pnpm start` runs `next build`, which consumes the same two packages.
   start: ['sdk', 'player'],

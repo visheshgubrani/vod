@@ -69,11 +69,11 @@ describe('GET /health/config', () => {
     expect(body.ready).toBe(true)
     expect(body.problems).toEqual([])
     expect(body.deployment).toMatchObject({
-      dbTransport: 'neon-http',
+      dbTransport: 'postgres-js',
       rateLimitStore: 'memory',
       transcodeProvider: 'modal',
       modalDispatch: 'direct-http',
-      analyticsWrite: 'none',
+      analyticsWrite: 'delivery-worker',
       deliveryUrl: 'https://media.example.com',
     })
 
@@ -84,37 +84,27 @@ describe('GET /health/config', () => {
     expect(raw.includes('super_secret')).toBe(false)
   })
 
-  it('reports the Workers shape, including the analytics sink it has', async () => {
-    const app = withRuntime(
-      healthApp,
-      createTestRuntime(FULL_TEST_ENV, {
-        runtime: 'workers',
-        analytics: { canWritePlayback: true, writePlayback: () => 0 },
-      }),
-      '/health',
-    )
+  it('reports delivery-worker analytics write from local configuration', async () => {
+    const app = appFor(FULL_TEST_ENV)
 
     const res = await app.request('/health/config')
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
-      deployment: { runtime: string; analyticsWrite: string }
+      deployment: { runtime: string; analyticsWrite: string; analyticsEnabled: boolean }
     }
-    expect(body.deployment.runtime).toBe('workers')
-    expect(body.deployment.analyticsWrite).toBe('workers-analytics-engine')
+    expect(body.deployment.runtime).toBe('node')
+    expect(body.deployment.analyticsEnabled).toBe(true)
+    expect(body.deployment.analyticsWrite).toBe('delivery-worker')
   })
 
-  it('reports a fatal problem for a TCP Postgres on Workers', async () => {
-    const app = withRuntime(
-      healthApp,
-      createTestRuntime({ ...FULL_TEST_ENV, DB_DRIVER: 'pg' }, { runtime: 'workers' }),
-      '/health',
-    )
-
+  it('reports analytics write none when analytics is disabled', async () => {
+    const app = appFor({ ...FULL_TEST_ENV, ANALYTICS_ENABLED: 'false' })
     const res = await app.request('/health/config')
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { ready: boolean; problems: string[] }
-    expect(body.ready).toBe(false)
-    expect(body.problems.join('\n')).toMatch(/DB_DRIVER=pg cannot work on Cloudflare Workers/)
+    const body = (await res.json()) as {
+      deployment: { analyticsWrite: string; analyticsEnabled: boolean }
+    }
+    expect(body.deployment.analyticsEnabled).toBe(false)
+    expect(body.deployment.analyticsWrite).toBe('none')
   })
 
   it('serves the plain text health probe', async () => {

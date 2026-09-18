@@ -31,7 +31,10 @@ const requireInternalSecret = createMiddleware<{ Bindings: Bindings }>(async (c,
 internalApp.use('/sweep', requireInternalSecret)
 
 internalApp.post('/sweep', async (c) => {
-  const result = await runMaintenance(c.var.runtime.env)
+  const run = c.var.runtime.runMaintenancePass
+  const result = run
+    ? ((await run()) as Awaited<ReturnType<typeof runMaintenance>>)
+    : await runMaintenance(c.var.runtime.env)
   return c.json({
     ok: true,
     // `stats` keeps its original meaning (the transcode sweep) so existing

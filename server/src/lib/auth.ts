@@ -3,11 +3,11 @@
  *
  * Was a module-scope `betterAuth({...})` reading `process.env` with `|| ''`
  * fallbacks for the OAuth client ids and a hardcoded `http://localhost:8787`
- * baseURL. On Workers that instance was built at isolate start, so a credential
- * arriving only as a binding produced an auth instance with empty client ids and
- * a localhost base — a misconfiguration that fails into a broken login instead of
- * an error. Now the composition root passes the resolved config and the installed
- * database, and every input is visible at the call site.
+ * baseURL. That produced an auth instance with empty client ids and a localhost
+ * base whenever credentials arrived only through configuration — a
+ * misconfiguration that fails into a broken login instead of an error. Now the
+ * composition root passes the resolved config and the installed database, and
+ * every input is visible at the call site.
  */
 
 import { betterAuth } from 'better-auth'

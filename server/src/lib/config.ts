@@ -14,40 +14,25 @@
 
 export type EnvLike = Record<string, string | undefined>
 
-/**
- * Which of the two supported runtimes is executing.
- *
- * This is NOT an env var: it is determined by which composition root loaded
- * (`src/node/server.ts` under @hono/node-server, or `src/index.ts` under
- * Cloudflare Workers). It is passed in explicitly so that every runtime-dependent
- * decision is visible at the call site instead of being inferred from whichever
- * globals happen to exist.
- */
-export type RuntimeName = 'node' | 'workers'
+/** The API runtime. ClipMux v1 is Node-only. */
+export type RuntimeName = 'node'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
-/**
- * Postgres transport.
- * - `postgres-js` — TCP. Works on Node only: the Workers runtime forbids reusing
- *   a socket across requests, so the first query succeeds and the rest fail with
- *   "Cannot perform I/O on behalf of a different request".
- * - `neon-http` — one HTTPS request per query. The only transport Workers can use.
- */
-export type DbTransport = 'postgres-js' | 'neon-http'
+/** Postgres transport. ClipMux v1 always uses postgres-js over DATABASE_URL. */
+export type DbTransport = 'postgres-js'
 
 /**
- * Choose the Postgres transport from DB_DRIVER.
- * - `pg` / `postgres-js` → TCP
- * - `neon` / `neon-http`, or unset → Neon HTTP (the Workers heritage default)
- *
- * Lives here, not in `lib/database`, so that configuration resolution does not
- * have to import a database driver to answer a question about a string.
+ * Boolean env flags. Unset uses `defaultValue`; `"false"`/`"0"` are off;
+ * `"true"`/`"1"` are on. Any other value falls back to the default rather than
+ * inventing a third state.
  */
-export function dbTransportFromEnv(driver?: string | null): DbTransport {
-  const value = (driver || '').trim().toLowerCase()
-  if (value === 'pg' || value === 'postgres-js') return 'postgres-js'
-  return 'neon-http'
+export function parseEnabledFlag(env: EnvLike, key: string, defaultValue: boolean): boolean {
+  const raw = secretValue(env, key)?.toLowerCase()
+  if (raw === undefined) return defaultValue
+  if (raw === 'true' || raw === '1') return true
+  if (raw === 'false' || raw === '0') return false
+  return defaultValue
 }
 
 export type TranscodeProvider = 'modal' | 'self-hosted'
@@ -103,6 +88,9 @@ export type ClipMuxConfig = {
   }
   accountId: string | null
   cloudflareAnalyticsToken: string | null
+  /** False stops playback/bandwidth collection and analytics queries. */
+  analyticsEnabled: boolean
+  analyticsIngestSecret: string | null
   orgConcurrencyCap: number | null
   uploadSizeLimitBytes: number
 }
@@ -179,10 +167,6 @@ export function orgConcurrencyCap(env: EnvLike): number | null {
 
 /**
  * Log verbosity, resolved once at composition time.
- *
- * On Workers `process.env.NODE_ENV` is replaced at build time rather than read at
- * runtime, so a module-scope logger froze its level for the isolate's life; here
- * the value is an input like any other.
  */
 export function parseLogLevel(env: EnvLike, isProduction: boolean): LogLevel {
   const raw = env['LOG_LEVEL']?.trim().toLowerCase()
@@ -260,6 +244,13 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
     problems.push('DATABASE_URL is not set')
   } else if (!/^postgres(ql)?:\/\//.test(databaseUrl)) {
     problems.push('DATABASE_URL must be a postgres:// or postgresql:// URL')
+  }
+  if (hasSecret(env, 'DB_DRIVER')) {
+    advisories.push(
+      'DB_DRIVER is no longer used. ClipMux v1 always connects through DATABASE_URL '
+        + 'with postgres-js. Remove DB_DRIVER from the environment — a Neon URL is a '
+        + 'regular postgresql:// connection string and does not need a driver flag.',
+    )
   }
 
   // ---- storage (R2 via S3 API) ----------------------------------------------
@@ -362,10 +353,22 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
     problems.push('JWT_SECRET must be at least 32 characters')
   }
 
-  // ---- analytics (Cloudflare Analytics Engine SQL API) --------------------------
-  const analyticsToken = secretValue(env, 'CLOUDFLARE_ANALYTICS_TOKEN')
-  if (!accountId || !analyticsToken) {
-    advisories.push('CLOUDFLARE_ANALYTICS_TOKEN is not set (playback/bandwidth stats disabled)')
+  // ---- analytics (Cloudflare Analytics Engine via the delivery worker) ----------
+  const analyticsEnabled = parseEnabledFlag(env, 'ANALYTICS_ENABLED', true)
+  const analyticsIngestSecret = secretValue(env, 'ANALYTICS_INGEST_SECRET')
+  const analyticsToken = analyticsEnabled ? secretValue(env, 'CLOUDFLARE_ANALYTICS_TOKEN') : null
+  if (!analyticsEnabled) {
+    advisories.push('ANALYTICS_ENABLED is false: playback and bandwidth analytics are off')
+  } else {
+    if (!accountId || !analyticsToken) {
+      advisories.push('CLOUDFLARE_ANALYTICS_TOKEN is not set (playback/bandwidth stats disabled)')
+    }
+    if (!analyticsIngestSecret) {
+      advisories.push(
+        'ANALYTICS_INGEST_SECRET is not set: playback telemetry cannot be forwarded '
+          + 'to the delivery worker',
+      )
+    }
   }
 
   // ---- AI (optional) -------------------------------------------------------------
@@ -406,7 +409,7 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
           jwtSecret &&
           jwtSecret.length >= MIN_SECRET_LENGTH,
       ),
-      analytics: Boolean(accountId && analyticsToken),
+      analytics: analyticsEnabled && Boolean(accountId && analyticsToken),
       ai: Boolean(groqKey),
       delivery: Boolean(deliveryUrl),
       rawUploads: Boolean(rawBucket),
@@ -444,6 +447,8 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
     },
     accountId,
     cloudflareAnalyticsToken: analyticsToken,
+    analyticsEnabled,
+    analyticsIngestSecret: analyticsEnabled ? analyticsIngestSecret : null,
     orgConcurrencyCap: orgConcurrencyCap(env),
     uploadSizeLimitBytes: maxUploadBytes(env),
   }

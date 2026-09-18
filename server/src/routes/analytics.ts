@@ -1,25 +1,20 @@
 import { Hono } from 'hono'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { db } from '../lib/database'
 import { WAE_MAX_DATA_POINTS_PER_INVOCATION } from '../lib/analytics-engine'
+import {
+  JOURNAL_MAX_BODY_BYTES,
+  isVideoUuid,
+  parseJournalEvents,
+  readTextWithLimit,
+  toPlaybackRow,
+} from '../lib/playbackJournal'
 import type { PlaybackRow } from '../runtime/types'
 import type { Bindings } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
-
-interface AnalyticsEvent {
-  event: string
-  ts: string
-  videoId: string
-  sessionId: string
-  userId?: string | null
-  currentTime?: number
-  duration?: number
-  watchedDelta?: number
-  errorCode?: string
-}
 
 function parseUserAgent(ua: string): { device: string; browser: string } {
   let device = 'unknown'
@@ -50,96 +45,91 @@ function parseUserAgent(ua: string): { device: string; browser: string } {
   return { device, browser }
 }
 
-async function resolveOrganizationId(videoId: string): Promise<string> {
-  try {
-    const rows = await db
-      .select({ organizationId: video.organizationId })
-      .from(video)
-      .where(and(notDeleted, eq(video.id, videoId)))
-      .limit(1)
+async function resolveOrganizationIds(videoIds: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(videoIds.filter(isVideoUuid))]
+  const ownership = new Map<string, string>()
+  if (unique.length === 0) return ownership
 
-    return rows[0]?.organizationId || ''
-  } catch {
-    return ''
+  const rows = await db
+    .select({ id: video.id, organizationId: video.organizationId })
+    .from(video)
+    .where(and(notDeleted, inArray(video.id, unique)))
+
+  for (const row of rows) {
+    ownership.set(row.id, row.organizationId)
   }
+  return ownership
 }
 
 app.post('/journal', async (c) => {
   try {
-    const events = await c.req.json<AnalyticsEvent[]>()
-
-    if (!Array.isArray(events) || events.length === 0) {
-      return c.json({ error: 'Invalid payload: expected non-empty array' }, 400)
-    }
-
-    const country = c.req.header('CF-IPCountry') || 'unknown'
-    const userAgent = c.req.header('User-Agent') || ''
-    const platform = c.req.header('Sec-CH-UA-Platform')?.replace(/"/g, '') || ''
-
-    const { device: parsedDevice, browser } = parseUserAgent(userAgent)
-    const device = platform || parsedDevice
-
-    const primaryVideoId = events[0]?.videoId || ''
-    const organizationId = primaryVideoId
-      ? await resolveOrganizationId(primaryVideoId)
-      : ''
-
-    const rows: PlaybackRow[] = events.map((e) => ({
-      event: e.event || 'unknown',
-      videoId: e.videoId,
-      sessionId: e.sessionId,
-      userId: e.userId || '',
-      country,
-      device,
-      browser,
-      errorCode: e.errorCode || '',
-      watchedDelta: e.watchedDelta ?? 0,
-      currentTime: e.currentTime ?? 0,
-      duration: e.duration ?? 0,
-    }))
-
-    // The sink is a capability, not a binding lookup: Node has no Analytics
-    // Engine binding at all, which is a fact about the runtime rather than a
-    // per-request surprise.
-    //
-    // The 501 is deliberate and stays 501: the player's journal flush is
-    // fire-and-forget, so a status code is the only place a developer sees that
-    // telemetry was dropped. (It is also what surfaced this the first time — the
-    // dashboard's Network tab, not a log.) The message names the binding because
-    // "not configured" reads like a missing secret, and this is not that: no
-    // value of ACCOUNT_ID or CLOUDFLARE_ANALYTICS_TOKEN can write a data point.
-    if (!c.var.runtime.analytics.canWritePlayback) {
+    const limited = await readTextWithLimit(c.req.raw, JOURNAL_MAX_BODY_BYTES)
+    if (!limited.ok) {
       return c.json(
         {
-          error: 'Playback analytics not configured',
-          message:
-            'This API has no Analytics Engine write sink: writing playback telemetry needs the ' +
-            'PLAYBACK_ANALYTICS binding, which exists on Cloudflare Workers only. The API is ' +
-            'running on a runtime (Node or a container) that cannot record it.',
+          error: limited.error,
+          ...(limited.status === 413 ? { limitBytes: JOURNAL_MAX_BODY_BYTES } : {}),
         },
-        501,
+        limited.status,
       )
     }
 
-    // Cap before scheduling so the response reflects what will actually be written
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(limited.text) as unknown
+    } catch {
+      return c.json({ error: 'Invalid payload: expected JSON array' }, 400)
+    }
+
+    const result = parseJournalEvents(parsed)
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status)
+    }
+
+    const truncated = result.truncated
+
+    if (!c.var.runtime.analytics.canWritePlayback) {
+      return c.json({
+        success: true,
+        count: 0,
+        received: result.received,
+        truncated,
+        disabled: !c.var.runtime.shape.analyticsEnabled,
+      })
+    }
+
+    const userAgent = c.req.header('User-Agent') || ''
+    const platform = c.req.header('Sec-CH-UA-Platform')?.replace(/"/g, '') || ''
+    const { device: parsedDevice, browser } = parseUserAgent(userAgent)
+    const device = platform || parsedDevice
+    // Geographic enrichment is out of scope: Node has no trusted client-country
+    // source, and CF-IPCountry on this host would be the API's location.
+    const country = 'unknown'
+
+    const ownership = await resolveOrganizationIds(result.events.map((event) => event.videoId))
+    const rows: PlaybackRow[] = []
+    for (const event of result.events) {
+      const organizationId = ownership.get(event.videoId)
+      if (!organizationId) continue
+      const row = toPlaybackRow(event, { organizationId, country, device, browser })
+      if (row) rows.push(row)
+    }
+
     const toWrite = rows.slice(0, WAE_MAX_DATA_POINTS_PER_INVOCATION)
-    const truncated = rows.length > toWrite.length
 
     c.var.runtime.background(
-      Promise.resolve().then(() => {
-        c.var.runtime.analytics.writePlayback(organizationId, toWrite)
-      }),
-      'playback analytics write',
+      c.var.runtime.analytics.writePlayback(toWrite),
+      'playback analytics forward',
     )
 
     return c.json({
       success: true,
       count: toWrite.length,
-      received: events.length,
-      truncated,
-      ...(truncated
+      received: result.received,
+      truncated: result.truncated,
+      ...(result.truncated
         ? {
-            message: `Accepted ${toWrite.length} of ${events.length} events (WAE limit ${WAE_MAX_DATA_POINTS_PER_INVOCATION} per request)`,
+            message: `Accepted ${toWrite.length} of ${result.received} events (WAE limit ${WAE_MAX_DATA_POINTS_PER_INVOCATION} per request)`,
           }
         : {}),
     })

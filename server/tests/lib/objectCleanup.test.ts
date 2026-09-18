@@ -318,7 +318,7 @@ const store = {
 describe('cleanupDepsFromEnv', () => {
   it('returns dependencies with no raw bucket configured', () => {
     const deps = cleanupDepsFromEnv(
-      { TRANSCODED_BUCKET_NAME: 'transcoded', DB_DRIVER: 'pg' },
+      { TRANSCODED_BUCKET_NAME: 'transcoded' },
       store,
     )
     expect(deps).not.toBeNull()
@@ -327,7 +327,7 @@ describe('cleanupDepsFromEnv', () => {
   })
 
   it('returns null only when there is nowhere to clean up', () => {
-    expect(cleanupDepsFromEnv({ DB_DRIVER: 'pg' }, store)).toBeNull()
+    expect(cleanupDepsFromEnv({}, store)).toBeNull()
   })
 
   it('still reports the raw bucket when one is configured', () => {

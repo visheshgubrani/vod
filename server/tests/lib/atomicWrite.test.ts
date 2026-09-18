@@ -14,21 +14,16 @@ import {
 } from '../helpers/db'
 
 // ────────────────────────────────────────────────────────────────────────────
-// Result normalization — the one place the two drivers genuinely differ.
+// Result normalization.
 //
 // Verified against drizzle-orm 0.45.2:
 //   postgres-js  PostgresJsQueryResultHKT.type = RowList<Row[]>   -> row array
-//   neon-http    NeonHttpQueryResult<T>         = { rows: T[] }   -> wrapped
 //
 // No database needed; these are pure shape checks.
 // ────────────────────────────────────────────────────────────────────────────
 describe('normalizeRows', () => {
   it('accepts the postgres-js shape (a bare row array)', () => {
     expect(normalizeRows([{ id: 1 }, { id: 2 }])).toEqual([{ id: 1 }, { id: 2 }])
-  })
-
-  it('accepts the neon-http shape (rows wrapped in a result object)', () => {
-    expect(normalizeRows({ rows: [{ id: 1 }], rowCount: 1 })).toEqual([{ id: 1 }])
   })
 
   it('treats a driver result with no rows as an empty list', () => {
@@ -185,8 +180,8 @@ describe.skipIf(!hasTestDatabase)('atomic intent writes (real Postgres)', () => 
 //
 // Needed for the lifecycle+outbox write, where a CTE is the wrong shape: the
 // update carries jsonb documents and arrays, so the typed query builder has to
-// stay. The driver difference (neon `batch` vs postgres-js `transaction`) is
-// hidden behind one interface, and that interface is what is tested here.
+// stay. Multi-statement writes run inside a postgres-js transaction, and that
+// interface is what is tested here.
 // ────────────────────────────────────────────────────────────────────────────
 describe('runAtomically', () => {
   const probe = pgTable('atomic_probe_guard', {
@@ -199,40 +194,35 @@ describe('runAtomically', () => {
     required: text('required').notNull(),
   })
 
-  it('routes to batch() when the driver exposes it (neon-http)', async () => {
+  it('routes to transaction() on postgres-js', async () => {
     const built: unknown[] = []
-    const batch = vi.fn(async (queries: unknown[]) => queries)
-    const fakeDb = {
-      batch,
-      // Stand-ins for drizzle builders: thenable, so the pg path could await them.
-      update: () => ({ __kind: 'update' }),
-      insert: () => ({ __kind: 'insert' }),
-    }
+    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        update: () => Promise.resolve({ __kind: 'update' }),
+        insert: () => Promise.resolve({ __kind: 'insert' }),
+      }
+      return fn(tx)
+    })
+    const fakeDb = { transaction }
 
     await runAtomically(fakeDb as never, (handle) => {
-      const db = handle as unknown as typeof fakeDb
+      const db = handle as unknown as { update: () => unknown; insert: () => unknown }
       const queries = [db.update(), db.insert()]
       built.push(...queries)
       return queries as never[]
     })
 
-    expect(batch).toHaveBeenCalledTimes(1)
-    // One round trip carrying both statements is the whole point.
-    expect(batch.mock.calls[0][0]).toHaveLength(2)
+    expect(transaction).toHaveBeenCalledTimes(1)
     expect(built).toHaveLength(2)
   })
 
-  it('refuses to run a multi-statement write when the driver supports neither', async () => {
-    // Silently degrading to sequential non-atomic writes would lose the
-    // guarantee the caller asked for, so this must be loud.
-    await expect(runAtomically({} as never, () => [])).rejects.toThrow(
-      /neither batch\(\) nor transaction\(\)/,
-    )
+  it('refuses to run a multi-statement write when the driver has no transaction()', async () => {
+    await expect(runAtomically({} as never, () => [])).rejects.toThrow(/no transaction\(\)/)
   })
 
   it('reports driver capability without throwing', () => {
-    expect(supportsAtomicBatch({ batch: () => undefined })).toBe(true)
     expect(supportsAtomicBatch({ transaction: () => undefined })).toBe(true)
+    expect(supportsAtomicBatch({ batch: () => undefined })).toBe(false)
     expect(supportsAtomicBatch({})).toBe(false)
     expect(supportsAtomicBatch(null)).toBe(false)
   })

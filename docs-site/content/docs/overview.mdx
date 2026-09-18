@@ -56,7 +56,7 @@ Playback is designed around the same concerns as larger platforms:
 - predictable URLs and playback identifiers
 - a drop-in React player (`@clipmux/player`)
 
-The delivery worker is Cloudflare-only and that is **fixed**, not a default. The API and dashboard can run on Workers **or** Node/Docker; signed playback still goes through the delivery worker in front of R2. See [Deployment](/deploy).
+The delivery worker is Cloudflare-only and that is **fixed**, not a default. The API and dashboard can run on Node or Docker; signed playback still goes through the delivery worker in front of R2. See [Deployment](/deploy).
 
 ## Deployment Shapes
 
@@ -64,12 +64,11 @@ An installation chooses part of its infrastructure and inherits the rest:
 
 | Axis | Options | Selected by |
 | --- | --- | --- |
-| API runtime | Node \| Cloudflare Workers | the entrypoint you run (`pnpm dev` / Docker = Node; `pnpm dev:workers` / `wrangler deploy` = Workers) |
-| Postgres transport | `postgres-js` \| `neon-http` | `DB_DRIVER` |
+| Postgres | bundled/dev Postgres \| any `postgresql://` URL | `DATABASE_URL` |
 | Transcode provider | Modal GPU \| self-hosted agent | `TRANSCODE_PROVIDER` (stored per job) |
 | Dispatch transport | direct HTTP \| QStash | `QSTASH_TOKEN` presence |
-| Rate-limit store | in-memory \| Redis (TCP, Node only) \| Upstash (REST) | `REDIS_URL`, else Upstash REST, else in-memory |
-| Analytics read | Analytics Engine SQL \| none | `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` |
+| Rate-limit store | in-memory \| Redis (TCP) \| Upstash (REST) | `REDIS_URL`, else Upstash REST, else in-memory |
+| Analytics | on (default) \| off | `ANALYTICS_ENABLED`; writes go through the delivery worker |
 
 **Fixed:** delivery is always the Cloudflare delivery worker + R2, and object storage is always Cloudflare R2. `GET /health/config` reports the resolved choices in its `deployment` object — see [the health endpoint](/api-reference#get-healthconfig) for the full shape.
 

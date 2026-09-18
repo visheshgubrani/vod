@@ -40,12 +40,10 @@ const TEST_NAME = 'Account Schema'
 // and a shared database would put other suites' rows in reach of these queries.
 const PREVIOUS_ENV = {
   DATABASE_URL: process.env.DATABASE_URL,
-  DB_DRIVER: process.env.DB_DRIVER,
   BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
 }
 
 process.env.DATABASE_URL = testDatabaseUrl(SUITE_DATABASE)
-process.env.DB_DRIVER = 'pg'
 // better-auth requires a secret for the credential flow. Tests read no env file
 // (src/lib/auth.ts has no dotenv load), so it is supplied here explicitly.
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET ?? 'test-secret-32-chars-minimum-1234567890'

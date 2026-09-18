@@ -12,7 +12,7 @@
 # Configuration comes from `.env` at the repo root, which Compose reads twice:
 #   * for `${...}` interpolation in this file (Compose only reads the shell env
 #     and `.env` for interpolation — an `env_file:` value cannot interpolate)
-#   * as the container environment for `api` and `maintenance`
+#   * as the container environment for `api`
 # So one file configures both the stack's wiring and the API's env.
 #
 # Delivery is deliberately absent: signed playback is always the Cloudflare
@@ -72,7 +72,6 @@ services:
       - .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-clipmux}}
-      DB_DRIVER: ${DB_DRIVER:-pg}
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,49 +102,7 @@ services:
       # from .env still wins because the default is itself an interpolation.
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-clipmux}}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      DB_DRIVER: ${DB_DRIVER:-pg}
       NODE_ENV: production
-
-  # Background maintenance for every non-Workers runtime.
-  #
-  # The Workers deployment gets this from the cron trigger in
-  # server/wrangler.jsonc; a container has no equivalent, and without something
-  # calling the endpoint the system silently stops reconciling: webhook retries
-  # never run, and deleted videos keep their bytes forever. This service is that
-  # something.
-  #
-  # It calls the same `runMaintenance` path the cron does, so both runtimes do
-  # identical work. Requires INTERNAL_SWEEP_SECRET in .env.
-  maintenance:
-    image: alpine:3.20
-    container_name: clipmux-maintenance
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_started
-    env_file:
-      - .env
-    environment:
-      # Deliberately NOT setting INTERNAL_SWEEP_SECRET here. Compose gives
-      # `environment` precedence over `env_file`, so an entry like
-      # ${INTERNAL_SWEEP_SECRET:-} would substitute an empty string whenever the
-      # secret is absent from `.env`, blanking the value env_file had just
-      # provided and putting this service into its "refusing to start" branch.
-      MAINTENANCE_INTERVAL_SECONDS: ${MAINTENANCE_INTERVAL_SECONDS:-900}
-    command: >
-      sh -c '
-        if [ -z "$$INTERNAL_SWEEP_SECRET" ]; then
-          echo "[maintenance] INTERNAL_SWEEP_SECRET is not set; refusing to start.";
-          echo "[maintenance] Webhook retries and storage reclamation will NOT run.";
-          sleep infinity;
-        fi;
-        echo "[maintenance] running every $${MAINTENANCE_INTERVAL_SECONDS}s";
-        while true; do
-          sleep "$${MAINTENANCE_INTERVAL_SECONDS}";
-          wget -q -O- --header="x-sweep-secret: $$INTERNAL_SWEEP_SECRET" \
-            --post-data="" http://api:4080/api/internal/sweep \
-            || echo "[maintenance] pass failed; will retry";
-        done'
 
   web:
     image: ${CLIPMUX_WEB_IMAGE:-clipmux-web:local}
@@ -203,7 +160,7 @@ services:
       - ${CLIPMUX_MEDIA_DIR:-./media}:/media:ro
     # The agent polls the API, so CLIPMUX_API_URL has to resolve *from inside the
     # container*: the service name only works when the bundled api service is the
-    # API. For a Workers API use its public URL; for `pnpm dev` on this machine
+    # API. For a remote Node API use its public URL; for `pnpm dev` on this machine
     # use http://host.docker.internal:<port> — which is why this mapping exists
     # (Docker Desktop provides it, plain Linux Docker does not).
     extra_hosts:

@@ -1,44 +1,42 @@
 /**
  * Node runtime entrypoint (Docker / VPS deployments, and `pnpm dev`).
  *
- * Boots the same Hono app as the Cloudflare Worker, under @hono/node-server,
- * with the Node composition root supplying everything platform-specific:
+ * Boots the Hono app under @hono/node-server, with the Node composition root
+ * supplying everything platform-specific:
  *
  * - `process.env` as the environment (loaded from `.dev.vars` in development)
  * - background work tracked instead of `ctx.waitUntil`, including the request
- *   context Hono exposes as `c.executionCtx` — Node has no platform one, and
- *   Hono's getter throws instead of returning undefined
- * - no Analytics Engine binding, so `analyticsWrite: 'none'` — reported by
- *   `GET /health/config` and answered by `/api/playback` as "not configured"
- *   rather than being discovered mid-request
- * - fatal configuration problems refuse to start, instead of a deployment that
- *   looks healthy and fails on the second request
+ *   context Hono exposes as `c.executionCtx`
+ * - playback telemetry forwarded to the delivery worker when configured
+ * - in-process maintenance on this instance when a database is configured
+ * - fatal configuration problems refuse to start
  */
 
 import '../lib/load-local-env'
 import { serve } from '@hono/node-server'
 import { createApp } from '../app'
 import { createNodeRequestHandler, createNodeRuntime } from '../runtime/node'
-import type { EnvLike } from '../lib/config'
+import { parseEnabledFlag, type EnvLike } from '../lib/config'
+import { runMaintenance } from '../utils/maintenance'
+import {
+  createMaintenanceScheduler,
+  maintenanceIntervalMs,
+} from '../utils/maintenanceScheduler'
 
 const env = process.env as unknown as EnvLike
-const runtime = createNodeRuntime(env)
+const runtimeBase = createNodeRuntime(env)
 
-for (const advisory of runtime.advisories) {
+for (const advisory of runtimeBase.advisories) {
   console.warn(`[clipmux-api] advisory: ${advisory}`)
 }
-if (runtime.problems.length > 0) {
+if (runtimeBase.problems.length > 0) {
   console.warn('[clipmux-api] configuration problems:')
-  for (const problem of runtime.problems) {
+  for (const problem of runtimeBase.problems) {
     console.warn(`[clipmux-api]   - ${problem.message}`)
   }
 }
 
-// Fatal problems are the combinations that cannot work at all (a TCP Postgres or
-// a TCP Redis on Workers, an unrecognised TRANSCODE_PROVIDER). Everything else is
-// reported and the server still boots: a half-configured installation should be
-// able to answer /health/config and say what is missing.
-const fatal = runtime.problems.filter((problem) => problem.fatal)
+const fatal = runtimeBase.problems.filter((problem) => problem.fatal)
 if (fatal.length > 0) {
   console.error('[clipmux-api] refusing to start:')
   for (const problem of fatal) {
@@ -47,16 +45,30 @@ if (fatal.length > 0) {
   process.exit(1)
 }
 
+const databaseConfigured = Boolean(runtimeBase.env['DATABASE_URL']?.trim())
+const sweepEnabled = parseEnabledFlag(runtimeBase.env, 'SWEEP_ENABLED', true)
+const scheduler = createMaintenanceScheduler({
+  enabled: sweepEnabled && databaseConfigured,
+  intervalMs: maintenanceIntervalMs(runtimeBase.env),
+  run: () => runMaintenance(runtimeBase.env),
+  onError: (error) => {
+    console.error('[clipmux-api] maintenance pass failed:', error)
+  },
+})
+
+const runtime = {
+  ...runtimeBase,
+  ...(sweepEnabled && databaseConfigured
+    ? { runMaintenancePass: () => scheduler.runNow() }
+    : {}),
+}
+
 const app = createApp(runtime)
 const handleRequest = createNodeRequestHandler(app, runtime)
 const port = Number(process.env.PORT || 4080)
 
 const server = serve(
   {
-    // Bindings are gone as a concept here: the runtime already resolved
-    // everything from `process.env`, and the app reads it from `c.var.runtime`.
-    // The handler is also where this runtime gets the request context Hono
-    // exposes as `c.executionCtx` — Node has no platform one to hand over.
     fetch: handleRequest,
     port,
     // Never read `HOSTNAME`: every Unix shell and Docker sets it to the
@@ -73,14 +85,27 @@ const server = serve(
         `transcode=${runtime.shape.transcodeProvider}, ` +
         `analytics-write=${runtime.shape.analyticsWrite})`,
     )
+    if (sweepEnabled && databaseConfigured) {
+      scheduler.start()
+      console.log(
+        `[clipmux-api] maintenance scheduler started ` +
+          `(interval=${maintenanceIntervalMs(runtime.env) / 1000}s)`,
+      )
+    } else if (!sweepEnabled) {
+      console.log('[clipmux-api] maintenance scheduler disabled (SWEEP_ENABLED=false)')
+    }
   },
 )
+
+const SHUTDOWN_MS = 10_000
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     console.log(`[clipmux-api] ${signal} received, shutting down`)
-    server.close(() => process.exit(0))
-    // Hard stop if close hangs (in-flight streams).
-    setTimeout(() => process.exit(0), 10_000).unref()
+    scheduler.stop()
+    server.close(() => {
+      void scheduler.waitForIdle().then(() => process.exit(0))
+    })
+    setTimeout(() => process.exit(0), SHUTDOWN_MS).unref()
   })
 }

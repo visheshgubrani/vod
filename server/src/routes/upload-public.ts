@@ -37,8 +37,7 @@ const app = new Hono<{ Bindings: Bindings; Variables: UploadTokenVariables }>()
 /**
  * Bucket names come from the resolved configuration on every use — see the note
  * in routes/upload.ts. The module-scope constant this replaces was read once at
- * import time from `process.env`, which on Workers is evaluated before any
- * binding is available.
+ * import time from `process.env`.
  */
 function rawBucketOrFail(c: Context<{ Bindings: Bindings; Variables: UploadTokenVariables }>): string | Response {
   const bucket = c.var.runtime.config.rawBucket

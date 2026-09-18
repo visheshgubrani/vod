@@ -69,19 +69,19 @@ file is only useful if it is current.
   live suite by hand before changing these queries. It exists because of a real
   regression: the read path was ported from ClickHouse, which accepts
   `if(cond, blob3, NULL)`, and Analytics Engine refuses it with a 422.
-- **Nothing writes playback telemetry outside the Workers runtime, and that is a
-  permanent shape of the current design.** Writing needs the Analytics Engine
-  binding, so a Node API — `pnpm dev`, and every Compose self-hosted install —
-  records no playback events at all. This is now stated where it is felt: the
-  deploy wizard warns when it selects a Node API, `/health/config` reports
-  `analyticsWrite: 'none'`, and the dashboard renders a notice on the analytics
-  views instead of leaving a zero to be misread as "nobody watched". Two
-  alternatives were considered and are deliberately not implemented: a
-  purpose-built writer Worker plus a Node adapter that posts batches to it, and
-  metering playback from the delivery worker (which already has the binding and
-  the `org_id`/`video_id` claims) at the cost of losing player-level events
-  (seek/pause/error) and per-heartbeat watch time. See
-  `docs/deployment-shapes.md`.
+- **Playback telemetry forwarding is best-effort.** Node accepts events and
+  forwards them to the delivery worker with a five-second timeout and no
+  retries. Acceptance is not a durable-storage promise; there is no queue and
+  no exactly-once guarantee. Geographic enrichment is out of scope (`country`
+  is `"unknown"`).
+- **In-process maintenance is single-instance.** `SWEEP_ENABLED` defaults to
+  true on one designated Node API. Additional replicas must set
+  `SWEEP_ENABLED=false`. Distributed scheduling and leader election are
+  deferred. Manual sweeps must target the designated instance.
+- **No Coolify-style host installer yet.** Bootstrap is the existing wizard;
+  a separate host installer is deferred.
+- **No automatic tunnels for local Modal callbacks.** Local API users must
+  supply a publicly reachable `BACKEND_URL` themselves.
 
 ## Marketing assets
 
@@ -107,7 +107,7 @@ file is only useful if it is current.
   nothing tracked in git proves that output matches `src/`. `scripts/dev.mjs`
   rebuilds a package whose `dist/` is older than any file in its `src/` before
   the dev servers start (and stops if that build fails), which covers
-  `pnpm dev`/`dev:workers`/`dev:all`/`start`. It does **not** cover
+  `pnpm dev`/`dev:all`/`start`. It does **not** cover
   `pnpm dev:example` or a bare `next dev` in `web/` — those still need
   `pnpm --filter @clipmux/{uploader,player,server} build` first, which is what
   the README and CONTRIBUTING say. A `prepare`/`postinstall` build was rejected:
@@ -133,9 +133,9 @@ file is only useful if it is current.
   real S3 request proves them, and neither wrangler (OAuth) nor the wizard
   (no SigV4) makes one. `--deploy` and `GET /health/config` are the first real
   proof.
-- **Neither Neon nor QStash is provisioned automatically.** Both are paste-a-value
-  steps with a console link: provisioning them would mean storing a vendor API key
-  in the wizard, for accounts the operator creates anyway.
+- **Neither hosted Postgres nor QStash is provisioned automatically.** Both are
+  paste-a-value steps with a console link: provisioning them would mean storing a
+  vendor API key in the wizard, for accounts the operator creates anyway.
 - **`checks.database` and `--check` prove configuration shape, not connectivity.**
   `server/src/lib/config.ts` regex-matches `DATABASE_URL`, so `GET /health/config`
   reports `database: true` and `ready: true` while every real query fails — the
@@ -145,7 +145,7 @@ file is only useful if it is current.
   local case instead: `setup/src/devInfra.ts` inspects the dev container and
   probes host reachability, so `--check --target dev` and an interactive dev run
   report an unusable dev Postgres by name. A *remote* `DATABASE_URL`
-  (`db.kind: "existing"` or Neon) is still only checked for shape and TCP.
+  (`db.kind: "existing"`) is still only checked for shape and TCP.
 - **A busy dev port is not detected by `up --wait`.** Docker can create
   `clipmux-dev-postgres` and fail to programme its port mapping while the
   container's own health check still passes, so `pnpm dev:infra` can exit `0`

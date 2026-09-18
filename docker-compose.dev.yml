@@ -7,7 +7,7 @@
 #   redis     :6379  — the dev rate-limit store (REDIS_URL in server/.dev.vars)
 #
 # The API and dashboard run on the host under `pnpm dev` (Node + Next). The
-# application containers — api, web, maintenance, migrate, transcoder — live in
+# application containers — api, web, migrate, transcoder — live in
 # docker-compose.yml, which is the *deployment* file for end users (and how we
 # test a deployment). Do not add application services here.
 #

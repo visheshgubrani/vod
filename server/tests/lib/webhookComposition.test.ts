@@ -17,9 +17,9 @@ import { createTestRuntime, withRuntime } from '../helpers/runtime'
  * real outbox write, the real drain, and a real HMAC signature. Only the
  * receiver's HTTP endpoint is faked, because a test cannot host one.
  *
- * The route talks to the module-level `db` proxy, which reads DATABASE_URL and
- * DB_DRIVER. Both are pointed at the test database before the route is
- * imported, so the route and the assertions share one connection target.
+ * The route talks to the module-level `db` proxy, which reads DATABASE_URL.
+ * That URL is pointed at the test database before the route is imported, so
+ * the route and the assertions share one connection target.
  */
 
 const ORG = 'org-compose'
@@ -34,7 +34,6 @@ const ATTEMPT = 'att-compose-1'
 // database would put other suites' rows in reach of this suite's assertions.
 const SUITE_DATABASE = 'clipmux_t_composition'
 process.env.DATABASE_URL = testDatabaseUrl(SUITE_DATABASE)
-process.env.DB_DRIVER = 'pg'
 process.env.MODAL_WEBHOOK_SECRET = INGEST_SECRET
 
 /**

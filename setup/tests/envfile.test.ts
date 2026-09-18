@@ -45,12 +45,12 @@ describe('renderEnvFile', () => {
       '# old comment',
       'JWT_SECRET=old-jwt',
       'GOOGLE_CLIENT_ID=abc',
-      'SWEEP_ENABLED=true',
+      'CUSTOM_FLAG=true',
     ].join('\n')
     const text = renderEnvFile(canonical, existing, serverKeySet())
     expect(text).toContain('JWT_SECRET=jwt-1')
     expect(text).toContain('GOOGLE_CLIENT_ID=abc')
-    expect(text).toContain('SWEEP_ENABLED=true')
+    expect(text).toContain('CUSTOM_FLAG=true')
     expect(text).not.toContain('old-jwt')
     expect(text).not.toContain('# old comment')
   })

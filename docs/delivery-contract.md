@@ -338,8 +338,9 @@ Restart recovery has three parts, and all three are needed:
 - **Additive migrations only.** The agent tables are new; no existing column
   changed meaning. `video.transcode_attempt_id`, the lease, the state machine and
   the webhook outbox keep their current behaviour unchanged.
-- **Both database drivers.** Every new statement is a single guarded CTE, so it
-  behaves identically on `neon-http` (batch) and `postgres-js` (transaction).
+- **Guarded CTEs.** Every new statement is a single guarded CTE, so
+  publication and job admission keep their concurrency guarantees inside a
+  postgres-js transaction.
 - **Modal is unaffected.** A Modal callback passes no `outputPrefix` and no
   inventory gate; `videos/<id>/…` URLs and legacy player URL construction keep
   working exactly as before.

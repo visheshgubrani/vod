@@ -35,7 +35,6 @@ const INGEST_SECRET = 'ingest-secret-for-heartbeat-tests'
 // The route and the assertions must share one connection target, so point the
 // module-level `db` proxy at this suite's database before importing the route.
 process.env.DATABASE_URL = testDatabaseUrl('clipmux_t_heartbeat')
-process.env.DB_DRIVER = 'pg'
 process.env.MODAL_WEBHOOK_SECRET = INGEST_SECRET
 
 const RUNTIME_ENV = { TRANSCODE_INGEST_SECRET: INGEST_SECRET }

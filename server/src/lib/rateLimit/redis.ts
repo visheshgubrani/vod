@@ -7,11 +7,7 @@
  * This adapter makes "shared rate limits" a deployment decision rather than a
  * vendor decision.
  *
- * Runtime: **Node only.** Cloudflare Workers cannot open a TCP socket, so
- * `resolveDeployment` refuses to select this adapter there rather than failing
- * at the first request.
- *
- * Window semantics are a sorted-set sliding window, chosen to match
+ * Runtime: Node. Window semantics are a sorted-set sliding window, chosen to match
  * `InMemorySlidingWindow` exactly (`success/limit/remaining/reset`, reset =
  * oldest live timestamp + window) because both feed the same response headers
  * and the same tests. A fixed-window INCR counter would be cheaper and would
@@ -91,7 +87,7 @@ function defaultConnect(url: string): Promise<RedisCommandClient> {
   if (cached) return cached
 
   const pending = (async () => {
-    // Dynamic import keeps `redis` out of the Workers bundle entirely.
+    // Dynamic import keeps `redis` out of unused composition paths.
     const { createClient } = await import('redis')
     const client = createClient({ url })
     // node-redis emits 'error' out of band; without a handler it is an

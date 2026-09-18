@@ -30,15 +30,15 @@ const SECRETS: SecretSet = {
   betterAuthSecret: 'a'.repeat(64),
   jwtSecret: 'b'.repeat(64),
   internalSweepSecret: 'c'.repeat(64),
-  transcodeIngestSecret: 'd'.repeat(64),
+    transcodeIngestSecret: 'd'.repeat(64),
+  analyticsIngestSecret: 'f'.repeat(64),
   postgresPassword: 'e'.repeat(48),
 }
 
 function answers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
   return {
     target: 'dev',
-    runtime: 'workers',
-    db: { kind: 'neon', url: 'postgresql://user:pass@ep-x.aws.neon.tech/vod' },
+    db: { kind: 'existing', url: 'postgresql://user:pass@db.example.com/vod' },
     queue: { kind: 'direct' },
     rateLimit: { kind: 'memory' },
     accountId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
@@ -67,7 +67,7 @@ describe('writeTargetConfig', () => {
     for (const path of paths) {
       expect(statSync(path).mode & 0o777).toBe(0o600)
     }
-    expect(readTargetConfig(root, 'dev')?.['DB_DRIVER']).toBe('neon-http')
+    expect(readTargetConfig(root, 'dev')?.['DATABASE_URL']).toContain('db.example.com')
   })
 
   it('writes only the root .env for the deploy target', () => {
@@ -97,7 +97,6 @@ describe('writeTargetConfig', () => {
       answers({
         transcodeProvider: 'self-hosted',
         uploadsEnabled: false,
-        runtime: 'node',
         db: { kind: 'local' },
       }),
     )

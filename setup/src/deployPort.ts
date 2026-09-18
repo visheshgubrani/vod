@@ -21,6 +21,7 @@ import {
   ensureCfLogin,
   makeTempDir,
   patchDeliveryBucket,
+  patchDeliveryAnalytics,
   putWorkerSecrets,
   dbMigrate,
   type TempDir,
@@ -37,9 +38,9 @@ import {
   putModalSecret,
 } from './modal'
 import { analyticsTokenTemplateUrl } from './parsers'
+import { lintDeployEnv, lintServerEnv, MIN_SECRET_LENGTH } from './verify'
 import { findOnPath, runInherit } from './runners'
 import { readTargetConfig, upsertTargetConfig } from './envio'
-import { lintDeployEnv, lintServerEnv } from './verify'
 import type { ConfigTarget } from './types'
 import {
   askConfirm,
@@ -94,6 +95,8 @@ export interface DeployPort {
   ensureBucket: (name: string) => Promise<void>
   applyBucketCors: (bucket: string, origins: string[]) => Promise<void>
   patchDeliveryBucket: (bucket: string) => boolean
+  /** Add or remove Analytics Engine dataset bindings. */
+  patchDeliveryAnalytics: (enabled: boolean) => boolean
   /** Set up the optional Cloudflare analytics read token; null when declined. */
   offerAnalyticsToken: () => Promise<string | null>
 
@@ -112,8 +115,8 @@ export interface DeployPort {
     previousHosts: string | null,
   ) => Promise<string | null>
 
-  deployWorker: (pkg: 'server' | 'delivery') => Promise<string | null>
-  putWorkerSecrets: (pkg: 'server' | 'delivery', entries: EntryList) => Promise<void>
+  deployWorker: (pkg: 'delivery') => Promise<string | null>
+  putWorkerSecrets: (pkg: 'delivery', entries: EntryList) => Promise<void>
   dbMigrate: (databaseUrl: string) => Promise<void>
   composeMigrate: () => Promise<void>
   composeUp: () => Promise<void>
@@ -123,6 +126,7 @@ export interface DeployPort {
   writeConfig: (updates: EntryList) => void
   lintConfig: () => { rows: CheckRow[]; failed: boolean }
   probeHealth: (baseUrl: string | null) => Promise<void>
+  probeDeliveryHealth: (baseUrl: string | null, ingestSecret: string) => Promise<void>
   /** Release the port's resources (temp files). Always called. */
   cleanup: () => void
 }
@@ -158,6 +162,77 @@ async function probeHealth(baseUrl: string | null): Promise<void> {
   } catch {
     logWarn(`could not reach ${url} (is the API up?) — re-check with: curl ${url}`)
   }
+}
+
+/**
+ * Confirm the delivery worker can write analytics and shares the ingest secret.
+ *
+ * `/health/config` is secret-free and can report `ingestConfigured: true` while
+ * both writer capabilities are `"none"`. An authenticated empty batch is what
+ * proves the secret actually matches.
+ */
+export async function verifyDeliveryAnalytics(input: {
+  baseUrl: string
+  ingestSecret: string
+  fetchImpl?: typeof fetch
+}): Promise<void> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  const origin = input.baseUrl.replace(/\/+$/, '')
+  const healthUrl = `${origin}/health/config`
+  const health = await fetchImpl(healthUrl, { signal: AbortSignal.timeout(20_000) })
+  if (!health.ok) {
+    throw new Error(`GET ${healthUrl} returned HTTP ${health.status}`)
+  }
+  const body = (await health.json()) as {
+    analyticsEnabled?: boolean
+    ingestConfigured?: boolean
+    playbackWrite?: string
+    bandwidthWrite?: string
+  }
+  if (body.analyticsEnabled !== true || body.ingestConfigured !== true) {
+    throw new Error(
+      `delivery ${healthUrl} does not report analytics enabled with an ingest secret ` +
+        `(analyticsEnabled=${String(body.analyticsEnabled)}, ingestConfigured=${String(body.ingestConfigured)})`,
+    )
+  }
+  if (body.playbackWrite !== 'analytics-engine' || body.bandwidthWrite !== 'analytics-engine') {
+    throw new Error(
+      `delivery ${healthUrl} does not have analytics dataset bindings ` +
+        `(playbackWrite=${String(body.playbackWrite)}, bandwidthWrite=${String(body.bandwidthWrite)})`,
+    )
+  }
+  if (input.ingestSecret.trim().length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `ANALYTICS_INGEST_SECRET is missing or shorter than ${MIN_SECRET_LENGTH} characters — ` +
+        'cannot verify ingest',
+    )
+  }
+  const ingestUrl = `${origin}/internal/analytics/playback`
+  const ingest = await fetchImpl(ingestUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${input.ingestSecret}`,
+    },
+    body: JSON.stringify({ events: [] }),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (ingest.status === 401 || ingest.status === 403) {
+    throw new Error(`delivery ingest secret was rejected (HTTP ${ingest.status})`)
+  }
+  if (!ingest.ok) {
+    throw new Error(`delivery empty-batch ingest returned HTTP ${ingest.status}`)
+  }
+}
+
+/** Probe `<delivery>/health/config` for the enabled analytics capability. */
+async function probeDeliveryHealth(baseUrl: string | null, ingestSecret: string): Promise<void> {
+  if (!baseUrl) {
+    throw new Error('DELIVERY_URL is missing — deploy the delivery worker first')
+  }
+  logInfo(`Probing ${baseUrl.replace(/\/+$/, '')}/health/config …`)
+  await verifyDeliveryAnalytics({ baseUrl, ingestSecret })
+  logSuccess('Delivery worker reports analytics enabled')
 }
 
 /**
@@ -213,6 +288,7 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
     ensureBucket: (name) => ensureBucket(root, name),
     applyBucketCors: (bucket, origins) => applyBucketCors(root, bucket, origins, temp),
     patchDeliveryBucket: (bucket) => patchDeliveryBucket(root, bucket),
+    patchDeliveryAnalytics: (enabled) => patchDeliveryAnalytics(root, enabled),
 
     offerAnalyticsToken: async () => {
       const addAnalytics = await askConfirm('Set up optional Cloudflare usage analytics now?', false)
@@ -280,6 +356,7 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
       return target === 'deploy' ? lintDeployEnv(env) : lintServerEnv(env)
     },
     probeHealth,
+    probeDeliveryHealth,
     cleanup: () => temp.cleanup(),
   }
 

@@ -9,7 +9,7 @@ import { fatalProblems, resolveDeployment } from '../../src/runtime/deployment'
  */
 
 const MODAL_INSTALL = {
-  DATABASE_URL: 'postgresql://user:pass@db.example.com/neondb',
+  DATABASE_URL: 'postgresql://user:pass@db.example.com/clipmux',
   BETTER_AUTH_SECRET: 'a-32-character-secret-string-1234567890',
   JWT_SECRET: 'another-32-character-secret-string-9876543',
   ACCOUNT_ID: 'cf-account-123',
@@ -24,17 +24,13 @@ const MODAL_INSTALL = {
 
 describe('resolveDeployment', () => {
   it('never throws, whatever it is handed', () => {
-    expect(() => resolveDeployment({}, 'node')).not.toThrow()
-    expect(() => resolveDeployment({}, 'workers')).not.toThrow()
-    expect(() => resolveDeployment({ DB_DRIVER: 'nonsense' }, 'workers')).not.toThrow()
-    expect(() => resolveDeployment({ REDIS_URL: 'x' }, 'workers')).not.toThrow()
+    expect(() => resolveDeployment({})).not.toThrow()
+    expect(() => resolveDeployment({ DB_DRIVER: 'neon-http' })).not.toThrow()
+    expect(() => resolveDeployment({ REDIS_URL: 'x' })).not.toThrow()
   })
 
-  it('resolves the Node shape from DB_DRIVER and the caller-provided runtime', () => {
-    const { shape } = resolveDeployment(
-      { ...MODAL_INSTALL, DB_DRIVER: 'pg', QSTASH_TOKEN: 'qs' },
-      'node',
-    )
+  it('resolves the Node postgres-js shape', () => {
+    const { shape } = resolveDeployment({ ...MODAL_INSTALL, QSTASH_TOKEN: 'qs' })
 
     expect(shape).toMatchObject({
       runtime: 'node',
@@ -43,96 +39,94 @@ describe('resolveDeployment', () => {
       transcodeProvider: 'modal',
       selfHostedEnabled: false,
       modalDispatch: 'qstash',
+      analyticsEnabled: true,
       analyticsWrite: 'none',
       deliveryRuntime: 'cloudflare-worker',
       deliveryUrl: 'https://media.example.com',
     })
   })
 
-  it('defaults to the Neon HTTP transport, and to direct HTTP dispatch', () => {
-    const { shape } = resolveDeployment(MODAL_INSTALL, 'workers')
-    expect(shape.dbTransport).toBe('neon-http')
+  it('defaults Modal dispatch to direct HTTP', () => {
+    const { shape } = resolveDeployment(MODAL_INSTALL)
     expect(shape.modalDispatch).toBe('direct-http')
   })
 
-  it('reports the Workers analytics sink only when the binding is present', () => {
-    // The binding is an object, not a string, so the root has to say so.
-    expect(resolveDeployment(MODAL_INSTALL, 'workers').shape.analyticsWrite).toBe('none')
+  it('reports delivery-worker analytics write when ingest is configured', () => {
+    expect(resolveDeployment(MODAL_INSTALL).shape.analyticsWrite).toBe('none')
     expect(
-      resolveDeployment(MODAL_INSTALL, 'workers', { hasPlaybackAnalyticsBinding: true }).shape
-        .analyticsWrite,
-    ).toBe('workers-analytics-engine')
-    // Node has no binding to have.
+      resolveDeployment({
+        ...MODAL_INSTALL,
+        ANALYTICS_INGEST_SECRET: 'analytics-ingest-secret-32-chars-min',
+      }).shape.analyticsWrite,
+    ).toBe('delivery-worker')
     expect(
-      resolveDeployment(MODAL_INSTALL, 'node', { hasPlaybackAnalyticsBinding: true }).shape
-        .analyticsWrite,
+      resolveDeployment({
+        ...MODAL_INSTALL,
+        ANALYTICS_ENABLED: 'false',
+        ANALYTICS_INGEST_SECRET: 'analytics-ingest-secret-32-chars-min',
+      }).shape.analyticsWrite,
     ).toBe('none')
   })
 
   it('reports the self-hosted provider and its enablement', () => {
-    const { shape } = resolveDeployment(
-      { ...MODAL_INSTALL, TRANSCODE_PROVIDER: 'self-hosted' },
-      'node',
-    )
+    const { shape } = resolveDeployment({
+      ...MODAL_INSTALL,
+      TRANSCODE_PROVIDER: 'self-hosted',
+    })
     expect(shape.transcodeProvider).toBe('self-hosted')
     expect(shape.selfHostedEnabled).toBe(true)
   })
 
-  it('reports the analytics *read* path, which works on both runtimes', () => {
-    const withToken = resolveDeployment(
-      { ...MODAL_INSTALL, CLOUDFLARE_ANALYTICS_TOKEN: 'token' },
-      'node',
-    )
+  it('reports the analytics read path only when analytics is enabled', () => {
+    const withToken = resolveDeployment({
+      ...MODAL_INSTALL,
+      CLOUDFLARE_ANALYTICS_TOKEN: 'token',
+    })
     expect(withToken.shape.analyticsRead).toBe('cloudflare-sql')
-    expect(resolveDeployment(MODAL_INSTALL, 'node').shape.analyticsRead).toBe('none')
+    expect(resolveDeployment(MODAL_INSTALL).shape.analyticsRead).toBe('none')
+    expect(
+      resolveDeployment({
+        ...MODAL_INSTALL,
+        CLOUDFLARE_ANALYTICS_TOKEN: 'token',
+        ANALYTICS_ENABLED: 'false',
+      }).shape.analyticsRead,
+    ).toBe('none')
   })
 
-  it('refuses a TCP Postgres on Workers', () => {
-    const resolution = resolveDeployment({ ...MODAL_INSTALL, DB_DRIVER: 'pg' }, 'workers')
-
-    expect(resolution.config.ready).toBe(false)
-    expect(fatalProblems(resolution).join('\n')).toMatch(/DB_DRIVER=pg cannot work/)
-  })
-
-  it('allows a TCP Postgres on Node', () => {
-    const resolution = resolveDeployment({ ...MODAL_INSTALL, DB_DRIVER: 'pg' }, 'node')
+  it('advises that DB_DRIVER is obsolete rather than selecting another driver', () => {
+    const resolution = resolveDeployment({ ...MODAL_INSTALL, DB_DRIVER: 'neon-http' })
+    expect(resolution.shape.dbTransport).toBe('postgres-js')
+    expect(resolution.advisories.join('\n')).toMatch(/DB_DRIVER is no longer used/)
     expect(fatalProblems(resolution)).toEqual([])
   })
 
-  it('refuses a TCP REDIS_URL on Workers instead of silently going per-isolate', () => {
-    const resolution = resolveDeployment(
-      { ...MODAL_INSTALL, REDIS_URL: 'redis://localhost:6379' },
-      'workers',
-    )
+  it('selects Redis over Upstash over memory', () => {
+    const upstash = {
+      UPSTASH_REDIS_REST_URL: 'https://x.upstash.io',
+      UPSTASH_REDIS_REST_TOKEN: 't',
+    }
 
-    expect(fatalProblems(resolution).join('\n')).toMatch(/REDIS_URL is set but/)
-    // Falls back to the next available store rather than refusing to limit at all.
-    expect(resolution.shape.rateLimitStore).toBe('memory')
-  })
-
-  it('selects Redis over Upstash over memory on Node', () => {
-    const upstash = { UPSTASH_REDIS_REST_URL: 'https://x.upstash.io', UPSTASH_REDIS_REST_TOKEN: 't' }
-
+    expect(resolveDeployment({ ...MODAL_INSTALL, ...upstash }).shape.rateLimitStore).toBe('upstash')
     expect(
-      resolveDeployment({ ...MODAL_INSTALL, ...upstash }, 'node').shape.rateLimitStore,
-    ).toBe('upstash')
-    expect(
-      resolveDeployment({ ...MODAL_INSTALL, ...upstash, REDIS_URL: 'redis://localhost:6379' }, 'node')
-        .shape.rateLimitStore,
+      resolveDeployment({
+        ...MODAL_INSTALL,
+        ...upstash,
+        REDIS_URL: 'redis://localhost:6379',
+      }).shape.rateLimitStore,
     ).toBe('redis')
-    expect(resolveDeployment(MODAL_INSTALL, 'node').shape.rateLimitStore).toBe('memory')
+    expect(resolveDeployment(MODAL_INSTALL).shape.rateLimitStore).toBe('memory')
   })
 
   it('refuses an unrecognised TRANSCODE_PROVIDER rather than quietly keeping modal', () => {
-    const resolution = resolveDeployment(
-      { ...MODAL_INSTALL, TRANSCODE_PROVIDER: 'inhouse' },
-      'node',
-    )
+    const resolution = resolveDeployment({
+      ...MODAL_INSTALL,
+      TRANSCODE_PROVIDER: 'inhouse',
+    })
     expect(fatalProblems(resolution).join('\n')).toMatch(/TRANSCODE_PROVIDER/)
   })
 
   it('keeps a missing optional capability non-fatal so the API can still boot', () => {
-    const resolution = resolveDeployment({ DB_DRIVER: 'pg' }, 'node')
+    const resolution = resolveDeployment({})
 
     expect(fatalProblems(resolution)).toEqual([])
     expect(resolution.problems.length).toBeGreaterThan(0)

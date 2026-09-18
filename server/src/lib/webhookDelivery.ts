@@ -61,7 +61,7 @@ function newLeaseOwner(): string {
   return `wkr_${randomBytes(8).toString('hex')}`
 }
 
-/** postgres-js hands back parsed jsonb; neon-http may hand back a string. */
+/** postgres-js usually hands back parsed jsonb; a string is still accepted. */
 function asObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object') return value as Record<string, unknown>
   if (typeof value === 'string') {

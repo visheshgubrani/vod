@@ -3,6 +3,8 @@
  * so the wizard's final report and `--check` mode share one set of rules.
  */
 
+import { parseEnabledFlag } from './mapping'
+
 export interface CheckRow {
   ok: boolean
   /** Advisory rows (○) never fail the run. */
@@ -55,7 +57,6 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
   if (!dbOk) failed = true
   rows.push({ ok: dbOk, text: 'Postgres connection URL (DATABASE_URL)', key: 'DATABASE_URL' })
 
-  advisory('DB_DRIVER', 'DB driver (neon-http | pg)')
   check('ACCOUNT_ID', 'Cloudflare account id')
   check('R2_ACCESS_KEY_ID', 'R2 access key id')
   check('R2_SECRET_ACCESS_KEY', 'R2 secret access key')
@@ -66,7 +67,7 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
   // endpoint is the fastest way to make a working install look unfinished.
   const provider = (env['TRANSCODE_PROVIDER'] ?? 'modal').trim().toLowerCase()
   const selfHosted = provider === 'self-hosted' || provider === 'selfhosted' || provider === 'local'
-  const uploadsEnabled = (env['UPLOADS_ENABLED'] ?? 'true').trim().toLowerCase() !== 'false'
+  const uploadsEnabled = parseEnabledFlag(env['UPLOADS_ENABLED'], true)
 
   if (selfHosted && !uploadsEnabled) {
     advisory('RAW_BUCKET_NAME', 'Raw bucket (not needed: uploads are off)')
@@ -85,7 +86,17 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
   check('BETTER_AUTH_SECRET', 'Auth secret (>=32 chars)')
   advisory('DELIVERY_URL', 'Delivery worker base URL')
 
-  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET'] as const) {
+  const analyticsOn = parseEnabledFlag(env['ANALYTICS_ENABLED'], true)
+  if (analyticsOn) {
+    check('ANALYTICS_INGEST_SECRET', 'Analytics ingest secret (>=32 chars)')
+    advisory('CLOUDFLARE_ANALYTICS_TOKEN', 'Analytics SQL read token (optional)')
+  } else {
+    advisory('ANALYTICS_INGEST_SECRET', 'Analytics ingest secret (not needed: analytics are off)')
+    advisory('CLOUDFLARE_ANALYTICS_TOKEN', 'Analytics SQL read token (not needed: analytics are off)')
+  }
+
+  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET', 'ANALYTICS_INGEST_SECRET'] as const) {
+    if (key === 'ANALYTICS_INGEST_SECRET' && !analyticsOn) continue
     const value = env[key]
     if (isSet(value) && value.trim().length < MIN_SECRET_LENGTH) {
       failed = true
@@ -155,6 +166,21 @@ export function lintEnvFiles(
   failed = server.failed
   rows.push(...lintDeliveryMirror(serverEnv['JWT_SECRET'], deliveryEnv))
   for (const row of rows.slice(-1)) if (!row.ok && !row.advisory) failed = true
+  const analyticsOn = parseEnabledFlag(serverEnv['ANALYTICS_ENABLED'], true)
+  if (analyticsOn && deliveryEnv) {
+    const serverSecret = serverEnv['ANALYTICS_INGEST_SECRET']
+    const deliverySecret = deliveryEnv['ANALYTICS_INGEST_SECRET']
+    const match =
+      isSet(serverSecret) && isSet(deliverySecret) && serverSecret === deliverySecret
+    rows.push({
+      ok: match,
+      text: match
+        ? 'delivery/.dev.vars ANALYTICS_INGEST_SECRET matches the API (local files only)'
+        : 'delivery/.dev.vars ANALYTICS_INGEST_SECRET does not match the API (local files only)',
+      key: 'ANALYTICS_INGEST_SECRET',
+    })
+    if (!match) failed = true
+  }
   return { rows, failed }
 }
 
@@ -209,7 +235,7 @@ export function lintDeployEnv(env: Record<string, string>): { rows: CheckRow[]; 
 
   const provider = (env['TRANSCODE_PROVIDER'] ?? 'modal').trim().toLowerCase()
   const selfHosted = provider === 'self-hosted' || provider === 'selfhosted' || provider === 'local'
-  const uploadsOn = (env['UPLOADS_ENABLED'] ?? 'true').trim().toLowerCase() !== 'false'
+  const uploadsOn = parseEnabledFlag(env['UPLOADS_ENABLED'], true)
 
   if (selfHosted && !uploadsOn) {
     advisory('RAW_BUCKET_NAME', 'Raw bucket (not needed: uploads are off)')
@@ -223,7 +249,17 @@ export function lintDeployEnv(env: Record<string, string>): { rows: CheckRow[]; 
   }
   advisory('DELIVERY_URL', 'Delivery worker base URL')
 
-  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET'] as const) {
+  const analyticsOn = parseEnabledFlag(env['ANALYTICS_ENABLED'], true)
+  if (analyticsOn) {
+    check('ANALYTICS_INGEST_SECRET', 'Analytics ingest secret (>=32 chars)')
+    advisory('CLOUDFLARE_ANALYTICS_TOKEN', 'Analytics SQL read token (optional)')
+  } else {
+    advisory('ANALYTICS_INGEST_SECRET', 'Analytics ingest secret (not needed: analytics are off)')
+    advisory('CLOUDFLARE_ANALYTICS_TOKEN', 'Analytics SQL read token (not needed: analytics are off)')
+  }
+
+  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET', 'ANALYTICS_INGEST_SECRET'] as const) {
+    if (key === 'ANALYTICS_INGEST_SECRET' && !analyticsOn) continue
     const value = env[key]
     if (isSet(value) && value.trim().length < MIN_SECRET_LENGTH) {
       failed = true

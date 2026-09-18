@@ -12,7 +12,7 @@
  */
 
 import type { CheckRow } from './verify'
-import type { ConfigTarget, DbKind, RuntimeKind, WizardAnswers } from './types'
+import type { ConfigTarget, DbKind, WizardAnswers } from './types'
 
 export type OsFamily = 'debian' | 'rpm' | 'arch' | 'suse' | 'alpine' | 'mac' | 'unknown'
 
@@ -146,7 +146,6 @@ export const DOCKER_DESKTOP_HINT = 'https://docs.docker.com/desktop/ (or: brew i
  */
 export interface SystemShape {
   target?: ConfigTarget
-  runtime: RuntimeKind
   dbKind?: DbKind
   transcodeProvider?: 'modal' | 'self-hosted'
   uploadsEnabled?: boolean
@@ -155,7 +154,6 @@ export interface SystemShape {
 export function systemShapeFromAnswers(answers: WizardAnswers): SystemShape {
   return {
     ...(answers.target !== undefined ? { target: answers.target } : {}),
-    runtime: answers.runtime,
     dbKind: answers.db?.kind,
     ...(answers.transcodeProvider !== undefined
       ? { transcodeProvider: answers.transcodeProvider }
@@ -201,7 +199,7 @@ export function requirementsFor(
   // ── Docker: the Compose stack and the self-hosted agent ─────────────────
   const wantsCompose = target === 'deploy'
   const wantsLocalInfra =
-    target === 'dev' && shape.runtime === 'node' && shape.dbKind === 'local'
+    target === 'dev' && shape.dbKind === 'local'
   const wantsAgent = provider === 'self-hosted'
   if (wantsCompose || wantsLocalInfra || wantsAgent) {
     const why = wantsAgent
@@ -227,8 +225,7 @@ export function requirementsFor(
     })
   }
   // No row at all when nothing in this shape uses Docker: a "✓ Docker — not
-  // needed for this shape" line is noise, and an advisory "○ Docker" on a
-  // Workers install reads like something is missing.
+  // needed for this shape" line is noise.
 
   // ── Python: building the Modal deploy environment ──────────────────────
   if (provider === 'modal') {

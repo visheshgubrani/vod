@@ -274,8 +274,7 @@ export function decideHeartbeatThrottle(
  * Taking the lock in an earlier statement fixes it, because each *statement* in
  * a READ COMMITTED transaction gets a fresh snapshot: a second claimer blocks
  * here, and once it proceeds its claim statement sees the first claimer's
- * committed row. Both drivers run the pair in one transaction — neon via
- * `batch`, postgres-js via `transaction`.
+ * committed row. The pair runs in one postgres-js transaction.
  *
  * Only taken when a cap is configured; an uncapped organization has nothing to
  * serialize and should not pay for it.

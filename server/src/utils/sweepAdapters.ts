@@ -8,8 +8,8 @@ import type { EnvLike } from '../lib/config'
 
 /**
  * Production sweep adapters — thin SQL/dispatch glue over the pure
- * jobSweeper core. Environment values come from the request/scheduled env
- * (c.env / bindings) so both Workers and tests can inject them.
+ * jobSweeper core. Environment values come from the runtime env so tests can
+ * inject them.
  */
 
 export const DEFAULT_SWEEP_LIMITS: SweepLimits = {

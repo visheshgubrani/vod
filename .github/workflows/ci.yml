@@ -92,14 +92,12 @@ jobs:
     runs-on: ubuntu-latest
     # Production builds intentionally reject missing marketing destinations.
     # CI supplies syntactically valid test destinations; deployments provide the
-    # real docs and hosted-form URLs through marketing/.env.example.
+    # real docs URL through marketing/.env.example.
     env:
       MARKETING_CANONICAL_ORIGIN: https://clipmux.com
       MARKETING_DOCS_URL: https://docs.clipmux.com
       MARKETING_QUICKSTART_URL: https://docs.clipmux.com/quickstart
       MARKETING_GITHUB_URL: https://github.com/visheshgubrani/vod
-      MARKETING_MANAGED_FORM_URL: https://forms.example.invalid/clipmux-managed
-      MARKETING_ENTERPRISE_FORM_URL: https://forms.example.invalid/clipmux-enterprise
       MARKETING_PRIVACY_URL: https://clipmux.com/privacy
       MARKETING_HERO_VIDEO_URL: /media/hero-1080.mp4
       MARKETING_HERO_VIDEO_MOBILE_URL: /media/hero-720.mp4
@@ -277,11 +275,14 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile
       # @clipmux/uploader and @clipmux/player only build at tag time otherwise,
-      # so a broken build stayed invisible until a release was cut.
+      # so a broken build stayed invisible until a release was cut. The Node API
+      # bundle is the production artifact `pnpm start` and Compose run.
       - name: Build published packages
         run: |
           pnpm --filter @clipmux/uploader build
           pnpm --filter @clipmux/player build
+      - name: Build Node API
+        run: pnpm --filter vod-api build:node
 
   soft-delete-guard:
     runs-on: ubuntu-latest
@@ -318,12 +319,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The API runs on two runtimes, and the boundary between them used to be
-      # implicit: a middleware copied `c.env` into `process.env` on every request
-      # so that modules written against ambient env would work on Workers. That
-      # bridge is gone. This guard keeps it gone, because the failure mode is
-      # silent — code that reads the wrong environment looks fine until one
-      # runtime misbehaves.
+      # Ambient `process.env` used to leak into route modules so the same code
+      # could run on Workers. The API is Node-only now; capabilities still come
+      # from the composition root. This guard keeps route modules from reading
+      # the ambient environment, because that failure mode is silent.
       - name: Only the composition roots may read the ambient environment
         run: |
           fail=0
@@ -341,8 +340,8 @@ jobs:
             fail=1
           fi
 
-          # `c.env` is the Workers binding map. Only the runtime layer may read
-          # it; everything else goes through c.var.runtime.
+          # `c.env` is leftover Workers binding-map access. Only the runtime
+          # layer may read it; everything else goes through c.var.runtime.
           envs="$(grep -rn 'c\.env' server/src --include='*.ts' \
             | grep -v '^server/src/runtime/' \
             | grep -vE ':[0-9]+:[[:space:]]*(\*|//)' || true)"

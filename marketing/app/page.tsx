@@ -14,7 +14,7 @@ const faqs = [
   {
     question: "What do I actually have to run?",
     answer:
-      "Four things, and you choose the shape of each. Storage: a Cloudflare R2 bucket for raw uploads and a second for transcoded output. State: Postgres. Compute: the API runtime, which is the same Hono app on Node or on Cloudflare Workers, plus the delivery Worker that serves media. Transcoding: Modal, or a self-hosted agent on machines you already have. The bootstrap wizard checks each requirement before it writes any configuration.",
+      "Storage: two R2 buckets, one for raw uploads and one for transcoded output. State: Postgres. Compute: the Node API and the delivery Worker that serves media. Transcoding: Modal's GPU runners, or the self-hosted agent on machines you already have. The bootstrap wizard checks each requirement before it writes any configuration.",
   },
   {
     question: "Who owns the video files?",
@@ -36,11 +36,6 @@ const faqs = [
     answer:
       "The software is Apache-2.0 and free. You pay your infrastructure providers directly: storage and egress for R2, your Postgres host, whatever runs the API, and GPU time for transcoding. ClipMux adds no licence fee and no per-minute charge on top, and it reports the storage and bandwidth it measured so you can reconcile it against your own bills.",
   },
-  {
-    question: "Is managed hosting available?",
-    answer:
-      "Not yet. Managed hosting is planned with no date and no published price, so the interest list is a way to register a preference rather than a waitlist for something you can buy. Self-hosting is the supported path today and runs the same application.",
-  },
 ];
 
 export default function Home() {
@@ -56,11 +51,13 @@ export default function Home() {
         <DeveloperSection config={siteConfig} />
         <HostingSection config={siteConfig} />
 
-        <section id="faq" className="faq-section" data-reveal>
-          <div className="content-width faq-layout">
-            <div>
-              <p className="section-label">06 / Questions</p>
-              <h2 className="section-title">Clear answers before the first frame.</h2>
+        <section id="faq" className="section">
+          <div className="content-width">
+            <div className="section-header">
+              <p className="section-label">Questions</p>
+              <h2 className="section-title">
+                Clear answers before the first frame.
+              </h2>
             </div>
             <FaqList items={faqs} />
           </div>

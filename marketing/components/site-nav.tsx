@@ -15,7 +15,7 @@ const navItems = [
   { href: "#workflow", label: "Workflow" },
   { href: "#platform", label: "Platform" },
   { href: "#developers", label: "Developers" },
-  { href: "#hosting", label: "Hosting" },
+  { href: "#hosting", label: "Self-hosting" },
 ];
 
 type SiteNavProps = {

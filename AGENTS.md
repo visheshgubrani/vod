@@ -6,7 +6,7 @@ VOD platform).
 ## Repository layout (single pnpm workspace at the repo root)
 
 ```
-server/        Hono API — control plane (Cloudflare Worker or Node/Docker)
+server/        Hono API — control plane (Node; Docker or `pnpm dev`)
 delivery/      Cloudflare Worker — media delivery (JWT, manifest rewriting, metering)
 web/           Next.js dashboard + Developer Welcome (/setup BYOK page)
 sdk/           @clipmux/uploader — browser upload SDK (windowed multipart,
@@ -39,7 +39,6 @@ setup/         clipmux-setup — interactive bootstrap wizard (TS, clack + chalk
 ```bash
 pnpm install                  # root ONLY — never inside a package
 pnpm dev                      # API (Node, tsx watch :8787) + web (Next :3000), parallel
-pnpm dev:workers              # same pair, API under wrangler dev (:8787)
 pnpm dev:all                  # adds delivery worker + sdk/player watch builds
 pnpm dev:infra                # dev Postgres :5433 + Redis :6382 (docker-compose.dev.yml, waits for health)
 pnpm dev:infra:down           # stop dev infra, keep data
@@ -49,11 +48,8 @@ pnpm db:up / pnpm db:down     # dev Postgres only (compatibility aliases for dev
 pnpm db:migrate               # drizzle-kit migrate, reads server/.dev.vars
 pnpm db:seed                  # first tenant
 pnpm docker:up / :down / :build / :migrate / :logs / :reset   # deployment stack (docker-compose.yml, root .env)
-# DB_DRIVER=pg is impossible on Workers — the server refuses to start with an
-# explanatory message. `pnpm dev:workers` needs neon-http + a Neon URL by design;
-# `pnpm dev` (Node) is the default and works with the dev Postgres.
-# worker ports are pinned in wrangler.jsonc (:8787 API, :8788 delivery) — a busy
-# port fails loudly; Next dev silently moves to :3001 when :3000 is taken
+# Delivery worker port is pinned in delivery/wrangler.jsonc (:8788). A busy
+# port fails loudly; Next dev silently moves to :3001 when :3000 is taken.
 pnpm test                     # server/delivery/sdk/player/server-sdk/setup suites
 pnpm build                    # builds packages that define build
 pnpm lint                     # web (eslint) + others that define it
@@ -68,52 +64,53 @@ pnpm --filter ./server test   # one package (filters match paths or names)
 pnpm --filter vod-api exec tsc --noEmit
 ```
 
-Per-package: `web` (Next 16 standalone: `output: "standalone"`; `dev:workers`
-is just `next dev`), `sdk`/`player` (tsup + vitest), `delivery` (wrangler +
-vitest pool-workers), `server` (`dev` = Node `tsx watch src/node/server.ts`,
-`dev:workers` = `wrangler dev` :8787; drizzle `db:migrate` (authoritative —
+Per-package: `web` (Next 16 standalone: `output: "standalone"`), `sdk`/`player`
+(tsup + vitest), `delivery` (wrangler + vitest pool-workers), `server`
+(`dev` = Node `tsx watch src/node/server.ts`; drizzle `db:migrate` (authoritative —
 `db:push` cannot create the hand-written trigger)/`db:seed`;
 the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
 `build:node` + `start:node` remain available for a bundled Node runtime).
 
 ## Stack notes (verified)
 
-- **Runtime:** the same Hono app runs on Node (`@hono/node-server` in
-  `src/node/server.ts` — `pnpm dev`, `pnpm start`, Docker) or Cloudflare Workers
-  (`pnpm dev:workers`, `wrangler deploy`). `DB_DRIVER` picks the Postgres
-  transport: `pg`/postgres-js (Node only — the server refuses to start on
-  Workers) vs `neon-http` (both). Composition roots live in
-  `server/src/runtime/`: `deployment.ts` decides every choosable axis once and
-  purely, `node.ts`/`workers.ts` wire the resulting capabilities, and an
-  entrypoint hands one of them to `createApp`. Put runtime-only behavior behind
-  a port there — never a runtime branch inside a route. Docs:
+- **Runtime:** the Hono API runs on Node (`@hono/node-server` in
+  `src/node/server.ts` — `pnpm dev`, `pnpm start`, Docker). Postgres is always
+  `postgres-js` over `DATABASE_URL` (a Neon URL is an ordinary connection
+  string). `DB_DRIVER` is obsolete and produces an advisory, not a driver
+  selection. Composition lives in `server/src/runtime/`: `deployment.ts`
+  decides choosable axes once and purely, `node.ts` wires capabilities, and
+  the Node entrypoint hands the result to `createApp`. Put platform-specific
+  behavior behind a port there — never a runtime branch inside a route. Docs:
   `docs/deployment-shapes.md`.
 - **Queue:** direct HTTP dispatch to the Modal endpoint is the default
   (`utils/queue.ts`, typed `DispatchError` on final failure, never retries
   4xx); QStash is an optional adapter (used only when `QSTASH_TOKEN` set).
-- **Rate limiting:** `REDIS_URL` (plain TCP, Node only; fatal on Workers) →
-  Upstash Redis REST (`UPSTASH_REDIS_REST_URL/TOKEN`, works on both runtimes) →
-  in-memory sliding window (`lib/rateLimit/memory.ts`) — always on, never
-  fail-open.
+- **Rate limiting:** `REDIS_URL` (plain TCP) → Upstash Redis REST
+  (`UPSTASH_REDIS_REST_URL/TOKEN`) → in-memory sliding window
+  (`lib/rateLimit/memory.ts`) — always on, never fail-open.
 - **Video state machine** (`lib/videoState.ts`): pure transition rules;
   late/duplicate transcode callbacks are guarded (never resurrect `failed`,
   never downgrade `ready`). Complete handlers dispatch the job BEFORE
   `uploading→processing`.
-- **Sweeper** (`utils/jobSweeper.ts` + `sweepAdapters.ts`): heartbeat-aware
-  recovery of stuck `processing` (>45 min stale ⇒ retry ≤3 ⇒ typed
-  `JOB_TIMEOUT`) and abandoned `uploading` rows; endpoint
-  `POST /api/internal/sweep` (INTERNAL_SWEEP_SECRET), opt-in cron
-  (`SWEEP_ENABLED`), retry endpoint `POST /api/video/:id/retry`, heartbeats
-  `POST /api/webhook/heartbeat`.
+- **Sweeper** (`utils/jobSweeper.ts` + `sweepAdapters.ts` +
+  `maintenanceScheduler.ts`): heartbeat-aware recovery of stuck `processing`
+  (>45 min stale ⇒ retry ≤3 ⇒ typed `JOB_TIMEOUT`) and abandoned `uploading`
+  rows; endpoint `POST /api/internal/sweep` (INTERNAL_SWEEP_SECRET). The Node
+  entrypoint starts an in-process scheduler after listen (`SWEEP_ENABLED`
+  default true; additional replicas set it false). Retry endpoint
+  `POST /api/video/:id/retry`, heartbeats `POST /api/webhook/heartbeat`.
 - **Health:** `GET /health` (ok), `GET /health/config` (public capability
   flags — never secrets; consumed by landing + /setup; also carries an additive
   `deployment` object with the resolved shape — runtime, transports, providers,
-  stores, `deliveryRuntime`/`deliveryUrl` — see `docs/deployment-shapes.md`),
-  delivery `GET /health`, Modal `GET /healthz`.
+  stores, `analyticsWrite: "delivery-worker" | "none"`, `deliveryRuntime`/`deliveryUrl`
+  — see `docs/deployment-shapes.md`), delivery `GET /health` and
+  `GET /health/config`, Modal `GET /healthz`.
 - **Delivery worker** verifies HS256 JWTs (iss `clipmux`, aud `playback`,
   shared `JWT_SECRET`) per request for signed content, rewrites every
   URI-bearing HLS/DASH tag (never foreign-host URLs), serves 206 ranges,
-  meters bandwidth into Analytics Engine, cache-tags signed segments.
+  meters bandwidth into Analytics Engine, accepts Node-forwarded playback
+  events on `POST /internal/analytics/playback` (`ANALYTICS_INGEST_SECRET`),
+  cache-tags signed segments.
 - **Transcoding** reports stable `error_code`s (see `docs/delivery-contract.md`),
   heartbeats non-fatally, adapts segment duration to short clips, verifies
   uploads (typed `PARTIAL_UPLOAD`), pre-bakes Whisper weights. The engine lives in
@@ -168,13 +165,12 @@ expected values from literals/worked examples (never re-derived from code).
   `delivery/.dev.vars.example`, `web/.env.example`, root `.env.example`) and
   `server/src/lib/config.ts` validation; keep `/health/config` secret-free.
   `server/.dev.vars` is now the **development-only** config (`pnpm dev`,
-  `pnpm dev:workers`, migrations, tests), loaded through
+  migrations, tests), loaded through
   `server/src/lib/load-local-env.ts` (`.dev.vars` then `.env`, real env vars
   always win) — never add a second server-side local env file. A Docker Compose
   **deployment** is configured by the root `.env` (template `.env.example`),
-  which Compose reads for both interpolation and the `api`/`maintenance`
-  container environment; do not document or wire `.dev.vars` as deployment
-  config.
+  which Compose reads for both interpolation and the `api` container
+  environment; do not document or wire `.dev.vars` as deployment config.
 - **Bootstrap / wizard changes**: `scripts/bootstrap.sh` parses the mode first —
   `--help`, `--doctor`, `--check`, `--answers` and any run without a TTY install
   nothing (no nvm, no corepack, no `pnpm install`). The wizard owns one
@@ -190,10 +186,10 @@ expected values from literals/worked examples (never re-derived from code).
   (`setup/src/deploy.ts`): independent steps continue after a failure, dependent
   steps are blocked, and an incomplete deployment exits nonzero.
 - **Runtime axes**: choosable vs fixed behavior is decided in
-  `server/src/runtime/deployment.ts`, wired in `node.ts`/`workers.ts`. Adding a
-  runtime-specific capability means adding a port there — not branching on the
-  runtime in a route. Fatal combinations (`DB_DRIVER=pg` or `REDIS_URL` on
-  Workers, an unknown `TRANSCODE_PROVIDER`) refuse to boot by design.
+  `server/src/runtime/deployment.ts`, wired in `node.ts`. Adding a
+  platform-specific capability means adding a port there — not branching in a
+  route. An unknown `TRANSCODE_PROVIDER` refuses to boot by design. `DB_DRIVER`
+  is ignored with an advisory.
 - **Documentation**: two surfaces, split by audience. `docs-site/` is the
   published Fumadocs site for developers integrating and operators deploying
   (content in `docs-site/content/docs/`, groups ordered by `meta.json` at each
@@ -221,26 +217,28 @@ expected values from literals/worked examples (never re-derived from code).
 
 ## Environment variables (key set — see `server/.dev.vars.example` for development; root `.env.example` for deployment)
 
-`DATABASE_URL`, `DB_DRIVER`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
+`DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
 `FRONTEND_URL`, `CORS_ORIGINS` (wildcard `*.` patterns supported),
 `BACKEND_URL`, `ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
 `RAW_BUCKET_NAME`, `TRANSCODED_BUCKET_NAME`, `CLOUDFLARE_ANALYTICS_TOKEN`,
+`ANALYTICS_ENABLED` (default true), `ANALYTICS_INGEST_SECRET` (shared with delivery),
 `MODAL_WEBHOOK_URL`, `TRANSCODE_INGEST_SECRET` (wins over the legacy alias
 `MODAL_WEBHOOK_SECRET` in both directions), `QSTASH_TOKEN` (optional),
 `TRANSCODE_PROVIDER` (`modal` default | `self-hosted`), `SELF_HOSTED_ENABLED`,
 `UPLOADS_ENABLED` (enforced — upload routes 403 when false),
 `TRANSCODE_ORG_CONCURRENCY_CAP`,
 `JWT_SECRET`, `DELIVERY_URL` (single delivery base URL everywhere),
-`INTERNAL_SWEEP_SECRET`, `SWEEP_*`, `MAX_UPLOAD_SIZE_BYTES`,
-`REDIS_URL` (plain TCP, Node runtime only — fatal on Workers; takes precedence
-over Upstash), `UPSTASH_REDIS_REST_URL/TOKEN` (optional), `RATE_LIMIT_*`.
+`INTERNAL_SWEEP_SECRET`, `SWEEP_ENABLED` (default true; replicas set false),
+`MAINTENANCE_INTERVAL_SECONDS` (default 900), `SWEEP_*`, `MAX_UPLOAD_SIZE_BYTES`,
+`REDIS_URL` (plain TCP; takes precedence over Upstash),
+`UPSTASH_REDIS_REST_URL/TOKEN` (optional), `RATE_LIMIT_*`.
 Web: `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_BASE_URL`,
 `NEXT_PUBLIC_FRONTEND_URL`.
 
 ## Dependencies
 
 - web: Next 16 (standalone), React 19, better-auth, TanStack Query, Tailwind 4
-- server: Hono, Drizzle ORM, neon-http + postgres.js, better-auth, AWS SDK S3,
+- server: Hono, Drizzle ORM, postgres.js, better-auth, AWS SDK S3,
   @hono/node-server, Upstash (optional)
 - delivery: Hono, jose
 - transcoding: Modal, FFmpeg/Shaka, faster-whisper, Groq (optional).

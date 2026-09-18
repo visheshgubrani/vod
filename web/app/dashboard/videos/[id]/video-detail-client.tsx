@@ -45,6 +45,7 @@ import {
 import { PlaybackAnalyticsNotice } from "@/components/dashboard/playback-analytics-notice";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { API_BASE_URL } from "@/lib/api-base";
+import { useDeploymentAnalytics } from "@/lib/use-deployment-analytics";
 
 const API_URL = API_BASE_URL;
 
@@ -227,6 +228,8 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
   const [embedMuted, setEmbedMuted] = React.useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
+  const { shape: analyticsShape } = useDeploymentAnalytics();
+  const telemetryEnabled = analyticsShape?.analyticsWrite === "delivery-worker";
 
   // Unwrap params
   React.useEffect(() => {
@@ -592,7 +595,9 @@ export default function VideoDetailPage({ params }: VideoDetailPageProps) {
               subtitles={video.subtitleUrl || undefined}
               chapters={video.chapters || undefined}
               // Analytics are opt-in in @clipmux/player; the dashboard opts in.
-              analyticsEndpoint={`${API_URL}/playback/journal`}
+              analyticsEndpoint={
+                telemetryEnabled ? `${API_URL}/playback/journal` : false
+              }
             />
           ) : (
             <div className="flex aspect-video flex-col items-center justify-center gap-3 bg-panel-quiet text-muted-foreground">

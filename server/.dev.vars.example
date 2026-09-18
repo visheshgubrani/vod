@@ -1,19 +1,11 @@
 # ClipMux API — LOCAL DEVELOPMENT config. Copy to server/.dev.vars.
 #
-# Read by `pnpm dev` (the Node runtime), the Workers runtime (`pnpm dev:workers`),
-# migrations, the seed script and the drizzle CLI. Real env vars always win over
-# this file.
+# Read by `pnpm dev`, migrations, the seed script and the drizzle CLI. Real env
+# vars always win over this file.
 #
 # This file is for developing ClipMux. A *deployment* is configured by the root
-# `.env` for Docker Compose (see .env.example) or by `wrangler secret put` for
-# the Workers runtime — never by committing this file.
+# `.env` for Docker Compose (see .env.example) — never by committing this file.
 DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vod_dev
-# 'pg' (postgres.js over TCP) for the Node runtime — the default.
-# `pnpm dev:workers` requires 'neon-http' and a Neon URL: the Workers runtime
-# cannot hold a Postgres TCP connection across requests, so the first query
-# succeeds and the rest fail with "Cannot perform I/O on behalf of a different
-# request". That is a runtime property, not a bug — use `pnpm dev` locally.
-DB_DRIVER=pg
 BETTER_AUTH_SECRET=your-secret-at-least-32-chars
 BETTER_AUTH_URL=http://localhost:8787
 FRONTEND_URL=http://localhost:3000
@@ -44,6 +36,12 @@ R2_SECRET_ACCESS_KEY=your-r2-secret-key
 RAW_BUCKET_NAME=raw-bucket-uploads
 TRANSCODED_BUCKET_NAME=transcoded-bucket
 CLOUDFLARE_ANALYTICS_TOKEN=your-analytics-api-token
+# Playback/bandwidth collection. Default true. Set false to skip Analytics
+# Engine writes and queries; media delivery still works. Existing datasets are
+# not deleted.
+ANALYTICS_ENABLED=true
+# Shared only with the delivery worker. Independently generated from JWT_SECRET.
+ANALYTICS_INGEST_SECRET=
 
 # OAuth (optional)
 GOOGLE_CLIENT_ID=
@@ -77,18 +75,17 @@ JWT_SECRET=your-jwt-secret-at-least-32-chars
 # Absolute base URL of your delivery worker (no scheme-less placeholders)
 DELIVERY_URL=https://media.yourdomain.com
 
-# Job sweeper (stuck-video recovery)
+# Job sweeper / in-process maintenance (stuck-video recovery, webhooks, cleanup)
 # INTERNAL_SWEEP_SECRET=long-random-string  # required to call /api/internal/sweep
-# SWEEP_ENABLED=true                        # enables scheduled() runs (cron trigger)
+# SWEEP_ENABLED=true                        # default on; false disables this instance’s scheduler
 # SWEEP_PROCESSING_STALE_MIN=45
 # SWEEP_UPLOADING_STALE_HOURS=24
 # SWEEP_MAX_ATTEMPTS=3
 
 # Rate limiting (choose one; first match wins)
-#   REDIS_URL                     a plain Redis over TCP — Node runtime only.
+#   REDIS_URL                     a plain Redis over TCP.
 #                                 `pnpm dev:infra` starts one on :6382.
-#   UPSTASH_REDIS_REST_URL/TOKEN  Upstash REST — works on both runtimes,
-#                                 including Workers (which cannot open a socket).
+#   UPSTASH_REDIS_REST_URL/TOKEN  Upstash Redis REST.
 #   neither                       in-memory sliding window, per instance. Fine
 #                                 for one API instance; configure one of the two
 #                                 above before running replicas.
@@ -97,15 +94,15 @@ UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 
 # ── Background maintenance (transcode sweeps, webhook retries, byte cleanup) ──
-# Without this, webhook retries and storage reclamation do NOT run: deleted
-# videos keep their bytes and failed deliveries are never retried.
-# Workers: pair with the cron trigger in server/wrangler.jsonc.
-# Node:    nothing runs a pass by itself. Hit the endpoint from cron/host:
-#            curl -X POST localhost:8787/api/internal/sweep -H "x-sweep-secret: $INTERNAL_SWEEP_SECRET"
-#          (a Docker deployment gets the `maintenance` compose service instead)
+# Runs in this Node API process after listen. Exactly one instance should keep
+# SWEEP_ENABLED=true; additional replicas set SWEEP_ENABLED=false. Manual
+# sweeps (POST /api/internal/sweep) target the designated instance.
 SWEEP_ENABLED=true
 # Shared secret for POST /api/internal/sweep.
 INTERNAL_SWEEP_SECRET=
+# Seconds between passes after each completion. Positive integer, 1–2147483
+# (Node's timer range); other values fall back to 900.
+MAINTENANCE_INTERVAL_SECONDS=900
 # Rows/jobs handled per maintenance pass (default 50).
 MAINTENANCE_BATCH_SIZE=50
 

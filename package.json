@@ -9,7 +9,6 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs dev",
-    "dev:workers": "node scripts/dev.mjs dev:workers",
     "dev:all": "node scripts/dev.mjs dev:all",
     "dev:cleanup": "node scripts/dev.mjs cleanup",
     "dev:example": "pnpm --filter ./examples/nextjs-integration dev",

@@ -99,9 +99,9 @@ describe('parsePackageTable', () => {
 })
 
 describe('requirementsFor', () => {
-  it('does not ask a Workers + Modal installation for Docker or Python', () => {
+  it('does not require Docker for a Modal installation that uses existing Postgres', () => {
     const requirements = requirementsFor(
-      { target: 'dev', runtime: 'workers', dbKind: 'neon', transcodeProvider: 'modal' },
+      { target: 'dev', dbKind: 'existing', transcodeProvider: 'modal' },
       'develop',
     )
     const ids = requirements.map((requirement) => requirement.id)
@@ -113,7 +113,7 @@ describe('requirementsFor', () => {
 
   it('requires Docker and Compose for the deploy target', () => {
     const requirements = requirementsFor(
-      { target: 'deploy', runtime: 'node', dbKind: 'local', transcodeProvider: 'modal' },
+      { target: 'deploy', dbKind: 'local', transcodeProvider: 'modal' },
       'deploy',
     )
     for (const id of ['docker', 'docker-compose'] as const) {
@@ -125,13 +125,13 @@ describe('requirementsFor', () => {
 
   it('requires Docker for the dev Postgres, but only when it is the bundled one', () => {
     const bundled = requirementsFor(
-      { target: 'dev', runtime: 'node', dbKind: 'local', transcodeProvider: 'modal' },
+      { target: 'dev', dbKind: 'local', transcodeProvider: 'modal' },
       'develop',
     )
     expect(bundled.find((requirement) => requirement.id === 'docker')?.level).toBe('required')
 
     const external = requirementsFor(
-      { target: 'dev', runtime: 'node', dbKind: 'existing', transcodeProvider: 'modal' },
+      { target: 'dev', dbKind: 'existing', transcodeProvider: 'modal' },
       'develop',
     )
     expect(external.map((requirement) => requirement.id)).not.toContain('docker')
@@ -141,8 +141,7 @@ describe('requirementsFor', () => {
     const requirements = requirementsFor(
       {
         target: 'dev',
-        runtime: 'workers',
-        dbKind: 'neon',
+        dbKind: 'existing',
         transcodeProvider: 'self-hosted',
         uploadsEnabled: false,
       },
@@ -155,7 +154,7 @@ describe('requirementsFor', () => {
 
   it('delegates Docker installs to Docker itself', () => {
     const requirements = requirementsFor(
-      { target: 'deploy', runtime: 'node', dbKind: 'local', transcodeProvider: 'modal' },
+      { target: 'deploy', dbKind: 'local', transcodeProvider: 'modal' },
       'deploy',
     )
     const docker = requirements.find((requirement) => requirement.id === 'docker')
@@ -235,7 +234,6 @@ describe('systemShapeFromAnswers', () => {
   it('carries the fields requirements depend on', () => {
     const shape = systemShapeFromAnswers({
       target: 'deploy',
-      runtime: 'node',
       db: { kind: 'local' },
       queue: { kind: 'direct' },
       rateLimit: { kind: 'memory' },
@@ -250,7 +248,6 @@ describe('systemShapeFromAnswers', () => {
     })
     expect(shape).toEqual({
       target: 'deploy',
-      runtime: 'node',
       dbKind: 'local',
       transcodeProvider: 'self-hosted',
       uploadsEnabled: false,
@@ -299,7 +296,7 @@ describe('shell detector ↔ TypeScript planner', () => {
       expect(`${fixture}=${detection.family}`).toBe(`${fixture}=${detection.family}`)
 
       const requirements = requirementsFor(
-        { runtime: 'workers', dbKind: 'neon', transcodeProvider: 'modal' },
+        { dbKind: 'existing', transcodeProvider: 'modal' },
         'deploy',
       )
       for (const requirement of requirements) {
@@ -338,12 +335,10 @@ describe('shell detector ↔ TypeScript planner', () => {
 describe('every shape plans', () => {
   const shapes: SystemShape[] = []
   for (const target of ['dev', 'deploy'] as const) {
-    for (const runtime of ['workers', 'node'] as const) {
-      for (const dbKind of ['neon', 'local', 'existing'] as const) {
-        for (const transcodeProvider of ['modal', 'self-hosted'] as const) {
-          for (const uploadsEnabled of [true, false]) {
-            shapes.push({ target, runtime, dbKind, transcodeProvider, uploadsEnabled })
-          }
+    for (const dbKind of ['local', 'existing'] as const) {
+      for (const transcodeProvider of ['modal', 'self-hosted'] as const) {
+        for (const uploadsEnabled of [true, false]) {
+          shapes.push({ target, dbKind, transcodeProvider, uploadsEnabled })
         }
       }
     }
@@ -361,9 +356,9 @@ describe('every shape plans', () => {
     }
   })
 
-  it('never requires Python or Docker for a Workers + Modal develop run', () => {
+  it('never requires Python or Docker for a Modal develop run against existing Postgres', () => {
     const requirements = requirementsFor(
-      { target: 'dev', runtime: 'workers', dbKind: 'neon', transcodeProvider: 'modal' },
+      { target: 'dev', dbKind: 'existing', transcodeProvider: 'modal' },
       'develop',
     )
     expect(

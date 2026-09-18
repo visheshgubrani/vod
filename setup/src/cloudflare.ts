@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WizardError } from './errors'
 import { parseAccountId, parseWorkersUrl, r2BucketAlreadyExists } from './parsers'
-import { patchBucketName } from './cfgpatch'
+import { patchAnalyticsEngineDatasets, patchBucketName } from './cfgpatch'
 import { pkgCapture, pkgInherit, runCapture } from './runners'
 import { logInfo, logStep, logWarn, withSpinner } from './ui'
 
-const SERVER = 'server'
+const SERVER = 'delivery'
 const DELIVERY = 'delivery'
 
 export interface TempDir {
@@ -162,14 +162,21 @@ export function patchDeliveryBucket(root: string, bucket: string): boolean {
   return true
 }
 
+/** Add or remove Analytics Engine dataset bindings on the delivery worker. */
+export function patchDeliveryAnalytics(root: string, enabled: boolean): boolean {
+  const path = join(root, DELIVERY, 'wrangler.jsonc')
+  const text = readFileSync(path, 'utf8')
+  const updated = patchAnalyticsEngineDatasets(text, enabled)
+  if (updated === text) return false
+  writeFileSync(path, updated, { encoding: 'utf8' })
+  return true
+}
+
 /**
  * Deploy a worker package. Returns the parsed workers.dev URL (null when
  * none was printed — custom domains print none).
  */
-export async function deployWorker(
-  root: string,
-  pkg: 'server' | 'delivery',
-): Promise<string | null> {
+export async function deployWorker(root: string, pkg: 'delivery'): Promise<string | null> {
   return withSpinner(
     `Deploying ${pkg} worker…`,
     async () => {
@@ -195,7 +202,7 @@ export async function deployWorker(
  */
 export async function putWorkerSecrets(
   root: string,
-  pkg: 'server' | 'delivery',
+  pkg: 'delivery',
   entries: readonly (readonly [string, string])[],
   temp: TempDir,
 ): Promise<void> {

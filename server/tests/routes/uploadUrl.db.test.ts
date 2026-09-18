@@ -68,7 +68,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/url (PostgreSQL, Node wiring
     // a deployment does; `handle.db` is the suite's own connection to the same
     // database, used for the assertions.
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
 
     const response = await createNodeRequestHandler(createApp(signedInAs(runtime)), runtime)(

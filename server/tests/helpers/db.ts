@@ -34,9 +34,8 @@
  *   (the `AFTER DELETE` cleanup trigger). Anything exercising those paths must
  *   be migrated, not pushed.
  *
- * Driver: these tests use postgres-js against a plain server. The neon-http
- * driver is a Workers-only HTTP transport and cannot be pointed at a local
- * container, so its result *shape* is covered by `normalizeRows` unit tests.
+ * Driver: these tests use postgres-js against a plain server — the same
+ * transport the API uses.
  */
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -194,11 +193,7 @@ export async function createTestDb(
   // app code would fail with "database is not installed" — the deliberate
   // replacement for the ambient `process.env` fallback that used to make this
   // work by accident.
-  //
-  // The cast is the one place the two driver types meet: `Db` is the neon-http
-  // handle type the app is written against, while tests run postgres-js against
-  // a local container (the neon driver is a Workers-only HTTP transport).
-  installDb(db as unknown as Db)
+  installDb(db)
 
   // The same migrator `db:migrate` runs, so a migration that works in tests
   // cannot fail in a deployment (or vice versa), and `__drizzle_migrations`

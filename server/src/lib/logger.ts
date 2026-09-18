@@ -1,11 +1,9 @@
 /**
  * Structured logger.
  *
- * The level is a constructor argument, not an ambient read. On Workers
- * `process.env.NODE_ENV` is statically replaced at build time rather than read at
- * runtime, so a module-scope level was frozen for the isolate's life; the
- * composition root now resolves it once from the same configuration everything
- * else uses, and injects it.
+ * The level is a constructor argument, not an ambient read. The composition
+ * root resolves it once from the same configuration everything else uses, and
+ * injects it.
  */
 
 import type { LogLevel } from './config'

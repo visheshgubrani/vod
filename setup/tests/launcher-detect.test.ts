@@ -149,8 +149,11 @@ describe('scripts/lib/detect.sh', () => {
       { CLIPMUX_OS_RELEASE_FILE: join(dir, 'ubuntu') },
     )
     expect(result.stdout).toContain('PY=apt-get install -y python3 python3-venv python3-pip')
-    // The hint is what a user runs themselves, so it carries the sudo prefix.
-    expect(result.stdout).toContain('HINT=sudo apt-get install -y python3 python3-venv python3-pip')
+    // The hint is what a user runs themselves. As root it is the bare command;
+    // otherwise it carries the sudo prefix.
+    expect(result.stdout).toMatch(
+      /HINT=(sudo )?apt-get install -y python3 python3-venv python3-pip/,
+    )
     // Docker is deliberately absent from the table (see the file's header).
     expect(result.stdout).toContain('MISSING=none')
   })

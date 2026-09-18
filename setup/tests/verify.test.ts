@@ -4,7 +4,6 @@ import { lintDeliveryMirror, lintEnvFiles, lintServerEnv, renderCheckRows } from
 function goodServerEnv(): Record<string, string> {
   return {
     DATABASE_URL: 'postgresql://user:pass@host/db',
-    DB_DRIVER: 'neon-http',
     ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     R2_ACCESS_KEY_ID: 'r2-access-key-42',
     R2_SECRET_ACCESS_KEY: 'r2-secret-value-9f2c81',
@@ -14,6 +13,7 @@ function goodServerEnv(): Record<string, string> {
     TRANSCODE_INGEST_SECRET: 'i'.repeat(40),
     JWT_SECRET: 'j'.repeat(40),
     BETTER_AUTH_SECRET: 'b'.repeat(40),
+    ANALYTICS_INGEST_SECRET: 'a'.repeat(40),
     DELIVERY_URL: 'https://media.example.com',
   }
 }
@@ -57,6 +57,17 @@ describe('lintServerEnv', () => {
     const env = goodServerEnv()
     env['ACCOUNT_ID'] = 'your-cloudflare-account-id'
     expect(lintServerEnv(env).failed).toBe(true)
+  })
+
+  it('does not require the ingest secret when ANALYTICS_ENABLED=0', () => {
+    const env = goodServerEnv()
+    env['ANALYTICS_ENABLED'] = '0'
+    delete env['ANALYTICS_INGEST_SECRET']
+    const { rows, failed } = lintServerEnv(env)
+    expect(failed).toBe(false)
+    const ingest = rows.find((row) => row.key === 'ANALYTICS_INGEST_SECRET')
+    expect(ingest?.advisory).toBe(true)
+    expect(ingest?.text).toContain('not needed')
   })
 })
 
@@ -110,7 +121,6 @@ describe('lintEnvFiles + renderCheckRows', () => {
   it('renders rows with ✓/✗/○ without leaking values', () => {
     const env = goodServerEnv()
     delete env['DELIVERY_URL']
-    delete env['DB_DRIVER']
     const { rows } = lintServerEnv(env)
     const lines = renderCheckRows(rows)
     expect(lines[0]).toMatch(/^✓/)
@@ -149,6 +159,7 @@ const BASE: Record<string, string> = {
   TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
   JWT_SECRET: 'j'.repeat(40),
   BETTER_AUTH_SECRET: 'b'.repeat(40),
+  ANALYTICS_INGEST_SECRET: 'a'.repeat(40),
 }
 
 const rowFor = (env: Record<string, string>, fragment: string) =>

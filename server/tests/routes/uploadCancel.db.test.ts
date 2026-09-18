@@ -165,7 +165,6 @@ describe.skipIf(!hasTestDatabase)(
       const runtime = createNodeRuntime(
         fullyConfiguredEnv({
           DATABASE_URL: handle.url,
-          DB_DRIVER: 'pg',
           UPLOADS_ENABLED: 'true',
           RAW_BUCKET_NAME: RAW_BUCKET,
           TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',

@@ -555,10 +555,9 @@ export async function finalizeVideoSuccess(
 /**
  * Assert that publication and job finalization agreed.
  *
- * Returned as a *statement* rather than a JavaScript check because the
- * `neon-http` driver executes a batch as one server-side transaction with no
- * opportunity to inspect an intermediate result: the only way to abort it is for
- * a statement to fail. The cast raises `invalid input syntax for type integer:
+ * Returned as a *statement* rather than a JavaScript check so a split
+ * publication/job-finalization result aborts the surrounding transaction with a
+ * named error. The cast raises `invalid input syntax for type integer:
  * "publication diverged"`, which names the problem in the error the caller sees.
  *
  * Both-agree is the success case in either direction: both empty is a stale
@@ -592,7 +591,7 @@ export async function finalizeAndSucceed(
 ): Promise<FinalizeSuccessResult> {
   const atomic = executor as AtomicExecutor & AtomicBatchExecutor
   if (!supportsAtomicBatch(atomic)) {
-    throw new Error('atomic publication requires a driver with batch() or transaction()')
+    throw new Error('atomic publication requires postgres-js transaction()')
   }
 
   const { statement, parsed, eventId } = buildSuccessStatement(input)
@@ -625,10 +624,7 @@ export async function finalizeAndSucceed(
     published = outcome.publishedRows
     jobAdvanced = outcome.jobRows
   } else {
-    const results = await atomic.batch!([statement, jobStatement, assertion] as never[])
-    const rows = results as unknown[]
-    published = normalizeRows(rows[0])
-    jobAdvanced = normalizeRows(rows[1])
+    throw new Error('atomic publication requires postgres-js transaction()')
   }
 
   if (published.length === 0) {

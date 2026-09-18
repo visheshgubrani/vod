@@ -89,7 +89,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
 
   it('mints a token bound to the session organization', async () => {
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
 
     const response = await mint(signedInAs(runtime), { expires_in: '30m', max_files: 2 })
@@ -124,7 +124,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
 
   it('defaults to a one-hour, single-file token', async () => {
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
 
     const body = (await (await mint(signedInAs(runtime))).json()) as {
@@ -145,7 +145,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
 
   it('refuses an expiration beyond the 24h ceiling', async () => {
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
 
     const response = await mint(signedInAs(runtime), { expires_in: '48h' })
@@ -156,7 +156,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
 
   it('rejects a max_files outside 1–100', async () => {
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
 
     expect((await mint(signedInAs(runtime), { max_files: 0 })).status).toBe(400)
@@ -165,7 +165,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
 
   it('requires an active organization', async () => {
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
 
     const response = await mint(signedInWithoutOrg(runtime))
@@ -176,7 +176,7 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
 
   it('refuses an anonymous request', async () => {
     const runtime = createNodeRuntime(
-      fullyConfiguredEnv({ DATABASE_URL: handle.url, DB_DRIVER: 'pg' }),
+      fullyConfiguredEnv({ DATABASE_URL: handle.url }),
     )
     const anonymous: RuntimeCapabilities = {
       ...runtime,
@@ -192,7 +192,6 @@ describe.skipIf(!hasTestDatabase)('POST /api/upload/token (PostgreSQL, Node wiri
     const runtime = createNodeRuntime(
       fullyConfiguredEnv({
         DATABASE_URL: handle.url,
-        DB_DRIVER: 'pg',
         UPLOADS_ENABLED: 'false',
       }),
     )

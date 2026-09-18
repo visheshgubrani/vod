@@ -8,9 +8,9 @@ uploads. You still paste R2 S3 keys from the dashboard — Wrangler cannot
 mint them.
 
 This page is the deployment flow after those accounts exist. What a
-deployment can and cannot vary — API runtime, Postgres transport, transcoder
-provider, dispatch transport, rate-limit store; delivery and storage are
-**fixed** — is the canonical reference in
+deployment can and cannot vary — Postgres, transcoder provider, dispatch
+transport, rate-limit store, analytics on/off; delivery and storage are
+**fixed**, and the API is Node — is the canonical reference in
 [deployment-shapes.md](./deployment-shapes.md).
 
 ## Two stacks, two files
@@ -18,12 +18,12 @@ provider, dispatch transport, rate-limit store; delivery and storage are
 | File | Purpose | Configuration |
 | --- | --- | --- |
 | `docker-compose.dev.yml` (project `clipmux-dev`) | Local development infrastructure only: `postgres` (:5433) and `redis` (:6382). No API or web service — application code runs on the host. | `server/.dev.vars` |
-| `docker-compose.yml` (project `clipmux`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `maintenance`, `web`, plus the `migrate` (`tools`) and `transcoder` (`transcoder`) profiles. | `.env` at the repo root |
+| `docker-compose.yml` (project `clipmux`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `web`, plus the `migrate` (`tools`) and `transcoder` (`transcoder`) profiles. | `.env` at the repo root |
 
-`server/.dev.vars` is **development-only** (`pnpm dev`, `pnpm dev:workers`,
-migrations, tests). A Compose deployment is configured entirely by `.env` at
-the repo root — Compose reads it twice, for `${...}` interpolation and as the
-environment of the `api`/`maintenance` containers. Never commit `.env`.
+`server/.dev.vars` is **development-only** (`pnpm dev`, migrations, tests). A
+Compose deployment is configured entirely by `.env` at the repo root —
+Compose reads it twice, for `${...}` interpolation and as the environment of
+the `api` container. Never commit `.env`.
 
 ## Compose deployment
 
@@ -48,6 +48,9 @@ pnpm docker:up            # docker compose up -d
 
 `pnpm dev` and `docker compose up -d` both want ports 8787/3000 — run the dev
 setup or the deployment stack, not both.
+
+Run **exactly one** API instance with `SWEEP_ENABLED=true` (the default).
+Additional replicas set `SWEEP_ENABLED=false`. There is no leader election.
 
 ### Migrations
 
@@ -76,31 +79,31 @@ TypeScript schema and cannot create the hand-written objects, in particular the
 1. Two R2 buckets (raw uploads + transcoded output) with S3 CORS allowing your
    dashboard / upload origin.
 2. The **delivery** Worker bound to the transcoded bucket (`delivery/wrangler.jsonc`).
-3. Optional: the API Worker (you can run the API in the Compose stack instead).
 
 Delivery is fixed: there is no Node delivery worker, so the Compose stack has
-no service for it. Add a custom domain after first deploy — the wrangler configs
-ship with commented examples (`api.example.com` / `media.example.com`); they do
-not bind a production hostname for you.
+no service for it. Add a custom domain after first deploy — the wrangler config
+ships with a commented example (`media.example.com`); it does not bind a
+production hostname for you.
 
-## Path A — Cloudflare Workers
+## Path A — Node API + Cloudflare delivery
 
 ```bash
-./scripts/bootstrap.sh --target dev   # wizard: Workers runtime, R2/Neon keys
-pnpm db:migrate           # against the Neon URL; db:push cannot create the cleanup trigger
-cd server && pnpm exec wrangler deploy
-cd ../delivery && pnpm exec wrangler deploy
-cd ../transcoding && modal deploy main.py
+./scripts/bootstrap.sh --target dev   # wizard: bundled or existing Postgres, R2 keys
+pnpm db:migrate           # against DATABASE_URL; db:push cannot create the cleanup trigger
+cd delivery && pnpm exec wrangler deploy
+cd transcoding && modal deploy main.py
+pnpm dev                  # Node API :8787 + dashboard :3000
 ```
 
-Set `DB_DRIVER=neon-http` (the runtime refuses to start with `pg`, and
-`REDIS_URL` is likewise fatal there — use Upstash REST or the in-memory
-limiter). Frontend: import `web/` into Vercel and set
-`NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_BASE_URL`, and
-`NEXT_PUBLIC_FRONTEND_URL`.
+`DATABASE_URL` is any `postgresql://` connection string. A Neon URL is ordinary
+hosted Postgres — there is no dedicated driver or wizard choice. Frontend:
+import `web/` into Vercel and set `NEXT_PUBLIC_API_BASE_URL`,
+`NEXT_PUBLIC_AUTH_BASE_URL`, and `NEXT_PUBLIC_FRONTEND_URL`, or run the Docker
+web image.
 
-Job sweeper: set `SWEEP_ENABLED=true` and uncomment `triggers.crons` in
-`server/wrangler.jsonc`, or call `POST /api/internal/sweep` with
+The Node API starts in-process maintenance after listen when `SWEEP_ENABLED=true`
+(the default). Additional replicas set `SWEEP_ENABLED=false`. Manual sweeps
+target that designated instance: `POST /api/internal/sweep` with
 `INTERNAL_SWEEP_SECRET`.
 
 ## Path B — Docker Compose (API + dashboard), Workers delivery
@@ -117,6 +120,23 @@ Then set `DELIVERY_URL` in `.env` to the deployed worker origin (no trailing
 slash) and restart the API. Rebuild the web image after changing
 `NEXT_PUBLIC_*` (they are baked at build time).
 
+## Migrating from the archived API Worker
+
+The API Worker runtime is archived at `archive/workers-api` / tag
+`v0-workers-checkpoint`. Existing installations:
+
+1. Deploy the updated **delivery** worker first (playback ingest endpoint +
+   `ANALYTICS_INGEST_SECRET`).
+2. Configure Node against the **existing** database. No data migration or
+   reset is required.
+3. Stop the old API Worker’s cron.
+4. Switch API traffic and callback URLs to Node.
+5. Retire the old API Worker deployment.
+
+Preserve database contents, R2 objects, dataset names, and playback secrets
+throughout. `DB_DRIVER` is obsolete: if it is still set, Node starts and
+reports an advisory — remove it.
+
 ## Health
 
 - API liveness: `GET /health` → `ok`
@@ -128,7 +148,7 @@ slash) and restart the API. Rebuild the web image after changing
     `modalDispatch`, `analyticsWrite`, `analyticsRead`, `uploadsEnabled`,
     `deliveryRuntime`, `deliveryUrl`. Contract:
     [deployment-shapes.md](./deployment-shapes.md).
-- Delivery worker: `GET /health`
+- Delivery worker: `GET /health` and `GET /health/config`
 - Modal: `GET /healthz`
 - Dashboard: `/setup` and the cluster-health strip consume `/health/config`
 
@@ -141,8 +161,9 @@ exist, say which) and optionally probes `/health/config`.
 The API mints playback tokens (`iss: clipmux`, `aud: playback`). The delivery
 worker verifies them with the **same** `JWT_SECRET`. The bootstrap wizard
 mirrors that secret into `delivery/.dev.vars` (the `dev` target);
-`./scripts/bootstrap.sh --check --target dev` warns if they diverge. A Workers deployment sets it with
-`wrangler secret put JWT_SECRET`; a Compose deployment sets it in `.env`.
+`./scripts/bootstrap.sh --check --target dev` warns if they diverge. A
+delivery-worker deployment sets it with `cd delivery && pnpm exec wrangler secret put JWT_SECRET`;
+a Compose deployment sets it in `.env`.
 
 ## Modal
 
@@ -153,12 +174,16 @@ Create secrets `clipmux-creds` and optional `clipmux-groq-creds`, then
 `MODAL_WEBHOOK_SECRET` alias is accepted but loses to it in both directions).
 
 `./scripts/bootstrap.sh --deploy` creates both secrets for you, deriving every
-value from `server/.dev.vars`: `R2_BUCKET_NAME` from `TRANSCODED_BUCKET_NAME`,
-`ALLOWED_SOURCE_BUCKETS` from `RAW_BUCKET_NAME`, and `ALLOWED_CALLBACK_HOSTS`
-from `BACKEND_URL` (the host the API actually builds callbacks from). The creds
-secret is rewritten on every deploy, so editing `.dev.vars` and re-running
-`--deploy` is how a bucket or callback host is changed. The old `r2-creds` /
-`groq-creds` names are detected and offered for deletion.
+value from the selected configuration target: `R2_BUCKET_NAME` from
+`TRANSCODED_BUCKET_NAME`, `ALLOWED_SOURCE_BUCKETS` from `RAW_BUCKET_NAME`, and
+`ALLOWED_CALLBACK_HOSTS` from `BACKEND_URL` (the host the API actually builds
+callbacks from). The creds secret is rewritten on every deploy, so editing the
+target file and re-running `--deploy` is how a bucket or callback host is
+changed. The old `r2-creds` / `groq-creds` names are detected and offered for
+deletion.
+
+Local API users must supply a publicly reachable `BACKEND_URL`. Automatic
+tunnels are deferred.
 
 ## Background maintenance (required for correctness, not optional)
 
@@ -175,32 +200,18 @@ One maintenance pass does three things:
 deleted videos keep costing storage forever. `GET /health/config` reports
 `maintenance.enabled` and adds an advisory when it is off.
 
-### Workers
+The Node API starts an in-process scheduler after listen when a database is
+configured and `SWEEP_ENABLED=true` (the default). It runs an initial
+asynchronous pass, then schedules the next pass after completion using
+`MAINTENANCE_INTERVAL_SECONDS` (default 900; must be a positive integer in 1–2147483 or it falls back to 900). Timer and authenticated manual
+sweeps share a process-local single-flight runner, so they cannot overlap. A
+failed pass does not stop subsequent scheduling. Shutdown stops scheduling and
+lets active work finish within the existing shutdown deadline.
 
-`server/wrangler.jsonc` ships a cron trigger (`*/15 * * * *`) and the handler
-runs maintenance when `SWEEP_ENABLED=true`:
-
-```bash
-pnpm exec wrangler secret put SWEEP_ENABLED   # value: true
-pnpm exec wrangler deploy
-```
-
-Alternatively schedule `POST /api/internal/sweep` yourself with the
-`INTERNAL_SWEEP_SECRET` header — it calls the same runner.
-
-### Compose
-
-`docker-compose.yml` includes a `maintenance` service that calls the endpoint on
-an interval (`MAINTENANCE_INTERVAL_SECONDS`, default 900). Set
-`INTERNAL_SWEEP_SECRET` in `.env`; without it the service logs a loud warning
-and deliberately does nothing rather than pretend.
-
-```bash
-pnpm docker:up
-pnpm docker:logs          # confirm maintenance is actually running
-```
-
-### Verifying it ran
+Run **exactly one** scheduler-enabled API instance. Additional replicas set
+`SWEEP_ENABLED=false`. Manual sweeps (`POST /api/internal/sweep` with
+`INTERNAL_SWEEP_SECRET`) must target that designated instance. Distributed
+scheduling and leader election are deferred.
 
 ```bash
 curl -X POST http://localhost:8787/api/internal/sweep \

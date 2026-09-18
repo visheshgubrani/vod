@@ -45,14 +45,15 @@ healthApp.get('/config', async (c) => {
   const advisories = [...cfg.advisories]
   if (!maintenance.enabled) {
     advisories.push(
-      'SWEEP_ENABLED is not "true": background maintenance is off, so webhook ' +
-        'retries and storage reclamation will not run (see docs/deploy.md).',
+      'SWEEP_ENABLED is false: background maintenance is off, so webhook ' +
+        'retries and storage reclamation will not run on this instance ' +
+        '(see docs/deploy.md).',
     )
   } else if (maintenance.stale) {
     advisories.push(
       maintenance.lastSucceededAt
-        ? `Background maintenance is enabled but last succeeded at ${maintenance.lastSucceededAt} — check the cron trigger or the compose maintenance service.`
-        : 'Background maintenance is enabled but has never run — check the cron trigger or the compose maintenance service.',
+        ? `Background maintenance is enabled but last succeeded at ${maintenance.lastSucceededAt} — check this API instance’s logs.`
+        : 'Background maintenance is enabled but has never run — check this API instance’s logs.',
     )
   }
 

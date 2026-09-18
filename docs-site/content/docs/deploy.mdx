@@ -1,20 +1,19 @@
 ---
 title: Deployment
-description: Docker Compose and Cloudflare Workers deployment shapes, the axes a deployment chooses, maintenance, recovery and what refuses to boot.
+description: Docker Compose and Cloudflare delivery-worker deployment shapes, the axes a deployment chooses, maintenance, recovery and what refuses to boot.
 ---
 
 ClipMux has one codebase and two stacks. Local development runs Postgres and
 Redis from `docker-compose.dev.yml` with the API and dashboard on the host
 (`pnpm dev`). A **deployment** is `docker-compose.yml`, configured by `.env` at
-the repo root — or Workers, configured by `wrangler secret`.
+the repo root. The API always runs on Node.
 
 Signed playback is always the **Cloudflare delivery worker** in front of R2. That
 is fixed, not a default.
 
 <Callout type="info" title="Not sure which shape you want?">
   [Quickstart](/quickstart) walks both paths end to end. Come back here for the
-  operational detail — maintenance, recovery, and what breaks on the Workers
-  runtime.
+  operational detail — maintenance, recovery, and what refuses to boot.
 </Callout>
 
 ## Path A — Docker Compose
@@ -40,23 +39,15 @@ pnpm docker:up            # docker compose up -d
 **The Compose stack has no delivery service** — there is no Node delivery path.
 Deploy `delivery/` to Cloudflare regardless of which shape you choose.
 
-## Path B — Cloudflare Workers
+## Path B — Cloudflare delivery worker
 
-The API runs on Workers, so Postgres must be reachable over HTTP.
+The API is Node. Deploy only the delivery worker to Cloudflare:
 
 ```bash
-cd server
-pnpm exec wrangler secret bulk <secrets.json>   # or one `wrangler secret put` each
+cd delivery
+pnpm exec wrangler secret bulk <secrets.json>   # JWT_SECRET, ANALYTICS_INGEST_SECRET, ANALYTICS_ENABLED
 pnpm exec wrangler deploy
 ```
-
-Two hard requirements:
-
-- `DB_DRIVER=neon-http` with a Neon URL. `DB_DRIVER=pg` and `REDIS_URL` **cannot**
-  work on Workers — the runtime cannot hold a TCP connection across requests or
-  open a plain socket. The server refuses to start and explains why rather than
-  failing later in a confusing way.
-- Rate limiting uses Upstash REST or the in-memory limiter. Not `REDIS_URL`.
 
 The dashboard goes wherever Next.js runs — Vercel, the Docker web image, or a
 Node host. Set its `NEXT_PUBLIC_*` values to your deployed API.
@@ -73,13 +64,12 @@ Node host. Set its `NEXT_PUBLIC_*` values to your deployed API.
 
 | Axis | Options | Selected by |
 | --- | --- | --- |
-| API runtime | Node \| Cloudflare Workers | `pnpm dev` / Docker = Node; `pnpm dev:workers` / `wrangler deploy` = Workers |
-| Postgres transport | `postgres-js` (`DB_DRIVER=pg`) \| `neon-http` | `DB_DRIVER` |
+| Postgres | bundled \| any `postgresql://` URL | `DATABASE_URL` |
 | Transcode provider | `modal` \| `self-hosted` | `TRANSCODE_PROVIDER` |
 | Dispatch transport | `direct-http` \| `qstash` | `QSTASH_TOKEN` presence |
-| Rate-limit store | `memory` \| `redis` (TCP, Node only) \| `upstash` (REST) | `REDIS_URL` → Upstash REST → in-memory |
-| Analytics write | `workers-analytics-engine` \| `none` | The `PLAYBACK_ANALYTICS` binding (Workers only) |
-| Analytics read | `cloudflare-sql` \| `none` | `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` |
+| Rate-limit store | `memory` \| `redis` (TCP) \| `upstash` (REST) | `REDIS_URL` → Upstash REST → in-memory |
+| Analytics write | `delivery-worker` \| `none` | `ANALYTICS_ENABLED` plus `DELIVERY_URL` and `ANALYTICS_INGEST_SECRET` |
+| Analytics read | `cloudflare-sql` \| `none` | `ANALYTICS_ENABLED` plus `ACCOUNT_ID` + `CLOUDFLARE_ANALYTICS_TOKEN` |
 
 **Fixed:** delivery is the Cloudflare Worker + R2, and object storage is
 Cloudflare R2. Generic S3 and MinIO are not implemented.
@@ -91,8 +81,6 @@ resolved to — see [the health endpoint](/api-reference#get-healthconfig).
 
 | Combination | Why it is fatal |
 | --- | --- |
-| `DB_DRIVER=pg` on Workers | Workers cannot hold a Postgres TCP connection across requests. The first query succeeds and the rest fail. |
-| `REDIS_URL` on Workers | Workers cannot open a plain TCP socket. Use Upstash REST. |
 | An unrecognised `TRANSCODE_PROVIDER` | The provider is stored per job at creation. Guessing would silently misroute work. |
 
 ## Profiles and services
@@ -103,7 +91,6 @@ resolved to — see [the health endpoint](/api-reference#get-healthconfig).
 | `web` | default | `pnpm docker:up` |
 | `postgres`, `redis` | default | internal only, no host ports |
 | `migrate` | `tools` | `pnpm docker:migrate` |
-| `maintenance` | default | runs the sweep loop on `MAINTENANCE_INTERVAL_SECONDS` |
 | `transcoder` | `transcoder` | `docker compose --profile transcoder up -d` (self-hosted agent) |
 
 ## Migrations
@@ -167,9 +154,8 @@ never retried.
 
 | Runtime | What runs the sweep |
 | --- | --- |
-| Compose | The `maintenance` service, automatically |
-| Workers | The cron trigger in `server/wrangler.jsonc`, when `SWEEP_ENABLED=true` |
-| Node, bare | **Nothing.** Hit the endpoint from your own cron |
+| Node API (default) | In-process scheduler after listen when `SWEEP_ENABLED=true` |
+| Additional replicas | Set `SWEEP_ENABLED=false`. Manual sweeps target the designated instance |
 
 ```bash
 curl -X POST http://localhost:8787/api/internal/sweep \
@@ -191,6 +177,7 @@ failure worth alerting on.
 | `GET /health` (API) | Plain text `ok`. Use for liveness. |
 | `GET /health/config` (API) | Capability flags, deployment shape, maintenance status. Secret-free. |
 | `GET /health` (delivery worker) | Liveness for the delivery worker. |
+| `GET /health/config` (delivery worker) | Capability flags: analytics enabled, ingest secret configured. Secret-free. |
 | `GET /healthz` (Modal) | Liveness for the transcode endpoint. |
 
 ## Environment
@@ -200,8 +187,8 @@ fatal combinations, is on [Configuration](/configuration). The short version:
 
 - **Development:** `server/.dev.vars`, loaded via `load-local-env.ts`.
 - **Deployment:** `.env` at the repo root, read by Compose.
-- **Workers:** `wrangler secret put` / `wrangler secret bulk`. Never a committed
-  file.
+- **Delivery worker:** `cd delivery && pnpm exec wrangler secret put` /
+  `wrangler secret bulk`. Never a committed file.
 
 <Cards>
   <Card title="Configuration" href="/configuration" description="Every environment variable and which file it belongs in." />

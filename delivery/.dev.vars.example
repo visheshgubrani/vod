@@ -20,11 +20,17 @@ DEFAULT_POLICY=public
 # enable it in production.
 DELIVERY_DEBUG=false
 
+# Playback/bandwidth collection. Must match the API. Default true.
+ANALYTICS_ENABLED=true
+# Shared only with the API. Independently generated from JWT_SECRET.
+ANALYTICS_INGEST_SECRET=
+
 # ── Bindings configured in wrangler.jsonc, not here ──────────────────────────
 # TRANSCODED_BUCKET  R2 bucket holding the transcoded HLS/DASH artifacts.
 # USAGE_ANALYTICS    Analytics Engine dataset (default `bandwidth_usage`);
 #                    blobs: org, videoId, fileType — double: bytes.
-# dev.port           Local dev port (8788; the API worker owns 8787) and its
+# PLAYBACK_ANALYTICS Analytics Engine dataset (default `playback_events`).
+# dev.port           Local dev port (8788; the Node API owns 8787) and its
 #                    inspector port, pinned so `pnpm dev:all` can run both.
 #
 # Deploy with `pnpm --filter ./delivery deploy` after pointing TRANSCODED_BUCKET

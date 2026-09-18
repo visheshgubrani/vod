@@ -17,7 +17,7 @@ this folder is the reference for how the pieces fit together.
 | --- | --- | --- |
 | [deployment-shapes.md](./deployment-shapes.md) | Canonical architecture reference: the choosable axes, what is fixed and why, fatal combinations, the runtime seam, the `/health/config` contract | Maintainer |
 | [delivery-contract.md](./delivery-contract.md) | The wire contract between the delivery worker, the API and the transcoder: object layout, playback JWT, manifest rewriting, transcode payloads, the self-hosted agent protocol | Maintainer |
-| [deploy.md](./deploy.md) | The Compose deployment flow, the Workers path, the minimum Cloudflare surface, health checks and background maintenance | Operator |
+| [deploy.md](./deploy.md) | The Compose deployment flow, the Node API + delivery worker path, the minimum Cloudflare surface, health checks and background maintenance | Operator |
 | [self-hosted-transcoding.md](./self-hosted-transcoding.md) | Self-hosted agent setup, hardware sizing, day-two operation and troubleshooting | Operator |
 | [transcoding-toolchain.md](./transcoding-toolchain.md) | The FFmpeg/Shaka build recipe, `versions.env` as the single source of version truth, release gates and rollout | Maintainer |
 | [known-gaps.md](./known-gaps.md) | What the platform deliberately does not do yet, weak guarantees worth knowing about, and deferred roadmap work | Maintainer |

@@ -70,11 +70,11 @@ raw bucket needs, and what each key unlocks — is the
 
 | You need | Why | Where |
 | --- | --- | --- |
-| [Cloudflare](https://dash.cloudflare.com/sign-up) account | R2 buckets, the **delivery** Worker (always), and the API Worker on the Workers path | Free tier is enough to start |
+| [Cloudflare](https://dash.cloudflare.com/sign-up) account | R2 buckets and the **delivery** Worker | Free tier is enough to start |
 | Two **R2** buckets | Raw uploads vs transcoded HLS/DASH | R2 → Create bucket |
 | An **R2 API token** (S3 credentials) | API, Modal, and uploads talk to R2 over the S3 API | R2 → Manage R2 API Tokens |
-| Cloudflare login | Deploy the delivery worker (always) and the API worker (Workers path) | wrangler is a pinned local devDependency — `pnpm exec wrangler login`, never a global `npx wrangler` |
-| [Postgres](https://neon.tech) **or** Docker | Metadata, auth, video rows | Neon serverless URL, or the `postgres` service inside the Compose stack |
+| Cloudflare login | Deploy the delivery worker | wrangler is a pinned local devDependency of `delivery/` — `cd delivery && pnpm exec wrangler login`, never a global `npx wrangler` |
+| [Postgres](https://www.postgresql.org) **or** Docker | Metadata, auth, video rows | Any `postgresql://` URL (Neon is ordinary hosted Postgres), or the `postgres` service inside the Compose stack |
 | [Modal](https://modal.com) account (only for the Modal transcoder) | GPU transcoding (FFmpeg / Shaka / Whisper) | `--deploy` prepares `transcoding/.venv` (uv, else `python3 -m venv`) and runs `modal setup` — or `modal token set` when a browser login is not possible |
 | Docker (Compose v2) | The Compose stack, the dev Postgres/Redis, and the self-hosted transcoder agent | `./scripts/bootstrap.sh --doctor` checks the daemon, not just the binary; Docker is installed by Docker's own instructions, never with a guessed package name |
 | Node 22 + pnpm 12 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both when missing (nvm first, then the distro package, re-checking the version) |
@@ -101,7 +101,7 @@ it — live in the docs site:
 
 - [Keys you will collect → Required](docs-site/content/docs/quickstart.mdx) —
   `ACCOUNT_ID`, the R2 S3 key pair, both bucket names, `DATABASE_URL`,
-  `DB_DRIVER`, `MODAL_WEBHOOK_URL`, `TRANSCODE_INGEST_SECRET`, `JWT_SECRET`,
+  `MODAL_WEBHOOK_URL`, `TRANSCODE_INGEST_SECRET`, `JWT_SECRET`,
   `BETTER_AUTH_SECRET`, `DELIVERY_URL` and the three public origins.
 - [Keys you will collect → Optional](docs-site/content/docs/quickstart.mdx) —
   `GROQ_API_KEY`, `CLOUDFLARE_ANALYTICS_TOKEN`, OAuth, `QSTASH_TOKEN`,
@@ -110,7 +110,7 @@ it — live in the docs site:
 [`server/.dev.vars.example`](server/.dev.vars.example) and
 [`.env.example`](.env.example) remain the authoritative, commented templates —
 they are what the wizard and Compose actually read. The full environment
-reference, including which variables are fatal on which runtime, is
+reference is
 [docs-site/content/docs/configuration.mdx](docs-site/content/docs/configuration.mdx).
 
 One capability behaves differently enough to say here: `CLOUDFLARE_ANALYTICS_TOKEN`
@@ -153,20 +153,20 @@ then the opt-in **deploy**.
 ./scripts/bootstrap.sh --check [api-url]   # verify the config without printing secrets
 ```
 
-Choices the wizard asks about: the **API runtime** (Cloudflare Workers,
-`DB_DRIVER=neon-http`, or Node, `pg`), **Postgres** (Neon, the bundled/dev
-container, or your own URL), the **transcoder** (**Modal**, GPU in the cloud, or
+Choices the wizard asks about: **Postgres** (the bundled/dev container, or your
+own URL — a Neon connection string is a regular `postgresql://` URL),
+**analytics** (on by default), the **transcoder** (**Modal**, GPU in the cloud, or
 **this machine**, the self-hosted Docker agent), browser **uploads** (a local-only
 installation needs no raw bucket), **QStash** queueing (Modal only — self-hosted
 work is queued in the database), a **rate-limit store** (in-memory, Upstash, or
-your own Redis on Node) and **AI subtitles/chapters** (Modal only — the agent
+your own Redis) and **AI subtitles/chapters** (Modal only — the agent
 image does not ship Whisper or the Groq client yet, see
-[docs/known-gaps.md](docs/known-gaps.md)).
+[docs/known-gaps.md](docs/known-gaps.md)). The API always runs on Node.
 
 You will paste two things from dashboards (the CLIs cannot create them):
 
 1. **R2 S3 API token** — [Manage API Tokens](https://dash.cloudflare.com/?to=/:account/r2/api-tokens), Object Read & Write on both buckets.
-2. **DATABASE_URL** — [Neon](https://console.neon.tech) (skip if you chose the bundled/dev Postgres).
+2. **DATABASE_URL** — any `postgresql://` URL (skip if you chose the bundled/dev Postgres).
 
 Then open `/setup` on the dashboard. The rest of this section is the same
 flow if you prefer to do it by hand.
@@ -205,10 +205,10 @@ Create the R2 API token (table above). You now have `ACCOUNT_ID`,
 
 ### 2. Postgres
 
-- **Workers path:** create a [Neon](https://neon.tech) project (or any
-  Postgres that accepts `postgresql://…`). Copy `DATABASE_URL`.
-- **Compose deployment:** skip this — the stack runs its own Postgres, and
-  `DATABASE_URL` may be left blank in `.env`.
+- **Existing Postgres:** create a project (Neon, RDS, the machine’s Postgres,
+  or any host that accepts `postgresql://…`). Copy `DATABASE_URL`.
+- **Compose deployment / bundled Postgres:** skip this — the stack runs its
+  own Postgres, and `DATABASE_URL` may be left blank in `.env`.
 
 ### 3. Modal account
 
@@ -234,7 +234,7 @@ The wizard writes `server/.dev.vars` and `delivery/.dev.vars` (same
 `cp server/.dev.vars.example server/.dev.vars` and the same for
 `delivery/.dev.vars`, plus `cp web/.env.example web/.env` for the dashboard.
 
-Those are **local development** files — `pnpm dev`, `pnpm dev:workers`,
+Those are **local development** files — `pnpm dev`,
 migrations and tests read `server/.dev.vars`. A Docker Compose **deployment**
 is configured by `.env` at the repo root instead:
 
@@ -278,16 +278,15 @@ URLs and the transcode completion callback both read it.
 
 ### 6. Deploy the API (pick one)
 
-**Path A — Cloudflare Workers (default)**
+**Path A — Node API + Cloudflare delivery**
 
 ```bash
-cd server
+cd delivery
 pnpm exec wrangler deploy    # uses .dev.vars locally; for production:
 # pnpm exec wrangler secret bulk <secrets.json>   # ./scripts/bootstrap.sh --deploy does this for you
 ```
 
-Set `DB_DRIVER=neon-http`. After deploy, set `BACKEND_URL` /
-`BETTER_AUTH_URL` to the Worker URL.
+After deploy, set `DELIVERY_URL`. The API runs with `pnpm dev` or Compose.
 
 **Path B — Docker Compose (API + dashboard + Postgres + Redis)**
 
@@ -352,7 +351,7 @@ modal deploy main.py
 Copy the `transcode_video` HTTPS URL into `MODAL_WEBHOOK_URL` on the API.
 `ALLOWED_CALLBACK_HOSTS` is a hostname only (no `https://`) — the host of your
 `BACKEND_URL` (the API builds callbacks from it), plus `localhost` for
-`wrangler dev`.
+`pnpm dev`.
 
 ### 8. Dashboard
 
@@ -419,7 +418,6 @@ pnpm install
 pnpm dev:infra                # dev Postgres (:5433) + Redis (:6382), waits for health
 pnpm db:migrate               # apply migrations to the dev database
 pnpm dev                      # API on Node (:8787) + web (:3000)
-pnpm dev:workers              # same pair, API under wrangler dev (:8787) — needs DB_DRIVER=neon-http
 pnpm dev:all                  # dev + delivery worker (:8788) + sdk/player watch builds
 pnpm dev:example              # examples/nextjs-integration (:3000) — the documented flow
                               #   (run `pnpm --filter @clipmux/{uploader,player,server} build` first)
@@ -437,11 +435,8 @@ pnpm --filter ./server-sdk test
 (cd transcoding && .venv/bin/python -m pytest)
 ```
 
-`pnpm dev` runs the API on the **Node** runtime (`tsx watch`) and is the
-default because it works with the dev Postgres out of the box. `pnpm dev:workers`
-runs the same API under `wrangler dev`; it needs `DB_DRIVER=neon-http` with a
-Neon URL **by design** — the Workers runtime forbids reusing a TCP socket
-across requests, so a `pg` connection cannot survive past the first query.
+`pnpm dev` runs the API on Node (`tsx watch`) against the dev Postgres.
+
 Neither command starts a database, and the API boots without one: `GET /health`
 still answers `ok` and `/health/config` still reports `database: true` (those
 checks only verify the URL is configured) while real queries fail. Which
@@ -478,9 +473,9 @@ around.)
 
 `pnpm dev` and `docker compose up -d` both want ports 8787/3000 — run the dev
 setup or the deployment stack, not both. (The dev compose file has no `api`/
-`web` services, so there is nothing to stop first.) The Workers' local ports
-are pinned in `server/wrangler.jsonc` (:8787) and `delivery/wrangler.jsonc`
-(:8788), so a busy port fails loudly instead of drifting. Next is not pinned:
+`web` services, so there is nothing to stop first.) The delivery worker's local
+port is pinned in `delivery/wrangler.jsonc` (:8788), so a busy port fails loudly
+instead of drifting. Next is not pinned:
 `next dev` quietly moves to :3001 when :3000 is taken (check
 `FRONTEND_URL`/`CORS_ORIGINS` then), and `next start` fails outright with
 `EADDRINUSE`.

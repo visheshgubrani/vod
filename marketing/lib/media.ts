@@ -1,9 +1,12 @@
 /**
  * Every image and video the marketing page references.
  *
- * The assets themselves are supplied separately — this module is the single
- * place that names them, so swapping a clip or a still never means hunting
- * through components. Paths are served from `marketing/public`.
+ * The page has exactly one media asset: the hero recording. Everything below
+ * the hero is typographic, so a checkout without `public/media` still renders a
+ * complete, presentable page instead of a grid of broken thumbnails.
+ *
+ * The files themselves are supplied separately — this module is the single
+ * place that names them. Paths are served from `marketing/public`.
  *
  * `width`/`height` are the intrinsic pixel dimensions: they are written into
  * `width`/`height` attributes and CSS `aspect-ratio` so media reserves its box
@@ -26,7 +29,7 @@ export type VideoAsset = MediaAsset & {
   mobileSrc?: string;
 };
 
-/** The coastal hero clip — also the asset the whole page tells a story about. */
+/** The hero recording — the page's one visual moment. */
 export const heroVideo: VideoAsset = {
   src: siteConfig.heroVideoUrl,
   mobileSrc: siteConfig.heroVideoMobileUrl,
@@ -36,59 +39,3 @@ export const heroVideo: VideoAsset = {
   alt: "A coastal headland at golden hour, used as the demo asset throughout this page.",
   caption: "coastal-headland.mp4 · 1080p source",
 };
-
-/** Supporting footage for the library and workflow examples. */
-export const supportingClips: VideoAsset[] = [
-  {
-    src: "/media/clips/woodland.mp4",
-    poster: "/media/clips/woodland-poster.jpg",
-    width: 1920,
-    height: 1080,
-    alt: "Sunlight through a woodland canopy.",
-    caption: "woodland-canopy.mp4",
-  },
-  {
-    src: "/media/clips/architecture.mp4",
-    poster: "/media/clips/architecture-poster.jpg",
-    width: 1920,
-    height: 1080,
-    alt: "A concrete building facade with repeating windows.",
-    caption: "facade-study.mp4",
-  },
-  {
-    src: "/media/clips/craft.mp4",
-    poster: "/media/clips/craft-poster.jpg",
-    width: 1920,
-    height: 1080,
-    alt: "Hands shaping clay on a potter's wheel.",
-    caption: "wheel-throwing.mp4",
-  },
-];
-
-/**
- * 16:9 stills used as library thumbnails and poster stand-ins. These are
- * marketing and demo-fixture only — the dashboard always shows real customer
- * thumbnails.
- */
-export const thumbnails = {
-  coastal: "/media/thumbs/coastal.jpg",
-  woodland: "/media/thumbs/woodland.jpg",
-  architecture: "/media/thumbs/architecture.jpg",
-  craft: "/media/thumbs/craft.jpg",
-} as const;
-
-/**
- * Every file the page expects, in one list. `marketing/public/media/README.md`
- * documents the provenance fields each entry needs before launch.
- */
-export const requiredMediaFiles: string[] = [
-  heroVideo.src,
-  heroVideo.mobileSrc!,
-  heroVideo.poster,
-  ...supportingClips.flatMap((clip) => [
-    clip.src,
-    clip.poster,
-    ...(clip.mobileSrc ? [clip.mobileSrc] : []),
-  ]),
-  ...Object.values(thumbnails),
-];

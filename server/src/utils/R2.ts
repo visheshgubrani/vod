@@ -3,9 +3,8 @@
  *
  * Install-once, like `lib/database`: the composition root builds the client from
  * the resolved credentials and installs it, and everything else asks for the
- * installed one. Previously `getR2()` fell back to `process.env`, which worked on
- * Workers only because a per-request middleware copied bindings into
- * `process.env` — so a `c.env`-only credential set silently resolved to nothing.
+ * installed one. Previously `getR2()` fell back to `process.env`, which silently
+ * resolved to nothing when credentials were not on the ambient environment.
  *
  * Storage stays R2: it is a fixed part of the architecture (the delivery Worker
  * is bound to the same bucket), not a choosable provider.

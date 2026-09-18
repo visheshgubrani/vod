@@ -5,10 +5,9 @@
  *
  * Only the analytics axes are modelled. The dashboard needs them because
  * "playback views are zero because nobody watched" and "playback views are zero
- * because nothing is recording them" look identical in a chart, and only the
- * deployment shape tells them apart: writing playback telemetry needs a
- * Cloudflare Worker with the `PLAYBACK_ANALYTICS` binding, so a Node or
- * container API reads fine and records nothing.
+ * because nothing is recording them" look identical in a chart. The API
+ * reports `analyticsWrite: "delivery-worker" | "none"` from local
+ * configuration — forwarding through Node to the delivery worker, or off.
  *
  * Three properties matter for how this is consumed:
  *
@@ -27,10 +26,11 @@ import { API_BASE_URL, apiOrigin } from "@/lib/api-base";
 /** The subset of the `/health/config` payload this module reads. */
 export interface DeploymentAnalyticsShape {
   runtime: string;
-  /** `'workers-analytics-engine'` when the binding is present, else `'none'`. */
+  /** `'delivery-worker'` when Node can forward playback events, else `'none'`. */
   analyticsWrite: string;
   /** `'cloudflare-sql'` when credentials are configured, else `'none'`. */
   analyticsRead: string;
+  analyticsEnabled: boolean;
 }
 
 const CONFIG_URL = `${apiOrigin(API_BASE_URL)}/health/config`;
@@ -51,7 +51,7 @@ export function readAnalyticsShape(
   const deployment = (payload as { deployment?: unknown }).deployment;
   if (typeof deployment !== "object" || deployment === null) return null;
 
-  const { runtime, analyticsWrite, analyticsRead } = deployment as Record<
+  const { runtime, analyticsWrite, analyticsRead, analyticsEnabled } = deployment as Record<
     string,
     unknown
   >;
@@ -63,7 +63,12 @@ export function readAnalyticsShape(
     return null;
   }
 
-  return { runtime, analyticsWrite, analyticsRead };
+  return {
+    runtime,
+    analyticsWrite,
+    analyticsRead,
+    analyticsEnabled: analyticsEnabled !== false,
+  };
 }
 
 /** The capability, shared by every caller instead of refetched per component. */

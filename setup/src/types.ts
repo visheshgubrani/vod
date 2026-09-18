@@ -7,36 +7,27 @@
  */
 
 /**
- * `node` used to be called `compose`, which conflated the API runtime with the
- * Docker deployment shape. They are separate decisions: the Node runtime runs
- * under Docker, under `pnpm dev`, or behind any process manager. `compose` is
- * still accepted from older `--answers` files (see parsers.ts).
- */
-export type RuntimeKind = 'workers' | 'node'
-/**
  * Which configuration this run owns.
  *
  * ClipMux keeps two of them, and they are not interchangeable:
  *
  * - `dev`    — `server/.dev.vars` + `delivery/.dev.vars`: running the API on
- *              this machine (`pnpm dev`), or deploying it as a Cloudflare
- *              Worker.
+ *              this machine (`pnpm dev`).
  * - `deploy` — the root `.env`: the Docker Compose stack on a server.
  *
  * A run touches exactly one, and uses it for choices, credentials, deployment
- * and verification. Writing both (which is what the wizard used to do for the
- * Node runtime) is how a Compose deployment ended up reading a `.env` the
- * wizard had stopped updating.
+ * and verification. Writing both is how a Compose deployment ended up reading
+ * a `.env` the wizard had stopped updating.
  */
 export type ConfigTarget = 'dev' | 'deploy'
-export type DbKind = 'neon' | 'local' | 'existing'
+export type DbKind = 'local' | 'existing'
 export type QueueKind = 'direct' | 'qstash'
-/** `redis` is a plain Redis over TCP: Node runtime only, no hosted vendor. */
+/** `redis` is a plain Redis over TCP. */
 export type RateLimitKind = 'memory' | 'redis' | 'upstash'
 
 export interface DbAnswers {
   kind: DbKind
-  /** Required for kind 'neon' | 'existing'. */
+  /** Required for kind 'existing'. A Neon URL is a regular postgresql:// URL. */
   url?: string
 }
 
@@ -62,8 +53,6 @@ export interface RateLimitAnswers {
 export interface WizardAnswers {
   /** Which configuration file(s) this run owns. Omitted means 'dev'. */
   target?: ConfigTarget
-  /** API runtime: Cloudflare Worker (default) or Node (Docker/VPS/local). */
-  runtime: RuntimeKind
   db: DbAnswers
   queue: QueueAnswers
   rateLimit: RateLimitAnswers
@@ -78,6 +67,8 @@ export interface WizardAnswers {
   selfHostedEnabled?: boolean
   /** Accept browser/SDK uploads. Omitted means true. */
   uploadsEnabled?: boolean
+  /** Playback/bandwidth analytics. Omitted means true. */
+  analyticsEnabled?: boolean
   frontendUrl: string
   /** Optional Groq key for AI subtitles/chapters. */
   groqApiKey?: string
@@ -98,16 +89,17 @@ export interface SecretSet {
   jwtSecret: string
   internalSweepSecret: string
   transcodeIngestSecret: string
+  analyticsIngestSecret: string
   /** Password for the bundled Postgres of a Docker deployment (.env only). */
   postgresPassword: string
 }
 
 /** Choices the CLI flags may prefill (interactive mode only). */
 export interface Prefill {
-  runtime?: RuntimeKind
   dbKind?: DbKind
   queueKind?: QueueKind
   rateLimitKind?: RateLimitKind
   transcodeProvider?: 'modal' | 'self-hosted'
   uploadsEnabled?: boolean
+  analyticsEnabled?: boolean
 }

@@ -45,7 +45,7 @@ pnpm typecheck        # type-check every package
    `cp delivery/.dev.vars.example delivery/.dev.vars` and
    `cp web/.env.example web/.env` (`./scripts/bootstrap.sh --target dev` writes the first two
    for you). `server/.dev.vars` is **development-only**: `pnpm dev`,
-   `pnpm dev:workers`, migrations, the seed script and the drizzle CLI load it
+   migrations, the seed script and the drizzle CLI load it
    through `server/src/lib/load-local-env.ts`, and real env vars always win. A
    *deployment* is configured by `.env` at the repo root (template:
    `.env.example`) — never by `server/.dev.vars`. Real values are gitignored;
@@ -78,11 +78,6 @@ pnpm typecheck        # type-check every package
      `@clipmux/uploader`/`@clipmux/player` from `dist/`, which is gitignored),
      and stops with the failing filter named if a build breaks — otherwise a
      stale build surfaces as a Next compile error in the browser.
-   - `pnpm dev:workers` — the same pair with the API under `wrangler dev`, for
-     Workers semantics. It needs `DB_DRIVER=neon-http` and a Neon URL **by
-     design**: the Workers runtime cannot hold a Postgres TCP connection across
-     requests, so a `pg` connection serves the first query and then fails with
-     `Cannot perform I/O on behalf of a different request`.
    - `pnpm dev:all` — `pnpm dev` plus the delivery worker (:8788) and the
      `sdk`/`player` watch builds
    - `pnpm start` — the production artifacts instead of the dev servers:
@@ -107,10 +102,10 @@ pnpm typecheck        # type-check every package
 
    `pnpm dev` and the deployment stack both want ports 8787/3000 — run one or
    the other, not both. The dev compose file has no `api`/`web` services, so
-   there is nothing to stop first; the port guard exists because the Workers'
-   dev ports are pinned in each `wrangler.jsonc` (`dev.port`/`dev.inspector_port`
-   — API :8787, delivery :8788), so `wrangler dev` fails hard while those ports
-   are taken instead of drifting somewhere your env files don't point at. Next
+   there is nothing to stop first. The delivery worker's local ports are pinned
+   in `delivery/wrangler.jsonc` (`dev.port`/`dev.inspector_port` — :8788 / 9230),
+   so `wrangler dev` fails hard while those ports are taken instead of drifting
+   somewhere your env files don't point at. Next
    is *not* pinned: `next dev` quietly moves to :3001 when :3000 is taken (then
    `FRONTEND_URL`/`CORS_ORIGINS` no longer match), and `next start` fails with
     `EADDRINUSE` instead.

@@ -5,11 +5,10 @@
  * capabilities the app asks for. Everything runtime-specific about Node lives
  * here:
  *
- *  - `process.env` is the binding source (native, no bridge needed)
+ *  - `process.env` is the binding source
  *  - background work is tracked instead of `ctx.waitUntil`
- *  - playback telemetry has no sink, because Analytics Engine is a Workers
- *    binding — reported as `analyticsWrite: 'none'` rather than discovered as a
- *    501 mid-request
+ *  - playback telemetry is forwarded to the delivery worker when analytics is
+ *    enabled and the ingest secret is present
  *
  * The database and R2 clients are installed (not handed around) because ~30
  * existing call sites import the `db`/`r2` handles; installing removes the
@@ -19,7 +18,7 @@
  * which is what "the API boots without a database" has always meant.
  */
 
-import type { ExecutionContext, Hono } from 'hono'
+import type { Hono } from 'hono'
 import { createLogger } from '../lib/logger'
 import { createAuth } from '../lib/auth'
 import { createDb, db, installDb, unconfiguredDb } from '../lib/database'
@@ -28,7 +27,7 @@ import { createRateLimiterFactory } from '../lib/rateLimit'
 import type { EnvLike } from '../lib/config'
 import { fatalProblems, resolveDeployment } from './deployment'
 import { nodeBackground, nodeExecutionContext } from './background'
-import { nullAnalytics } from './analytics'
+import { deliveryAnalyticsForwarder, nullAnalytics } from './analytics'
 import type { RuntimeCapabilities } from './types'
 import type { Bindings } from '../types'
 
@@ -41,7 +40,7 @@ function trimmed(env: EnvLike, key: string): string | null {
 }
 
 export function createNodeRuntime(env: EnvLike): NodeRuntime {
-  const resolution = resolveDeployment(env, 'node')
+  const resolution = resolveDeployment(env)
   const { config, shape, logLevel, rateLimit, problems, advisories } = resolution
   const logger = createLogger({ level: logLevel })
 
@@ -49,7 +48,7 @@ export function createNodeRuntime(env: EnvLike): NodeRuntime {
   // auth instance is constructed, so "no database configured" needs a handle
   // that constructs and fails precisely on first use — see `unconfiguredDb`.
   const databaseUrl = trimmed(env, 'DATABASE_URL')
-  installDb(databaseUrl ? createDb(databaseUrl, shape.dbTransport) : unconfiguredDb())
+  installDb(databaseUrl ? createDb(databaseUrl) : unconfiguredDb())
 
   const accountId = trimmed(env, 'ACCOUNT_ID')
   const accessKeyId = trimmed(env, 'R2_ACCESS_KEY_ID')
@@ -65,6 +64,14 @@ export function createNodeRuntime(env: EnvLike): NodeRuntime {
     )
   })
 
+  const analytics =
+    shape.analyticsWrite === 'delivery-worker' && config.deliveryUrl && config.analyticsIngestSecret
+      ? deliveryAnalyticsForwarder({
+          deliveryUrl: config.deliveryUrl,
+          ingestSecret: config.analyticsIngestSecret,
+        })
+      : nullAnalytics
+
   return {
     runtime: 'node',
     shape,
@@ -75,7 +82,7 @@ export function createNodeRuntime(env: EnvLike): NodeRuntime {
     objectStore: r2,
     auth: createAuth(db, config),
     rateLimiter,
-    analytics: nullAnalytics,
+    analytics,
     background: nodeBackground(),
     logger,
     problems,
@@ -88,11 +95,10 @@ export function createNodeRuntime(env: EnvLike): NodeRuntime {
  *
  * The third argument of `app.fetch` is load-bearing: it is what Hono installs as
  * `c.executionCtx`, and the routes read it to dispatch tenant webhooks and to
- * schedule post-response work. Workers pass the platform's `ExecutionContext`;
- * Node has no platform object to pass, so this factory supplies the stand-in —
- * in one place, used by the entrypoint and by the suites, so that "Node serves
- * requests with a context" is a property of the runtime rather than a line each
- * entrypoint has to remember.
+ * schedule post-response work. Node has no platform object to pass, so this
+ * factory supplies the stand-in — in one place, used by the entrypoint and by
+ * the suites, so that "Node serves requests with a context" is a property of
+ * the runtime rather than a line each entrypoint has to remember.
  */
 export function createNodeRequestHandler(
   app: Hono<{ Bindings: Bindings }>,
@@ -100,17 +106,12 @@ export function createNodeRequestHandler(
 ): (request: Request) => Response | Promise<Response> {
   // One context for the process: `waitUntil` holds no per-request state, and a
   // fresh object per request would only invite someone to store some there.
-  //
-  // `passThroughOnException` and `props` are declared by Hono for the Workers
-  // runtime; Node has neither an origin/next listener to pass an exception to
-  // nor Wrangler bindings, so both are present and inert. `waitUntil` — the one
-  // member routes actually use — is the tracked Node implementation.
-  const executionCtx: ExecutionContext = {
+  const executionCtx = {
     ...nodeExecutionContext(),
     passThroughOnException: () => {},
     props: {},
   }
-  const env = runtime.env as unknown as Bindings
+  const env = runtime.env as Bindings
   return (request) => app.fetch(request, env, executionCtx)
 }
 

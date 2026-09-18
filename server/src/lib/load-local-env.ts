@@ -1,11 +1,9 @@
 /**
- * Single local-config loader for every Node-side entrypoint (`wrangler dev`
- * reads `.dev.vars` on its own, so keeping one file avoids two divergent local
- * configs).
+ * Single local-config loader for every Node-side entrypoint.
  *
  * Precedence, highest first:
  *   1. real environment variables (Docker/compose, CI, shell exports)
- *   2. server/.dev.vars   — canonical local config, also used by `wrangler dev`
+ *   2. server/.dev.vars   — canonical local config
  *   3. server/.env        — optional fallback for anyone who prefers it
  *
  * Missing files are not an error: in the container both are absent and the

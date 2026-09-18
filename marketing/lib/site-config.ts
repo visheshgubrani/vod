@@ -3,8 +3,6 @@ export type SiteConfig = {
   docsUrl: string;
   quickstartUrl: string;
   githubUrl: string;
-  managedFormUrl: string;
-  enterpriseFormUrl: string;
   privacyUrl: string;
   /** The 24-second hero recording, in a 1080p desktop cut… */
   heroVideoUrl: string;
@@ -26,10 +24,6 @@ const localDefaults: SiteConfig = {
   docsUrl: "http://localhost:3002",
   quickstartUrl: "http://localhost:3002/quickstart",
   githubUrl: "https://github.com/visheshgubrani/vod",
-  managedFormUrl:
-    "mailto:hello@clipmux.com?subject=ClipMux%20managed%20hosting%20waitlist",
-  enterpriseFormUrl:
-    "mailto:hello@clipmux.com?subject=ClipMux%20enterprise%20deployment",
   privacyUrl: "http://localhost:3000/privacy",
   heroVideoUrl: "/media/hero-1080.mp4",
   heroVideoMobileUrl: "/media/hero-720.mp4",
@@ -46,8 +40,6 @@ const requiredEnv: Array<[keyof SiteConfig, string]> = [
   ["docsUrl", "MARKETING_DOCS_URL"],
   ["quickstartUrl", "MARKETING_QUICKSTART_URL"],
   ["githubUrl", "MARKETING_GITHUB_URL"],
-  ["managedFormUrl", "MARKETING_MANAGED_FORM_URL"],
-  ["enterpriseFormUrl", "MARKETING_ENTERPRISE_FORM_URL"],
   ["privacyUrl", "MARKETING_PRIVACY_URL"],
 ];
 
@@ -61,9 +53,6 @@ export function getSiteConfig(env: SiteEnv = process.env): SiteConfig {
     docsUrl: env.MARKETING_DOCS_URL ?? localDefaults.docsUrl,
     quickstartUrl: env.MARKETING_QUICKSTART_URL ?? localDefaults.quickstartUrl,
     githubUrl: env.MARKETING_GITHUB_URL ?? localDefaults.githubUrl,
-    managedFormUrl: env.MARKETING_MANAGED_FORM_URL ?? localDefaults.managedFormUrl,
-    enterpriseFormUrl:
-      env.MARKETING_ENTERPRISE_FORM_URL ?? localDefaults.enterpriseFormUrl,
     privacyUrl: env.MARKETING_PRIVACY_URL ?? localDefaults.privacyUrl,
     heroVideoUrl: env.MARKETING_HERO_VIDEO_URL ?? localDefaults.heroVideoUrl,
     heroVideoMobileUrl:

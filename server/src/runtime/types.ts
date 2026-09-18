@@ -1,27 +1,14 @@
 /**
- * The runtime seam: what the application needs from whichever platform runs it.
+ * The runtime seam: what the application needs from the Node platform.
  *
- * ClipMux serves the same Hono app from two very different places — Cloudflare
- * Workers (no TCP sockets, bindings instead of env vars, `ctx.waitUntil`, an
- * Analytics Engine binding) and Node (`@hono/node-server`, `process.env`, real
- * sockets, no bindings). Before this module the app discovered which one it was
- * on *implicitly*: a middleware copied `c.env` into `process.env` on every
- * request so that modules which were written against ambient env would work on
- * Workers, and the Node entry asserted `process.env as unknown as Bindings` so
- * the type checker would agree that an `AnalyticsEngineDataset` existed.
+ * ClipMux serves the Hono API from Node (`@hono/node-server`, `process.env`,
+ * real sockets). Playback telemetry is forwarded to the delivery worker; the
+ * Analytics Engine binding itself never lives on this process.
  *
- * Now each platform builds one `RuntimeCapabilities` object at its own
- * composition root, and everything downstream receives it. Consequences that
- * matter:
- *
- *  - Adding a platform means writing one composition root, not auditing every
- *    module for which globals happen to exist.
- *  - A capability a platform genuinely lacks (`analytics.canWritePlayback` on
- *    Node) is a value the app can branch on and report, instead of a runtime
- *    surprise on a request.
- *  - Nothing reads ambient state, so a test can build capabilities directly —
- *    including a Workers-shaped one, which was previously impossible because
- *    the Workers path only existed as a side effect of `process.env`.
+ * Each composition root builds one `RuntimeCapabilities` object, and everything
+ * downstream receives it. A capability this process genuinely lacks
+ * (`analytics.canWritePlayback` when analytics is off or the ingest secret is
+ * missing) is a value the app can branch on and report.
  */
 
 import type { S3Client } from '@aws-sdk/client-s3'
@@ -43,7 +30,7 @@ export type { DbTransport }
 /** How a *Modal* job is handed to the transcoder. */
 export type ModalDispatchTransport = 'direct-http' | 'qstash'
 
-export type AnalyticsWriteSink = 'workers-analytics-engine' | 'none'
+export type AnalyticsWriteSink = 'delivery-worker' | 'none'
 export type AnalyticsReadSource = 'cloudflare-sql' | 'none'
 
 /**
@@ -52,6 +39,9 @@ export type AnalyticsReadSource = 'cloudflare-sql' | 'none'
  * Deliberately flat and secret-free: it is what `/health/config` publishes and
  * what the dashboard renders, so an operator can see which provider, transport
  * and store are actually in use rather than inferring it from defaults.
+ *
+ * `analyticsWrite` is a configured capability, not remote liveness of the
+ * delivery worker.
  */
 export type DeploymentShape = {
   runtime: RuntimeName
@@ -61,6 +51,7 @@ export type DeploymentShape = {
   selfHostedEnabled: boolean
   /** Self-hosted jobs are queued in Postgres; this is the Modal transport. */
   modalDispatch: ModalDispatchTransport
+  analyticsEnabled: boolean
   analyticsWrite: AnalyticsWriteSink
   analyticsRead: AnalyticsReadSource
   uploadsEnabled: boolean
@@ -69,7 +60,7 @@ export type DeploymentShape = {
   deliveryUrl: string | null
 }
 
-/** One playback telemetry row, as the delivery client reports it. */
+/** One playback telemetry row, as forwarded to the delivery worker. */
 export type PlaybackRow = {
   event: string
   videoId: string
@@ -82,28 +73,27 @@ export type PlaybackRow = {
   watchedDelta: number
   currentTime: number
   duration: number
+  organizationId: string
 }
 
 /**
  * Playback telemetry sink.
  *
- * Write and read are separate capabilities on purpose: writing needs a Workers
- * Analytics Engine *binding*, while reading is an ordinary HTTPS call to the
- * Analytics Engine SQL API and therefore works on both runtimes. A deployment
- * can legitimately report `write: none, read: cloudflare-sql`.
+ * Write and read are separate capabilities on purpose: writing forwards rows to
+ * the delivery worker, while reading is an ordinary HTTPS call to the Analytics
+ * Engine SQL API. A deployment can legitimately report
+ * `write: none, read: cloudflare-sql`.
  */
 export type AnalyticsPort = {
   canWritePlayback: boolean
-  /** Returns how many rows were accepted; always 0 when unavailable. */
-  writePlayback(organizationId: string, rows: PlaybackRow[]): number
+  /** Returns how many rows were accepted by the sink; always 0 when unavailable. */
+  writePlayback(rows: PlaybackRow[]): Promise<number>
 }
 
 /**
  * Fire-and-forget work that must outlive the response.
  *
- * Workers get `ctx.waitUntil`; Node has no equivalent, so the promise is
- * tracked with a logged catch. Both are expressed here so call sites cannot
- * assume a Workers-only object exists.
+ * Node has no `ctx.waitUntil`, so the promise is tracked with a logged catch.
  */
 export type BackgroundRun = (work: Promise<unknown>, label: string) => void
 
@@ -111,8 +101,8 @@ export type BackgroundRun = (work: Promise<unknown>, label: string) => void
  * The only thing background work needs from a platform context.
  *
  * Structural rather than `ExecutionContext` so the runtime layer does not depend
- * on either platform's type — Hono's `ExecutionContext`, Cloudflare's global and
- * the Node stand-in all satisfy it.
+ * on Cloudflare types — Hono's `ExecutionContext` and the Node stand-in both
+ * satisfy it.
  */
 export type WaitUntilLike = {
   waitUntil(work: Promise<unknown>): void
@@ -162,12 +152,8 @@ export type RuntimeCapabilities = {
   readonly problems: DeploymentProblem[]
   readonly advisories: string[]
   /**
-   * Upgrade the isolate capabilities for one request.
-   *
-   * The Workers background runner wraps the *invocation's* `ExecutionContext`,
-   * which does not exist until a request arrives, so the app cannot be handed a
-   * complete capability set at construction time. Present only on that runtime;
-   * when absent the runtime is used as-is.
+   * Process-local maintenance. Present on the Node composition root so the
+   * timer and `POST /api/internal/sweep` share one single-flight runner.
    */
-  readonly forRequest?: (executionCtx: WaitUntilLike) => RuntimeCapabilities
+  readonly runMaintenancePass?: () => Promise<unknown>
 }

@@ -1,8 +1,8 @@
 # Marketing media
 
-This directory holds the footage and stills the marketing page references. The
+The page has exactly one media asset: the hero recording. It lives here, and the
 files themselves are supplied separately — everything below is the contract the
-components already expect. Drop a file at the listed path with the listed
+component already expects. Drop a file at the listed path with the listed
 dimensions and it appears; no code change is needed.
 
 `lib/media.ts` is the single place these paths are written down. If you rename a
@@ -15,24 +15,19 @@ file, change it there.
 | `hero-1080.mp4` | video | 1920×1080, H.264/AAC, ≤5 MB | Hero frame, all breakpoints ≥768px |
 | `hero-720.mp4` | video | 1280×720, H.264/AAC, ≤2.5 MB | Hero frame below 768px |
 | `hero-poster.jpg` | image | 1920×1080, progressive JPEG | Hero poster, LCP element |
-| `clips/woodland.mp4` | video | 1920×1080 | Supporting demo asset |
-| `clips/woodland-poster.jpg` | image | 1920×1080 | Poster for the above |
-| `clips/architecture.mp4` | video | 1920×1080 | Supporting demo asset |
-| `clips/architecture-poster.jpg` | image | 1920×1080 | Poster for the above |
-| `clips/craft.mp4` | video | 1920×1080 | Supporting demo asset |
-| `clips/craft-poster.jpg` | image | 1920×1080 | Poster for the above |
-| `thumbs/coastal.jpg` | image | 1280×720 | Library rows, workflow scenes, player preview |
-| `thumbs/woodland.jpg` | image | 1280×720 | Library rows |
-| `thumbs/architecture.jpg` | image | 1280×720 | Library rows |
-| `thumbs/craft.jpg` | image | 1280×720 | Library rows |
 
 Overrides live in `MARKETING_HERO_VIDEO_URL`, `MARKETING_HERO_VIDEO_MOBILE_URL`
 and `MARKETING_HERO_POSTER_URL` (see `.env.example`) for deployments that serve
 the hero from a CDN.
 
+Nothing else is required. The page used to reference supporting clips and 16:9
+thumbnails for library rows and workflow scenes; those sections are typographic
+now, so a checkout without this directory renders a complete page rather than a
+grid of broken images.
+
 ## The hero recording
 
-A 24-second sequence assembled from the clips above and app captures:
+A 24-second sequence assembled from footage and app captures:
 
 | Time | Content |
 |---|---|
@@ -58,13 +53,10 @@ lose and impossible to reconstruct later.
 
 | Local file | Source URL | Creator | Downloaded | Licence |
 |---|---|---|---|---|
-| `hero-1080.mp4`, `thumbs/coastal.jpg` | _add Pexels URL_ | _add creator_ | _YYYY-MM-DD_ | [Pexels License](https://www.pexels.com/license/) |
-| `clips/woodland.mp4`, `thumbs/woodland.jpg` | _add Pexels URL_ | _add creator_ | _YYYY-MM-DD_ | [Pexels License](https://www.pexels.com/license/) |
-| `clips/architecture.mp4`, `thumbs/architecture.jpg` | _add Pexels URL_ | _add creator_ | _YYYY-MM-DD_ | [Pexels License](https://www.pexels.com/license/) |
-| `clips/craft.mp4`, `thumbs/craft.jpg` | _add Pexels URL_ | _add creator_ | _YYYY-MM-DD_ | [Pexels License](https://www.pexels.com/license/) |
+| `hero-1080.mp4`, `hero-720.mp4`, `hero-poster.jpg` | _add Pexels URL_ | _add creator_ | _YYYY-MM-DD_ | [Pexels License](https://www.pexels.com/license/) |
 
 Choose natural colour and clean compositions, with no visible branding. Generate
-posters from the actual selected clips rather than from stills.
+the poster from the actual selected clip rather than from a still.
 
 ## Encoding notes
 

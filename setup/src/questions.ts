@@ -21,7 +21,6 @@ import type {
   QueueKind,
   RateLimitAnswers,
   RateLimitKind,
-  RuntimeKind,
   WizardAnswers,
 } from './types'
 import { DEFAULT_ANSWERS } from './types'
@@ -70,85 +69,51 @@ export interface AskContext {
 /** The decisions, before any value has been collected. */
 export interface Choices {
   target: ConfigTarget
-  runtime: RuntimeKind
   dbKind: DbKind
   transcodeProvider: 'modal' | 'self-hosted'
   /** Only meaningful (and only asked) for the self-hosted provider. */
   uploadsEnabled: boolean
   queueKind: QueueKind
   rateLimitKind: RateLimitKind
+  analyticsEnabled: boolean
   /** Whether to collect a Groq key (Modal provider only). */
   wantGroq: boolean
 }
 
 export async function askChoices(ctx: AskContext): Promise<Choices> {
   const { prefill, target } = ctx
-  // Numbered steps: runtime (dev only), Postgres, transcoder, rate limits.
-  const total = target === 'dev' ? 4 : 3
+  // Numbered steps: Postgres, transcoder, rate limits, analytics.
+  const total = 4
   let index = 0
 
-  // ── 1. Runtime ─────────────────────────────────────────────────────────
-  // A Compose deployment is always the Node runtime, so the question only
-  // exists for the dev target.
-  let runtime: RuntimeKind = 'node'
-  if (target === 'dev') {
-    index += 1
-    step(index, total, 'Where the API runs')
-    runtime =
-      prefill.runtime ??
-      (await askSelect<RuntimeKind>(
-        'Where should the ClipMux API run?',
-        [
-          {
-            value: 'workers',
-            label: 'Cloudflare Workers (managed)',
-            hint: 'DB_DRIVER=neon-http — deploy with wrangler; Postgres must be Neon',
-          },
-          {
-            value: 'node',
-            label: 'Node on this machine (`pnpm dev`, a VPS, a process manager)',
-            hint: 'DB_DRIVER=pg — any Postgres; Redis rate limiting available',
-          },
-        ],
-        'workers',
-      ))
-  }
-
-  // ── 2. Postgres ────────────────────────────────────────────────────────
+  // ── 1. Postgres ────────────────────────────────────────────────────────
   index += 1
   step(index, total, 'Postgres')
-  // A --db prefill only applies when it is valid for the chosen runtime
-  // (workers ⇒ neon only; node ⇒ local/existing); otherwise fall back.
-  const prefillDbValid =
-    prefill.dbKind !== undefined &&
-    (prefill.dbKind === 'neon' ? runtime === 'workers' : runtime === 'node')
   const dbKind: DbKind =
-    (prefillDbValid ? prefill.dbKind : undefined) ??
-    (runtime === 'workers'
-      ? 'neon'
-      : await askSelect<DbKind>(
-          target === 'deploy'
-            ? 'Which Postgres should the Compose stack use?'
-            : 'Which Postgres should the Node API use?',
-          target === 'deploy'
-            ? [
-                {
-                  value: 'local',
-                  label: 'The bundled Postgres service (recommended)',
-                  hint: 'created and configured by docker-compose.yml',
-                },
-                { value: 'existing', label: 'I already have a Postgres server' },
-              ]
-            : [
-                {
-                  value: 'local',
-                  label: 'The dev Postgres from `pnpm dev:infra` (recommended)',
-                  hint: 'localhost:5433, started by docker-compose.dev.yml',
-                },
-                { value: 'existing', label: 'I already have a Postgres server' },
-              ],
-          'local',
-        ))
+    (prefill.dbKind === 'local' || prefill.dbKind === 'existing' ? prefill.dbKind : undefined) ??
+    (await askSelect<DbKind>(
+      target === 'deploy'
+        ? 'Which Postgres should the Compose stack use?'
+        : 'Which Postgres should the Node API use?',
+      target === 'deploy'
+        ? [
+            {
+              value: 'local',
+              label: 'The bundled Postgres service (recommended)',
+              hint: 'created and configured by docker-compose.yml',
+            },
+            { value: 'existing', label: 'I already have a Postgres server' },
+          ]
+        : [
+            {
+              value: 'local',
+              label: 'The dev Postgres from `pnpm dev:infra` (recommended)',
+              hint: 'localhost:5433, started by docker-compose.dev.yml',
+            },
+            { value: 'existing', label: 'I already have a Postgres server' },
+          ],
+      'local',
+    ))
 
   // ── 3. Transcoder ──────────────────────────────────────────────────────
   index += 1
@@ -229,18 +194,14 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
           label: 'In-memory (recommended for one instance)',
           hint: 'no extra service; fine until you run many API replicas',
         },
-        ...(runtime === 'node'
-          ? [
-              {
-                value: 'redis' as const,
-                label: 'Redis (your own server, shared across replicas)',
-                hint: 'REDIS_URL — e.g. redis://localhost:6379; no hosted account',
-              },
-            ]
-          : []),
+        {
+          value: 'redis' as const,
+          label: 'Redis (your own server, shared across replicas)',
+          hint: 'REDIS_URL — e.g. redis://localhost:6379; no hosted account',
+        },
         {
           value: 'upstash',
-          label: 'Upstash Redis (hosted, works on Workers too)',
+          label: 'Upstash Redis (hosted REST)',
           hint: 'requires a REST URL + token',
         },
       ],
@@ -273,14 +234,18 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
     )
   }
 
+  const analyticsEnabled =
+    prefill.analyticsEnabled ??
+    (await askConfirm('Enable Cloudflare Analytics Engine (playback + bandwidth)?', true))
+
   return {
     target,
-    runtime,
     dbKind,
     transcodeProvider,
     uploadsEnabled,
     queueKind,
     rateLimitKind,
+    analyticsEnabled,
     wantGroq,
   }
 }
@@ -296,20 +261,13 @@ export async function askCredentials(
   choices: Choices,
   options: { accountIdDefault?: string } = {},
 ): Promise<WizardAnswers> {
-  const { target, runtime, dbKind, transcodeProvider, uploadsEnabled, queueKind, rateLimitKind } =
+  const { target, dbKind, transcodeProvider, uploadsEnabled, queueKind, rateLimitKind, analyticsEnabled } =
     choices
   const needsRawBucket = uploadsEnabled || transcodeProvider === 'modal'
 
   // ── Postgres ───────────────────────────────────────────────────────────
   let dbUrl: string | undefined
-  if (dbKind === 'neon') {
-    note(
-      'Workers use the neon-http driver, so DATABASE_URL must be a Neon project URL.\n\n' +
-        linksNote(['neon']),
-      'Postgres (Neon)',
-    )
-    dbUrl = await requireUrl('Paste the Neon project DATABASE_URL:', 'postgres')
-  } else if (dbKind === 'existing') {
+  if (dbKind === 'existing') {
     dbUrl = await requireUrl(
       target === 'deploy'
         ? 'Paste your Postgres DATABASE_URL (reachable from the containers):'
@@ -421,12 +379,12 @@ export async function askCredentials(
 
   return {
     target,
-    runtime,
     db,
     queue,
     rateLimit,
     transcodeProvider,
     uploadsEnabled,
+    analyticsEnabled,
     accountId: accountId.trim(),
     r2AccessKeyId: r2AccessKeyId.trim(),
     r2SecretAccessKey: r2SecretAccessKey.trim(),

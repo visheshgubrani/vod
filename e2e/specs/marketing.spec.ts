@@ -2,8 +2,9 @@ import { expect, test } from "@playwright/test";
 
 /**
  * Marketing page behaviour that a build cannot prove: the media fallback
- * policy, the integration tabs, anchor navigation under a sticky header, and
- * the reduced-motion / no-JavaScript guarantees.
+ * policy, the single code example, anchor navigation under a sticky header,
+ * the no-JavaScript guarantees, and the shape of the redesign — no imagery
+ * below the hero, no entrance animations, and no managed or enterprise offer.
  *
  * The `public/media` files are supplied separately, so most of these tests run
  * against the *missing asset* state on purpose — that is the state a fresh
@@ -77,51 +78,28 @@ test.describe("hero", () => {
   });
 });
 
-test.describe("integration tabs", () => {
-  test("expose real tab semantics and swap code with the keyboard", async ({
+test.describe("developer example", () => {
+  test("shows one browser example with its filename and surface", async ({
     page,
   }) => {
     await page.goto("/#developers");
-    await expect(page.getByRole("tablist", { name: "Integration steps" })).toBeVisible();
 
-    const tokenTab = page.getByRole("tab", { name: "Create a token" });
-    await expect(tokenTab).toHaveAttribute("aria-selected", "true");
-    await expect(page.locator(".code-panel-file strong")).toHaveText(
-      "app/api/upload-token/route.ts",
-    );
-    await expect(page.locator(".code-panel-scope")).toHaveText("Server");
-
-    await tokenTab.focus();
-    await page.keyboard.press("ArrowRight");
-
-    const uploadTab = page.getByRole("tab", { name: "Upload" });
-    await expect(uploadTab).toHaveAttribute("aria-selected", "true");
-    await expect(uploadTab).toBeFocused();
-    await expect(page.locator(".code-panel-file strong")).toHaveText(
+    const panel = page.locator("#developers .code-panel");
+    await expect(panel.locator(".code-panel-file strong")).toHaveText(
       "app/upload-form.tsx",
     );
-    await expect(page.locator(".code-panel-scope")).toHaveText("Browser");
-    await expect(page.locator('[role="tabpanel"]')).toHaveAccessibleName(
-      "Upload",
+    await expect(panel.locator(".code-panel-scope")).toHaveText("Browser");
+    await expect(panel.locator(".code-body code")).not.toBeEmpty();
+    await expect(panel.locator(".code-body code")).toContainText("startUpload");
+
+    // Where the upload token comes from is the point of the section.
+    await expect(page.locator("#developers")).toContainText(
+      "app/api/upload-token/route.ts",
     );
-  });
 
-  test("every tab shows a filename, a surface and a result", async ({ page }) => {
-    await page.goto("/#developers");
-    await expect(page.getByRole("tablist", { name: "Integration steps" })).toBeVisible();
-
-    for (const [tab, file, scope] of [
-      ["Create a token", "app/api/upload-token/route.ts", "Server"],
-      ["Upload", "app/upload-form.tsx", "Browser"],
-      ["Play", "app/video-player.tsx", "Browser"],
-      ["Receive events", "app/api/webhooks/clipmux/route.ts", "Server"],
-    ] as const) {
-      await page.getByRole("tab", { name: tab }).click();
-      await expect(page.locator(".code-panel-file strong")).toHaveText(file);
-      await expect(page.locator(".code-panel-scope")).toHaveText(scope);
-      await expect(page.locator(".code-body code")).not.toBeEmpty();
-      await expect(page.locator(".result-panel-head")).not.toBeEmpty();
-    }
+    // The tabbed tutorial is gone: one example, one panel.
+    await expect(panel).toHaveCount(1);
+    await expect(page.getByRole("tablist")).toHaveCount(0);
   });
 
   test("the copy control confirms without a page reload", async ({
@@ -130,16 +108,59 @@ test.describe("integration tabs", () => {
   }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.goto("/#developers");
-    await expect(page.getByRole("tablist", { name: "Integration steps" })).toBeVisible();
 
-    const copy = page.getByRole("button", { name: "Copy this example" });
-    await copy.click();
+    const section = page.locator("#developers");
+    await section
+      .getByRole("button", { name: "Copy this example" })
+      .click();
     await expect(
-      page.getByRole("button", { name: "Code copied" }),
+      section.getByRole("button", { name: "Code copied" }),
     ).toBeVisible();
 
     const clipboard = await page.evaluate(() => navigator.clipboard.readText());
-    expect(clipboard).toContain("uploads.createToken");
+    expect(clipboard).toContain("startUpload");
+  });
+});
+
+test.describe("self-hosting and offers", () => {
+  test("shows the bootstrap command and the single hosting path", async ({
+    page,
+  }) => {
+    await page.goto("/#hosting");
+
+    await expect(page.locator("#hosting .code-panel-file strong")).toHaveText(
+      "scripts/bootstrap.sh",
+    );
+    await expect(page.locator("#hosting .code-panel-scope")).toHaveText("Shell");
+    await expect(page.locator("#hosting .code-body code")).toContainText(
+      "./scripts/bootstrap.sh",
+    );
+    await expect(
+      page.locator("#hosting").getByRole("link", { name: /Start self-hosting/ }),
+    ).toBeVisible();
+  });
+
+  test("no managed or enterprise offer is on the page", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("body")).not.toContainText(/managed hosting/i);
+    await expect(page.locator("body")).not.toContainText(/enterprise/i);
+    await expect(page.locator("body")).not.toContainText(/interest list/i);
+    await expect(page.locator('a[href*="managed"], a[href*="enterprise"]')).toHaveCount(0);
+  });
+
+  test("the architecture diagram and the hosting comparison are gone", async ({
+    page,
+  }) => {
+    await page.goto("/#ownership");
+
+    await expect(page.locator("#ownership svg")).toHaveCount(0);
+    await expect(page.locator("#ownership")).toContainText(
+      "Your files stay in your buckets.",
+    );
+
+    // One comparison-free hosting section.
+    await expect(page.locator("#hosting .hosting-card")).toHaveCount(0);
   });
 });
 
@@ -155,6 +176,25 @@ test.describe("navigation and FAQ", () => {
         .getBoundingClientRect().height,
       label: document
         .querySelector("#platform .section-label")!
+        .getBoundingClientRect().top,
+    }));
+
+    expect(geometry.label).toBeGreaterThan(geometry.header);
+  });
+
+  test("the renamed self-hosting anchor still lands below the header", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("link", { name: "Self-hosting", exact: true }).click();
+    await page.waitForTimeout(1200);
+
+    const geometry = await page.evaluate(() => ({
+      header: document
+        .querySelector(".site-header")!
+        .getBoundingClientRect().height,
+      label: document
+        .querySelector("#hosting .section-label")!
         .getBoundingClientRect().top,
     }));
 
@@ -190,25 +230,36 @@ test.describe("navigation and FAQ", () => {
   });
 });
 
-test.describe("motion and layout", () => {
-  test("reduced motion shows all three workflow scenes at once", async ({
+test.describe("the redesign's shape", () => {
+  test("ships no imagery below the hero", async ({ page }) => {
+    await page.goto("/");
+
+    // Every image below the hero is gone, so the missing-asset state of a fresh
+    // checkout cannot render broken thumbnails.
+    await expect(page.locator("main img")).toHaveCount(0);
+    await expect(page.locator("main video")).toHaveCount(1);
+    await expect(page.locator("#platform .library-row")).toHaveCount(3);
+  });
+
+  test("carries no below-hero entrance animation", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("[data-reveal]")).toHaveCount(0);
+    await expect(page.locator("[data-workflow-scene]")).toHaveCount(0);
+  });
+
+  test("every workflow step is readable at once, with motion reduced", async ({
     browser,
   }) => {
     const context = await browser.newContext({ reducedMotion: "reduce" });
     const page = await context.newPage();
     await page.goto("/#workflow");
 
-    const scenes = page.locator("[data-workflow-scene]");
-    await expect(scenes).toHaveCount(3);
-    for (let index = 0; index < 3; index += 1) {
-      await expect(scenes.nth(index)).toBeVisible();
+    for (const step of ["Upload", "Process", "Play"]) {
+      await expect(
+        page.locator("#workflow").getByRole("heading", { name: step, exact: true }),
+      ).toBeVisible();
     }
-    await expect(page.locator(".workflow-scenes")).not.toHaveAttribute(
-      "data-animated",
-      "true",
-    );
 
-    // Every explanation is available without scrolling through a sequence.
     await expect(
       page.getByRole("heading", { name: "One upload. Ready for playback." }),
     ).toBeVisible();
@@ -216,7 +267,7 @@ test.describe("motion and layout", () => {
   });
 
   test("no width overflows horizontally", async ({ page }) => {
-    for (const width of [360, 390, 768, 1024, 1440]) {
+    for (const width of [320, 360, 390, 768, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/");
       await page.waitForTimeout(500);

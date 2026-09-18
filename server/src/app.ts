@@ -1,18 +1,9 @@
 /**
  * The Hono application, built by a composition root.
  *
- * This module used to be a module-scope `new Hono()` that discovered its
- * runtime implicitly: it read `process.env` at import time for the rate-limit
- * knobs and `NODE_ENV`, and — because that cannot work on Workers, where
- * bindings arrive per invocation — it installed a middleware that copied every
- * string binding into `process.env` on every request. That bridge mutated
- * isolate-global state, ran *after* the module-scope reads it was written to
- * satisfy, and was duplicated in the health route.
- *
- * Now the app is a function of `RuntimeCapabilities`. There is no ambient
+ * The app is a function of `RuntimeCapabilities`. There is no ambient
  * environment to reach for: configuration, clients, the rate limiter, the
- * analytics sink and background work all arrive on `c.var.runtime`, and the
- * Workers-only parts are values the runtime either has or does not.
+ * analytics sink and background work all arrive on `c.var.runtime`.
  */
 
 import { type Context, Hono } from 'hono'
@@ -78,12 +69,9 @@ export function createApp(runtime: RuntimeCapabilities): Hono<{ Bindings: Bindin
     }
   }
 
-  // ── Runtime, first ────────────────────────────────────────────────────────
-  // Everything below reads c.var.runtime. On Workers the per-request object
-  // additionally carries a background runner bound to this invocation's
-  // ExecutionContext, which does not exist until a request arrives.
+  // Everything below reads c.var.runtime.
   app.use('*', async (c, next) => {
-    c.set('runtime', runtime.forRequest ? runtime.forRequest(c.executionCtx) : runtime)
+    c.set('runtime', runtime)
     await next()
   })
 

@@ -99,7 +99,6 @@ export function classifyDevDb(input: {
 export function devInfraChoice(answers: WizardAnswers): boolean {
   return (
     (answers.target ?? 'dev') === 'dev' &&
-    answers.runtime === 'node' &&
     answers.db.kind === 'local'
   )
 }

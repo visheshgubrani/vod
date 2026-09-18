@@ -101,13 +101,12 @@ export function SetupWizard() {
           </span>
         </div>
         <p className="dash-body mt-2 break-all text-muted-foreground">
-          {HEALTH_CONFIG_URL} — is the API worker/container running?
+          {HEALTH_CONFIG_URL} — is the API running?
         </p>
         {apiState === "down" && (
           <p className="dash-body mt-3 text-failed">
             Could not reach the API at {HEALTH_CONFIG_URL}. Start it with{" "}
-            <Code>wrangler dev</Code> (server package) or{" "}
-            <Code>docker compose up -d</Code>.
+            <Code>pnpm dev</Code> or <Code>docker compose up -d</Code>.
           </p>
         )}
         {error && apiState === "ok" && (

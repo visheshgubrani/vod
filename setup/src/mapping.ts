@@ -13,7 +13,6 @@ import type {
   QueueKind,
   RateLimitAnswers,
   RateLimitKind,
-  RuntimeKind,
   SecretSet,
   WizardAnswers,
 } from './types'
@@ -47,7 +46,6 @@ export const DEV_LOCAL_REDIS_URL = 'redis://localhost:6382'
  */
 export const SERVER_KEY_ORDER = [
   'DATABASE_URL',
-  'DB_DRIVER',
   'BETTER_AUTH_SECRET',
   'BETTER_AUTH_URL',
   'FRONTEND_URL',
@@ -59,6 +57,8 @@ export const SERVER_KEY_ORDER = [
   'RAW_BUCKET_NAME',
   'TRANSCODED_BUCKET_NAME',
   'CLOUDFLARE_ANALYTICS_TOKEN',
+  'ANALYTICS_ENABLED',
+  'ANALYTICS_INGEST_SECRET',
   'QSTASH_TOKEN',
   'MODAL_WEBHOOK_URL',
   'TRANSCODE_INGEST_SECRET',
@@ -68,6 +68,8 @@ export const SERVER_KEY_ORDER = [
   'JWT_SECRET',
   'DELIVERY_URL',
   'INTERNAL_SWEEP_SECRET',
+  'SWEEP_ENABLED',
+  'MAINTENANCE_INTERVAL_SECONDS',
   'GROQ_API_KEY',
   'REDIS_URL',
   'UPSTASH_REDIS_REST_URL',
@@ -76,7 +78,7 @@ export const SERVER_KEY_ORDER = [
 
 /**
  * Canonical keys for the deployment `.env` (repo root) — what docker-compose.yml
- * interpolates and what the api/maintenance containers consume.
+ * interpolates and what the api container consumes.
  *
  * Separate from server/.dev.vars on purpose: that file is *development* config,
  * and having the deployment stack read it made the two indistinguishable (the
@@ -87,7 +89,6 @@ export const DEPLOY_KEY_ORDER = [
   'POSTGRES_PASSWORD',
   'POSTGRES_DB',
   'DATABASE_URL',
-  'DB_DRIVER',
   'REDIS_URL',
   'CLIPMUX_API_PORT',
   'CLIPMUX_WEB_PORT',
@@ -110,6 +111,8 @@ export const DEPLOY_KEY_ORDER = [
   'RAW_BUCKET_NAME',
   'TRANSCODED_BUCKET_NAME',
   'CLOUDFLARE_ANALYTICS_TOKEN',
+  'ANALYTICS_ENABLED',
+  'ANALYTICS_INGEST_SECRET',
   'DELIVERY_URL',
   'TRANSCODE_PROVIDER',
   'SELF_HOSTED_ENABLED',
@@ -124,7 +127,13 @@ export const DEPLOY_KEY_ORDER = [
 ] as const
 
 /** Canonical keys for delivery/.dev.vars. */
-export const DELIVERY_KEY_ORDER = ['JWT_SECRET', 'DEFAULT_POLICY', 'DELIVERY_DEBUG'] as const
+export const DELIVERY_KEY_ORDER = [
+  'JWT_SECRET',
+  'DEFAULT_POLICY',
+  'DELIVERY_DEBUG',
+  'ANALYTICS_ENABLED',
+  'ANALYTICS_INGEST_SECRET',
+] as const
 
 const SERVER_KEY_SET = new Set<string>(SERVER_KEY_ORDER)
 const DELIVERY_KEY_SET = new Set<string>(DELIVERY_KEY_ORDER)
@@ -145,18 +154,8 @@ export function deployKeySet(): ReadonlySet<string> {
   return DEPLOY_KEY_SET
 }
 
-/**
- * DB driver derived from the runtime choice.
- *
- * Not a free choice: `pg` cannot work on Workers, which the server now refuses to
- * start with rather than failing on the second request.
- */
-export function dbDriverFor(runtime: WizardAnswers['runtime']): 'neon-http' | 'pg' {
-  return runtime === 'workers' ? 'neon-http' : 'pg'
-}
-
 /** The DATABASE_URL written for host-side tooling. */
-export function databaseUrlFor(runtime: WizardAnswers['runtime'], db: DbAnswers): string {
+export function databaseUrlFor(db: DbAnswers): string {
   if (db.kind === 'local') return COMPOSE_LOCAL_DATABASE_URL
   if (db.url !== undefined && db.url.trim() !== '') return db.url.trim()
   // Unreachable after validateAnswers() passes; defensive fallback.
@@ -184,9 +183,26 @@ export function plainRedisUrl(rateLimit: RateLimitAnswers): string {
   return rateLimit.kind === 'redis' ? (rateLimit.url ?? '').trim() : ''
 }
 
+/**
+ * Boolean env flags. Unset uses `defaultValue`; `"false"`/`"0"` are off;
+ * `"true"`/`"1"` are on. Any other value falls back to the default.
+ * Matches `parseEnabledFlag` in server/src/lib/config.ts.
+ */
+export function parseEnabledFlag(raw: string | undefined, defaultValue: boolean): boolean {
+  const value = raw?.trim().toLowerCase()
+  if (!value) return defaultValue
+  if (value === 'true' || value === '1') return true
+  if (value === 'false' || value === '0') return false
+  return defaultValue
+}
+
 /** Whether browser/SDK uploads are accepted. Omitted means true. */
 export function uploadsEnabled(answers: WizardAnswers): boolean {
   return answers.uploadsEnabled !== false
+}
+
+export function analyticsEnabled(answers: Pick<WizardAnswers, 'analyticsEnabled'>): boolean {
+  return answers.analyticsEnabled !== false
 }
 
 /** The transcoder that new jobs use. Omitted means Modal. */
@@ -235,10 +251,10 @@ export function selfHostedEnabledValue(answers: WizardAnswers): string {
  */
 export interface ChoiceShape {
   target?: ConfigTarget
-  runtime: RuntimeKind
   dbKind?: DbKind
   transcodeProvider?: 'modal' | 'self-hosted'
   uploadsEnabled?: boolean
+  analyticsEnabled?: boolean
   queueKind?: QueueKind
   rateLimitKind?: RateLimitKind
 }
@@ -258,19 +274,16 @@ export function validateChoices(shape: ChoiceShape): string[] {
   if (shape.target !== undefined && shape.target !== 'dev' && shape.target !== 'deploy') {
     problems.push(`target must be "dev" or "deploy", got "${String(shape.target)}"`)
   }
-  if (shape.runtime !== 'workers' && shape.runtime !== 'node') {
-    problems.push(`runtime must be "workers" or "node", got "${String(shape.runtime)}"`)
-  }
 
   const dbKind = shape.dbKind
-  if (dbKind !== 'neon' && dbKind !== 'local' && dbKind !== 'existing') {
-    problems.push(`db.kind must be "neon", "local" or "existing", got "${String(dbKind)}"`)
-  } else {
-    if (shape.runtime === 'workers' && dbKind !== 'neon') {
-      problems.push('runtime "workers" requires db.kind "neon" (the neon-http driver)')
-    }
-    if (shape.runtime === 'node' && dbKind !== 'local' && dbKind !== 'existing') {
-      problems.push('runtime "node" requires db.kind "local" or "existing"')
+  if (dbKind !== 'local' && dbKind !== 'existing') {
+    if (dbKind === 'neon') {
+      problems.push(
+        'db.kind "neon" is no longer a wizard choice. Use db.kind "existing" with your ' +
+          'Postgres URL — a Neon connection string is a regular postgresql:// URL.',
+      )
+    } else {
+      problems.push(`db.kind must be "local" or "existing", got "${String(dbKind)}"`)
     }
   }
 
@@ -281,10 +294,6 @@ export function validateChoices(shape: ChoiceShape): string[] {
   const rateLimitKind = shape.rateLimitKind
   if (rateLimitKind !== 'memory' && rateLimitKind !== 'redis' && rateLimitKind !== 'upstash') {
     problems.push('rateLimit.kind must be "memory", "redis" or "upstash"')
-  } else if (rateLimitKind === 'redis' && shape.runtime === 'workers') {
-    // A TCP socket is impossible on Workers. Refusing here is the point: the
-    // alternative is a deployment whose limits are silently per-isolate.
-    problems.push('rateLimit "redis" is not available on the Workers runtime — use "upstash"')
   }
 
   if (
@@ -312,12 +321,12 @@ export function validateChoices(shape: ChoiceShape): string[] {
 export function validateChoicesOf(answers: WizardAnswers): string[] {
   return validateChoices({
     ...(answers.target !== undefined ? { target: answers.target } : {}),
-    runtime: answers.runtime,
     ...(answers.db?.kind !== undefined ? { dbKind: answers.db.kind } : {}),
     ...(answers.transcodeProvider !== undefined
       ? { transcodeProvider: answers.transcodeProvider }
       : {}),
     ...(answers.uploadsEnabled !== undefined ? { uploadsEnabled: answers.uploadsEnabled } : {}),
+    ...(answers.analyticsEnabled !== undefined ? { analyticsEnabled: answers.analyticsEnabled } : {}),
     ...(answers.queue?.kind !== undefined ? { queueKind: answers.queue.kind } : {}),
     ...(answers.rateLimit?.kind !== undefined ? { rateLimitKind: answers.rateLimit.kind } : {}),
   })
@@ -409,11 +418,11 @@ export function buildDevConfig(
   const queueToken = qstashToken(answers.queue)
   const redis = upstashRedis(answers.rateLimit)
   const plainRedis = plainRedisUrl(answers.rateLimit)
-  const dbUrl = databaseUrlFor(answers.runtime, answers.db)
+  const dbUrl = databaseUrlFor(answers.db)
+  const analyticsOn = analyticsEnabled(answers)
 
   const entries: EnvEntry[] = [
     ['DATABASE_URL', dbUrl],
-    ['DB_DRIVER', dbDriverFor(answers.runtime)],
     ['BETTER_AUTH_SECRET', secrets.betterAuthSecret],
     ['BETTER_AUTH_URL', 'http://localhost:8787'],
     ['FRONTEND_URL', answers.frontendUrl.trim()],
@@ -436,12 +445,16 @@ export function buildDevConfig(
     ['RAW_BUCKET_NAME', rawBucketValue(answers)],
     ['TRANSCODED_BUCKET_NAME', answers.transcodedBucket.trim()],
     ['CLOUDFLARE_ANALYTICS_TOKEN', ''],
+    ['ANALYTICS_ENABLED', analyticsOn ? 'true' : 'false'],
+    ['ANALYTICS_INGEST_SECRET', analyticsOn ? secrets.analyticsIngestSecret : ''],
     ['QSTASH_TOKEN', queueToken],
     ['MODAL_WEBHOOK_URL', ''],
     ['TRANSCODE_INGEST_SECRET', secrets.transcodeIngestSecret],
     ['JWT_SECRET', secrets.jwtSecret],
     ['DELIVERY_URL', ''],
     ['INTERNAL_SWEEP_SECRET', secrets.internalSweepSecret],
+    ['SWEEP_ENABLED', 'true'],
+    ['MAINTENANCE_INTERVAL_SECONDS', '900'],
     ['GROQ_API_KEY', answers.groqApiKey?.trim() ?? ''],
     ['REDIS_URL', plainRedis],
     ['UPSTASH_REDIS_REST_URL', redis.url],
@@ -477,7 +490,6 @@ export function buildDeployConfig(
     ['POSTGRES_PASSWORD', secrets.postgresPassword],
     ['POSTGRES_DB', 'clipmux'],
     ['DATABASE_URL', externalDbUrl],
-    ['DB_DRIVER', 'pg'],
     // Blank means the bundled Redis; set it to use your own.
     ['REDIS_URL', answers.rateLimit.kind === 'redis' ? (answers.rateLimit.url ?? '').trim() : ''],
     ['CLIPMUX_API_PORT', '8787'],
@@ -501,6 +513,8 @@ export function buildDeployConfig(
     ['RAW_BUCKET_NAME', rawBucketValue(answers)],
     ['TRANSCODED_BUCKET_NAME', answers.transcodedBucket.trim()],
     ['CLOUDFLARE_ANALYTICS_TOKEN', ''],
+    ['ANALYTICS_ENABLED', analyticsEnabled(answers) ? 'true' : 'false'],
+    ['ANALYTICS_INGEST_SECRET', analyticsEnabled(answers) ? secrets.analyticsIngestSecret : ''],
     ['DELIVERY_URL', ''],
     ['TRANSCODE_PROVIDER', transcodeProvider(answers)],
     ['SELF_HOSTED_ENABLED', selfHostedEnabledValue(answers)],
@@ -516,11 +530,14 @@ export function buildDeployConfig(
 }
 
 /** Build delivery/.dev.vars (JWT_SECRET mirrored from the API). */
-export function buildDeliveryEntries(secrets: SecretSet): EntryList {
+export function buildDeliveryEntries(secrets: SecretSet, answers?: Pick<WizardAnswers, 'analyticsEnabled'>): EntryList {
+  const analyticsOn = answers ? analyticsEnabled(answers) : true
   return [
     ['JWT_SECRET', secrets.jwtSecret],
     ['DEFAULT_POLICY', 'public'],
     ['DELIVERY_DEBUG', 'false'],
+    ['ANALYTICS_ENABLED', analyticsOn ? 'true' : 'false'],
+    ['ANALYTICS_INGEST_SECRET', analyticsOn ? secrets.analyticsIngestSecret : ''],
   ]
 }
 
@@ -540,17 +557,12 @@ export function deriveAnswersFromConfig(
   target: ConfigTarget,
   env: Record<string, string>,
 ): WizardAnswers {
-  const driver = env['DB_DRIVER']
-  const runtime: WizardAnswers['runtime'] =
-    target === 'deploy' ? 'node' : driver === 'pg' ? 'node' : 'workers'
   const dbUrl = (env['DATABASE_URL'] ?? '').trim()
 
   const db: DbAnswers =
-    runtime === 'node'
-      ? dbUrl === '' || dbUrl === DEV_LOCAL_DATABASE_URL
-        ? { kind: 'local' }
-        : { kind: 'existing', url: dbUrl }
-      : { kind: 'neon', url: dbUrl }
+    dbUrl === '' || dbUrl === DEV_LOCAL_DATABASE_URL
+      ? { kind: 'local' }
+      : { kind: 'existing', url: dbUrl }
 
   const queue: QueueAnswers = (env['QSTASH_TOKEN'] ?? '').trim()
     ? { kind: 'qstash', token: env['QSTASH_TOKEN'] }
@@ -572,11 +584,9 @@ export function deriveAnswersFromConfig(
       ? 'self-hosted'
       : 'modal'
   const selfHostedRaw = (env['SELF_HOSTED_ENABLED'] ?? '').trim().toLowerCase()
-  const uploadsRaw = (env['UPLOADS_ENABLED'] ?? '').trim().toLowerCase()
 
   return {
     target,
-    runtime,
     db,
     queue,
     rateLimit,
@@ -587,7 +597,8 @@ export function deriveAnswersFromConfig(
     transcodedBucket: (env['TRANSCODED_BUCKET_NAME'] ?? '').trim(),
     transcodeProvider,
     ...(selfHostedRaw === '' ? {} : { selfHostedEnabled: selfHostedRaw === 'true' || selfHostedRaw === '1' }),
-    uploadsEnabled: uploadsRaw === '' ? true : uploadsRaw !== 'false',
+    uploadsEnabled: parseEnabledFlag(env['UPLOADS_ENABLED'], true),
+    analyticsEnabled: parseEnabledFlag(env['ANALYTICS_ENABLED'], true),
     frontendUrl: (env['FRONTEND_URL'] ?? '').trim() || (env['CORS_ORIGINS'] ?? '').trim(),
     groqApiKey: (env['GROQ_API_KEY'] ?? '').trim() || undefined,
   }

@@ -9,21 +9,17 @@ import {
 } from '../../src/lib/database'
 import { getR2, installR2, resetInstalledR2, createR2Client } from '../../src/utils/R2'
 import { createNodeRuntime } from '../../src/runtime/node'
-import { getWorkersRuntime, resetWorkersRuntime, withRequestContext } from '../../src/runtime/workers'
-import { stringBindings } from '../../src/runtime/bindings'
-import type { Bindings } from '../../src/types'
 
 /**
  * The handles are install-once.
  *
  * This is the enforcement of the boundary: `db` and `r2` used to resolve their
- * credentials from `process.env` on every property access, which worked on
- * Workers only because a middleware had copied bindings into it per request. A
- * missing install must therefore be an error, not a silent fallback.
+ * credentials from `process.env` on every property access. A missing install
+ * must therefore be an error, not a silent fallback.
  */
 
 const COMPLETE_ENV = {
-  DATABASE_URL: 'postgresql://user:pass@db.example.com/neondb',
+  DATABASE_URL: 'postgresql://user:pass@db.example.com/clipmux',
   BETTER_AUTH_SECRET: 'a-32-character-secret-string-1234567890',
   JWT_SECRET: 'another-32-character-secret-string-9876543',
   ACCOUNT_ID: 'cf-account-123',
@@ -38,7 +34,6 @@ const COMPLETE_ENV = {
 afterEach(() => {
   resetInstalledDb()
   resetInstalledR2()
-  resetWorkersRuntime()
 })
 
 describe('database handle', () => {
@@ -76,65 +71,27 @@ describe('object storage handle', () => {
   })
 })
 
-describe('stringBindings', () => {
-  it('keeps strings and drops non-string bindings', () => {
-    const env = stringBindings({
-      DATABASE_URL: 'postgresql://x',
-      EMPTY: undefined,
-      PLAYBACK_ANALYTICS: { writeDataPoint: () => {} },
-    } as unknown as Bindings)
-
-    expect(env).toEqual({ DATABASE_URL: 'postgresql://x' })
-  })
-})
-
-describe('composition roots', () => {
-  it('produce the same capability shape', () => {
-    const node = createNodeRuntime(COMPLETE_ENV)
-    const workers = getWorkersRuntime(COMPLETE_ENV as unknown as Bindings)
-
-    const keysOf = (value: object) => Object.keys(value).sort()
-    // `forRequest` is Workers-only by design: the background runner needs the
-    // invocation's context, which Node does not have.
-    expect(keysOf(workers).filter((key) => key !== 'forRequest')).toEqual(keysOf(node))
-  })
-
-  it('resolve the runtime they were built for', () => {
+describe('composition root', () => {
+  it('resolves the Node runtime', () => {
     expect(createNodeRuntime(COMPLETE_ENV).runtime).toBe('node')
-    expect(getWorkersRuntime(COMPLETE_ENV as unknown as Bindings).runtime).toBe('workers')
   })
 
-  it('memoise the Workers runtime per bindings object', () => {
-    const bindings = COMPLETE_ENV as unknown as Bindings
-    expect(getWorkersRuntime(bindings)).toBe(getWorkersRuntime(bindings))
-
-    const other = { ...COMPLETE_ENV } as unknown as Bindings
-    expect(getWorkersRuntime(other)).not.toBe(getWorkersRuntime(bindings))
-  })
-
-  it('bind background work per request on Workers', () => {
-    const isolate = getWorkersRuntime(COMPLETE_ENV as unknown as Bindings)
-    const seen: Promise<unknown>[] = []
-    const capability = withRequestContext(isolate, {
-      waitUntil: (work) => seen.push(work),
-    })
-
-    capability.background(Promise.resolve('done'), 'test task')
-    expect(seen).toHaveLength(1)
-
-    // The isolate object is a complete capability set too, but scheduling
-    // outside a request is a wiring bug and must say so.
-    expect(() => isolate.background(Promise.resolve(), 'stray')).toThrow(
-      /outside a request/,
-    )
-  })
-
-  it('expose the resolved deployment shape for /health/config', () => {
-    const node = createNodeRuntime({ ...COMPLETE_ENV, DB_DRIVER: 'pg' })
+  it('exposes the resolved deployment shape for /health/config', () => {
+    const node = createNodeRuntime(COMPLETE_ENV)
     expect(node.shape).toMatchObject({
       runtime: 'node',
       dbTransport: 'postgres-js',
       deliveryRuntime: 'cloudflare-worker',
     })
+  })
+
+  it('forwards playback analytics when ingest is configured', () => {
+    const runtime = createNodeRuntime({
+      ...COMPLETE_ENV,
+      DELIVERY_URL: 'https://media.example.com',
+      ANALYTICS_INGEST_SECRET: 'analytics-ingest-secret-32-chars-min',
+    })
+    expect(runtime.analytics.canWritePlayback).toBe(true)
+    expect(runtime.shape.analyticsWrite).toBe('delivery-worker')
   })
 })

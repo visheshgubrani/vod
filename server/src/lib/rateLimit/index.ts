@@ -1,21 +1,18 @@
 /**
  * Rate limiting — one selection point, three adapters.
  *
- * | Store     | Runtime | Why |
- * | --------- | ------- | --- |
- * | `redis`   | Node    | A self-hoster's own Redis. No second vendor. |
- * | `upstash` | both    | REST, so it also works on Workers (no TCP sockets). |
- * | `memory`  | both    | Zero-config default; per instance only. |
+ * | Store     | Why |
+ * | --------- | --- |
+ * | `redis`   | A self-hoster's own Redis. No second vendor. |
+ * | `upstash` | REST Redis, optional. |
+ * | `memory`  | Zero-config default; per instance only. |
  *
  * Selection precedence is fixed and reported by `/health/config`:
- * `REDIS_URL` → `UPSTASH_REDIS_REST_URL/TOKEN` → in-memory. An impossible
- * combination (a TCP Redis on Workers) is reported as a problem rather than
- * silently downgraded, so `resolveDeployment` can refuse to boot instead of the
- * operator discovering their limits are per-isolate.
+ * `REDIS_URL` → `UPSTASH_REDIS_REST_URL/TOKEN` → in-memory.
  */
 
 import type { Duration } from '@upstash/ratelimit'
-import type { EnvLike, RuntimeName } from '../config'
+import type { EnvLike } from '../config'
 import { InMemorySlidingWindow } from './memory'
 import { createRedisLimiter } from './redis'
 import { createUpstashLimiter } from './upstash'
@@ -104,7 +101,7 @@ function value(env: EnvLike, key: string): string | null {
   return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null
 }
 
-export function resolveRateLimitConfig(env: EnvLike, runtime: RuntimeName): RateLimitConfig {
+export function resolveRateLimitConfig(env: EnvLike): RateLimitConfig {
   const problems: string[] = []
 
   const redisUrl = value(env, 'REDIS_URL')
@@ -113,16 +110,7 @@ export function resolveRateLimitConfig(env: EnvLike, runtime: RuntimeName): Rate
   const upstash = upstashUrl && upstashToken ? { url: upstashUrl, token: upstashToken } : null
 
   let store: RateLimitStoreKind = 'memory'
-  if (redisUrl && runtime === 'workers') {
-    // Not a downgrade we make silently: the operator asked for a shared store
-    // and would otherwise get per-isolate limits that look like they work.
-    problems.push(
-      'REDIS_URL is set but this is the Cloudflare Workers runtime, which cannot '
-        + 'open a TCP socket. Use UPSTASH_REDIS_REST_URL/TOKEN, or run the API on '
-        + 'Node (`pnpm dev`, or the Docker deployment).',
-    )
-    if (upstash) store = 'upstash'
-  } else if (redisUrl) {
+  if (redisUrl) {
     store = 'redis'
   } else if (upstash) {
     store = 'upstash'

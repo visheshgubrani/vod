@@ -1,13 +1,9 @@
 /**
  * The maintenance runner.
  *
- * Everything that reconciles durable state lives here, and both entry points
- * call it: the cron/scheduled trigger and `POST /api/internal/sweep`.
- *
- * They previously diverged — the scheduled handler ran only the transcode
- * sweep, so a deployment using the documented Workers cron never attempted a
- * single webhook retry. Sharing one function is what makes "the cron is
- * configured" mean the same thing as "retries happen".
+ * Everything that reconciles durable state lives here. The in-process
+ * scheduler and `POST /api/internal/sweep` both call it, so an operator who
+ * triggers a pass by hand gets exactly the work the timer would have done.
  *
  * Each pass is independently guarded: a failure in one must not stop the other,
  * because they reconcile unrelated work (stuck transcode jobs vs undelivered
@@ -29,7 +25,7 @@ import {
   type CleanupStats,
 } from '../lib/objectCleanup'
 import { s3ObjectStore } from './objectStore'
-import type { EnvLike } from '../lib/config'
+import { parseEnabledFlag, type EnvLike } from '../lib/config'
 
 export type MaintenanceResult = {
   videos: SweepStats
@@ -157,15 +153,14 @@ function readPositiveInt(
 }
 
 /**
- * Should the scheduled trigger run maintenance?
+ * Should the in-process scheduler run maintenance?
  *
- * Opt-in, because it is the cron trigger that must be configured — and the
- * consequence of leaving it off is not limited to stuck transcode jobs: webhook
- * retries stop too. `GET /health/config` reports whether this is on, so the
- * omission is visible rather than silent.
+ * Defaults to on: unset means enabled. `SWEEP_ENABLED=false` is the replica
+ * opt-out. `GET /health/config` reports whether this is on, so an extra replica
+ * that forgot the flag is visible rather than silent.
  */
 export function isMaintenanceEnabled(env: EnvLike | undefined): boolean {
-  return env?.SWEEP_ENABLED === 'true'
+  return parseEnabledFlag(env ?? {}, 'SWEEP_ENABLED', true)
 }
 
 /** A pass older than this is treated as "not actually running". */

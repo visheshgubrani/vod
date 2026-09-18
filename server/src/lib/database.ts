@@ -1,21 +1,8 @@
-import { neon } from '@neondatabase/serverless'
-import { drizzle as drizzleNeon } from 'drizzle-orm/neon-http'
 import postgres from 'postgres'
-import { drizzle as drizzlePg } from 'drizzle-orm/postgres-js'
+import { drizzle } from 'drizzle-orm/postgres-js'
 import * as schema from '../db/schema'
-import { dbTransportFromEnv, type DbTransport } from './config'
 
-export type DbDriver = DbTransport
-export type Db = ReturnType<typeof drizzleNeon>
-
-/**
- * Choose the Postgres transport from `DB_DRIVER`.
- *
- * Re-exported from `lib/config` (where the mapping lives) so the pure
- * configuration layer can answer the question without importing a driver, while
- * `node/migrate.ts` and the tests keep the name they already use.
- */
-export const dbDriverFromEnv = dbTransportFromEnv
+export type Db = ReturnType<typeof drizzle<typeof schema>>
 
 function postgresOptions(url: string): postgres.Options<{}> {
   const options: postgres.Options<{}> = {
@@ -31,29 +18,26 @@ function postgresOptions(url: string): postgres.Options<{}> {
 }
 
 /**
- * Build a client for an explicit URL and transport.
+ * Build a schema-aware postgres-js Drizzle client for an explicit URL.
  *
  * A factory rather than a cached singleton: the returned instance belongs to the
  * caller, so a composition root installs exactly one and a test can build one
  * against a scratch database without racing a module-level cache.
  */
-export function createDb(databaseUrl: string, driver: DbTransport): Db {
-  if (driver === 'postgres-js') {
-    const client = postgres(databaseUrl, postgresOptions(databaseUrl))
-    return drizzlePg(client, { schema }) as unknown as Db
-  }
-  return drizzleNeon(neon(databaseUrl), { schema })
+export function createDb(databaseUrl: string): Db {
+  const client = postgres(databaseUrl, postgresOptions(databaseUrl))
+  return drizzle(client, { schema })
 }
 
 let installed: Db | null = null
 
 /**
- * Install the client this process (Node) or isolate (Workers) will use.
+ * Install the client this process will use.
  *
  * The composition roots are the only callers. There is deliberately no lazy
  * ambient-environment fallback: that is what let `db` resolve credentials from
- * `process.env` and appear to work on Workers only because a middleware had
- * copied bindings into it, per request, after module evaluation.
+ * `process.env` and appear to work only after a middleware had copied bindings
+ * into it.
  */
 export function installDb(instance: Db): void {
   installed = instance

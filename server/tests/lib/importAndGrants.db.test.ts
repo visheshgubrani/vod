@@ -34,11 +34,8 @@ const suiteDb = suiteUrl
   : null
 const hasTestDatabase = suiteDb?.hasTestDatabase ?? false
 
-// The application handle defaults to `neon-http` (the Workers transport), an
-// HTTPS-only driver that cannot be pointed at a local container.
 if (suiteUrl) {
   process.env.DATABASE_URL = suiteUrl
-  process.env.DB_DRIVER = 'pg'
 }
 
 const { createTestDb, connectTestDb } = suiteDb ?? ({} as never)

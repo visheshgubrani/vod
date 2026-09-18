@@ -27,7 +27,6 @@ import type {
   Prefill,
   QueueKind,
   RateLimitKind,
-  RuntimeKind,
   SecretSet,
   WizardAnswers,
 } from './types'
@@ -183,21 +182,33 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--runtime': {
         const value = next(i, arg)
-        // 'compose' was the old name for the Node runtime; still accepted so an
-        // existing script or answers file does not break.
-        if (value !== 'workers' && value !== 'node' && value !== 'compose') {
-          usageError(`--runtime must be workers|node, got ${value}`)
-        }
-        options.prefill.runtime = (value === 'compose' ? 'node' : value) as RuntimeKind
-        i += 1
+        usageError(
+          `--runtime is no longer used. ClipMux v1 always runs the API on Node. ` +
+            `Remove --runtime ${value} from the command.`,
+        )
         break
       }
       case '--db': {
         const value = next(i, arg)
-        if (value !== 'neon' && value !== 'local' && value !== 'existing') {
-          usageError(`--db must be neon|local|existing, got ${value}`)
+        if (value === 'neon') {
+          usageError(
+            '--db neon is no longer a wizard choice. Use --db existing and pass a ' +
+              'postgresql:// URL (a Neon connection string is a regular Postgres URL).',
+          )
+        }
+        if (value !== 'local' && value !== 'existing') {
+          usageError(`--db must be local|existing, got ${value}`)
         }
         options.prefill.dbKind = value as DbKind
+        i += 1
+        break
+      }
+      case '--analytics': {
+        const value = next(i, arg)
+        if (value !== 'on' && value !== 'off') {
+          usageError(`--analytics must be on|off, got ${value}`)
+        }
+        options.prefill.analyticsEnabled = value === 'on'
         i += 1
         break
       }
@@ -275,16 +286,30 @@ function loadAnswersFile(path: string): WizardAnswers {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new WizardError('answers file must be a JSON object (see --help for the schema)')
   }
+  const rawObj = raw as Record<string, unknown>
+  if (rawObj.runtime === 'workers') {
+    throw new WizardError(
+      'runtime "workers" is no longer supported. ClipMux v1 runs the API on Node. ' +
+        'Remove "runtime" from the answers file.',
+    )
+  }
+  const rawDb = (rawObj.db ?? null) as { kind?: unknown } | null
+  const dbKind = typeof rawDb?.kind === 'string' ? rawDb.kind : undefined
   const answers = raw as Partial<WizardAnswers>
-  const dbKind = answers.db?.kind
   const queueKind = answers.queue?.kind
   const rateKind = answers.rateLimit?.kind
   const target = answers.target
   if (target !== undefined && target !== 'dev' && target !== 'deploy') {
     throw new WizardError('answers target must be "dev" or "deploy"')
   }
-  if (dbKind !== 'neon' && dbKind !== 'local' && dbKind !== 'existing') {
-    throw new WizardError('answers db.kind must be "neon", "local" or "existing"')
+  if (dbKind === 'neon') {
+    throw new WizardError(
+      'db.kind "neon" is no longer a wizard choice. Use db.kind "existing" with your ' +
+        'Postgres URL — a Neon connection string is a regular postgresql:// URL.',
+    )
+  }
+  if (dbKind !== 'local' && dbKind !== 'existing') {
+    throw new WizardError('answers db.kind must be "local" or "existing"')
   }
   if (queueKind !== 'direct' && queueKind !== 'qstash') {
     throw new WizardError('answers queue.kind must be "direct" or "qstash"')
@@ -298,7 +323,6 @@ function loadAnswersFile(path: string): WizardAnswers {
   }
   const merged: WizardAnswers = {
     ...(target !== undefined ? { target } : {}),
-    runtime: answers.runtime === 'workers' ? 'workers' : 'node',
     db: { kind: dbKind, ...(answers.db?.url ? { url: answers.db.url } : {}) },
     queue: { kind: queueKind, ...(answers.queue?.token ? { token: answers.queue.token } : {}) },
     rateLimit: {
@@ -320,6 +344,9 @@ function loadAnswersFile(path: string): WizardAnswers {
       : {}),
     ...(answers.uploadsEnabled !== undefined
       ? { uploadsEnabled: answers.uploadsEnabled !== false }
+      : {}),
+    ...(answers.analyticsEnabled !== undefined
+      ? { analyticsEnabled: answers.analyticsEnabled !== false }
       : {}),
     frontendUrl: (answers.frontendUrl ?? DEFAULT_ANSWERS.frontendUrl).toString().trim(),
     groqApiKey: answers.groqApiKey?.toString().trim() || undefined,
@@ -365,19 +392,6 @@ function nextStepsText(answers: WizardAnswers): string {
     `  ${delivery}`,
     ...pairing,
   ]
-  if (answers.runtime === 'workers') {
-    return [
-      'Develop:',
-      `  ${color.cmd('pnpm dev:workers')}                     ${color.muted('# wrangler dev :8787 + dashboard :3000')}`,
-      `  ${color.muted('The Workers runtime needs DB_DRIVER=neon-http with a Neon URL.')}`,
-      `Verify:  ${color.cmd('./scripts/bootstrap.sh --check http://localhost:8787')}`,
-      '',
-      ...deployBlock,
-      '',
-      'Deploying the API itself with Docker Compose is a different configuration:',
-      `  ${color.cmd('./scripts/bootstrap.sh --target deploy')}`,
-    ].join('\n')
-  }
   return [
     'Develop (this machine):',
     `  ${color.cmd('pnpm dev:infra')}                       ${color.muted('# Postgres :5433 + Redis :6382')}`,
@@ -393,7 +407,6 @@ function nextStepsText(answers: WizardAnswers): string {
 
 /** Where to send someone for each key the verifier can report as missing. */
 const MISSING_KEY_LINKS: Record<string, LinkKind> = {
-  DATABASE_URL: 'neon',
   ACCOUNT_ID: 'cfAccountId',
   R2_ACCESS_KEY_ID: 'r2ApiTokens',
   R2_SECRET_ACCESS_KEY: 'r2ApiTokens',
@@ -651,7 +664,7 @@ function writeConfiguredTarget(
       ? { primary: buildDeployConfig(answers, secrets) }
       : {
           primary: buildDevConfig(answers, secrets),
-          delivery: buildDeliveryEntries(secrets),
+          delivery: buildDeliveryEntries(secrets, answers),
         }
   return writeTargetConfig(root, target, writes, force)
 }

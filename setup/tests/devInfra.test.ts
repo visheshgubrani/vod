@@ -23,7 +23,6 @@ const SECRET = 'a'.repeat(64)
 function answers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
   return {
     target: 'dev',
-    runtime: 'node',
     db: { kind: 'local' },
     queue: { kind: 'direct' },
     rateLimit: { kind: 'memory' },
@@ -265,14 +264,9 @@ describe('devInfraChoice', () => {  it('is true for the dev target with the loca
     expect(devInfraChoice(answers({ target: 'deploy' }))).toBe(false)
   })
 
-  it('is false for Neon or an existing server — there is nothing to start', () => {
-    expect(devInfraChoice(answers({ db: { kind: 'neon', url: 'postgresql://x/y' } }))).toBe(false)
+  it('is false for an existing server — there is nothing to start', () => {
     expect(devInfraChoice(answers({ db: { kind: 'existing', url: 'postgresql://x/y' } }))).toBe(
       false,
     )
-  })
-
-  it('is false on the Workers runtime — it cannot open a TCP socket to this Postgres', () => {
-    expect(devInfraChoice(answers({ runtime: 'workers' }))).toBe(false)
   })
 })

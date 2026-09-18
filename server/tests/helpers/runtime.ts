@@ -4,9 +4,7 @@
  * Route modules reach configuration, clients, the limiter, the analytics sink and
  * background work through `c.var.runtime`, which `createApp` installs. A suite
  * that mounts a single route app needs the same thing, and it should be able to
- * *choose* the deployment shape it is testing — including a Workers-shaped one,
- * which was impossible before the runtime seam existed because the Workers path
- * only existed as a side effect of ambient `process.env`.
+ * choose the deployment shape it is testing.
  *
  * Deliberately side-effect free: it does not install a database or an R2 client.
  * Suites that need a real database install one through `createTestDb`; a second
@@ -22,15 +20,14 @@ import { createRateLimiterFactory, type RateLimiterFactory } from '../../src/lib
 import { resolveDeployment } from '../../src/runtime/deployment'
 import { nodeBackground } from '../../src/runtime/background'
 import { nullAnalytics } from '../../src/runtime/analytics'
-import type { EnvLike, RuntimeName } from '../../src/lib/config'
+import type { EnvLike } from '../../src/lib/config'
 import type { AnalyticsPort, RuntimeCapabilities } from '../../src/runtime/types'
 
 export type TestRuntimeOptions = {
-  /** Defaults to `node`; pass `workers` to exercise that shape. */
-  runtime?: RuntimeName
   /** Swapped in wholesale when a suite needs a specific sink or limiter. */
   analytics?: AnalyticsPort
   rateLimiter?: RateLimiterFactory
+  runMaintenancePass?: () => Promise<unknown>
   /** Silence the logger by default: suites assert on behaviour, not on output. */
   logLevel?: RuntimeCapabilities['logLevel']
 }
@@ -39,10 +36,7 @@ export function createTestRuntime(
   env: EnvLike = {},
   options: TestRuntimeOptions = {},
 ): RuntimeCapabilities {
-  const runtime = options.runtime ?? 'node'
-  const resolution = resolveDeployment(env, runtime, {
-    hasPlaybackAnalyticsBinding: Boolean(options.analytics?.canWritePlayback),
-  })
+  const resolution = resolveDeployment(env)
   const logLevel = options.logLevel ?? 'error'
   const logger = createLogger({ level: logLevel })
 
@@ -55,7 +49,7 @@ export function createTestRuntime(
   }
 
   return {
-    runtime,
+    runtime: 'node',
     shape: resolution.shape,
     config: resolution.config,
     env,
@@ -71,6 +65,7 @@ export function createTestRuntime(
     logger,
     problems: resolution.problems,
     advisories: resolution.advisories,
+    ...(options.runMaintenancePass ? { runMaintenancePass: options.runMaintenancePass } : {}),
   }
 }
 
@@ -81,10 +76,10 @@ export function createTestRuntime(
  * production for that route.
  */
 export function withRuntime(
-  app: Hono<any>,
+  app: Hono,
   runtime: RuntimeCapabilities,
   path = '/',
-): Hono<any> {
+): Hono {
   const outer = new Hono()
   outer.use('*', async (c, next) => {
     c.set('runtime', runtime)
@@ -101,7 +96,7 @@ export function withRuntime(
  */
 export function fullyConfiguredEnv(env: EnvLike = {}): EnvLike {
   return {
-    DATABASE_URL: 'postgresql://user:pass@db.example.com/neondb?sslmode=require',
+    DATABASE_URL: 'postgresql://user:pass@db.example.com/clipmux',
     BETTER_AUTH_SECRET: 'a-32-character-secret-string-1234567890',
     JWT_SECRET: 'another-32-character-secret-string-9876543',
     ACCOUNT_ID: 'cf-account-123',
@@ -113,6 +108,7 @@ export function fullyConfiguredEnv(env: EnvLike = {}): EnvLike {
     TRANSCODE_INGEST_SECRET: 'ingest-secret',
     DELIVERY_URL: 'https://media.example.com',
     CLOUDFLARE_ANALYTICS_TOKEN: 'analytics-token',
+    ANALYTICS_INGEST_SECRET: 'analytics-ingest-secret-32-chars-min',
     ...env,
   }
 }

@@ -6,6 +6,7 @@ import {
 import { db } from '../lib/database'
 import { webhookEndpoint } from '../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
+import type { WaitUntilLike } from '../runtime/types'
 
 /**
  * All supported webhook event types
@@ -118,7 +119,7 @@ export async function dispatchWebhookEvent(
 }
 
 export function dispatchWebhook(
-  executionCtx: Pick<ExecutionContext, 'waitUntil'> | undefined,
+  executionCtx: WaitUntilLike | undefined,
   organizationId: string,
   event: WebhookEvent,
   data: Record<string, unknown>,

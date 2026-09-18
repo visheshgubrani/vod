@@ -18,14 +18,15 @@ import {
 } from '../lib/lifecycleFinalize'
 import { drainOutbox } from '../lib/webhookDelivery'
 import type { Bindings } from '../types'
+import type { WaitUntilLike } from '../runtime/types'
 
 /**
- * Run a task after the response without losing it, tolerating a runtime with no
- * ExecutionContext (the Node entry). A failure is logged, never propagated:
- * these tasks are best-effort by design, and the sweeper is the safety net.
+ * Run a task after the response without losing it. A failure is logged, never
+ * propagated: these tasks are best-effort by design, and the sweeper is the
+ * safety net.
  */
 function runAfterResponse(
-  executionCtx: Pick<ExecutionContext, 'waitUntil'> | undefined,
+  executionCtx: WaitUntilLike | undefined,
   task: Promise<unknown>,
 ): void {
   const guarded = task.catch((err) => {

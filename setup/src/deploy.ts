@@ -20,8 +20,7 @@
  * only when this runs, which is only when the user asked for a deploy.
  */
 
-import type { EntryList } from './mapping'
-import { SERVER_KEY_ORDER, transcodeProvider, uploadsEnabled } from './mapping'
+import { analyticsEnabled, transcodeProvider, uploadsEnabled } from './mapping'
 import type { ConfigTarget, WizardAnswers } from './types'
 import { WizardError } from './errors'
 import { pairingCommand } from './pairing'
@@ -43,6 +42,7 @@ export type DeployStepId =
   | 'modal'
   | 'delivery-worker'
   | 'delivery-secret'
+  | 'delivery-analytics'
   | 'migrate'
   | 'api'
   | 'modal-callbacks'
@@ -109,39 +109,31 @@ export function deploySummaryLine(report: DeployReport): string {
 }
 
 /**
- * What a wizard-selected shape cannot do, said once, at the moment it is chosen.
+ * What turning analytics off means, said once, when it is chosen.
  *
- * Playback telemetry is written through the Analytics Engine *binding*, which
- * exists on Cloudflare Workers only. A Node API (a Compose container, or
- * `pnpm dev` locally) therefore reads analytics and records none, and the
- * dashboard shows honest zeros for every view metric. Nothing about the install
- * is broken — but nothing in the deploy output used to say so, which is how this
- * arrived as a bug report.
- *
- * Deliberately an advisory and not a step: it is a capability of the chosen
- * shape, not a step that failed. Bandwidth analytics keep working either way,
- * because the delivery worker is always deployed and meters its own egress.
+ * Media delivery is unaffected. Existing Analytics Engine datasets are not
+ * deleted. Re-enable by writing matching ANALYTICS_ENABLED=true values and the
+ * shared ingest secret, then re-running `--deploy`.
  */
-export function playbackAnalyticsAdvisory(shape: 'compose' | 'local'): string {
-  const recovery =
-    shape === 'compose'
-      ? 'Deploy the API as a Worker instead (`cd server && pnpm exec wrangler deploy`) if you need playback telemetry.'
-      : '`pnpm dev:workers` runs the API on Workers — it needs a reachable cloud database (Neon + DB_DRIVER=neon-http), not the local dev Postgres.'
+export function analyticsDisabledAdvisory(): string {
   return (
-    'Playback analytics will not be recorded: writing them needs the Analytics Engine ' +
-    `PLAYBACK_ANALYTICS binding, and this API runs on Node. ${recovery}`
+    'Analytics are disabled: playback and bandwidth events will not be collected, ' +
+    'and the dashboard will show a disabled state rather than usage. Media delivery ' +
+    'is unaffected. Re-enable with ANALYTICS_ENABLED=true and a shared ANALYTICS_INGEST_SECRET.'
   )
 }
 
 const RESUME: Record<DeployStepId, string | undefined> = {
-  'cf-login': 'pnpm --filter vod-api exec wrangler login',
+  'cf-login': 'cd delivery && pnpm exec wrangler login',
   buckets: './scripts/bootstrap.sh --deploy   (re-run; bucket creation is idempotent)',
   'delivery-config': './scripts/bootstrap.sh --deploy   (re-run)',
   modal: 'cd transcoding && .venv/bin/modal setup && .venv/bin/modal deploy main.py',
   'delivery-worker': 'cd delivery && pnpm exec wrangler deploy',
   'delivery-secret': 'cd delivery && pnpm exec wrangler secret put JWT_SECRET',
+  'delivery-analytics':
+    'cd delivery && pnpm exec wrangler secret put ANALYTICS_INGEST_SECRET && curl $DELIVERY_URL/health/config',
   migrate: 'pnpm db:migrate   (dev target) or pnpm docker:migrate   (deploy target)',
-  api: 'pnpm docker:up   (deploy target) or: cd server && pnpm exec wrangler deploy',
+  api: 'pnpm docker:up   (deploy target) or pnpm dev   (dev target)',
   'modal-callbacks': './scripts/bootstrap.sh --deploy   (re-run once the API URL is known)',
   report: undefined,
 }
@@ -164,6 +156,7 @@ export async function runDeployPhase(
   const provider = transcodeProvider(answers)
   const wantsModal = provider === 'modal'
   const wantsUploads = uploadsEnabled(answers)
+  const wantsAnalytics = analyticsEnabled(answers)
 
   const steps: DeployStepResult[] = []
   const failed = new Set<DeployStepId>()
@@ -250,13 +243,13 @@ export async function runDeployPhase(
           `env ACCOUNT_ID (${effective}) differs from the logged-in account (${loggedIn}) — provisioning uses ${loggedIn}`,
         )
       }
-      io.writeConfig([
-        ['ACCOUNT_ID', effective],
-        ['SWEEP_ENABLED', 'true'],
-      ])
+      const existingSweep = (io.readConfig()?.['SWEEP_ENABLED'] ?? '').trim()
+      const updates: Array<readonly [string, string]> = [['ACCOUNT_ID', effective]]
+      if (existingSweep === '') updates.push(['SWEEP_ENABLED', 'true'])
+      io.writeConfig(updates)
 
       const current = io.readConfig() ?? {}
-      if (!current['CLOUDFLARE_ANALYTICS_TOKEN']?.trim()) {
+      if (wantsAnalytics && !current['CLOUDFLARE_ANALYTICS_TOKEN']?.trim()) {
         const token = await io.offerAnalyticsToken()
         if (token !== null) {
           io.writeConfig([['CLOUDFLARE_ANALYTICS_TOKEN', token]])
@@ -303,7 +296,16 @@ export async function runDeployPhase(
       },
       () => {
         const patched = io.patchDeliveryBucket(answers.transcodedBucket)
-        return patched ? 'updated' : 'already correct'
+        const analyticsPatched = io.patchDeliveryAnalytics(wantsAnalytics)
+        const bucket = patched ? 'bucket updated' : 'bucket already correct'
+        const datasets = wantsAnalytics
+          ? analyticsPatched
+            ? 'analytics bindings enabled'
+            : 'analytics bindings already present'
+          : analyticsPatched
+            ? 'analytics bindings removed'
+            : 'analytics bindings already absent'
+        return `${bucket}, ${datasets}`
       },
     )
 
@@ -376,11 +378,12 @@ export async function runDeployPhase(
     await step(
       {
         id: 'delivery-secret',
-        label: 'Upload the delivery JWT secret',
+        label: 'Upload the delivery worker secrets',
         dependsOn: ['delivery-worker'],
       },
       async () => {
-        const jwt = io.readConfig()?.['JWT_SECRET'] ?? ''
+        const config = io.readConfig()
+        const jwt = config?.['JWT_SECRET'] ?? ''
         // Length and blankness are checked *here*, not only in lintServerEnv:
         // `putWorkerSecrets` drops empty values and returns without an error, so
         // without this guard the step would report "JWT_SECRET uploaded" for a
@@ -392,16 +395,54 @@ export async function runDeployPhase(
               'the delivery worker cannot verify playback tokens without it',
           )
         }
-        await io.putWorkerSecrets('delivery', [['JWT_SECRET', jwt]])
-        return 'JWT_SECRET uploaded'
+        const entries: Array<readonly [string, string]> = [
+          ['JWT_SECRET', jwt],
+          ['ANALYTICS_ENABLED', wantsAnalytics ? 'true' : 'false'],
+        ]
+        if (wantsAnalytics) {
+          const ingest = config?.['ANALYTICS_INGEST_SECRET'] ?? ''
+          if (ingest.trim().length < MIN_SECRET_LENGTH) {
+            throw new Error(
+              `ANALYTICS_INGEST_SECRET is missing or shorter than ${MIN_SECRET_LENGTH} characters — ` +
+                'the delivery worker cannot accept playback telemetry without it',
+            )
+          }
+          entries.push(['ANALYTICS_INGEST_SECRET', ingest])
+        }
+        await io.putWorkerSecrets('delivery', entries)
+        return wantsAnalytics
+          ? 'JWT_SECRET and ANALYTICS_INGEST_SECRET uploaded'
+          : 'JWT_SECRET uploaded (analytics disabled)'
       },
     )
 
+    if (wantsAnalytics) {
+      await step(
+        {
+          id: 'delivery-analytics',
+          label: 'Verify delivery analytics capability',
+          dependsOn: ['delivery-secret'],
+        },
+        async () => {
+          const url = result.deliveryUrl ?? io.readConfig()?.['DELIVERY_URL'] ?? null
+          const ingest = io.readConfig()?.['ANALYTICS_INGEST_SECRET'] ?? ''
+          await io.probeDeliveryHealth(url, ingest)
+          return 'delivery analytics bindings and ingest secret verified'
+        },
+      )
+    } else {
+      skip(
+        { id: 'delivery-analytics', label: 'Verify delivery analytics capability', dependsOn: [] },
+        'analytics disabled — ingest secret and dataset writes are skipped',
+      )
+      io.log.warn(analyticsDisabledAdvisory())
+    }
+
     // ── 6. Migrations ────────────────────────────────────────────────────
     //
-    // Exactly one migration path per run, decided by the target: a `deploy` run
-    // migrates the Compose database, a Workers run migrates the database in its
-    // own config file, and a dev/Node run leaves migrations to `pnpm db:migrate`.
+    // Exactly one migration path per run, decided by the target: a `deploy`
+    // run migrates the Compose database; a `dev` run leaves migrations to
+    // `pnpm db:migrate` on this machine.
     if (target === 'deploy') {
       await step(
         {
@@ -417,17 +458,10 @@ export async function runDeployPhase(
           return 'migrations applied to the Compose database'
         },
       )
-    } else if (answers.runtime === 'workers') {
-      await step({ id: 'migrate', label: 'Apply migrations to DATABASE_URL', dependsOn: [] }, async () => {
-        const databaseUrl = io.readConfig()?.['DATABASE_URL'] ?? ''
-        if (!databaseUrl) throw new Error(`DATABASE_URL is missing from ${configPath}`)
-        await io.dbMigrate(databaseUrl)
-        return 'migrations applied'
-      })
     } else {
       skip(
         { id: 'migrate', label: 'Apply migrations', dependsOn: [] },
-        'dev target with the Node runtime — run `pnpm db:migrate` yourself',
+        'dev target — run `pnpm db:migrate` yourself',
       )
     }
 
@@ -439,42 +473,11 @@ export async function runDeployPhase(
         apiConfigured = true
         return 'API http://localhost:8787 · dashboard http://localhost:3000'
       })
-      io.log.warn(playbackAnalyticsAdvisory('compose'))
-    } else if (answers.runtime === 'workers') {
-      await step(
-        {
-          id: 'api',
-          label: 'Deploy the API worker + secrets',
-          // A Workers deploy needs wrangler auth as well as a migrated database.
-          dependsOn: ['migrate', 'cf-login'],
-        },
-        async () => {
-          const apiUrl = await io.deployWorker('server')
-          if (apiUrl !== null) {
-            io.writeConfig([
-              ['BETTER_AUTH_URL', apiUrl],
-              ['BACKEND_URL', apiUrl],
-            ])
-            result.apiUrl = apiUrl
-          } else {
-            io.log.warn('API deploy finished but no workers.dev URL was parsed')
-          }
-          const updated = io.readConfig()
-          if (!updated) throw new Error(`${configPath} disappeared mid-deploy`)
-          const entries: EntryList = ([...SERVER_KEY_ORDER, 'SWEEP_ENABLED'] as readonly string[]).map(
-            (key) => [key, updated[key] ?? ''] as const,
-          )
-          await io.putWorkerSecrets('server', entries)
-          apiConfigured = true
-          return apiUrl ?? 'deployed (URL not parsed)'
-        },
-      )
     } else {
       skip(
         { id: 'api', label: 'Deploy the API', dependsOn: [] },
-        'dev target with the Node runtime — the API runs here via `pnpm dev`',
+        'dev target — the API runs here via `pnpm dev`',
       )
-      io.log.warn(playbackAnalyticsAdvisory('local'))
       apiConfigured = true
     }
 

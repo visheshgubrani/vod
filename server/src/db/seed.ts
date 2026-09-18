@@ -1,20 +1,17 @@
 import '../lib/load-local-env'
-import { createDb, dbDriverFromEnv } from '../lib/database'
+import { createDb } from '../lib/database'
 import { user, organization, member } from './schema'
 
 /**
  * Seed the first tenant.
  *
- * Goes through `createDb`/`dbDriverFromEnv` like every other database entrypoint,
- * so it honours `DB_DRIVER`. It used to construct a Neon client directly and
- * ignore the driver entirely — which meant `pnpm db:seed` could not seed the
- * Docker/Node Postgres that `.dev.vars.example` and `server/Dockerfile` both
- * describe, while migrations against the same database worked fine.
+ * Goes through `createDb` like every other database entrypoint, so it uses the
+ * same postgres-js client as the API.
  */
 const run = async () => {
   if (!process.env.DATABASE_URL) throw new Error('No DB URL')
 
-  const db = createDb(process.env.DATABASE_URL, dbDriverFromEnv(process.env.DB_DRIVER))
+  const db = createDb(process.env.DATABASE_URL)
 
   console.log('🌱 Seeding First Tenant...')
 

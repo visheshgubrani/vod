@@ -11,6 +11,7 @@ const SECRET_KEYS = new Set([
   'R2_SECRET_ACCESS_KEY',
   'TRANSCODE_INGEST_SECRET',
   'JWT_SECRET',
+  'ANALYTICS_INGEST_SECRET',
   'INTERNAL_SWEEP_SECRET',
   'QSTASH_TOKEN',
   'UPSTASH_REDIS_REST_TOKEN',
@@ -31,7 +32,6 @@ export function displayValue(key: string, value: string): string {
 
 const SERVER_KEY_LABELS: Record<string, string> = {
   DATABASE_URL: 'Postgres URL',
-  DB_DRIVER: 'DB driver',
   BETTER_AUTH_SECRET: 'Auth secret (generated)',
   BETTER_AUTH_URL: 'Auth base URL',
   FRONTEND_URL: 'Dashboard origin',
@@ -42,6 +42,8 @@ const SERVER_KEY_LABELS: Record<string, string> = {
   R2_SECRET_ACCESS_KEY: 'R2 secret access key',
   RAW_BUCKET_NAME: 'Raw bucket',
   TRANSCODED_BUCKET_NAME: 'Transcoded bucket',
+  ANALYTICS_ENABLED: 'Analytics collection',
+  ANALYTICS_INGEST_SECRET: 'Analytics ingest secret (generated)',
   CLOUDFLARE_ANALYTICS_TOKEN: 'Analytics API token (optional)',
   QSTASH_TOKEN: 'QStash token',
   MODAL_WEBHOOK_URL: 'Modal webhook URL',
@@ -74,14 +76,15 @@ export function summaryText(answers: WizardAnswers): string {
   const uploads = answers.uploadsEnabled !== false
   const lines = [
     `Configuration: ${target === 'deploy' ? 'deploy — root .env (Docker Compose)' : 'dev — server/.dev.vars'}`,
-    `API runtime: ${answers.runtime === 'workers' ? 'Cloudflare Workers (neon-http)' : 'Node (pg)'}`,
-    `Postgres: ${answers.db.kind === 'neon' ? 'Neon URL' : answers.db.kind === 'local' ? 'the bundled/dev Postgres' : 'existing Postgres URL'}`,
+    'API runtime: Node (postgres-js)',
+    `Postgres: ${answers.db.kind === 'local' ? 'the bundled/dev Postgres' : 'existing Postgres URL'}`,
     `Transcoding: ${PROVIDER_LABELS[provider]}`,
     ...(provider === 'modal'
       ? [`Queue: ${answers.queue.kind === 'direct' ? 'direct HTTP → Modal' : 'QStash'}`]
       : []),
     `Rate limiting: ${RATE_LIMIT_LABELS[answers.rateLimit.kind]}`,
     `Browser uploads: ${uploads ? 'enabled (raw bucket required)' : 'disabled (local files only)'}`,
+    `Analytics: ${answers.analyticsEnabled === false ? 'disabled' : 'enabled (delivery worker)'}`,
     `Buckets: ${uploads ? `${answers.rawBucket} / ` : ''}${answers.transcodedBucket} (Cloudflare R2)`,
     `Delivery worker: Cloudflare (always required for playback)`,
     `Dashboard origin: ${answers.frontendUrl}`,

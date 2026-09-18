@@ -18,11 +18,20 @@
  */
 
 import * as jose from 'jose';
+import {
+	PLAYBACK_INGEST_PATH,
+	analyticsEnabled,
+	deliveryAnalyticsCapabilities,
+	handlePlaybackIngestRequest,
+} from './playback-ingest';
 
 interface Env {
 	TRANSCODED_BUCKET: R2Bucket;
 	JWT_SECRET: string;
-	USAGE_ANALYTICS?: AnalyticsEngineDataset;  // For bandwidth tracking
+	USAGE_ANALYTICS?: AnalyticsEngineDataset;
+	PLAYBACK_ANALYTICS?: AnalyticsEngineDataset;
+	ANALYTICS_ENABLED?: string;
+	ANALYTICS_INGEST_SECRET?: string;
 	// Policy applied to objects that carry no playback-policy metadata.
 	// Defaults to 'public' (historical behavior); set to 'signed' to fail
 	// closed for objects whose metadata was never written.
@@ -526,7 +535,7 @@ function logBandwidth(
 	bytesServed: number,
 	fileType: string
 ) {
-	if (!env.USAGE_ANALYTICS || !organizationId) return;
+	if (!analyticsEnabled(env) || !env.USAGE_ANALYTICS || !organizationId) return;
 
 	ctx.waitUntil(
 		(async () => {
@@ -591,6 +600,12 @@ export default {
 			'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag',
 		};
 
+		const url = new URL(request.url);
+
+		if (url.pathname === PLAYBACK_INGEST_PATH) {
+			return handlePlaybackIngestRequest(request, env)
+		}
+
 		if (request.method === 'OPTIONS') {
 			return new Response(null, { headers: corsHeaders });
 		}
@@ -599,9 +614,14 @@ export default {
 			return new Response('Method not allowed', { status: 405, headers: corsHeaders });
 		}
 
-		const url = new URL(request.url);
 		if (url.pathname === '/health') {
 			return new Response('ok', { status: 200, headers: corsHeaders });
+		}
+		if (url.pathname === '/health/config') {
+			return Response.json(deliveryAnalyticsCapabilities(env), {
+				status: 200,
+				headers: { ...corsHeaders, 'content-type': 'application/json' },
+			});
 		}
 		const key = url.pathname.slice(1);
 		const token = url.searchParams.get('token');

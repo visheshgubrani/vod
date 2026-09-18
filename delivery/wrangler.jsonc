@@ -10,9 +10,9 @@
 	"observability": {
 		"enabled": true,
 	},
-	// Local dev: the API worker owns 8787/9229, and unlike the server port that
+	// Local dev: the Node API owns 8787, and unlike the server port that
 	// inspector collision is fatal. Pin both so `pnpm dev:all` (API + delivery
-	// together) can start the two workers without racing for a port.
+	// together) can start without racing for a port.
 	"dev": {
 		"port": 8788,
 		"inspector_port": 9230,
@@ -23,7 +23,10 @@
 			"bucket_name": "clipmux-transcoded",
 		},
 	],
-	"analytics_engine_datasets": [{ "binding": "USAGE_ANALYTICS", "dataset": "bandwidth_usage" }],
+	"analytics_engine_datasets": [
+		{ "binding": "USAGE_ANALYTICS", "dataset": "bandwidth_usage" },
+		{ "binding": "PLAYBACK_ANALYTICS", "dataset": "playback_events" },
+	],
 	// Bind a custom domain after first deploy, e.g.:
 	// "routes": [{ "pattern": "media.example.com", "custom_domain": true }],
 

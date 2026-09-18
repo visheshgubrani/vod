@@ -57,9 +57,7 @@ describe.skipIf(!hasTestDatabase)('...', () => {
   rolled back. Keep fakes for pure planners only.
 - Give each suite its own probe tables and state its own preconditions rather
   than depending on the production schema.
-- The test driver is `postgres-js`. `neon-http` is a Workers-only HTTP
-  transport and cannot be pointed at a local container, so its *result shape*
-  is covered by `normalizeRows` unit tests instead.
+- The test driver is `postgres-js`.
 
 ## Rules
 

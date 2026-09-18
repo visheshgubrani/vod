@@ -24,12 +24,12 @@ const SECRET = 'a'.repeat(64)
 function answers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
   return {
     target: 'dev',
-    runtime: 'workers',
-    db: { kind: 'neon', url: 'postgresql://user:pass@ep-x.aws.neon.tech/vod' },
+    db: { kind: 'existing', url: 'postgresql://user:pass@db.example.com/vod' },
     queue: { kind: 'direct' },
     rateLimit: { kind: 'memory' },
     transcodeProvider: 'modal',
     uploadsEnabled: true,
+    analyticsEnabled: true,
     accountId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     r2AccessKeyId: 'r2-key',
     r2SecretAccessKey: 'r2-secret',
@@ -43,8 +43,7 @@ function answers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
 
 function credsEnv(overrides: Record<string, string> = {}): Record<string, string> {
   return {
-    DATABASE_URL: 'postgresql://user:pass@ep-x.aws.neon.tech/vod',
-    DB_DRIVER: 'neon-http',
+    DATABASE_URL: 'postgresql://user:pass@db.example.com/vod',
     ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     R2_ACCESS_KEY_ID: 'r2-key',
     R2_SECRET_ACCESS_KEY: 'r2-secret',
@@ -54,7 +53,9 @@ function credsEnv(overrides: Record<string, string> = {}): Record<string, string
     TRANSCODE_INGEST_SECRET: SECRET,
     JWT_SECRET: SECRET,
     BETTER_AUTH_SECRET: SECRET,
-    BACKEND_URL: 'https://api.example.workers.dev',
+    ANALYTICS_ENABLED: 'true',
+    ANALYTICS_INGEST_SECRET: SECRET,
+    BACKEND_URL: 'http://localhost:8787',
     ...overrides,
   }
 }
@@ -64,7 +65,7 @@ interface Harness {
   calls: string[]
   config: Record<string, string>
   /** Every secret upload, as (package, entries) — the payload matters, not just the call. */
-  secrets: Array<{ pkg: 'server' | 'delivery'; entries: EntryList }>
+  secrets: Array<{ pkg: 'delivery'; entries: EntryList }>
   /** Warn lines, because an advisory nobody sees is not an advisory. */
   warnings: string[]
   failOn: (call: string, message?: string) => void
@@ -106,6 +107,7 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     ensureBucket: async (name) => void run(`ensureBucket:${name}`, undefined),
     applyBucketCors: async (bucket) => void run(`applyBucketCors:${bucket}`, undefined),
     patchDeliveryBucket: () => run('patchDeliveryBucket', true),
+    patchDeliveryAnalytics: (enabled) => run(`patchDeliveryAnalytics:${enabled}`, true),
     offerAnalyticsToken: async () => run('offerAnalyticsToken', null),
     prepareModal: async () => run('prepareModal', state.modalAvailable ? '/repo/transcoding/.venv/bin/modal' : null),
     cleanLegacySecrets: async () => void run('cleanLegacySecrets', undefined),
@@ -119,12 +121,7 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     refreshModalCallbacks: async (_bin, payload, previous) =>
       run('refreshModalCallbacks', payload.values['ALLOWED_CALLBACK_HOSTS'] ?? previous),
     deployWorker: async (pkg) =>
-      run(
-        `deployWorker:${pkg}`,
-        pkg === 'delivery'
-          ? 'https://clipmux-delivery.acme.workers.dev'
-          : 'https://clipmux-api.acme.workers.dev',
-      ),
+      run(`deployWorker:${pkg}`, 'https://clipmux-delivery.acme.workers.dev'),
     putWorkerSecrets: async (pkg, entries) => {
       secrets.push({ pkg, entries })
       run(`putWorkerSecrets:${pkg}`, undefined)
@@ -139,6 +136,11 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     },
     lintConfig: (): { rows: CheckRow[]; failed: boolean } => ({ rows: [], failed: false }),
     probeHealth: async () => void run('probeHealth', undefined),
+    probeDeliveryHealth: async (_url, secret) => {
+      calls.push(secret ? 'probeDeliveryHealth:secret' : 'probeDeliveryHealth')
+      const failure = failures.get('probeDeliveryHealth')
+      if (failure !== undefined) throw new Error(failure)
+    },
     cleanup: () => {},
   }
   return state
@@ -170,25 +172,22 @@ describe('describeModalAuth', () => {
   })
 })
 
-describe('runDeployPhase — Modal + Workers (dev target)', () => {
+describe('runDeployPhase — Modal + delivery (dev target)', () => {
   it('runs the full sequence and reports complete', async () => {
     const h = harness()
     const report = await runDeployPhase('/repo', answers(), h.port)
 
     expect(report.complete).toBe(true)
     expect(report.result.modalUrl).toContain('modal.run')
-    expect(report.result.apiUrl).toContain('workers.dev')
+    expect(report.result.apiUrl).toBeNull()
     expect(report.result.deliveryUrl).toContain('workers.dev')
-    // The API deploy must come after the migration, and the callback refresh
-    // after both the Modal and API steps.
     const order = h.calls
     expect(order.indexOf('ensureCfLogin')).toBeLessThan(order.indexOf('ensureBucket:clipmux-raw'))
-    expect(order.indexOf('dbMigrate')).toBeLessThan(order.indexOf('deployWorker:server'))
-    expect(order.indexOf('deployWorker:server')).toBeLessThan(
-      order.indexOf('refreshModalCallbacks'),
-    )
+    expect(order.indexOf('deployWorker:delivery')).toBeLessThan(order.indexOf('putWorkerSecrets:delivery'))
+    expect(order.indexOf('putWorkerSecrets:delivery')).toBeLessThan(order.indexOf('probeDeliveryHealth:secret'))
     expect(h.config['MODAL_WEBHOOK_URL']).toContain('modal.run')
     expect(h.config['DELIVERY_URL']).toContain('workers.dev')
+    expect(h.calls).not.toContain('deployWorker:server')
   })
 })
 
@@ -198,7 +197,11 @@ describe('runDeployPhase — the delivery JWT secret must actually be uploaded',
     const report = await runDeployPhase('/repo', answers(), h.port)
 
     const upload = h.secrets.find((entry) => entry.pkg === 'delivery')
-    expect(upload?.entries).toEqual([['JWT_SECRET', SECRET]])
+    expect(upload?.entries).toEqual([
+      ['JWT_SECRET', SECRET],
+      ['ANALYTICS_ENABLED', 'true'],
+      ['ANALYTICS_INGEST_SECRET', SECRET],
+    ])
     expect(report.steps.find((step) => step.id === 'delivery-secret')?.status).toBe('ok')
   })
 
@@ -241,8 +244,8 @@ describe('runDeployPhase — failures', () => {
     // …but the delivery worker, its secret and the API still went out.
     expect(h.calls).toContain('deployWorker:delivery')
     expect(h.calls).toContain('putWorkerSecrets:delivery')
-    expect(h.calls).toContain('deployWorker:server')
-    expect(report.result.apiUrl).toBe('https://clipmux-api.acme.workers.dev')
+    expect(h.calls).not.toContain('deployWorker:server')
+    expect(report.result.apiUrl).toBeNull()
     // The callback refresh depends on the Modal secret, so it is blocked, not attempted.
     expect(report.steps.find((step) => step.id === 'modal-callbacks')?.status).toBe('blocked')
     expect(h.calls).not.toContain('refreshModalCallbacks')
@@ -263,9 +266,8 @@ describe('runDeployPhase — failures', () => {
     for (const id of ['buckets', 'delivery-config', 'modal', 'delivery-worker'] as const) {
       expect(report.steps.find((step) => step.id === id)?.status).toBe('blocked')
     }
-    // Migrations do not need Cloudflare, so they still run.
-    expect(h.calls).toContain('dbMigrate')
-    // Nothing was deployed: the API worker needs wrangler auth too.
+    // Migrations on the dev target are left to `pnpm db:migrate`.
+    expect(h.calls).not.toContain('dbMigrate')
     expect(h.calls).not.toContain('deployWorker:delivery')
     expect(h.calls).not.toContain('deployWorker:server')
     expect(report.complete).toBe(false)
@@ -273,15 +275,24 @@ describe('runDeployPhase — failures', () => {
     expect(unfinished.find((step) => step.id === 'cf-login')?.resume).toContain('wrangler login')
   })
 
-  it('does not attempt the API deploy when the migration failed', async () => {
-    const h = harness()
-    h.failOn('dbMigrate', 'database unreachable')
+  it('does not attempt Compose when the migration failed on the deploy target', async () => {
+    const h = harness({ POSTGRES_PASSWORD: SECRET, JWT_SECRET: SECRET, ANALYTICS_INGEST_SECRET: SECRET })
+    h.failOn('composeMigrate', 'database unreachable')
 
-    const report = await runDeployPhase('/repo', answers(), h.port)
+    const report = await runDeployPhase(
+      '/repo',
+      answers({
+        target: 'deploy',
+        db: { kind: 'local' },
+        transcodeProvider: 'self-hosted',
+        uploadsEnabled: false,
+      }),
+      h.port,
+    )
 
     expect(report.steps.find((step) => step.id === 'migrate')?.status).toBe('failed')
     expect(report.steps.find((step) => step.id === 'api')?.status).toBe('blocked')
-    expect(h.calls).not.toContain('deployWorker:server')
+    expect(h.calls).not.toContain('composeUp')
     expect(report.complete).toBe(false)
   })
 })
@@ -300,8 +311,8 @@ describe('runDeployPhase — self-hosted provider', () => {
     expect(h.calls).not.toContain('deployModal')
     // The bug this replaces: the self-hosted path deployed delivery and stopped.
     expect(h.calls).toContain('deployWorker:delivery')
-    expect(h.calls).toContain('deployWorker:server')
-    expect(h.calls).toContain('dbMigrate')
+    expect(h.calls).not.toContain('deployWorker:server')
+    expect(h.calls).not.toContain('dbMigrate')
     // No raw bucket and no CORS: nothing uploads.
     expect(h.calls).not.toContain('ensureBucket:clipmux-raw')
     expect(h.calls).toContain('ensureBucket:clipmux-transcoded')
@@ -312,12 +323,11 @@ describe('runDeployPhase — self-hosted provider', () => {
 
 describe('runDeployPhase — deploy target', () => {
   it('migrates and brings up Compose, and never deploys the API worker', async () => {
-    const h = harness({ POSTGRES_PASSWORD: SECRET, JWT_SECRET: SECRET })
+    const h = harness({ POSTGRES_PASSWORD: SECRET, JWT_SECRET: SECRET, ANALYTICS_INGEST_SECRET: SECRET })
     const report = await runDeployPhase(
       '/repo',
       answers({
         target: 'deploy',
-        runtime: 'node',
         db: { kind: 'local' },
         transcodeProvider: 'self-hosted',
         uploadsEnabled: false,
@@ -333,40 +343,37 @@ describe('runDeployPhase — deploy target', () => {
     expect(report.complete).toBe(true)
   })
 
-  it('says playback analytics will not be recorded, and how to change that', async () => {
-    // A Compose deployment is complete and healthy and still cannot record
-    // playback telemetry: writing it needs the Analytics Engine binding, which
-    // only a Worker has. Nothing else in the deploy output distinguishes that
-    // from "analytics works", so the advisory is the deliverable.
+  it('says analytics are off when the operator disabled them', async () => {
     const h = harness()
     await runDeployPhase(
       '/repo',
       answers({
         target: 'deploy',
-        runtime: 'node',
         db: { kind: 'local' },
         transcodeProvider: 'self-hosted',
         uploadsEnabled: false,
+        analyticsEnabled: false,
       }),
       h.port,
     )
 
-    const advisory = h.warnings.find((line) => line.includes('Playback analytics'))
+    const advisory = h.warnings.find((line) => line.includes('Analytics are disabled'))
     expect(advisory).toBeDefined()
-    expect(advisory).toContain('PLAYBACK_ANALYTICS')
-    // It must point somewhere, not just report the gap.
-    expect(advisory).toContain('wrangler deploy')
+    expect(advisory).toContain('ANALYTICS_INGEST_SECRET')
+    expect(h.calls).not.toContain('probeDeliveryHealth')
+    expect(h.calls).not.toContain('probeDeliveryHealth:secret')
+    const upload = h.secrets.find((entry) => entry.pkg === 'delivery')
+    expect(upload?.entries).toEqual([
+      ['JWT_SECRET', SECRET],
+      ['ANALYTICS_ENABLED', 'false'],
+    ])
   })
 })
 
-describe('runDeployPhase — dev target with the Node runtime', () => {
+describe('runDeployPhase — dev target', () => {
   it('deploys the Cloudflare pieces and leaves the local API alone', async () => {
     const h = harness()
-    const report = await runDeployPhase(
-      '/repo',
-      answers({ runtime: 'node', db: { kind: 'local' } }),
-      h.port,
-    )
+    const report = await runDeployPhase('/repo', answers({ db: { kind: 'local' } }), h.port)
 
     expect(h.calls).toContain('deployWorker:delivery')
     expect(h.calls).not.toContain('deployWorker:server')
@@ -374,25 +381,51 @@ describe('runDeployPhase — dev target with the Node runtime', () => {
     expect(report.steps.find((step) => step.id === 'api')?.status).toBe('skipped')
     expect(report.steps.find((step) => step.id === 'migrate')?.status).toBe('skipped')
     expect(report.complete).toBe(true)
-    // Same capability gap as Compose, different recovery: this API can become a
-    // Worker without giving up the local database story.
-    expect(
-      h.warnings.some(
-        (line) => line.includes('Playback analytics') && line.includes('dev:workers'),
-      ),
-    ).toBe(true)
+    expect(h.calls).toContain('probeDeliveryHealth:secret')
   })
 
-  it('stays quiet when the API is a Worker, because writes work there', async () => {
+  it('skips analytics verification when analytics are off', async () => {
     const h = harness()
-    await runDeployPhase(
-      '/repo',
-      answers({ runtime: 'workers', db: { kind: 'neon', url: 'postgresql://user:pass@ep-x.aws.neon.tech/vod' } }),
-      h.port,
-    )
+    await runDeployPhase('/repo', answers({ analyticsEnabled: false }), h.port)
 
-    expect(h.calls).toContain('deployWorker:server')
-    expect(h.warnings.some((line) => line.includes('Playback analytics'))).toBe(false)
+    expect(h.calls).not.toContain('probeDeliveryHealth')
+    expect(h.calls).not.toContain('probeDeliveryHealth:secret')
+    expect(h.warnings.some((line) => line.includes('Analytics are disabled'))).toBe(true)
+  })
+
+  it('does not offer an analytics read token when analytics are off', async () => {
+    const h = harness()
+    await runDeployPhase('/repo', answers({ analyticsEnabled: false }), h.port)
+
+    expect(h.calls).not.toContain('offerAnalyticsToken')
+    expect(h.calls).toContain('patchDeliveryAnalytics:false')
+  })
+
+  it('patches analytics dataset bindings on when analytics are enabled', async () => {
+    const h = harness()
+    await runDeployPhase('/repo', answers(), h.port)
+
+    expect(h.calls).toContain('patchDeliveryAnalytics:true')
+    expect(h.calls).toContain('offerAnalyticsToken')
+  })
+})
+
+describe('runDeployPhase — SWEEP_ENABLED', () => {
+  it('defaults SWEEP_ENABLED to true when the config does not set it', async () => {
+    const h = harness()
+    expect(h.config['SWEEP_ENABLED']).toBeUndefined()
+
+    await runDeployPhase('/repo', answers(), h.port)
+
+    expect(h.config['SWEEP_ENABLED']).toBe('true')
+  })
+
+  it('preserves an existing SWEEP_ENABLED=false on a replica', async () => {
+    const h = harness(credsEnv({ SWEEP_ENABLED: 'false' }))
+
+    await runDeployPhase('/repo', answers(), h.port)
+
+    expect(h.config['SWEEP_ENABLED']).toBe('false')
   })
 })
 

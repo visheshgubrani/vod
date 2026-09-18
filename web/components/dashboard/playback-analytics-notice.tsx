@@ -1,15 +1,8 @@
 "use client";
 
 /**
- * Says out loud what a zeroed chart cannot: this deployment reads playback
- * analytics but has no writer, so nothing is being recorded.
- *
- * The dashboard used to answer `/api/analytics-stats/*` with real zeros, which
- * reads as "nobody watched" — while the API was answering `POST
- * /api/playback/journal` with a 501 that only the browser console ever saw.
- * Writing playback telemetry needs the `PLAYBACK_ANALYTICS` binding, which
- * exists on Cloudflare Workers only, so a Node or container API is a
- * configuration that cannot work rather than one that is misconfigured.
+ * Says out loud what a zeroed chart cannot: analytics are off or cannot be
+ * forwarded, so the numbers below are not usage.
  *
  * Rendered from the capability, never from the data: a notice that appears when
  * a metric is zero would flicker with the numbers.
@@ -23,7 +16,9 @@ export function PlaybackAnalyticsNotice({ className }: { className?: string }) {
   const { shape, loading } = useDeploymentAnalytics();
 
   // Unknown (`null`) is not "disabled" — see the hook.
-  if (loading || shape?.analyticsWrite !== "none") return null;
+  if (loading || !shape || shape.analyticsWrite !== "none") return null;
+
+  const disabled = shape.analyticsEnabled === false;
 
   return (
     <div
@@ -39,14 +34,14 @@ export function PlaybackAnalyticsNotice({ className }: { className?: string }) {
       />
       <div className="space-y-1">
         <p className="font-medium text-foreground">
-          Playback analytics aren’t being recorded
+          {disabled
+            ? "Analytics are disabled"
+            : "Playback analytics aren’t available"}
         </p>
         <p className="text-muted-foreground">
-          Recording playback telemetry requires the API to run as a Cloudflare
-          Worker with the <code className="font-mono text-[0.8125rem]">PLAYBACK_ANALYTICS</code>{" "}
-          binding. This deployment has no writer, so the numbers below stay at
-          zero. Bandwidth analytics are unaffected — the delivery worker records
-          those.
+          {disabled
+            ? "ANALYTICS_ENABLED is off for this deployment, so playback and bandwidth events are not collected. The numbers below are not usage. Media delivery is unaffected."
+            : "This API cannot forward playback telemetry to the delivery worker (missing DELIVERY_URL or ANALYTICS_INGEST_SECRET). The numbers below stay at zero and are not usage."}
         </p>
       </div>
     </div>
