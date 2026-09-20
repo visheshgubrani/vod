@@ -103,7 +103,7 @@ describe('dispatchDirectHttp', () => {
         ingestSecret: 's',
         payload: PAYLOAD,
       }, deps),
-    ).rejects.toMatchObject({ code: 'HTTP_STATUS' })
+    ).rejects.toMatchObject({ code: 'HTTP_STATUS', status: 401 })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })

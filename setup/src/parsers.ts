@@ -12,10 +12,22 @@ export function analyticsTokenTemplateUrl(): string {
   return 'https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22account_analytics%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=ClipMux%20Analytics'
 }
 
+export function parseAccountIds(text: string): string[] {
+  const matches = text.match(new RegExp(ACCOUNT_ID_RE.source, 'gi')) ?? []
+  const seen = new Set<string>()
+  const ids: string[] = []
+  for (const match of matches) {
+    const id = match.toLowerCase()
+    if (seen.has(id)) continue
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
+}
+
 /** First 32-hex id in `wrangler whoami` output, or null. */
 export function parseAccountId(text: string): string | null {
-  const match = text.match(ACCOUNT_ID_RE)
-  return match ? match[0].toLowerCase() : null
+  return parseAccountIds(text)[0] ?? null
 }
 
 /** Last *.workers.dev URL in deploy output, trailing slashes stripped. */

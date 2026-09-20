@@ -1,0 +1,158 @@
+---
+title: Install on a host
+description: Provision ClipMux on this machine or a VPS with Docker Compose, Caddy, Cloudflare delivery, and guided self-hosted pairing.
+---
+
+`scripts/install.sh` is the operator entrypoint. It provisions Docker when
+needed, writes a Compose deployment, starts the stack, and walks self-hosted
+encoder pairing. Contributors developing the codebase should keep using
+[`./scripts/bootstrap.sh`](/quickstart) instead.
+
+Cloudflare remains required: storage is R2 and signed playback is the delivery
+Worker. v1 covers **install and resume**. It does not upgrade, uninstall, or
+ship prebuilt application images.
+
+## Quick path
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/install.sh | bash
+```
+
+From a checkout:
+
+```bash
+./scripts/install.sh
+```
+
+Read-only:
+
+```bash
+./scripts/install.sh --help
+./scripts/install.sh --doctor
+```
+
+`--help` and `--doctor` parse arguments first, write nothing, and work without a
+checkout. Piped installs reconnect the wizard to `/dev/tty`. Without a usable
+terminal the installer exits before provisioning anything.
+
+## Pin a revision
+
+The script does **not** infer a git ref from the download URL. Put the same
+value in the URL and in `CLIPMUX_VERSION`:
+
+```bash
+CLIPMUX_VERSION=<git-sha> curl -fsSL \
+  https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh | bash
+```
+
+A fresh remote install defaults to `main` and records the resolved commit in
+`.clipmux-install` (gitignored).
+
+## What you need
+
+| You need | Why |
+| --- | --- |
+| A Linux host or VPS, or macOS with Docker Desktop | Where Compose runs |
+| A Cloudflare account | R2 buckets and the delivery Worker |
+| DNS and inbound TCP 80 + 443 (domain installs) | Caddy obtains certificates itself; the installer does not open firewalls or create tunnels |
+| An interactive terminal | Wrangler device login and pairing prompts |
+
+Supported automatic Docker Engine install: current Ubuntu/Debian releases via
+[Docker's apt repository](https://docs.docker.com/engine/install/ubuntu/). An
+existing Docker installation is never upgraded or replaced. macOS uses Docker
+Desktop. Elsewhere, install Engine yourself and re-run.
+
+Root or passwordless sudo is enough to install packages. `CLIPMUX_NO_SUDO=1`
+prints the commands instead. The installer may use `sudo -n docker` without
+changing group membership.
+
+## Destination
+
+| | Default |
+| --- | --- |
+| Root | `/opt/clipmux` |
+| Other users | `~/clipmux` |
+| In-repository `./scripts/install.sh` | that checkout, unless `CLIPMUX_DIR` is set |
+
+`CLIPMUX_DIR` overrides the prefix. The installer refuses an unrelated nonempty
+directory. A rerun reuses the checkout, `.env`, secrets and volumes — it does
+not fetch, reset, rotate credentials, or upgrade.
+
+## Access
+
+The wizard asks how this machine is reached:
+
+- **`http://localhost`** — loopback only. Encoding stays on this host (Modal
+  cannot reach localhost). Caddy binds `127.0.0.1:80`.
+- **A public HTTPS hostname** — no credentials, path, query, or custom port.
+  Caddy binds `0.0.0.0:80` and `:443`. Point DNS at this machine first.
+
+Every public URL (`BACKEND_URL`, `FRONTEND_URL`, `CORS_ORIGINS`,
+`BETTER_AUTH_URL`, `NEXT_PUBLIC_*`) is derived from that one origin. `/api` and
+`/api/auth` stay on the suffixes the dashboard already requires.
+
+<Callout type="warn" title="The installer does not change the firewall">
+  Domain HTTPS needs ports 80 and 443 reachable from the internet so Caddy can
+  complete certificate validation. See
+  [Caddy's HTTPS quick start](https://caddyserver.com/docs/quick-starts/https).
+</Callout>
+
+Busy ports stop the install with the listener's name. ClipMux's own containers
+are not treated as a conflict, so a resume can continue.
+
+## Cloudflare login
+
+Host installs use Wrangler's **device login** (`wrangler login --device
+--browser=false`), which works over SSH. The selected Cloudflare account must
+match `ACCOUNT_ID`; ambiguity or a mismatch fails the step.
+
+You still paste an **R2 S3 API token** — Wrangler cannot mint those.
+
+## Self-hosted pairing
+
+The application starts before the encoder daemon. The installer builds the
+agent image but does not start it until a credential exists.
+
+1. Create an organization in the dashboard.
+2. Open `/dashboard/transcoders` and copy a pairing code.
+3. Paste it privately when prompted.
+
+Pairing runs through Compose against `http://api:4080`. The token is stored on
+the persistent agent volume (`/var/lib/clipmux-transcoder/token`, mode `0600`) —
+not in `.env` and not in logs. A valid saved credential is reused on reruns.
+Canceling pairing leaves the application running; resume with
+`./scripts/install.sh`.
+
+Encoding defaults to CPU with the existing concurrency limits. GPU passthrough
+stays a manual Compose edit.
+
+## After install
+
+```bash
+# Same command resumes an interrupted install
+./scripts/install.sh
+
+# Stop without deleting data
+docker compose down
+
+# Manual upgrade (v1 has no --update)
+git pull
+docker compose build api web
+docker compose --profile tools run --rm migrate
+docker compose up -d
+```
+
+Default encoding profile is `proxy` (Caddy). After pairing, `COMPOSE_PROFILES`
+includes `transcoder`.
+
+## Recovery
+
+| Situation | What to do |
+| --- | --- |
+| Interrupted install | Re-run `./scripts/install.sh` — config, secrets and volumes are kept |
+| Pairing skipped or rejected | Re-run; the dashboard still serves. Missing/rejected credentials prompt again; connectivity errors report their cause |
+| Unrelated process on 80/443 | Stop that listener, then re-run. Port overrides are not offered in v1 |
+| Want to tear down data | `docker compose down -v` — this deletes Postgres and certificate volumes |
+
+There is no uninstaller in v1. Contributor setup remains
+`./scripts/bootstrap.sh`.

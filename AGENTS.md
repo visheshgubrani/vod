@@ -27,9 +27,10 @@ docs/          Maintainer-facing markdown: cross-service contracts
                (deployment-shapes.md), operator guides (deploy.md,
                self-hosted-transcoding.md), build recipe
                (transcoding-toolchain.md) and known-gaps.md
-scripts/       bootstrap.sh launcher (toolchain + wizard exec) and lib/ —
-               detect.sh (OS/package-manager verdict, the one detector) and
-               pkg-commands.tsv (install commands, read by bash AND the wizard)
+scripts/       bootstrap.sh (contributor toolchain + wizard) · install.sh
+               (operator host installer) · lib/ — detect.sh (the one OS
+               detector) and pkg-commands.tsv (install commands, read by bash
+               AND the wizard)
 setup/         clipmux-setup — interactive bootstrap wizard (TS, clack + chalk + ora):
                choices → system requirements → credentials → opt-in deploy
 ```

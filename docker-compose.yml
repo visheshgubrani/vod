@@ -180,6 +180,30 @@ services:
     # group_add:
     #   - video
 
+  # Reverse proxy for a host install (`scripts/install.sh`). Opt-in so an
+  # ordinary `docker compose up` still binds the API and dashboard on loopback
+  # only. COMPOSE_PROFILES=proxy (written by the installer) enables it.
+  caddy:
+    profiles: ["proxy"]
+    image: caddy:2-alpine
+    container_name: clipmux-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+      - web
+    ports:
+      - "${CLIPMUX_PROXY_BIND:-127.0.0.1}:80:80"
+      - "${CLIPMUX_PROXY_BIND:-127.0.0.1}:443:443"
+    environment:
+      CLIPMUX_CADDY_SITE: ${CLIPMUX_CADDY_SITE:-http://localhost}
+      CLIPMUX_ACME_EMAIL: ${CLIPMUX_ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - clipmux_caddy_data:/data
+      - clipmux_caddy_config:/config
+
 volumes:
   clipmux_postgres:
   clipmux_transcoder_scratch:
+  clipmux_caddy_data:
+  clipmux_caddy_config:

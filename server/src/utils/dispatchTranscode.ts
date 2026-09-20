@@ -243,3 +243,28 @@ export function dispatchFailureStatus(
       return 409
   }
 }
+
+/**
+ * JSON body every upload-complete path returns when dispatch did not start.
+ *
+ * `reason` is the stable code callers already match on. `message` is the typed
+ * DispatchError text when one exists — without it a 4xx from Modal was only
+ * reported as `dispatch-uncertain` / `dispatch-failed` and the ingest status
+ * never reached the SDK.
+ */
+export type DispatchFailureBody = {
+  error: string
+  reason: DispatchFailureReason
+  message?: string
+}
+
+export function dispatchFailureBody(
+  result: Extract<DispatchTranscodeResult, { dispatched: false }>,
+): DispatchFailureBody {
+  const message = result.error?.message
+  return {
+    error: `Transcode not started: ${result.reason}`,
+    reason: result.reason,
+    ...(message ? { message } : {}),
+  }
+}

@@ -16,6 +16,7 @@
     "overview",
     "migration-from-mux",
     "---Deploy---",
+    "host-install",
     "deploy",
     "configuration",
     "---API reference---",

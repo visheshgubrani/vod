@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   contentScoreSql,
   dailyViewsSql,
@@ -67,7 +67,21 @@ const FILE_ENV = parseEnvFile(resolve(__dirname, '../../.dev.vars'))
 const ACCOUNT_ID = process.env.ACCOUNT_ID || FILE_ENV.ACCOUNT_ID || ''
 const API_TOKEN = process.env.CLOUDFLARE_ANALYTICS_TOKEN || FILE_ENV.CLOUDFLARE_ANALYTICS_TOKEN || ''
 
-const hasAnalyticsCredentials = Boolean(ACCOUNT_ID && API_TOKEN)
+/** Values `.dev.vars.example` ships — presence is not a credential. */
+const PLACEHOLDER_ACCOUNT = 'your-cloudflare-account-id'
+const PLACEHOLDER_TOKEN = 'your-analytics-api-token'
+
+const hasAnalyticsCredentials = Boolean(
+  ACCOUNT_ID &&
+    API_TOKEN &&
+    ACCOUNT_ID !== PLACEHOLDER_ACCOUNT &&
+    API_TOKEN !== PLACEHOLDER_TOKEN,
+)
+
+function isAnalyticsAuthFailure(status: number, body: string): boolean {
+  if (status !== 400 && status !== 401 && status !== 403) return false
+  return body.includes('"code":9106') || body.includes('Authentication failed')
+}
 
 const VIDEO = '995d687a-0435-4225-939e-2260f792474c'
 const ORG = 'G1ct9tuZwIx7uXTGmGkYjVfyGYiuIqZu'
@@ -82,6 +96,24 @@ async function run(sql: string): Promise<{ status: number; body: string }> {
 }
 
 describe.skipIf(!hasAnalyticsCredentials)('Analytics Engine SQL: live parse check', () => {
+  let authRejected = false
+
+  beforeAll(async () => {
+    const { status, body } = await run(
+      `SELECT count(DISTINCT if(blob1 = 'seeking', blob3, NULL)) as x FROM playback_events`,
+    )
+    authRejected = isAnalyticsAuthFailure(status, body)
+    if (authRejected) {
+      console.warn(
+        'Skipping Analytics Engine SQL live checks: CLOUDFLARE_ANALYTICS_TOKEN was rejected (9106). Mint a token with Analytics Engine Read, or unset it so this suite skips.',
+      )
+    }
+  })
+
+  beforeEach((ctx) => {
+    if (authRejected) ctx.skip()
+  })
+
   it('still refuses the NULL-in-IF() idiom, so the checks below have teeth', async () => {
     const { status, body } = await run(
       `SELECT count(DISTINCT if(blob1 = 'seeking', blob3, NULL)) as x FROM playback_events`,

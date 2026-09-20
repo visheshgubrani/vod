@@ -21,7 +21,7 @@ accounts you control.
 | I want to… | Start here |
 | --- | --- |
 | **Read the docs** — setup, integration guides, API reference | [docs site](docs-site) — `pnpm --filter clipmux-docs dev`, or the built site |
-| **Run ClipMux** on my own accounts | [Setup](#setup) below, then [docs/deploy.md](docs/deploy.md) |
+| **Run ClipMux** on a machine or VPS | [`scripts/install.sh`](#host-install) below, then [docs-site host install](docs-site/content/docs/host-install.mdx) |
 | **Integrate it into my app** (Next.js, Vite, Nuxt, SvelteKit, Node) | [docs-site/content/docs/integrations](docs-site/content/docs/integrations) |
 | **See what differs per install** (API runtime, Postgres transport, transcoder, rate-limit store) | [docs/deployment-shapes.md](docs/deployment-shapes.md) |
 | **Develop ClipMux** — change the code | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -31,18 +31,29 @@ framework integration guides, the full `/v1` API reference, an error-code
 catalogue and the configuration reference. This README remains the shortest path
 to a running installation; the docs site is where the detail lives.
 
-**Fastest path to a deployment:** `./scripts/bootstrap.sh` — installs Node +
-pnpm when missing (nvm first, then the distro package), installs workspace deps,
-and runs an interactive wizard in three phases: **choices** (API runtime,
-Postgres, transcoder, queue, rate-limit store, AI), **requirements** (what those
-choices need on this machine, with permission-aware installs), then
-**credentials**. It writes one *configuration target* per run — `dev`
-(`server/.dev.vars` + `delivery/.dev.vars`) or `deploy` (the root `.env` for
-Docker Compose). Re-run with `--deploy` when you are ready: Cloudflare + Modal
-logins, R2 buckets/CORS, worker + GPU pipeline deploys and secret uploads; a
-deployment that does not finish exits nonzero and lists what is left. You still
-paste an **R2 S3 API token** (Wrangler cannot mint those) and a **Postgres URI**
-unless the stack runs its own Postgres.
+**Fastest path to a running installation on this machine or a VPS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/install.sh | bash
+```
+
+That installer provisions Docker Compose, writes `.env`, starts the app behind
+Caddy, and walks self-hosted encoder pairing. Cloudflare is still required.
+Details: [Install on a host](docs-site/content/docs/host-install.mdx).
+
+**Contributor setup** (Node on the host, not the operator installer):
+`./scripts/bootstrap.sh` — installs Node + pnpm when missing (nvm first, then
+the distro package), installs workspace deps, and runs an interactive wizard
+in three phases: **choices** (Postgres, transcoder, queue, rate-limit store,
+AI), **requirements** (what those choices need on this machine, with
+permission-aware installs), then **credentials**. It writes one
+*configuration target* per run — `dev` (`server/.dev.vars` +
+`delivery/.dev.vars`) or `deploy` (the root `.env` for Docker Compose). Re-run
+with `--deploy` when you are ready: Cloudflare + Modal logins, R2 buckets/CORS,
+worker + GPU pipeline deploys and secret uploads; a deployment that does not
+finish exits nonzero and lists what is left. You still paste an **R2 S3 API
+token** (Wrangler cannot mint those) and a **Postgres URI** unless the stack
+runs its own Postgres.
 
 `./scripts/bootstrap.sh --doctor` reports what this machine has and what the
 current configuration needs — read-only, no installs, safe on someone else's
@@ -119,6 +130,34 @@ binding, which exists on Cloudflare Workers only, so a Node API (`pnpm dev`, or
 the Compose deployment) reads analytics and records none — the dashboard says so
 rather than showing a zero. See
 [docs/deployment-shapes.md](docs/deployment-shapes.md#analytics-has-two-independent-halves).
+
+---
+
+## Host install
+
+Operator path for a machine or VPS. Contributor bootstrap stays separate.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/install.sh | bash
+./scripts/install.sh --doctor     # read-only
+./scripts/install.sh              # from a checkout: uses that tree unless CLIPMUX_DIR is set
+```
+
+Pin both the URL and the variable to the same ref — the script does not infer
+one from the other:
+
+```bash
+CLIPMUX_VERSION=<git-sha> curl -fsSL \
+  https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh | bash
+```
+
+Defaults: `/opt/clipmux` as root, `~/clipmux` otherwise. Access is
+`http://localhost` or a public HTTPS hostname. Localhost encoding is
+self-hosted; Modal needs a reachable HTTPS API. Resume with the same command
+(config, secrets and volumes are kept). Stop without deleting data:
+`docker compose down`. There is no `--update` in v1.
+
+Full operator notes: [docs-site host install](docs-site/content/docs/host-install.mdx).
 
 ---
 

@@ -4,6 +4,7 @@ import {
   modalAuthState,
   MODAL_MIN_VERSION,
   parseAccountId,
+  parseAccountIds,
   parseModalClientVersion,
   parseModalImageId,
   parseModalSecretNames,
@@ -36,6 +37,19 @@ Associated with the following account:
 
   it('returns null when no id is present', () => {
     expect(parseAccountId('not authenticated')).toBeNull()
+  })
+
+  it('lists unique account ids so a multi-account login is not silently picked', () => {
+    const text = `
+Associated accounts:
+  Account ID: a1b2c3d4e5f60718293a4b5c6d7e8f90
+  Account ID: a1b2c3d4e5f60718293a4b5c6d7e8f90
+  Account ID: 11111111111111111111111111111111
+`
+    expect(parseAccountIds(text)).toEqual([
+      'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      '11111111111111111111111111111111',
+    ])
   })
 })
 

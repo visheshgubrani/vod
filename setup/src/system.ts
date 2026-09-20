@@ -135,7 +135,7 @@ export interface Requirement {
 
 /** Docker's own installers, per platform — the only reliable cross-distro path. */
 export const DOCKER_INSTALL_HINT =
-  'https://docs.docker.com/engine/install/ (or: curl -fsSL https://get.docker.com | sh)'
+  'https://docs.docker.com/engine/install/'
 export const DOCKER_DESKTOP_HINT = 'https://docs.docker.com/desktop/ (or: brew install --cask docker)'
 
 /**

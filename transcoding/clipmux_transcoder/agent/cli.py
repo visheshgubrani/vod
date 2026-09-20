@@ -132,7 +132,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.command == "pair":
             return cmd_pair(args)
         if args.command == "doctor":
-            return cmd_doctor(args)
+            return cmd_doctor(args, load_config(args))
         if args.command == "capabilities":
             return cmd_capabilities(args)
         if args.command == "import":
@@ -275,7 +275,7 @@ def cmd_capabilities(args) -> int:
     return EXIT_OK
 
 
-def cmd_doctor(args) -> int:
+def cmd_doctor(args, config: AgentConfig) -> int:
     """
     Check every precondition, in the order a job would hit it.
 
@@ -283,8 +283,11 @@ def cmd_doctor(args) -> int:
     reports health on a machine where the first import will fail on permissions.
     So each check below mirrors a real failure mode, and the last one runs an
     actual encode and package cycle.
+
+    The credential is loaded through `load_config`, the same helper `run` uses,
+    so a token written by `pair` is visible here even when it is not in the
+    environment.
     """
-    config = AgentConfig.from_env()
     checks: List[Dict[str, Any]] = []
     ok = True
 

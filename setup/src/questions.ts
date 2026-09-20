@@ -27,6 +27,7 @@ import { DEFAULT_ANSWERS } from './types'
 import { linksNote } from './links'
 import { probeTcp } from './probe'
 import { logWarn, note, askConfirm, askPassword, askSelect, askText, step } from './ui'
+import { parsePublicOrigin, proxySettingsFor, type PublicAccess } from './origin'
 
 const POSTGRES_URL_RE = /^postgres(ql)?:\/\/\S+/
 const HTTP_URL_RE = /^https?:\/\/\S+/
@@ -64,6 +65,8 @@ export interface AskContext {
   target: ConfigTarget
   /** Account id discovered from an existing wrangler login, if any. */
   accountIdDefault?: string
+  /** `scripts/install.sh` — access, proxy, and always-on deploy. */
+  hostInstall?: boolean
 }
 
 /** The decisions, before any value has been collected. */
@@ -78,15 +81,76 @@ export interface Choices {
   analyticsEnabled: boolean
   /** Whether to collect a Groq key (Modal provider only). */
   wantGroq: boolean
+  hostInstall?: boolean
+  access?: PublicAccess
+  origin?: string
+  acmeEmail?: string
 }
 
 export async function askChoices(ctx: AskContext): Promise<Choices> {
-  const { prefill, target } = ctx
-  // Numbered steps: Postgres, transcoder, rate limits, analytics.
-  const total = 4
+  const { prefill, target, hostInstall } = ctx
+  const total = hostInstall ? 5 : 4
   let index = 0
 
-  // ── 1. Postgres ────────────────────────────────────────────────────────
+  let access: PublicAccess | undefined
+  let origin: string | undefined
+  let acmeEmail: string | undefined
+
+  if (hostInstall) {
+    index += 1
+    step(index, total, 'How this machine is reached')
+    access =
+      (prefill.access === 'localhost' || prefill.access === 'domain' ? prefill.access : undefined) ??
+      (await askSelect<PublicAccess>(
+        'How should this installation be reached?',
+        [
+          {
+            value: 'localhost',
+            label: 'http://localhost on this machine',
+            hint: 'loopback only — encoding stays on this host',
+          },
+          {
+            value: 'domain',
+            label: 'A public HTTPS hostname',
+            hint: 'Caddy terminates TLS; DNS and inbound 80/443 must already point here',
+          },
+        ],
+        'localhost',
+      ))
+    if (access === 'localhost') {
+      origin = 'http://localhost'
+      note(
+        'The stack will listen on loopback. Modal cannot reach localhost, so encoding\n' +
+          'runs on this machine. The installer does not open a firewall or create a tunnel.',
+        'Localhost installation',
+      )
+    } else {
+      const typed = await askText('Public hostname (HTTPS, no path or port):', {
+        placeholder: 'vod.example.com',
+        validate: (value) => {
+          const parsed = parsePublicOrigin(value)
+          if (!parsed.ok) return parsed.error
+          if (parsed.access !== 'domain') return 'enter a public hostname, not localhost'
+          return undefined
+        },
+      })
+      const parsed = parsePublicOrigin(typed)
+      if (!parsed.ok) throw new Error(parsed.error)
+      origin = parsed.origin
+      note(
+        'Point this hostname at this machine and allow inbound TCP 80 and 443.\n' +
+          'Caddy needs those ports reachable from the internet to issue a certificate.\n' +
+          'The installer does not modify firewalls or create a tunnel.',
+        'DNS and inbound ports',
+      )
+      const email = await askText('ACME email for certificate notices (optional):', {
+        placeholder: 'ops@example.com',
+      })
+      acmeEmail = email.trim() || undefined
+    }
+  }
+
+  // ── Postgres ───────────────────────────────────────────────────────────
   index += 1
   step(index, total, 'Postgres')
   const dbKind: DbKind =
@@ -115,27 +179,29 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
       'local',
     ))
 
-  // ── 3. Transcoder ──────────────────────────────────────────────────────
+  // ── Transcoder ─────────────────────────────────────────────────────────
   index += 1
   step(index, total, 'Where videos are encoded')
   const transcodeProvider =
-    prefill.transcodeProvider ??
-    (await askSelect<'modal' | 'self-hosted'>(
-      'How should ClipMux transcode?',
-      [
-        {
-          value: 'modal',
-          label: 'Modal (GPU in the cloud — nothing to install here)',
-          hint: 'FFmpeg/Shaka/Whisper on Modal; uploads come from the raw R2 bucket',
-        },
-        {
-          value: 'self-hosted',
-          label: 'This machine (Docker, your own CPU/GPU)',
-          hint: 'the agent reads files from folders you mount — no GPU rental',
-        },
-      ],
-      'modal',
-    ))
+    access === 'localhost'
+      ? 'self-hosted'
+      : (prefill.transcodeProvider ??
+        (await askSelect<'modal' | 'self-hosted'>(
+          'How should ClipMux transcode?',
+          [
+            {
+              value: 'modal',
+              label: 'Modal (GPU in the cloud — nothing to install here)',
+              hint: 'FFmpeg/Shaka/Whisper on Modal; uploads come from the raw R2 bucket',
+            },
+            {
+              value: 'self-hosted',
+              label: 'This machine (Docker, your own CPU/GPU)',
+              hint: 'the agent reads files from folders you mount — no GPU rental',
+            },
+          ],
+          'modal',
+        )))
 
   // Conditional sub-prompt: a local-only installation may have no uploads at
   // all, which is what makes it valid without a raw bucket.
@@ -247,6 +313,10 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
     rateLimitKind,
     analyticsEnabled,
     wantGroq,
+    ...(hostInstall ? { hostInstall: true } : {}),
+    ...(access !== undefined ? { access } : {}),
+    ...(origin !== undefined ? { origin } : {}),
+    ...(acmeEmail !== undefined ? { acmeEmail } : {}),
   }
 }
 
@@ -322,11 +392,13 @@ export async function askCredentials(
   }
 
   // ── Storage, origins and Cloudflare credentials ────────────────────────
-  const frontendUrl = await askText('Dashboard origin (CORS + FRONTEND_URL):', {
-    initialValue: DEFAULT_ANSWERS.frontendUrl,
-    validate: (value) =>
-      HTTP_URL_RE.test(value) ? undefined : 'must be an absolute http(s) URL',
-  })
+  const frontendUrl = choices.origin
+    ? choices.origin
+    : await askText('Dashboard origin (CORS + FRONTEND_URL):', {
+        initialValue: DEFAULT_ANSWERS.frontendUrl,
+        validate: (value) =>
+          HTTP_URL_RE.test(value) ? undefined : 'must be an absolute http(s) URL',
+      })
 
   let rawBucket = DEFAULT_ANSWERS.rawBucket
   if (needsRawBucket) {
@@ -392,5 +464,15 @@ export async function askCredentials(
     transcodedBucket: transcodedBucket.trim(),
     frontendUrl: frontendUrl.trim(),
     ...(groqApiKey ? { groqApiKey: groqApiKey.trim() } : {}),
+    ...(choices.hostInstall ? { hostInstall: true } : {}),
+    ...(choices.access !== undefined ? { access: choices.access } : {}),
+    ...(choices.origin !== undefined && choices.access !== undefined
+      ? {
+          proxy: proxySettingsFor(
+            { origin: choices.origin, access: choices.access },
+            choices.acmeEmail,
+          ),
+        }
+      : {}),
   }
 }

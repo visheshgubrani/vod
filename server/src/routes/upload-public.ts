@@ -27,7 +27,7 @@ import { buildRawObjectKey } from '../lib/rawObjectKey'
 import { uploadToken, video } from '../db/schema'
 import { notDeleted } from '../db/predicates'
 import { headObjectSize, r2 } from '../utils/R2'
-import { dispatchFailureStatus } from '../utils/dispatchTranscode'
+import { dispatchFailureBody, dispatchFailureStatus } from '../utils/dispatchTranscode'
 import { dispatchWithProvider } from '../utils/dispatchProvider'
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings, UploadTokenVariables } from '../types'
@@ -594,16 +594,9 @@ app.post('/complete', async (c) => {
         })
 
         if (!dispatchResult.dispatched) {
-            if (dispatchResult.reason === 'dispatch-failed') {
-                // dispatchTranscodeJob already marked the row failed.
-                console.error(`Failed to queue transcoding for ${fileId}:`, dispatchResult.error)
-                return c.json(
-                    { error: `Upload complete but transcoding failed to start: ${dispatchResult.error?.message ?? 'unknown error'}` },
-                    500,
-                )
-            }
+            console.error(`Transcode not dispatched for ${fileId}: ${dispatchResult.reason}`, dispatchResult.error)
             return c.json(
-                { error: `Transcode not started: ${dispatchResult.reason}`, reason: dispatchResult.reason },
+                dispatchFailureBody(dispatchResult),
                 dispatchFailureStatus(dispatchResult.reason),
             )
         }

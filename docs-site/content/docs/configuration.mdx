@@ -142,8 +142,24 @@ and it is the fastest way to answer "which shape is this thing actually running"
 curl "$CLIPMUX_API_URL/health/config"
 ```
 
+## Host installer
+
+Written by `scripts/install.sh` into the root `.env`. Ordinary `docker compose up`
+leaves them blank and does not start Caddy.
+
+| Variable | Notes |
+| --- | --- |
+| `CLIPMUX_HOST_INSTALL` | `true` when this `.env` was written by the host installer |
+| `CLIPMUX_CADDY_SITE` | Caddy site address: `http://localhost` or a public hostname |
+| `CLIPMUX_ACME_EMAIL` | Optional contact for certificate expiry notices |
+| `CLIPMUX_PROXY_BIND` | `127.0.0.1` (localhost) or `0.0.0.0` (public HTTPS) |
+| `COMPOSE_PROFILES` | `proxy`, then `proxy,transcoder` after pairing |
+
+The agent pairing token is **not** an env var. It lives on the
+`clipmux_transcoder_scratch` volume. See [Install on a host](/host-install).
+
 <Cards>
+  <Card title="Install on a host" href="/host-install" description="Operator installer: Compose, Caddy, Cloudflare, pairing." />
   <Card title="Deployment" href="/deploy" description="Compose and delivery-worker deployment, step by step." />
   <Card title="Quickstart" href="/quickstart" description="Create the R2 buckets, keys and Modal secrets this page refers to." />
-  <Card title="Errors & status codes" href="/errors" description="What a rejected request actually returns." />
 </Cards>

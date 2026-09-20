@@ -8,6 +8,11 @@ Redis from `docker-compose.dev.yml` with the API and dashboard on the host
 (`pnpm dev`). A **deployment** is `docker-compose.yml`, configured by `.env` at
 the repo root. The API always runs on Node.
 
+**Operators installing on a host or VPS should run
+[`scripts/install.sh`](/host-install)** rather than copying `.env.example` by
+hand. This page is the Compose shape, maintenance and recovery once that stack
+exists.
+
 Signed playback is always the **Cloudflare delivery worker** in front of R2. That
 is fixed, not a default.
 
@@ -92,6 +97,7 @@ resolved to — see [the health endpoint](/api-reference#get-healthconfig).
 | `postgres`, `redis` | default | internal only, no host ports |
 | `migrate` | `tools` | `pnpm docker:migrate` |
 | `transcoder` | `transcoder` | `docker compose --profile transcoder up -d` (self-hosted agent) |
+| `caddy` | `proxy` | host installer sets `COMPOSE_PROFILES=proxy` (and `transcoder` after pairing) |
 
 ## Migrations
 

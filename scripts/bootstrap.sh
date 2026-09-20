@@ -37,7 +37,8 @@
 #   NO_COLOR=1                 plain, unbranded output
 #
 # This launcher never deploys and never runs wrangler — the wizard does, using
-# each package's pinned local devDependency (`pnpm exec wrangler`).
+# each package's pinned local devDependency (`pnpm exec wrangler`). Operators
+# installing ClipMux on a host or VPS should run scripts/install.sh instead.
 
 set -euo pipefail
 
@@ -437,6 +438,9 @@ Usage (run from anywhere inside the repo):
   ./scripts/bootstrap.sh --deploy               provision & deploy (Cloudflare + Modal)
   ./scripts/bootstrap.sh --check [api-url]      verify the configuration without printing secrets
   ./scripts/bootstrap.sh --help
+
+Host install (Docker Compose on this machine or a VPS, not this launcher):
+  ./scripts/install.sh
 
 Configuration targets (one per run):
   dev      server/.dev.vars + delivery/.dev.vars

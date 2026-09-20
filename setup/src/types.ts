@@ -6,6 +6,10 @@
  * TUI would have collected.
  */
 
+import type { DeploymentProxyAnswers, PublicAccess } from './origin'
+
+export type { DeploymentProxyAnswers, PublicAccess }
+
 /**
  * Which configuration this run owns.
  *
@@ -72,6 +76,15 @@ export interface WizardAnswers {
   frontendUrl: string
   /** Optional Groq key for AI subtitles/chapters. */
   groqApiKey?: string
+  /**
+   * Set by `scripts/install.sh` / `--host-install`. Ordinary bootstrap runs
+   * leave this unset so existing answer files keep working.
+   */
+  hostInstall?: boolean
+  /** How the host install is reached. Omitted outside host-install mode. */
+  access?: PublicAccess
+  /** Caddy / bind / Compose-profile settings. Omitted outside host-install. */
+  proxy?: DeploymentProxyAnswers
 }
 
 /** Defaults that keep every prompt short. */
@@ -102,4 +115,5 @@ export interface Prefill {
   transcodeProvider?: 'modal' | 'self-hosted'
   uploadsEnabled?: boolean
   analyticsEnabled?: boolean
+  access?: PublicAccess
 }

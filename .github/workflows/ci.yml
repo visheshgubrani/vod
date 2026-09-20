@@ -252,6 +252,7 @@ jobs:
           # The deployment stack requires a root .env (fail-fast by design).
           cp .env.example .env
           docker compose config --quiet
+          docker compose --profile proxy --profile transcoder --profile tools config --quiet
       - name: Build API image
         run: docker build -f server/Dockerfile -t clipmux-api .
       - name: Build web image

@@ -261,6 +261,7 @@ app.get('/transcoding-breakdown', async (c) => {
 })
 
 import {
+  analyticsQueryFailureStatus,
   getAnalyticsConfig,
   parseDays,
   queryAnalyticsEngine,
@@ -350,6 +351,12 @@ app.get('/bandwidth', async (c) => {
     })
   } catch (error) {
     console.error('Bandwidth query error:', error)
+    if (analyticsQueryFailureStatus(error) === 501) {
+      return c.json({
+        error: 'Bandwidth analytics not configured',
+        message: 'CLOUDFLARE_ANALYTICS_TOKEN was rejected by Analytics Engine',
+      }, 501)
+    }
     return c.json({ error: 'Failed to query bandwidth analytics' }, 500)
   }
 })
@@ -414,6 +421,12 @@ app.get('/bandwidth/daily', async (c) => {
     })
   } catch (error) {
     console.error('Bandwidth daily query error:', error)
+    if (analyticsQueryFailureStatus(error) === 501) {
+      return c.json({
+        error: 'Bandwidth analytics not configured',
+        message: 'CLOUDFLARE_ANALYTICS_TOKEN was rejected by Analytics Engine',
+      }, 501)
+    }
     return c.json({ error: 'Failed to query daily bandwidth' }, 500)
   }
 })

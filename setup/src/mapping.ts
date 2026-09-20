@@ -16,6 +16,8 @@ import type {
   SecretSet,
   WizardAnswers,
 } from './types'
+import type { PublicAccess } from './origin'
+import { parsePublicOrigin, urlsFromOrigin } from './origin'
 
 /**
  * The dev Postgres URL for host-side tooling.
@@ -124,6 +126,11 @@ export const DEPLOY_KEY_ORDER = [
   'GROQ_API_KEY',
   'TRANSCODE_ORG_CONCURRENCY_CAP',
   'MAX_UPLOAD_SIZE_BYTES',
+  'CLIPMUX_HOST_INSTALL',
+  'CLIPMUX_CADDY_SITE',
+  'CLIPMUX_ACME_EMAIL',
+  'CLIPMUX_PROXY_BIND',
+  'COMPOSE_PROFILES',
 ] as const
 
 /** Canonical keys for delivery/.dev.vars. */
@@ -257,6 +264,8 @@ export interface ChoiceShape {
   analyticsEnabled?: boolean
   queueKind?: QueueKind
   rateLimitKind?: RateLimitKind
+  hostInstall?: boolean
+  access?: PublicAccess
 }
 
 /**
@@ -314,6 +323,17 @@ export function validateChoices(shape: ChoiceShape): string[] {
     )
   }
 
+  if (
+    shape.hostInstall === true &&
+    shape.access === 'localhost' &&
+    shape.transcodeProvider === 'modal'
+  ) {
+    problems.push(
+      'localhost installations cannot use Modal — Modal needs a publicly reachable HTTPS API. ' +
+        'Use the self-hosted transcoder, or install on a public HTTPS hostname.',
+    )
+  }
+
   return problems
 }
 
@@ -329,6 +349,8 @@ export function validateChoicesOf(answers: WizardAnswers): string[] {
     ...(answers.analyticsEnabled !== undefined ? { analyticsEnabled: answers.analyticsEnabled } : {}),
     ...(answers.queue?.kind !== undefined ? { queueKind: answers.queue.kind } : {}),
     ...(answers.rateLimit?.kind !== undefined ? { rateLimitKind: answers.rateLimit.kind } : {}),
+    ...(answers.hostInstall !== undefined ? { hostInstall: answers.hostInstall } : {}),
+    ...(answers.access !== undefined ? { access: answers.access } : {}),
   })
 }
 
@@ -374,6 +396,17 @@ export function validateCredentials(answers: WizardAnswers): string[] {
   }
   if (!/^https?:\/\/\S+/.test(answers.frontendUrl ?? '')) {
     problems.push('frontendUrl must be an absolute http(s) URL')
+  }
+
+  if (answers.hostInstall === true) {
+    const parsed = parsePublicOrigin(answers.frontendUrl ?? '')
+    if (!parsed.ok) {
+      problems.push(`host-install origin: ${parsed.error}`)
+    } else if (answers.access !== undefined && parsed.access !== answers.access) {
+      problems.push(
+        `host-install access "${answers.access}" does not match origin ${parsed.origin}`,
+      )
+    }
   }
 
   return problems
@@ -482,8 +515,11 @@ export function buildDeployConfig(
   const redis = upstashRedis(answers.rateLimit)
   const externalDbUrl =
     answers.db.kind === 'existing' ? (answers.db.url ?? '').trim() : ''
-  const frontend = answers.frontendUrl.trim()
-  const apiBase = 'http://localhost:8787'
+  const hostInstall = answers.hostInstall === true
+  const urls = hostInstall ? urlsFromOrigin(answers.frontendUrl.trim()) : null
+  const frontend = urls?.frontend ?? answers.frontendUrl.trim()
+  const apiBase = urls?.api ?? 'http://localhost:8787'
+  const proxy = hostInstall ? answers.proxy : undefined
 
   return [
     ['POSTGRES_USER', 'postgres'],
@@ -494,13 +530,13 @@ export function buildDeployConfig(
     ['REDIS_URL', answers.rateLimit.kind === 'redis' ? (answers.rateLimit.url ?? '').trim() : ''],
     ['CLIPMUX_API_PORT', '8787'],
     ['CLIPMUX_WEB_PORT', '3000'],
-    ['NEXT_PUBLIC_API_BASE_URL', `${apiBase}/api`],
-    ['NEXT_PUBLIC_AUTH_BASE_URL', `${apiBase}/api/auth`],
+    ['NEXT_PUBLIC_API_BASE_URL', urls?.nextApi ?? `${apiBase}/api`],
+    ['NEXT_PUBLIC_AUTH_BASE_URL', urls?.nextAuth ?? `${apiBase}/api/auth`],
     ['NEXT_PUBLIC_FRONTEND_URL', frontend],
     ['BETTER_AUTH_URL', apiBase],
     ['BACKEND_URL', apiBase],
     ['FRONTEND_URL', frontend],
-    ['CORS_ORIGINS', frontend],
+    ['CORS_ORIGINS', urls?.cors ?? frontend],
     ['BETTER_AUTH_SECRET', secrets.betterAuthSecret],
     ['JWT_SECRET', secrets.jwtSecret],
     ['TRANSCODE_INGEST_SECRET', secrets.transcodeIngestSecret],
@@ -526,6 +562,11 @@ export function buildDeployConfig(
     ['GROQ_API_KEY', answers.groqApiKey?.trim() ?? ''],
     ['TRANSCODE_ORG_CONCURRENCY_CAP', ''],
     ['MAX_UPLOAD_SIZE_BYTES', ''],
+    ['CLIPMUX_HOST_INSTALL', hostInstall ? 'true' : ''],
+    ['CLIPMUX_CADDY_SITE', proxy?.site ?? ''],
+    ['CLIPMUX_ACME_EMAIL', proxy?.acmeEmail ?? ''],
+    ['CLIPMUX_PROXY_BIND', proxy?.bindAddress ?? ''],
+    ['COMPOSE_PROFILES', proxy?.profiles ?? ''],
   ]
 }
 
@@ -601,6 +642,35 @@ export function deriveAnswersFromConfig(
     analyticsEnabled: parseEnabledFlag(env['ANALYTICS_ENABLED'], true),
     frontendUrl: (env['FRONTEND_URL'] ?? '').trim() || (env['CORS_ORIGINS'] ?? '').trim(),
     groqApiKey: (env['GROQ_API_KEY'] ?? '').trim() || undefined,
+    ...hostInstallFromEnv(env),
+  }
+}
+
+function hostInstallFromEnv(env: Record<string, string>): Pick<
+  WizardAnswers,
+  'hostInstall' | 'access' | 'proxy'
+> {
+  const hostInstall = parseEnabledFlag(env['CLIPMUX_HOST_INSTALL'], false)
+  if (!hostInstall) return {}
+
+  const site = (env['CLIPMUX_CADDY_SITE'] ?? '').trim()
+  const bindAddress = (env['CLIPMUX_PROXY_BIND'] ?? '').trim()
+  const profiles = (env['COMPOSE_PROFILES'] ?? '').trim()
+  const acmeEmail = (env['CLIPMUX_ACME_EMAIL'] ?? '').trim()
+  const originRaw = (env['FRONTEND_URL'] ?? '').trim() || (site.startsWith('http') ? site : '')
+  const parsed = parsePublicOrigin(originRaw || (site !== '' ? `https://${site}` : ''))
+  const access = parsed.ok ? parsed.access : undefined
+
+  return {
+    hostInstall: true,
+    ...(access !== undefined ? { access } : {}),
+    proxy: {
+      enabled: true,
+      site,
+      ...(acmeEmail !== '' ? { acmeEmail } : {}),
+      bindAddress,
+      profiles,
+    },
   }
 }
 

@@ -103,6 +103,7 @@ interface CliOptions {
   force: boolean
   rotateSecrets: boolean
   deploy: boolean
+  hostInstall: boolean
   answersPath: string | undefined
   checkEnabled: boolean
   checkUrl: string | undefined
@@ -123,6 +124,7 @@ function parseArgs(argv: string[]): CliOptions {
     force: false,
     rotateSecrets: false,
     deploy: false,
+    hostInstall: false,
     answersPath: undefined,
     checkEnabled: false,
     checkUrl: undefined,
@@ -155,6 +157,11 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--deploy':
         options.deploy = true
+        break
+      case '--host-install':
+        options.hostInstall = true
+        options.deploy = true
+        options.target = 'deploy'
         break
       case '--skip-deploy':
         // Accepted for compatibility; configure-only is the default flow now.
@@ -350,6 +357,13 @@ function loadAnswersFile(path: string): WizardAnswers {
       : {}),
     frontendUrl: (answers.frontendUrl ?? DEFAULT_ANSWERS.frontendUrl).toString().trim(),
     groqApiKey: answers.groqApiKey?.toString().trim() || undefined,
+    ...(answers.hostInstall === true ? { hostInstall: true } : {}),
+    ...(answers.access === 'localhost' || answers.access === 'domain'
+      ? { access: answers.access }
+      : {}),
+    ...(answers.proxy !== undefined && answers.proxy !== null && typeof answers.proxy === 'object'
+      ? { proxy: answers.proxy }
+      : {}),
   }
   return merged
 }
@@ -365,6 +379,26 @@ function nextStepsText(answers: WizardAnswers): string {
   const pairing = local
     ? ['', 'Encode on this machine (self-hosted provider):', `  ${pairingCommand()}`]
     : []
+
+  if (answers.hostInstall) {
+    const origin = answers.frontendUrl.trim()
+    return [
+      `This machine is serving ClipMux at ${origin}`,
+      `  Dashboard  ${origin}`,
+      `  API        ${origin}/api`,
+      `  Health     ${origin}/health/config`,
+      '',
+      'Re-run to resume (configuration, secrets and volumes are kept):',
+      `  ${color.cmd('./scripts/install.sh')}`,
+      '',
+      'Stop without deleting data:',
+      `  ${color.cmd('docker compose down')}`,
+      '',
+      'Manual upgrade (v1 does not auto-update):',
+      `  git pull && docker compose build api web && docker compose run --rm migrate && docker compose up -d`,
+      ...(local ? ['', 'Self-hosted encoding uses the paired agent on this machine.'] : []),
+    ].join('\n')
+  }
 
   if (target === 'deploy') {
     return [
@@ -712,6 +746,7 @@ async function interactiveConfigure(
     prefill: opts.prefill,
     target,
     accountIdDefault: accountIdDefault ?? undefined,
+    ...(opts.hostInstall ? { hostInstall: true } : {}),
   })
   choices.target = target
 
@@ -987,16 +1022,26 @@ async function main(): Promise<void> {
     return
   }
 
-  intro(repoVersion(root))
+  intro(repoVersion(root), opts.hostInstall ? 'host install' : undefined)
 
-  const target = await resolveTarget(root, opts, true)
+  const target = opts.hostInstall ? 'deploy' : await resolveTarget(root, opts, true)
   const primary = primaryConfigPath(root, target)
   const envExists =
     existsSync(primary) || (target === 'dev' && existsSync(deliveryVarsPath(root)))
 
   let answers: WizardAnswers
   let deployNow = opts.deploy
-  if (!envExists || opts.force) {
+  if (opts.hostInstall) {
+    if (!envExists || opts.force) {
+      answers = await interactiveConfigure(root, opts, target)
+    } else {
+      const env = readTargetConfig(root, target)
+      if (!env) throw new WizardError(`${primary} is missing — configure first`)
+      answers = deriveAnswersFromConfig(target, env)
+      logWarn(`Using the existing ${primary} — secrets, volumes and pairing are reused`)
+    }
+    deployNow = true
+  } else if (!envExists || opts.force) {
     answers = await interactiveConfigure(root, opts, target)
   } else if (opts.deploy) {
     // Explicit flag: deploy with what is already configured, no menu.

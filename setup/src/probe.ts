@@ -12,6 +12,7 @@
 import { connect } from 'node:net'
 import { findOnPath, runCapture } from './runners'
 import type { RequirementStatus, Requirement } from './system'
+import { dockerArgv } from './dockerCli'
 
 export interface ToolProbe {
   found: boolean
@@ -43,12 +44,13 @@ async function probeVersion(bin: string, args: string[], timeoutMs = 15_000): Pr
 
 /** Docker is two findings: the CLI/daemon, and the Compose v2 plugin. */
 export async function probeDocker(): Promise<ToolProbe> {
-  const bin = findOnPath('docker')
-  if (bin === null) return { found: false, detail: 'not installed' }
-  const version = await probeVersion(bin, ['--version'])
-  if (!version.found) return version
+  const argv = dockerArgv()
+  const bin = argv[0] === 'sudo' ? findOnPath('docker') : findOnPath(argv[0] ?? 'docker')
+  if (bin === null && argv[0] !== 'sudo') return { found: false, detail: 'not installed' }
+  const version = await probeVersion(argv[0] === 'sudo' ? 'docker' : (argv[0] ?? 'docker'), ['--version'])
+  if (!version.found && argv[0] !== 'sudo') return version
 
-  const info = await runCapture([bin, 'info', '--format', '{{.ServerVersion}}'], {
+  const info = await runCapture([...argv, 'info', '--format', '{{.ServerVersion}}'], {
     timeoutMs: 20_000,
   })
   if (info.code !== 0) {
@@ -56,19 +58,19 @@ export async function probeDocker(): Promise<ToolProbe> {
     if (output.includes('permission denied')) {
       return {
         found: false,
-        detail: 'installed, but this user cannot reach the daemon (add yourself to the `docker` group)',
+        detail:
+          'installed, but this user cannot reach the daemon (the installer can use `sudo -n docker` without changing group membership)',
       }
     }
     if (info.timedOut) return { found: false, detail: 'installed, but the daemon did not answer' }
     return { found: false, detail: 'installed, but the daemon is not running' }
   }
-  return { found: true, detail: version.detail }
+  return { found: true, detail: version.detail ?? argv.join(' ') }
 }
 
 export async function probeDockerCompose(): Promise<ToolProbe> {
-  const bin = findOnPath('docker')
-  if (bin === null) return { found: false, detail: 'docker is not installed' }
-  const result = await runCapture([bin, 'compose', 'version'], { timeoutMs: 20_000 })
+  const argv = dockerArgv()
+  const result = await runCapture([...argv, 'compose', 'version'], { timeoutMs: 20_000 })
   if (result.code !== 0) {
     return { found: false, detail: 'the `docker compose` v2 plugin is missing' }
   }

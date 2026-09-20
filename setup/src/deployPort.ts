@@ -16,6 +16,7 @@ import { clipmuxCredsFromEnv, type ModalCredsPayload } from './modal'
 import {
   applyBucketCors,
   browserUploadCorsOrigins,
+  cfAccountIds,
   deployWorker,
   ensureBucket,
   ensureCfLogin,
@@ -39,9 +40,12 @@ import {
 } from './modal'
 import { analyticsTokenTemplateUrl } from './parsers'
 import { lintDeployEnv, lintServerEnv, MIN_SECRET_LENGTH } from './verify'
-import { findOnPath, runInherit } from './runners'
+import { findOnPath, runCapture, runInherit } from './runners'
 import { readTargetConfig, upsertTargetConfig } from './envio'
 import type { ConfigTarget } from './types'
+import { dockerCmd } from './dockerCli'
+import { checkHostPorts, type HostPortNeed } from './ports'
+import { waitForOriginReady } from './readiness'
 import {
   askConfirm,
   askPassword,
@@ -80,6 +84,12 @@ function mask(value: string): string {
   return `••••${value.length - 4} chars`
 }
 
+export type AgentCredentialStatus =
+  | { kind: 'valid' }
+  | { kind: 'missing' }
+  | { kind: 'rejected'; detail: string }
+  | { kind: 'unreachable'; detail: string }
+
 export interface DeployPort {
   log: {
     step: (message: string) => void
@@ -92,6 +102,8 @@ export interface DeployPort {
   askPassword: (message: string) => Promise<string>
 
   ensureCfLogin: () => Promise<string | null>
+  /** Distinct Cloudflare account ids from `wrangler whoami`. */
+  cfAccounts: () => Promise<string[]>
   ensureBucket: (name: string) => Promise<void>
   applyBucketCors: (bucket: string, origins: string[]) => Promise<void>
   patchDeliveryBucket: (bucket: string) => boolean
@@ -118,9 +130,16 @@ export interface DeployPort {
   deployWorker: (pkg: 'delivery') => Promise<string | null>
   putWorkerSecrets: (pkg: 'delivery', entries: EntryList) => Promise<void>
   dbMigrate: (databaseUrl: string) => Promise<void>
+  composeBuild: (input: { services: readonly string[]; profiles?: readonly string[] }) => Promise<void>
   composeMigrate: () => Promise<void>
-  composeUp: () => Promise<void>
+  composeUp: (profiles?: readonly string[]) => Promise<void>
   hasDocker: () => boolean
+  checkHostPorts: (needs: readonly HostPortNeed[]) => Promise<void>
+  waitForOrigin: (origin: string) => Promise<void>
+  pairTranscoder: (code: string) => Promise<void>
+  inspectAgentCredential: () => Promise<AgentCredentialStatus>
+  agentDoctor: () => Promise<void>
+  startTranscoder: () => Promise<void>
 
   readConfig: () => Record<string, string> | undefined
   writeConfig: (updates: EntryList) => void
@@ -134,6 +153,8 @@ export interface DeployPort {
 export interface DeployPortOptions {
   root: string
   target: ConfigTarget
+  /** Host installs use wrangler device login (SSH-safe). */
+  deviceLogin?: boolean
 }
 
 /** Probe `<api>/health/config`, reporting readiness without ever a secret. */
@@ -271,8 +292,42 @@ async function cleanLegacySecrets(bin: string): Promise<void> {
 }
 
 export function createDeployPort(options: DeployPortOptions): DeployPort {
-  const { root, target } = options
+  const { root, target, deviceLogin } = options
   const temp: TempDir = makeTempDir()
+
+  const compose = (...args: string[]): string[] => dockerCmd('compose', ...args)
+
+  const runCompose = async (args: string[], message: string): Promise<void> => {
+    const code = await runInherit(compose(...args), { cwd: root })
+    if (code !== 0) throw new Error(`${message} — check the compose logs`)
+  }
+
+  const runAgent = async (args: string[]): Promise<{ code: number | null; output: string }> => {
+    const argv = compose(
+      '--profile',
+      'transcoder',
+      'run',
+      '--rm',
+      '--no-deps',
+      'transcoder',
+      '--api',
+      'http://api:4080',
+      ...args,
+    )
+    const result = await runCapture(argv, { cwd: root, timeoutMs: 0 })
+    return { code: result.code, output: `${result.stdout}\n${result.stderr}` }
+  }
+
+  const classifyAgent = (code: number | null, output: string): AgentCredentialStatus => {
+    const text = output.toLowerCase()
+    if (text.includes('no token') || text.includes('no agent token')) return { kind: 'missing' }
+    if (text.includes('rejected')) return { kind: 'rejected', detail: output.trim().split(/\r?\n/).pop() ?? 'rejected' }
+    if (code !== 0 && (text.includes('could not reach') || text.includes('connection refused'))) {
+      return { kind: 'unreachable', detail: output.trim().split(/\r?\n/).pop() ?? 'could not reach the API' }
+    }
+    if (code === 0) return { kind: 'valid' }
+    return { kind: 'unreachable', detail: output.trim().slice(-200) || 'agent doctor failed' }
+  }
 
   const port: DeployPort = {
     log: {
@@ -284,7 +339,8 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
     confirm: (message, initialValue) => askConfirm(message, initialValue),
     askPassword: (message) => askPassword(message),
 
-    ensureCfLogin: () => ensureCfLogin(root),
+    ensureCfLogin: () => ensureCfLogin(root, { device: deviceLogin === true }),
+    cfAccounts: () => cfAccountIds(root),
     ensureBucket: (name) => ensureBucket(root, name),
     applyBucketCors: (bucket, origins) => applyBucketCors(root, bucket, origins, temp),
     patchDeliveryBucket: (bucket) => patchDeliveryBucket(root, bucket),
@@ -331,23 +387,46 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
     deployWorker: (pkg) => deployWorker(root, pkg),
     putWorkerSecrets: (pkg, entries) => putWorkerSecrets(root, pkg, entries, temp),
     dbMigrate: (databaseUrl) => dbMigrate(root, databaseUrl),
-    composeMigrate: async () => {
-      const code = await runInherit(['docker', 'compose', 'run', '--rm', 'migrate'], { cwd: root })
-      if (code !== 0) {
-        throw new Error('docker compose run --rm migrate failed — check the compose logs')
-      }
+    composeBuild: async (input) => {
+      const profiles = (input.profiles ?? []).flatMap((profile) => ['--profile', profile])
+      await runCompose([...profiles, 'build', ...input.services], 'docker compose build failed')
     },
-    composeUp: async () => {
-      const up = await runInherit(['docker', 'compose', 'up', '-d'], { cwd: root })
-      if (up !== 0) throw new Error('docker compose up failed — check the compose logs')
-      // The API container has to pick up the URLs the deploy just discovered.
-      const api = await runInherit(
-        ['docker', 'compose', 'up', '-d', '--force-recreate', '--no-deps', 'api'],
-        { cwd: root },
+    composeMigrate: async () => {
+      await runCompose(
+        ['--profile', 'tools', 'run', '--rm', 'migrate'],
+        'docker compose run --rm migrate failed',
       )
-      if (api !== 0) throw new Error('API container recreation failed — check the compose logs')
+    },
+    composeUp: async (profiles) => {
+      const extra = (profiles ?? []).flatMap((profile) => ['--profile', profile])
+      await runCompose([...extra, 'up', '-d'], 'docker compose up failed')
+      await runCompose(
+        [...extra, 'up', '-d', '--force-recreate', '--no-deps', 'api'],
+        'API container recreation failed',
+      )
     },
     hasDocker: () => findOnPath('docker') !== null,
+    checkHostPorts,
+    waitForOrigin: (origin) => waitForOriginReady({ origin }),
+    pairTranscoder: async (code) => {
+      const result = await runAgent(['pair', '--code', code])
+      if (result.code !== 0) {
+        throw new Error(result.output.trim().split(/\r?\n/).pop() || 'pairing failed')
+      }
+    },
+    inspectAgentCredential: async () => {
+      const result = await runAgent(['doctor'])
+      return classifyAgent(result.code, result.output)
+    },
+    agentDoctor: async () => {
+      const result = await runAgent(['doctor'])
+      if (result.code !== 0) {
+        throw new Error(result.output.trim().slice(-400) || 'agent doctor failed')
+      }
+    },
+    startTranscoder: async () => {
+      await runCompose(['--profile', 'transcoder', 'up', '-d', 'transcoder'], 'could not start the transcoder')
+    },
 
     readConfig: () => readTargetConfig(root, target),
     writeConfig: (updates) => upsertTargetConfig(root, target, updates),

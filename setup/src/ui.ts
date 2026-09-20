@@ -121,6 +121,9 @@ export function printHelp(): void {
     `  ${cmd('./scripts/bootstrap.sh')} ${flag('--deploy')}`,
     `      ${color.muted('provision & deploy: Cloudflare login, R2 buckets/CORS, Modal secrets +')}`,
     `      ${color.muted('pipeline, delivery worker (the API always runs on Node)')}`,
+    `  ${cmd('./scripts/install.sh')}  ${color.muted('host installer — Docker Compose on this machine or a VPS')}`,
+    `  ${cmd('./scripts/bootstrap.sh')} ${flag('--host-install')}`,
+    `      ${color.muted('same host-install wizard the installer invokes (deploy target, always deploys)')}`,
     `  ${cmd('./scripts/bootstrap.sh')} ${flag('--check')} [api-url]`,
     `      ${color.muted('verify the configuration without printing secrets (+ /health/config)')}`,
     `  ${cmd('./scripts/bootstrap.sh')} ${flag('--doctor')}`,
@@ -143,6 +146,7 @@ export function printHelp(): void {
     `  ${flag('CLIPMUX_SKIP_INSTALL=1')}     ${color.muted('skip `pnpm install` in the launcher')}`,
     `  ${flag('CLIPMUX_STRICT_ENGINES=1')}   ${color.muted('fail when node’s major differs from engines.node')}`,
     `  ${flag('CLIPMUX_NO_SUDO=1')}          ${color.muted('never escalate privileges; print the command instead')}`,
+    `  ${flag('CLIPMUX_DOCKER')}             ${color.muted('docker argv prefix, e.g. `sudo -n docker`')}`,
     `  ${flag('NO_COLOR=1')}                 ${color.muted('plain output')}`,
     '',
     head('Already configured?') +
@@ -161,6 +165,7 @@ export function printHelp(): void {
     chalk.dim('    "accountId": "…", "r2AccessKeyId": "…", "r2SecretAccessKey": "…",'),
     chalk.dim('    "rawBucket": "clipmux-raw", "transcodedBucket": "clipmux-transcoded",'),
     chalk.dim('    "frontendUrl": "http://localhost:3000", "groqApiKey": ""   // optional'),
+    chalk.dim('    "hostInstall": true, "access": "localhost"  // optional; scripts/install.sh'),
     chalk.dim('  }'),
   ]
   // eslint-disable-next-line no-console

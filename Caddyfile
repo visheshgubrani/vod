@@ -1,0 +1,33 @@
+{
+	# Optional contact for ACME expiry notices. A dummy default keeps the
+	# directive valid when CLIPMUX_ACME_EMAIL is unset.
+	email {$CLIPMUX_ACME_EMAIL:clipmux@localhost}
+}
+
+{$CLIPMUX_CADDY_SITE:http://localhost} {
+	encode gzip
+
+	# API prefixes stay intact — Caddy `handle` does not strip the matched path.
+	handle /api {
+		reverse_proxy api:4080
+	}
+	handle /api/* {
+		reverse_proxy api:4080
+	}
+	handle /v1 {
+		reverse_proxy api:4080
+	}
+	handle /v1/* {
+		reverse_proxy api:4080
+	}
+	handle /health {
+		reverse_proxy api:4080
+	}
+	handle /health/* {
+		reverse_proxy api:4080
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

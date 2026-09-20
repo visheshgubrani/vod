@@ -364,3 +364,35 @@ class TestRenditionReuseAcrossAttempts:
         journal.record_rendition("v1", "att-1", "720p", str(output))
 
         assert journal.reusable_across_attempts("v2", "abc", "plan-1") == {}
+
+
+class TestPairingCredentialIsShared:
+    """
+    `pair` writes a token file. `run` loads it through `load_config`. `doctor`
+    used to call `AgentConfig.from_env()` instead, so a paired agent that
+    reported healthy under `run` looked unconfigured to `doctor`.
+    """
+
+    def test_pair_persists_a_credential_that_run_and_doctor_both_load(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLIPMUX_STATE_DIR", str(tmp_path))
+        monkeypatch.delenv("CLIPMUX_AGENT_TOKEN", raising=False)
+        monkeypatch.delenv("CLIPMUX_TOKEN_FILE", raising=False)
+
+        from clipmux_transcoder.agent.cli import load_config, store_token
+        from clipmux_transcoder.agent.config import AgentConfig
+
+        stored = store_token(AgentConfig.from_env({}), "agt_paired_token")
+        assert stored.read_text().strip() == "agt_paired_token"
+
+        class Args:
+            api = None
+            token = None
+            token_file = None
+            scratch_dir = None
+            root = None
+
+        loaded = load_config(Args())
+        assert loaded.token == "agt_paired_token"
+        # The environment still has no token — both commands must read the file.
+        env_config = AgentConfig.from_env({})
+        assert env_config.token == ""

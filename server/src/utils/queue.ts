@@ -220,6 +220,7 @@ export async function dispatchDirectHttp(
       throw new DispatchError(
         'HTTP_STATUS',
         `Transcoder rejected the request with HTTP ${response.status}`,
+        response.status,
       )
     }
 

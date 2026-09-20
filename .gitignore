@@ -29,6 +29,7 @@ __pycache__/
 .dev.vars.*
 !.dev.vars.example
 secrets.json
+.clipmux-install
 
 # cloudflare / wrangler
 .wrangler/

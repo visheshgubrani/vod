@@ -8,12 +8,14 @@ import {
   deriveAnswersFromConfig,
   deriveAnswersFromEnv,
   SERVER_KEY_ORDER,
+  DEPLOY_KEY_ORDER,
   needsRawBucket,
   selfHostedEnabledValue,
   validateAnswers,
   validateChoices,
   validateCredentials,
 } from '../src/mapping'
+import { parsePublicOrigin, proxySettingsFor, urlsFromOrigin } from '../src/origin'
 
 const SECRETS: SecretSet = {
   betterAuthSecret: 'a'.repeat(64),
@@ -401,5 +403,213 @@ describe('deriveAnswersFromConfig', () => {
     expect(deriveAnswersFromConfig('dev', { ANALYTICS_ENABLED: '1' }).analyticsEnabled).toBe(true)
     expect(deriveAnswersFromConfig('dev', { ANALYTICS_ENABLED: 'true' }).analyticsEnabled).toBe(true)
     expect(deriveAnswersFromConfig('dev', {}).analyticsEnabled).toBe(true)
+  })
+})
+
+describe('public origin for a host install', () => {
+  it('normalizes localhost and a public HTTPS hostname', () => {
+    expect(parsePublicOrigin('http://localhost')).toEqual({
+      ok: true,
+      origin: 'http://localhost',
+      access: 'localhost',
+    })
+    expect(parsePublicOrigin('HTTP://LocalHost/')).toEqual({
+      ok: true,
+      origin: 'http://localhost',
+      access: 'localhost',
+    })
+    expect(parsePublicOrigin('https://vod.example.com')).toEqual({
+      ok: true,
+      origin: 'https://vod.example.com',
+      access: 'domain',
+    })
+    expect(parsePublicOrigin('vod.example.com')).toEqual({
+      ok: true,
+      origin: 'https://vod.example.com',
+      access: 'domain',
+    })
+  })
+
+  it('rejects credentials, paths, queries and custom ports', () => {
+    expect(parsePublicOrigin('https://user:pass@vod.example.com').ok).toBe(false)
+    expect(parsePublicOrigin('https://vod.example.com/app').ok).toBe(false)
+    expect(parsePublicOrigin('https://vod.example.com?x=1').ok).toBe(false)
+    expect(parsePublicOrigin('http://localhost:3000').ok).toBe(false)
+    expect(parsePublicOrigin('https://vod.example.com:8443').ok).toBe(false)
+    expect(parsePublicOrigin('http://vod.example.com').ok).toBe(false)
+  })
+
+  it('derives API, auth and dashboard URLs from the same origin', () => {
+    expect(urlsFromOrigin('http://localhost')).toEqual({
+      origin: 'http://localhost',
+      api: 'http://localhost',
+      frontend: 'http://localhost',
+      nextApi: 'http://localhost/api',
+      nextAuth: 'http://localhost/api/auth',
+      cors: 'http://localhost',
+    })
+    expect(urlsFromOrigin('https://vod.example.com')).toEqual({
+      origin: 'https://vod.example.com',
+      api: 'https://vod.example.com',
+      frontend: 'https://vod.example.com',
+      nextApi: 'https://vod.example.com/api',
+      nextAuth: 'https://vod.example.com/api/auth',
+      cors: 'https://vod.example.com',
+    })
+  })
+
+  it('binds the proxy to loopback for localhost and to public interfaces for a domain', () => {
+    expect(proxySettingsFor({ origin: 'http://localhost', access: 'localhost' })).toEqual({
+      enabled: true,
+      site: 'http://localhost',
+      bindAddress: '127.0.0.1',
+      profiles: 'proxy',
+    })
+    expect(
+      proxySettingsFor({ origin: 'https://vod.example.com', access: 'domain' }, 'ops@example.com'),
+    ).toEqual({
+      enabled: true,
+      site: 'vod.example.com',
+      acmeEmail: 'ops@example.com',
+      bindAddress: '0.0.0.0',
+      profiles: 'proxy',
+    })
+  })
+})
+
+describe('host-install mapping', () => {
+  it('keeps proxy keys in the canonical deploy set', () => {
+    for (const key of [
+      'CLIPMUX_HOST_INSTALL',
+      'CLIPMUX_CADDY_SITE',
+      'CLIPMUX_ACME_EMAIL',
+      'CLIPMUX_PROXY_BIND',
+      'COMPOSE_PROFILES',
+    ]) {
+      expect(DEPLOY_KEY_ORDER).toContain(key)
+    }
+  })
+
+  it('writes localhost host-install URLs through the proxy origin, not :8787/:3000', () => {
+    const answers = nodeAnswers({
+      target: 'deploy',
+      db: { kind: 'local' },
+      hostInstall: true,
+      access: 'localhost',
+      transcodeProvider: 'self-hosted',
+      frontendUrl: 'http://localhost',
+      proxy: proxySettingsFor({ origin: 'http://localhost', access: 'localhost' }),
+    })
+    const entries = new Map(buildDeployConfig(answers, SECRETS))
+    expect(entries.get('FRONTEND_URL')).toBe('http://localhost')
+    expect(entries.get('BACKEND_URL')).toBe('http://localhost')
+    expect(entries.get('BETTER_AUTH_URL')).toBe('http://localhost')
+    expect(entries.get('CORS_ORIGINS')).toBe('http://localhost')
+    expect(entries.get('NEXT_PUBLIC_API_BASE_URL')).toBe('http://localhost/api')
+    expect(entries.get('NEXT_PUBLIC_AUTH_BASE_URL')).toBe('http://localhost/api/auth')
+    expect(entries.get('NEXT_PUBLIC_FRONTEND_URL')).toBe('http://localhost')
+    expect(entries.get('CLIPMUX_HOST_INSTALL')).toBe('true')
+    expect(entries.get('CLIPMUX_CADDY_SITE')).toBe('http://localhost')
+    expect(entries.get('CLIPMUX_PROXY_BIND')).toBe('127.0.0.1')
+    expect(entries.get('COMPOSE_PROFILES')).toBe('proxy')
+    expect(entries.get('CLIPMUX_API_PORT')).toBe('8787')
+    expect(entries.get('CLIPMUX_WEB_PORT')).toBe('3000')
+  })
+
+  it('writes a public HTTPS hostname through the same origin', () => {
+    const answers = nodeAnswers({
+      target: 'deploy',
+      db: { kind: 'local' },
+      hostInstall: true,
+      access: 'domain',
+      transcodeProvider: 'modal',
+      frontendUrl: 'https://vod.example.com',
+      proxy: proxySettingsFor(
+        { origin: 'https://vod.example.com', access: 'domain' },
+        'ops@example.com',
+      ),
+    })
+    const entries = new Map(buildDeployConfig(answers, SECRETS))
+    expect(entries.get('BACKEND_URL')).toBe('https://vod.example.com')
+    expect(entries.get('NEXT_PUBLIC_API_BASE_URL')).toBe('https://vod.example.com/api')
+    expect(entries.get('CLIPMUX_CADDY_SITE')).toBe('vod.example.com')
+    expect(entries.get('CLIPMUX_ACME_EMAIL')).toBe('ops@example.com')
+    expect(entries.get('CLIPMUX_PROXY_BIND')).toBe('0.0.0.0')
+  })
+
+  it('round-trips host-install proxy settings from the deploy .env', () => {
+    const original = nodeAnswers({
+      target: 'deploy',
+      db: { kind: 'local' },
+      hostInstall: true,
+      access: 'domain',
+      transcodeProvider: 'self-hosted',
+      frontendUrl: 'https://vod.example.com',
+      proxy: proxySettingsFor(
+        { origin: 'https://vod.example.com', access: 'domain' },
+        'ops@example.com',
+      ),
+    })
+    const entries = new Map(buildDeployConfig(original, SECRETS))
+    const derived = deriveAnswersFromConfig('deploy', Object.fromEntries(entries))
+    expect(derived.hostInstall).toBe(true)
+    expect(derived.access).toBe('domain')
+    expect(derived.frontendUrl).toBe('https://vod.example.com')
+    expect(derived.proxy).toEqual({
+      enabled: true,
+      site: 'vod.example.com',
+      acmeEmail: 'ops@example.com',
+      bindAddress: '0.0.0.0',
+      profiles: 'proxy',
+    })
+  })
+
+  it('leaves ordinary deploy answers on localhost:8787 / :3000', () => {
+    const entries = new Map(buildDeployConfig(nodeAnswers({ db: { kind: 'local' } }), SECRETS))
+    expect(entries.get('BACKEND_URL')).toBe('http://localhost:8787')
+    expect(entries.get('NEXT_PUBLIC_API_BASE_URL')).toBe('http://localhost:8787/api')
+    expect(entries.get('FRONTEND_URL')).toBe('http://localhost:3000')
+    expect(entries.get('CLIPMUX_HOST_INSTALL')).toBe('')
+    expect(entries.get('CLIPMUX_CADDY_SITE')).toBe('')
+    expect(entries.get('COMPOSE_PROFILES')).toBe('')
+  })
+
+  it('does not treat a legacy answers file as a host install', () => {
+    const derived = deriveAnswersFromConfig('deploy', {
+      FRONTEND_URL: 'http://localhost:3000',
+      BACKEND_URL: 'http://localhost:8787',
+    })
+    expect(derived.hostInstall).toBeUndefined()
+    expect(derived.proxy).toBeUndefined()
+    expect(derived.frontendUrl).toBe('http://localhost:3000')
+  })
+
+  it('rejects localhost + Modal before provisioning', () => {
+    const problems = validateChoices({
+      target: 'deploy',
+      dbKind: 'local',
+      hostInstall: true,
+      access: 'localhost',
+      transcodeProvider: 'modal',
+      uploadsEnabled: true,
+      queueKind: 'direct',
+      rateLimitKind: 'memory',
+    })
+    expect(problems.some((p) => p.includes('localhost installations cannot use Modal'))).toBe(true)
+  })
+
+  it('allows a public HTTPS hostname with Modal', () => {
+    expect(
+      validateChoices({
+        target: 'deploy',
+        dbKind: 'local',
+        hostInstall: true,
+        access: 'domain',
+        transcodeProvider: 'modal',
+        uploadsEnabled: true,
+        queueKind: 'direct',
+        rateLimitKind: 'memory',
+      }),
+    ).toEqual([])
   })
 })

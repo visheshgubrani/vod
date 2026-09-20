@@ -70,6 +70,9 @@ interface Harness {
   warnings: string[]
   failOn: (call: string, message?: string) => void
   modalAvailable: boolean
+  pairingCode: string
+  agentStatus: { kind: 'valid' } | { kind: 'missing' } | { kind: 'rejected'; detail: string } | { kind: 'unreachable'; detail: string }
+  accounts: string[]
 }
 
 function harness(config: Record<string, string> = credsEnv()): Harness {
@@ -83,6 +86,9 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     warnings,
     config: { ...config },
     modalAvailable: true,
+    pairingCode: 'ABCD-EFGH',
+    agentStatus: { kind: 'missing' },
+    accounts: ['a1b2c3d4e5f60718293a4b5c6d7e8f90'],
     failOn: (call, message = `${call} failed`) => failures.set(call, message),
     port: undefined as unknown as DeployPort,
   }
@@ -102,8 +108,9 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
       info: () => {},
     },
     confirm: async () => true,
-    askPassword: async () => '',
+    askPassword: async () => state.pairingCode,
     ensureCfLogin: async () => run('ensureCfLogin', 'a1b2c3d4e5f60718293a4b5c6d7e8f90'),
+    cfAccounts: async () => run('cfAccounts', state.accounts),
     ensureBucket: async (name) => void run(`ensureBucket:${name}`, undefined),
     applyBucketCors: async (bucket) => void run(`applyBucketCors:${bucket}`, undefined),
     patchDeliveryBucket: () => run('patchDeliveryBucket', true),
@@ -127,9 +134,17 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
       run(`putWorkerSecrets:${pkg}`, undefined)
     },
     dbMigrate: async () => void run('dbMigrate', undefined),
+    composeBuild: async (input) => void run(`composeBuild:${input.services.join(',')}`, undefined),
     composeMigrate: async () => void run('composeMigrate', undefined),
-    composeUp: async () => void run('composeUp', undefined),
+    composeUp: async (profiles) =>
+      void run(profiles && profiles.length > 0 ? `composeUp:${profiles.join(',')}` : 'composeUp', undefined),
     hasDocker: () => true,
+    checkHostPorts: async () => void run('checkHostPorts', undefined),
+    waitForOrigin: async (origin) => void run(`waitForOrigin:${origin}`, undefined),
+    pairTranscoder: async () => void run('pairTranscoder', undefined),
+    inspectAgentCredential: async () => run('inspectAgentCredential', state.agentStatus),
+    agentDoctor: async () => void run('agentDoctor', undefined),
+    startTranscoder: async () => void run('startTranscoder', undefined),
     readConfig: () => state.config,
     writeConfig: (updates: EntryList) => {
       for (const [key, value] of updates) state.config[key] = value
@@ -341,6 +356,9 @@ describe('runDeployPhase — deploy target', () => {
     expect(h.calls).not.toContain('deployWorker:server')
     expect(report.result.apiUrl).toBe('http://localhost:8787')
     expect(report.complete).toBe(true)
+    const order = h.calls
+    expect(order.indexOf('composeBuild:api,web')).toBeLessThan(order.indexOf('composeMigrate'))
+    expect(order.indexOf('composeMigrate')).toBeLessThan(order.indexOf('composeUp'))
   })
 
   it('says analytics are off when the operator disabled them', async () => {
@@ -426,6 +444,98 @@ describe('runDeployPhase — SWEEP_ENABLED', () => {
     await runDeployPhase('/repo', answers(), h.port)
 
     expect(h.config['SWEEP_ENABLED']).toBe('false')
+  })
+})
+
+function hostInstallAnswers(overrides: Partial<WizardAnswers> = {}): WizardAnswers {
+  return answers({
+    target: 'deploy',
+    db: { kind: 'local' },
+    hostInstall: true,
+    access: 'localhost',
+    transcodeProvider: 'self-hosted',
+    uploadsEnabled: false,
+    frontendUrl: 'http://localhost',
+    proxy: {
+      enabled: true,
+      site: 'http://localhost',
+      bindAddress: '127.0.0.1',
+      profiles: 'proxy',
+    },
+    ...overrides,
+  })
+}
+
+describe('runDeployPhase — host install', () => {
+  it('builds images before migrating, then waits for the origin', async () => {
+    const h = harness()
+    const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
+
+    const order = h.calls
+    expect(order.indexOf('checkHostPorts')).toBeLessThan(order.indexOf('composeBuild:api,web'))
+    expect(order.indexOf('composeBuild:api,web')).toBeLessThan(order.indexOf('composeMigrate'))
+    expect(order.indexOf('composeMigrate')).toBeLessThan(order.indexOf('composeUp:proxy'))
+    expect(order.indexOf('composeUp:proxy')).toBeLessThan(order.indexOf('waitForOrigin:http://localhost'))
+    expect(order.indexOf('waitForOrigin:http://localhost')).toBeLessThan(order.indexOf('pairTranscoder'))
+    expect(h.calls).toContain('agentDoctor')
+    expect(h.calls).toContain('startTranscoder')
+    expect(h.config['COMPOSE_PROFILES']).toBe('proxy,transcoder')
+    expect(report.result.apiUrl).toBe('http://localhost')
+    expect(report.complete).toBe(true)
+  })
+
+  it('makes installation incomplete when origin readiness fails', async () => {
+    const h = harness()
+    h.failOn('waitForOrigin:http://localhost', 'API reports ready: false')
+
+    const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
+
+    expect(report.steps.find((step) => step.id === 'readiness')?.status).toBe('failed')
+    expect(report.steps.find((step) => step.id === 'pair')?.status).toBe('blocked')
+    expect(h.calls).not.toContain('pairTranscoder')
+    expect(report.complete).toBe(false)
+  })
+
+  it('fails when the logged-in Cloudflare account does not match ACCOUNT_ID', async () => {
+    const h = harness()
+    h.accounts = ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']
+
+    const report = await runDeployPhase(
+      '/repo',
+      hostInstallAnswers({ accountId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }),
+      h.port,
+    )
+
+    expect(report.steps.find((step) => step.id === 'cf-login')?.status).toBe('failed')
+    expect(report.steps.find((step) => step.id === 'cf-login')?.detail).toMatch(/does not match/)
+    expect(report.complete).toBe(false)
+  })
+
+  it('leaves the application running when pairing is cancelled', async () => {
+    const h = harness()
+    h.pairingCode = ''
+
+    const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
+
+    expect(h.calls).toContain('composeUp:proxy')
+    expect(h.calls).not.toContain('pairTranscoder')
+    expect(h.calls).not.toContain('startTranscoder')
+    expect(report.steps.find((step) => step.id === 'pair')?.status).toBe('failed')
+    expect(report.steps.find((step) => step.id === 'pair')?.resume).toContain('install.sh')
+    expect(report.complete).toBe(false)
+  })
+
+  it('reuses a valid pairing credential without prompting', async () => {
+    const h = harness()
+    h.agentStatus = { kind: 'valid' }
+
+    const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
+
+    expect(h.calls).toContain('inspectAgentCredential')
+    expect(h.calls).not.toContain('pairTranscoder')
+    expect(h.calls).toContain('startTranscoder')
+    expect(report.steps.find((step) => step.id === 'pair')?.detail).toContain('reused')
+    expect(report.complete).toBe(true)
   })
 })
 

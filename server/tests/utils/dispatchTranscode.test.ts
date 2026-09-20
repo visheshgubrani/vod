@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   dispatchTranscodeJob,
   dispatchFailureStatus,
+  dispatchFailureBody,
   DEFAULT_TRANSCODE_LEASE_MS,
 } from '../../src/utils/dispatchTranscode'
 import { DispatchError, isUncertainDispatch } from '../../src/utils/queue'
@@ -321,6 +322,30 @@ describe('dispatchFailureStatus', () => {
     expect(dispatchFailureStatus('already-claimed')).toBe(409)
     expect(dispatchFailureStatus('deleted')).toBe(404)
     expect(dispatchFailureStatus('not-found')).toBe(404)
+  })
+})
+
+describe('dispatchFailureBody', () => {
+  it('includes the typed error message so a 4xx is not just a reason code', () => {
+    const error = new DispatchError(
+      'HTTP_STATUS',
+      'Transcoder rejected the request with HTTP 401',
+      401,
+    )
+    expect(
+      dispatchFailureBody({ dispatched: false, reason: 'dispatch-failed', error }),
+    ).toEqual({
+      error: 'Transcode not started: dispatch-failed',
+      reason: 'dispatch-failed',
+      message: 'Transcoder rejected the request with HTTP 401',
+    })
+  })
+
+  it('omits message when no DispatchError was attached', () => {
+    expect(dispatchFailureBody({ dispatched: false, reason: 'already-claimed' })).toEqual({
+      error: 'Transcode not started: already-claimed',
+      reason: 'already-claimed',
+    })
   })
 })
 

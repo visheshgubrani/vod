@@ -7,6 +7,17 @@ This is the operator's path: accounts and keys, then a running deployment. If yo
 already have a deployment and just want to integrate, go to
 [Your first video](/first-video) instead.
 
+**On a machine or VPS, start with the host installer** — it provisions Docker
+Compose, Caddy, Cloudflare resources and encoder pairing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/install.sh | bash
+```
+
+See [Install on a host](/host-install) for pinned revisions, localhost vs HTTPS,
+pairing and resume. The rest of this page is the **contributor / from-source**
+path (`./scripts/bootstrap.sh`) and the keys every deployment still needs.
+
 Budget about 30 minutes. Most of it is waiting for Cloudflare and Modal.
 
 <Callout type="warn" title="Create the accounts first, before you clone">

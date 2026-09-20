@@ -1,11 +1,15 @@
 # Deploying ClipMux
 
-First-run: **[README](../README.md)** or `./scripts/bootstrap.sh` — the
-launcher installs Node/pnpm (nvm) when missing, then the interactive wizard
-writes `.dev.vars` for your architecture choices; the opt-in `--deploy`
-phase handles Cloudflare + Modal login, R2 buckets/CORS, deploys and secret
-uploads. You still paste R2 S3 keys from the dashboard — Wrangler cannot
-mint them.
+**Operators installing on a host or VPS:** `./scripts/install.sh` (or
+`curl … | bash`) — see the docs site [Install on a host](../docs-site/content/docs/host-install.mdx).
+That path provisions Docker, writes `.env`, builds images, migrates, starts
+Compose with Caddy, and walks encoder pairing.
+
+**Contributors** keep using `./scripts/bootstrap.sh` — the launcher installs
+Node/pnpm (nvm) when missing, then the interactive wizard writes `.dev.vars`
+for your architecture choices; the opt-in `--deploy` phase handles Cloudflare
++ Modal login, R2 buckets/CORS, deploys and secret uploads. You still paste
+R2 S3 keys from the dashboard — Wrangler cannot mint them.
 
 This page is the deployment flow after those accounts exist. What a
 deployment can and cannot vary — Postgres, transcoder provider, dispatch
@@ -18,7 +22,7 @@ transport, rate-limit store, analytics on/off; delivery and storage are
 | File | Purpose | Configuration |
 | --- | --- | --- |
 | `docker-compose.dev.yml` (project `clipmux-dev`) | Local development infrastructure only: `postgres` (:5433) and `redis` (:6382). No API or web service — application code runs on the host. | `server/.dev.vars` |
-| `docker-compose.yml` (project `clipmux`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `web`, plus the `migrate` (`tools`) and `transcoder` (`transcoder`) profiles. | `.env` at the repo root |
+| `docker-compose.yml` (project `clipmux`) | The deployment stack for end users, and how we test a deployment: `postgres` and `redis` (both internal-only), `api`, `web`, plus the `migrate` (`tools`), `transcoder` (`transcoder`) and `caddy` (`proxy`) profiles. | `.env` at the repo root |
 
 `server/.dev.vars` is **development-only** (`pnpm dev`, migrations, tests). A
 Compose deployment is configured entirely by `.env` at the repo root —
@@ -73,6 +77,8 @@ TypeScript schema and cannot create the hand-written objects, in particular the
   `docker compose --profile transcoder up -d`, with
   `TRANSCODE_PROVIDER=self-hosted`. See
   [self-hosted-transcoding.md](./self-hosted-transcoding.md).
+- **`proxy`** (profile `proxy`) — Caddy in front of the API and dashboard.
+  The host installer enables it. Bind address comes from `CLIPMUX_PROXY_BIND`.
 
 ## Minimum Cloudflare surface
 

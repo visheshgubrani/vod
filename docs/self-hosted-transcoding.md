@@ -59,22 +59,28 @@ API ignores it; the reverse is not true.
 
 ## 2. Pair the machine
 
-In the dashboard: **Settings → Transcoders → Pair a machine**. You get a
-single-use code, valid for 15 minutes.
+A host install (`./scripts/install.sh`) does this for you: it starts the API,
+prompts for a code from `/dashboard/transcoders`, stores the credential on the
+agent volume, and only then enables the `transcoder` profile.
+
+Manually, in the dashboard: **Settings → Transcoders → Pair a machine**. You
+get a single-use code, valid for 15 minutes.
 
 ```bash
 docker compose --profile transcoder run --rm --no-deps transcoder \
-  --api https://api.example.com pair --code XXXX-XXXX-XX
+  --api http://api:4080 pair --code XXXX-XXXX-XX
 ```
 
 `--api` is a **global** option on the agent's CLI, so it comes *before* `pair`:
 `pair --api …` is an argparse error. `--no-deps` keeps `docker compose run` from
 starting the bundled `api`/`postgres`/`redis` services — drop it only when the
-API you are pairing with *is* the Compose `api` service.
+API you are pairing with *is* the Compose `api` service (the host installer
+always pairs against `http://api:4080`).
 
 Pairing runs a real encode probe first, so a machine that cannot encode fails
 here rather than on your first import. The credential is written to
-`/var/lib/clipmux-transcoder/token` with mode `0600`.
+`/var/lib/clipmux-transcoder/token` with mode `0600`. `doctor` and `run` both
+load that file through the same helper — it is not copied into `.env`.
 
 ---
 

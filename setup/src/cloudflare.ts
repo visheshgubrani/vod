@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WizardError } from './errors'
-import { parseAccountId, parseWorkersUrl, r2BucketAlreadyExists } from './parsers'
+import { parseAccountId, parseAccountIds, parseWorkersUrl, r2BucketAlreadyExists } from './parsers'
 import { patchAnalyticsEngineDatasets, patchBucketName } from './cfgpatch'
 import { pkgCapture, pkgInherit, runCapture } from './runners'
 import { logInfo, logStep, logWarn, withSpinner } from './ui'
@@ -64,17 +64,35 @@ export async function cfAccountId(root: string): Promise<string | null> {
   return accountId
 }
 
+/** Parse every distinct account id from `wrangler whoami`. */
+export async function cfAccountIds(root: string): Promise<string[]> {
+  const result = await pkgCapture(root, SERVER, 'wrangler', ['whoami'], { timeoutMs: 90_000 })
+  if (result.code !== 0) return []
+  return parseAccountIds(result.stdout + result.stderr)
+}
+
 /**
  * Ensure a wrangler login. Prints wrangler's own URL (stdio inherited — the
  * user approves in the browser; Ctrl+C cancels cleanly and the whole wizard
  * is resumable). Returns the account id when authenticated afterwards.
+ *
+ * Host installs use `--device --browser=false` so an SSH session can complete
+ * the login without a localhost callback server.
  */
-export async function ensureCfLogin(root: string): Promise<string | null> {
+export async function ensureCfLogin(
+  root: string,
+  options: { device?: boolean } = {},
+): Promise<string | null> {
   const known = await cfAccountId(root)
   if (known) return known
 
-  logStep('Opening wrangler login — approve it in your browser when it opens')
-  const code = await pkgInherit(root, SERVER, 'wrangler', ['login'])
+  const args = options.device ? ['login', '--device', '--browser=false'] : ['login']
+  logStep(
+    options.device
+      ? 'Starting wrangler device login — open the printed URL and enter the code'
+      : 'Opening wrangler login — approve it in your browser when it opens',
+  )
+  const code = await pkgInherit(root, SERVER, 'wrangler', args)
   if (code !== 0) {
     logWarn('wrangler login did not complete (exit ' + String(code) + ')')
     return null

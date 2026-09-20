@@ -78,10 +78,26 @@ file is only useful if it is current.
   true on one designated Node API. Additional replicas must set
   `SWEEP_ENABLED=false`. Distributed scheduling and leader election are
   deferred. Manual sweeps must target the designated instance.
-- **No Coolify-style host installer yet.** Bootstrap is the existing wizard;
-  a separate host installer is deferred.
 - **No automatic tunnels for local Modal callbacks.** Local API users must
   supply a publicly reachable `BACKEND_URL` themselves.
+
+## Host installer — deferred lifecycle
+
+`scripts/install.sh` covers first install and resume. These are explicitly out
+of v1:
+
+- **`--update`, uninstall, and purge.** Manual upgrade is `git pull` then
+  rebuild + migrate + `compose up`. Data-preserving stop is `docker compose
+  down`. Volume wipe is `docker compose down -v`.
+- **Public-IP access and custom ports.** Access is `http://localhost` or an
+  HTTPS hostname on 80/443. Binding a raw public IP, or publishing the proxy
+  on a non-default port, is not offered.
+- **Docker-only / containerized wizard.** The wizard still runs on the host
+  (Node + pnpm) so wrangler device login and prompts work. A fully
+  containerized setup UI is deferred.
+- **Prebuilt application images / a distribution registry.** Host installs
+  build `api`, `web`, and the agent image from the checkout. Shipping generic
+  images is deferred.
 
 ## Marketing assets
 

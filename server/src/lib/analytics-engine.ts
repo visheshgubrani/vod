@@ -142,6 +142,21 @@ export function analyticsErrorDetail(error: unknown): { detail: string } | undef
     : undefined
 }
 
+/**
+ * HTTP status a route should return for a caught Analytics Engine failure.
+ *
+ * 400/401/403 are the same situation as a missing token: the credential was
+ * rejected, so the dashboard should degrade (501) rather than 500. A 422 is
+ * our SQL being refused and stays a 500 with `detail`.
+ */
+export function analyticsQueryFailureStatus(error: unknown): 500 | 501 {
+  if (!(error instanceof AnalyticsEngineQueryError)) return 500
+  if (error.status === 400 || error.status === 401 || error.status === 403) {
+    return 501
+  }
+  return 500
+}
+
 export function parseDays(param: string | undefined, fallback = 30): number {
   return Math.min(90, Math.max(1, Number.parseInt(param || String(fallback), 10) || fallback))
 }

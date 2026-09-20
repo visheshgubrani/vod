@@ -53,7 +53,15 @@ const FILE_ENV = parseEnvFile(resolve(__dirname, '../../.dev.vars'))
 const ACCOUNT_ID = process.env.ACCOUNT_ID || FILE_ENV.ACCOUNT_ID || ''
 const API_TOKEN = process.env.CLOUDFLARE_ANALYTICS_TOKEN || FILE_ENV.CLOUDFLARE_ANALYTICS_TOKEN || ''
 
-const hasAnalyticsCredentials = Boolean(ACCOUNT_ID && API_TOKEN)
+const PLACEHOLDER_ACCOUNT = 'your-cloudflare-account-id'
+const PLACEHOLDER_TOKEN = 'your-analytics-api-token'
+
+const hasAnalyticsCredentials = Boolean(
+  ACCOUNT_ID &&
+    API_TOKEN &&
+    ACCOUNT_ID !== PLACEHOLDER_ACCOUNT &&
+    API_TOKEN !== PLACEHOLDER_TOKEN,
+)
 
 const VIDEO = '995d687a-0435-4225-939e-2260f792474c'
 const ORG = 'G1ct9tuZwIx7uXTGmGkYjVfyGYiuIqZu'
