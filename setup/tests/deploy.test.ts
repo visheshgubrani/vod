@@ -145,6 +145,7 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     inspectAgentCredential: async () => run('inspectAgentCredential', state.agentStatus),
     agentDoctor: async () => void run('agentDoctor', undefined),
     startTranscoder: async () => void run('startTranscoder', undefined),
+    useCfAccount: (id) => void run(`useCfAccount:${id}`, undefined),
     readConfig: () => state.config,
     writeConfig: (updates: EntryList) => {
       for (const [key, value] of updates) state.config[key] = value
@@ -536,6 +537,19 @@ describe('runDeployPhase — host install', () => {
     expect(h.calls).toContain('startTranscoder')
     expect(report.steps.find((step) => step.id === 'pair')?.detail).toContain('reused')
     expect(report.complete).toBe(true)
+  })
+
+  it('applies the selected Cloudflare account before provisioning resources', async () => {
+    const wanted = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    const h = harness()
+    h.accounts = [wanted]
+
+    await runDeployPhase('/repo', hostInstallAnswers({ accountId: wanted }), h.port)
+
+    expect(h.calls.indexOf(`useCfAccount:${wanted}`)).toBeGreaterThanOrEqual(0)
+    expect(h.calls.indexOf(`useCfAccount:${wanted}`)).toBeLessThan(
+      h.calls.indexOf('ensureBucket:clipmux-transcoded'),
+    )
   })
 })
 

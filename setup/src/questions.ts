@@ -87,6 +87,65 @@ export interface Choices {
   acmeEmail?: string
 }
 
+export interface HostAccessAnswers {
+  access: PublicAccess
+  origin: string
+  acmeEmail?: string
+}
+
+/** Access, origin, and optional ACME email for a host install. */
+export async function askHostAccess(prefill?: Pick<Prefill, 'access'>): Promise<HostAccessAnswers> {
+  const access =
+    (prefill?.access === 'localhost' || prefill?.access === 'domain' ? prefill.access : undefined) ??
+    (await askSelect<PublicAccess>(
+      'How should this installation be reached?',
+      [
+        {
+          value: 'localhost',
+          label: 'http://localhost on this machine',
+          hint: 'loopback only — encoding stays on this host',
+        },
+        {
+          value: 'domain',
+          label: 'A public HTTPS hostname',
+          hint: 'Caddy terminates TLS; DNS and inbound 80/443 must already point here',
+        },
+      ],
+      'localhost',
+    ))
+  if (access === 'localhost') {
+    note(
+      'The stack will listen on loopback. Modal cannot reach localhost, so encoding\n' +
+        'runs on this machine. The installer does not open a firewall or create a tunnel.',
+      'Localhost installation',
+    )
+    return { access, origin: 'http://localhost' }
+  }
+
+  const typed = await askText('Public hostname (HTTPS, no path or port):', {
+    placeholder: 'vod.example.com',
+    validate: (value) => {
+      const parsed = parsePublicOrigin(value)
+      if (!parsed.ok) return parsed.error
+      if (parsed.access !== 'domain') return 'enter a public hostname, not localhost'
+      return undefined
+    },
+  })
+  const parsed = parsePublicOrigin(typed)
+  if (!parsed.ok) throw new Error(parsed.error)
+  note(
+    'Point this hostname at this machine and allow inbound TCP 80 and 443.\n' +
+      'Caddy needs those ports reachable from the internet to issue a certificate.\n' +
+      'The installer does not modify firewalls or create a tunnel.',
+    'DNS and inbound ports',
+  )
+  const email = await askText('ACME email for certificate notices (optional):', {
+    placeholder: 'ops@example.com',
+  })
+  const acmeEmail = email.trim() || undefined
+  return { access, origin: parsed.origin, ...(acmeEmail !== undefined ? { acmeEmail } : {}) }
+}
+
 export async function askChoices(ctx: AskContext): Promise<Choices> {
   const { prefill, target, hostInstall } = ctx
   const total = hostInstall ? 5 : 4
@@ -99,55 +158,10 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
   if (hostInstall) {
     index += 1
     step(index, total, 'How this machine is reached')
-    access =
-      (prefill.access === 'localhost' || prefill.access === 'domain' ? prefill.access : undefined) ??
-      (await askSelect<PublicAccess>(
-        'How should this installation be reached?',
-        [
-          {
-            value: 'localhost',
-            label: 'http://localhost on this machine',
-            hint: 'loopback only — encoding stays on this host',
-          },
-          {
-            value: 'domain',
-            label: 'A public HTTPS hostname',
-            hint: 'Caddy terminates TLS; DNS and inbound 80/443 must already point here',
-          },
-        ],
-        'localhost',
-      ))
-    if (access === 'localhost') {
-      origin = 'http://localhost'
-      note(
-        'The stack will listen on loopback. Modal cannot reach localhost, so encoding\n' +
-          'runs on this machine. The installer does not open a firewall or create a tunnel.',
-        'Localhost installation',
-      )
-    } else {
-      const typed = await askText('Public hostname (HTTPS, no path or port):', {
-        placeholder: 'vod.example.com',
-        validate: (value) => {
-          const parsed = parsePublicOrigin(value)
-          if (!parsed.ok) return parsed.error
-          if (parsed.access !== 'domain') return 'enter a public hostname, not localhost'
-          return undefined
-        },
-      })
-      const parsed = parsePublicOrigin(typed)
-      if (!parsed.ok) throw new Error(parsed.error)
-      origin = parsed.origin
-      note(
-        'Point this hostname at this machine and allow inbound TCP 80 and 443.\n' +
-          'Caddy needs those ports reachable from the internet to issue a certificate.\n' +
-          'The installer does not modify firewalls or create a tunnel.',
-        'DNS and inbound ports',
-      )
-      const email = await askText('ACME email for certificate notices (optional):', {
-        placeholder: 'ops@example.com',
-      })
-      acmeEmail = email.trim() || undefined
-    }
+    const host = await askHostAccess(prefill)
+    access = host.access
+    origin = host.origin
+    acmeEmail = host.acmeEmail
   }
 
   // ── Postgres ───────────────────────────────────────────────────────────

@@ -104,6 +104,8 @@ export interface DeployPort {
   ensureCfLogin: () => Promise<string | null>
   /** Distinct Cloudflare account ids from `wrangler whoami`. */
   cfAccounts: () => Promise<string[]>
+  /** Pin subsequent wrangler provisioning to this Cloudflare account. */
+  useCfAccount: (accountId: string) => void
   ensureBucket: (name: string) => Promise<void>
   applyBucketCors: (bucket: string, origins: string[]) => Promise<void>
   patchDeliveryBucket: (bucket: string) => boolean
@@ -135,7 +137,7 @@ export interface DeployPort {
   composeUp: (profiles?: readonly string[]) => Promise<void>
   hasDocker: () => boolean
   checkHostPorts: (needs: readonly HostPortNeed[]) => Promise<void>
-  waitForOrigin: (origin: string) => Promise<void>
+  waitForOrigin: (origin: string, requiredChecks?: readonly string[]) => Promise<void>
   pairTranscoder: (code: string) => Promise<void>
   inspectAgentCredential: () => Promise<AgentCredentialStatus>
   agentDoctor: () => Promise<void>
@@ -294,6 +296,7 @@ async function cleanLegacySecrets(bin: string): Promise<void> {
 export function createDeployPort(options: DeployPortOptions): DeployPort {
   const { root, target, deviceLogin } = options
   const temp: TempDir = makeTempDir()
+  let wranglerAccount: string | undefined
 
   const compose = (...args: string[]): string[] => dockerCmd('compose', ...args)
 
@@ -341,8 +344,12 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
 
     ensureCfLogin: () => ensureCfLogin(root, { device: deviceLogin === true }),
     cfAccounts: () => cfAccountIds(root),
-    ensureBucket: (name) => ensureBucket(root, name),
-    applyBucketCors: (bucket, origins) => applyBucketCors(root, bucket, origins, temp),
+    useCfAccount: (accountId) => {
+      wranglerAccount = accountId
+    },
+    ensureBucket: (name) => ensureBucket(root, name, wranglerAccount),
+    applyBucketCors: (bucket, origins) =>
+      applyBucketCors(root, bucket, origins, temp, wranglerAccount),
     patchDeliveryBucket: (bucket) => patchDeliveryBucket(root, bucket),
     patchDeliveryAnalytics: (enabled) => patchDeliveryAnalytics(root, enabled),
 
@@ -384,8 +391,9 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
       return hosts
     },
 
-    deployWorker: (pkg) => deployWorker(root, pkg),
-    putWorkerSecrets: (pkg, entries) => putWorkerSecrets(root, pkg, entries, temp),
+    deployWorker: (pkg) => deployWorker(root, pkg, wranglerAccount),
+    putWorkerSecrets: (pkg, entries) =>
+      putWorkerSecrets(root, pkg, entries, temp, wranglerAccount),
     dbMigrate: (databaseUrl) => dbMigrate(root, databaseUrl),
     composeBuild: async (input) => {
       const profiles = (input.profiles ?? []).flatMap((profile) => ['--profile', profile])
@@ -407,7 +415,7 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
     },
     hasDocker: () => findOnPath('docker') !== null,
     checkHostPorts,
-    waitForOrigin: (origin) => waitForOriginReady({ origin }),
+    waitForOrigin: (origin, requiredChecks) => waitForOriginReady({ origin, requiredChecks }),
     pairTranscoder: async (code) => {
       const result = await runAgent(['pair', '--code', code])
       if (result.code !== 0) {

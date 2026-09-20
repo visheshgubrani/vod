@@ -16,6 +16,17 @@ import { logInfo, logStep, logWarn, withSpinner } from './ui'
 const SERVER = 'delivery'
 const DELIVERY = 'delivery'
 
+/**
+ * Environment for wrangler provisioning. Spreads `process.env` so PATH and
+ * the rest of the shell survive, then pins the selected Cloudflare account.
+ */
+export function wranglerProcessEnv(accountId?: string): NodeJS.ProcessEnv {
+  if (accountId === undefined || accountId.trim() === '') {
+    return { ...process.env }
+  }
+  return { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId.trim() }
+}
+
 export interface TempDir {
   path: string
   cleanup: () => void
@@ -105,9 +116,15 @@ async function bucketExistsMessage(output: string): Promise<boolean> {
   return text.includes('already exists') || text.includes('duplicate') || text.includes('409')
 }
 
-export async function ensureBucket(root: string, name: string): Promise<void> {
+export async function ensureBucket(
+  root: string,
+  name: string,
+  accountId?: string,
+): Promise<void> {
+  const env = wranglerProcessEnv(accountId)
   const info = await pkgCapture(root, SERVER, 'wrangler', ['r2', 'bucket', 'info', name], {
     timeoutMs: 120_000,
+    env,
   })
   if (r2BucketAlreadyExists(info.code, info.stdout + info.stderr)) {
     logInfo(`R2 bucket ${name} already exists — skipping create`)
@@ -117,6 +134,7 @@ export async function ensureBucket(root: string, name: string): Promise<void> {
   await withSpinner(`Creating R2 bucket ${name}…`, async () => {
     const result = await pkgCapture(root, SERVER, 'wrangler', ['r2', 'bucket', 'create', name], {
       timeoutMs: 120_000,
+      env,
     })
     if (result.code === 0) return
     if (await bucketExistsMessage(result.stdout + result.stderr)) return
@@ -132,6 +150,7 @@ export async function applyBucketCors(
   bucket: string,
   origins: string[],
   temp: TempDir,
+  accountId?: string,
 ): Promise<void> {
   const corsPath = join(temp.path, 'cors.json')
   const rule = {
@@ -150,12 +169,14 @@ export async function applyBucketCors(
   writeFileSync(corsPath, JSON.stringify(rule, null, 2), { encoding: 'utf8', mode: 0o600 })
 
   const args = ['r2', 'bucket', 'cors', 'set', bucket, '--file', corsPath]
+  const env = wranglerProcessEnv(accountId)
   await withSpinner(`Applying S3 CORS to ${bucket}…`, async () => {
     let result = await pkgCapture(root, SERVER, 'wrangler', [...args, '--force'], {
       timeoutMs: 120_000,
+      env,
     })
     if (result.code !== 0) {
-      result = await pkgCapture(root, SERVER, 'wrangler', args, { timeoutMs: 120_000 })
+      result = await pkgCapture(root, SERVER, 'wrangler', args, { timeoutMs: 120_000, env })
     }
     if (result.code !== 0) {
       throw new WizardError(
@@ -194,11 +215,18 @@ export function patchDeliveryAnalytics(root: string, enabled: boolean): boolean 
  * Deploy a worker package. Returns the parsed workers.dev URL (null when
  * none was printed — custom domains print none).
  */
-export async function deployWorker(root: string, pkg: 'delivery'): Promise<string | null> {
+export async function deployWorker(
+  root: string,
+  pkg: 'delivery',
+  accountId?: string,
+): Promise<string | null> {
   return withSpinner(
     `Deploying ${pkg} worker…`,
     async () => {
-      const result = await pkgCapture(root, pkg, 'wrangler', ['deploy'], { timeoutMs: 0 })
+      const result = await pkgCapture(root, pkg, 'wrangler', ['deploy'], {
+        timeoutMs: 0,
+        env: wranglerProcessEnv(accountId),
+      })
       if (result.code !== 0) {
         const outcome = result.timedOut ? 'timed out' : 'failed'
         throw new WizardError(
@@ -223,6 +251,7 @@ export async function putWorkerSecrets(
   pkg: 'delivery',
   entries: readonly (readonly [string, string])[],
   temp: TempDir,
+  accountId?: string,
 ): Promise<void> {
   const wanted = Object.fromEntries(entries.filter(([, value]) => value.trim() !== ''))
   if (Object.keys(wanted).length === 0) return
@@ -234,6 +263,7 @@ export async function putWorkerSecrets(
       async () => {
         const result = await pkgCapture(root, pkg, 'wrangler', ['secret', 'bulk', file], {
           timeoutMs: 180_000,
+          env: wranglerProcessEnv(accountId),
         })
         if (result.code !== 0) {
           throw new WizardError(

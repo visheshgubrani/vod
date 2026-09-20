@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -114,6 +115,50 @@ function writeState(dir: string, commit = 'abc123'): void {
   )
 }
 
+function pathWithoutDocker(dir: string): string {
+  const binDir = join(dir, 'bin')
+  mkdirSync(binDir, { recursive: true })
+  const names = [
+    'bash',
+    'sh',
+    'ls',
+    'id',
+    'uname',
+    'cat',
+    'mkdir',
+    'rmdir',
+    'mktemp',
+    'git',
+    'curl',
+    'chmod',
+    'head',
+    'sed',
+    'tee',
+    'true',
+    'false',
+    'rm',
+    'env',
+    'dirname',
+    'basename',
+    'ln',
+  ]
+  for (const name of names) {
+    const dest = join(binDir, name)
+    if (existsSync(dest)) continue
+    for (const root of ['/usr/bin', '/bin']) {
+      const src = join(root, name)
+      if (!existsSync(src)) continue
+      try {
+        symlinkSync(src, dest)
+      } catch {
+        // already linked
+      }
+      break
+    }
+  }
+  return binDir
+}
+
 function stubBin(dir: string, name: string, body: string): string {
   const binDir = join(dir, 'bin')
   mkdirSync(binDir, { recursive: true })
@@ -137,6 +182,8 @@ describe('scripts/install.sh (read-only modes)', () => {
     expect(result.stdout).toContain('--doctor')
     expect(result.stdout).toContain('CLIPMUX_VERSION')
     expect(result.stdout).toContain('the URL ref and CLIPMUX_VERSION must be the same')
+    expect(result.stdout).toMatch(/CLIPMUX_VERSION=<git-sha> bash/)
+    expect(result.stdout).not.toMatch(/CLIPMUX_VERSION=<git-sha> curl/)
     expect(result.combined).not.toContain('installing Docker')
     expect(result.combined).not.toContain('cloning')
     expect(existsSync(join(dest, '.clipmux-install'))).toBe(false)
@@ -277,7 +324,7 @@ describe('scripts/install.sh (destination, version, docker, rerun)', () => {
     const fixtures = tempDir('clipmux-skip-docker-fx-')
     const osRelease = join(fixtures, 'os-release')
     writeFileSync(osRelease, 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n')
-    const bin = stubBin(fixtures, 'docker', 'exit 1')
+    const bin = pathWithoutDocker(fixtures)
     const result = await runInstaller([], {
       env: {
         CLIPMUX_DIR: dest,
@@ -286,11 +333,35 @@ describe('scripts/install.sh (destination, version, docker, rerun)', () => {
         CLIPMUX_UNAME_OVERRIDE: 'Linux',
         CLIPMUX_OS_RELEASE_FILE: osRelease,
         CLIPMUX_NO_SUDO: '1',
-        PATH: `${bin}:/usr/bin:/bin`,
+        PATH: bin,
       },
     })
     expect(result.exitCode).not.toBe(0)
     expect(result.combined).toMatch(/CLIPMUX_SKIP_DOCKER_INSTALL=1|not installing Docker/)
+    expect(result.combined).not.toContain('apt-get install -y docker-ce')
+    expect(existsSync(join(dest, 'pnpm-workspace.yaml'))).toBe(false)
+  })
+
+  it('does not install or upgrade Docker when the CLI is present but the daemon is down', async () => {
+    const dest = tempDir('clipmux-docker-down-')
+    const fixtures = tempDir('clipmux-docker-down-fx-')
+    const osRelease = join(fixtures, 'os-release')
+    writeFileSync(osRelease, 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n')
+    const bin = stubBin(fixtures, 'docker', 'echo "Cannot connect to the Docker daemon" >&2; exit 1')
+    const result = await runInstaller([], {
+      env: {
+        CLIPMUX_DIR: dest,
+        CLIPMUX_TTY: ttyFile(),
+        CLIPMUX_UNAME_OVERRIDE: 'Linux',
+        CLIPMUX_OS_RELEASE_FILE: osRelease,
+        CLIPMUX_NO_SUDO: '1',
+        CLIPMUX_SKIP_DOCKER_INSTALL: '0',
+        PATH: `${bin}:/usr/bin:/bin`,
+      },
+    })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.combined).toMatch(/daemon is not usable|daemon is not reachable/)
+    expect(result.combined).not.toContain('installing Docker Engine from Docker')
     expect(result.combined).not.toContain('apt-get install -y docker-ce')
     expect(existsSync(join(dest, 'pnpm-workspace.yaml'))).toBe(false)
   })

@@ -14,6 +14,8 @@ import {
   validateAnswers,
   validateChoices,
   validateCredentials,
+  applyHostInstallSettings,
+  isHostInstallConfigured,
 } from '../src/mapping'
 import { parsePublicOrigin, proxySettingsFor, urlsFromOrigin } from '../src/origin'
 
@@ -582,6 +584,35 @@ describe('host-install mapping', () => {
     expect(derived.hostInstall).toBeUndefined()
     expect(derived.proxy).toBeUndefined()
     expect(derived.frontendUrl).toBe('http://localhost:3000')
+    expect(isHostInstallConfigured({ FRONTEND_URL: 'http://localhost:3000' })).toBe(false)
+  })
+
+  it('overlays host-install access onto an existing deploy config without dropping credentials', () => {
+    const existing = deriveAnswersFromConfig('deploy', {
+      FRONTEND_URL: 'http://localhost:3000',
+      BACKEND_URL: 'http://localhost:8787',
+      ACCOUNT_ID: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      R2_ACCESS_KEY_ID: 'r2-access-key',
+      R2_SECRET_ACCESS_KEY: 'r2-secret-key',
+      TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
+      TRANSCODE_PROVIDER: 'modal',
+    })
+    const overlaid = applyHostInstallSettings(existing, {
+      access: 'localhost',
+      origin: 'http://localhost',
+    })
+    expect(overlaid.hostInstall).toBe(true)
+    expect(overlaid.access).toBe('localhost')
+    expect(overlaid.frontendUrl).toBe('http://localhost')
+    expect(overlaid.r2AccessKeyId).toBe('r2-access-key')
+    expect(overlaid.accountId).toBe('a1b2c3d4e5f60718293a4b5c6d7e8f90')
+    expect(overlaid.transcodeProvider).toBe('self-hosted')
+    expect(overlaid.proxy).toEqual({
+      enabled: true,
+      site: 'http://localhost',
+      bindAddress: '127.0.0.1',
+      profiles: 'proxy',
+    })
   })
 
   it('rejects localhost + Modal before provisioning', () => {

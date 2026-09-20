@@ -41,6 +41,8 @@ import {
   validateChoices,
   validateCredentials,
   warningsFor,
+  applyHostInstallSettings,
+  isHostInstallConfigured,
 } from './mapping'
 import type { ChoiceShape } from './mapping'
 import {
@@ -55,7 +57,7 @@ import {
 } from './envio'
 import { preservedSecretKeys, secretSetFor } from './secret'
 import { WizardError } from './errors'
-import { askChoices, askCredentials } from './questions'
+import { askChoices, askCredentials, askHostAccess } from './questions'
 import { runPreflight } from './preflight'
 import { systemShapeFromAnswers } from './system'
 import { cfAccountId } from './cloudflare'
@@ -1037,8 +1039,20 @@ async function main(): Promise<void> {
     } else {
       const env = readTargetConfig(root, target)
       if (!env) throw new WizardError(`${primary} is missing — configure first`)
-      answers = deriveAnswersFromConfig(target, env)
-      logWarn(`Using the existing ${primary} — secrets, volumes and pairing are reused`)
+      if (!isHostInstallConfigured(env)) {
+        logWarn(
+          `${primary} predates host-install settings — collecting access now; existing secrets are kept`,
+        )
+        const host = await askHostAccess(opts.prefill)
+        answers = applyHostInstallSettings(deriveAnswersFromConfig(target, env), host)
+        const { secrets, preserved } = secretsForWrite(root, target, { rotate: false })
+        writeConfiguredTarget(root, answers, secrets, true)
+        reportPreservedSecrets(preserved)
+        logSuccess(`Updated ${primary} with host-install access — secrets were reused`)
+      } else {
+        answers = deriveAnswersFromConfig(target, env)
+        logWarn(`Using the existing ${primary} — secrets, volumes and pairing are reused`)
+      }
     }
     deployNow = true
   } else if (!envExists || opts.force) {

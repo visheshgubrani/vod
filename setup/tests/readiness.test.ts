@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { waitForOriginReady, OriginReadyError } from '../src/readiness'
+import { waitForOriginReady, OriginReadyError, requiredHealthChecks } from '../src/readiness'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -7,6 +7,23 @@ function jsonResponse(status: number, body: unknown): Response {
     headers: { 'content-type': 'application/json' },
   })
 }
+
+describe('requiredHealthChecks', () => {
+  it('never requires analytics, AI, delivery or rawUploads', () => {
+    expect(requiredHealthChecks({ transcodeProvider: 'modal', uploadsEnabled: true })).toEqual([
+      'database',
+      'auth',
+      'storage',
+      'transcoder',
+    ])
+    expect(
+      requiredHealthChecks({ transcodeProvider: 'self-hosted', uploadsEnabled: false }),
+    ).toEqual(['database', 'auth'])
+    expect(
+      requiredHealthChecks({ transcodeProvider: 'self-hosted', uploadsEnabled: true }),
+    ).toEqual(['database', 'auth', 'storage'])
+  })
+})
 
 describe('waitForOriginReady', () => {
   it('succeeds when the dashboard and a ready /health/config answer', async () => {
@@ -101,5 +118,54 @@ describe('waitForOriginReady', () => {
     })
     expect(healthCalls).toBe(3)
     expect(sleeps).toEqual([10, 10])
+  })
+
+  it('accepts ready: true when optional capability flags are false', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input)
+      if (url.endsWith('/')) return new Response('ok', { status: 200 })
+      return jsonResponse(200, {
+        ready: true,
+        checks: {
+          database: true,
+          auth: true,
+          analytics: false,
+          ai: false,
+          delivery: false,
+          rawUploads: false,
+        },
+      })
+    }
+
+    await waitForOriginReady({
+      origin: 'http://localhost',
+      fetchImpl,
+      attempts: 1,
+      sleep: async () => {},
+      requiredChecks: ['database', 'auth'],
+    })
+  })
+
+  it('fails only required checks for the selected configuration', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input)
+      if (url.endsWith('/')) return new Response('ok', { status: 200 })
+      return jsonResponse(200, {
+        ready: true,
+        checks: { database: true, auth: true, storage: false, analytics: false },
+      })
+    }
+
+    await expect(
+      waitForOriginReady({
+        origin: 'http://localhost',
+        fetchImpl,
+        attempts: 1,
+        sleep: async () => {},
+        requiredChecks: ['database', 'auth', 'storage'],
+      }),
+    ).rejects.toSatisfy(
+      (error: unknown) => error instanceof OriginReadyError && /storage/.test(error.message),
+    )
   })
 })

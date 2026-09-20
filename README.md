@@ -144,10 +144,19 @@ curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/ins
 ```
 
 Pin both the URL and the variable to the same ref — the script does not infer
-one from the other:
+one from the other. `CLIPMUX_VERSION` must reach the piped bash, not curl:
 
 ```bash
-CLIPMUX_VERSION=<git-sha> curl -fsSL \
+curl -fsSL \
+  https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh \
+  | CLIPMUX_VERSION=<git-sha> bash
+```
+
+Or export it first:
+
+```bash
+export CLIPMUX_VERSION=<git-sha>
+curl -fsSL \
   https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh | bash
 ```
 

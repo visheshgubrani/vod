@@ -17,7 +17,7 @@ import type {
   WizardAnswers,
 } from './types'
 import type { PublicAccess } from './origin'
-import { parsePublicOrigin, urlsFromOrigin } from './origin'
+import { parsePublicOrigin, proxySettingsFor, urlsFromOrigin } from './origin'
 
 /**
  * The dev Postgres URL for host-side tooling.
@@ -643,6 +643,32 @@ export function deriveAnswersFromConfig(
     frontendUrl: (env['FRONTEND_URL'] ?? '').trim() || (env['CORS_ORIGINS'] ?? '').trim(),
     groqApiKey: (env['GROQ_API_KEY'] ?? '').trim() || undefined,
     ...hostInstallFromEnv(env),
+  }
+}
+
+/** True only when this env was written by a host install (not a legacy `.env`). */
+export function isHostInstallConfigured(env: Record<string, string>): boolean {
+  return parseEnabledFlag(env['CLIPMUX_HOST_INSTALL'], false)
+}
+
+/**
+ * Overlay host-install access onto answers reconstructed from an existing
+ * deploy config. Credentials stay; localhost forces self-hosted encoding.
+ */
+export function applyHostInstallSettings(
+  answers: WizardAnswers,
+  input: { access: PublicAccess; origin: string; acmeEmail?: string },
+): WizardAnswers {
+  const parsed = parsePublicOrigin(input.origin)
+  const origin = parsed.ok ? parsed.origin : input.origin.trim().replace(/\/+$/, '')
+  const access = parsed.ok ? parsed.access : input.access
+  return {
+    ...answers,
+    hostInstall: true,
+    access,
+    frontendUrl: origin,
+    proxy: proxySettingsFor({ origin, access }, input.acmeEmail),
+    ...(access === 'localhost' ? { transcodeProvider: 'self-hosted' as const } : {}),
   }
 }
 

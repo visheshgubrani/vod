@@ -29,6 +29,7 @@ import { clipmuxCredsFromEnv, MODAL_CREDS_SECRET } from './modal'
 import { bucketCorsOrigins, createDeployPort, type DeployPort } from './deployPort'
 import { MIN_SECRET_LENGTH } from './verify'
 import { hostInstallPorts } from './ports'
+import { requiredHealthChecks } from './readiness'
 
 export interface DeployResult {
   apiUrl: string | null
@@ -324,6 +325,7 @@ export async function runDeployPhase(
           effective = loggedIn
         }
       }
+      io.useCfAccount(effective)
       const existingSweep = (io.readConfig()?.['SWEEP_ENABLED'] ?? '').trim()
       const updates: Array<readonly [string, string]> = [['ACCOUNT_ID', effective]]
       if (existingSweep === '') updates.push(['SWEEP_ENABLED', 'true'])
@@ -582,7 +584,7 @@ export async function runDeployPhase(
       await step(
         { id: 'readiness', label: 'Wait for dashboard and API readiness', dependsOn: ['api'] },
         async () => {
-          await io.waitForOrigin(publicOrigin)
+          await io.waitForOrigin(publicOrigin, requiredHealthChecks(answers))
           return `${publicOrigin} is serving the dashboard and reports ready: true`
         },
       )

@@ -38,10 +38,20 @@ terminal the installer exits before provisioning anything.
 ## Pin a revision
 
 The script does **not** infer a git ref from the download URL. Put the same
-value in the URL and in `CLIPMUX_VERSION`:
+value in the URL and in `CLIPMUX_VERSION`, and pass the variable to the piped
+`bash` (curl never forwards it):
 
 ```bash
-CLIPMUX_VERSION=<git-sha> curl -fsSL \
+curl -fsSL \
+  https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh \
+  | CLIPMUX_VERSION=<git-sha> bash
+```
+
+Or export it first:
+
+```bash
+export CLIPMUX_VERSION=<git-sha>
+curl -fsSL \
   https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh | bash
 ```
 

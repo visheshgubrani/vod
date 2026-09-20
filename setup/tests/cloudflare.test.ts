@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserUploadCorsOrigins } from '../src/cloudflare'
+import { browserUploadCorsOrigins, wranglerProcessEnv } from '../src/cloudflare'
 
 describe('browserUploadCorsOrigins', () => {
   it('keeps local Next ports even when the dashboard origin is localhost:3000', () => {
@@ -25,5 +25,17 @@ describe('browserUploadCorsOrigins', () => {
       'http://localhost:3001',
       'http://127.0.0.1:3000',
     ])
+  })
+})
+
+describe('wranglerProcessEnv', () => {
+  it('sets CLOUDFLARE_ACCOUNT_ID without dropping PATH', () => {
+    const env = wranglerProcessEnv('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+    expect(env.CLOUDFLARE_ACCOUNT_ID).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+    expect(env.PATH).toBe(process.env.PATH)
+  })
+
+  it('leaves the process environment alone when no account is selected', () => {
+    expect(wranglerProcessEnv(undefined).CLOUDFLARE_ACCOUNT_ID).toBe(process.env.CLOUDFLARE_ACCOUNT_ID)
   })
 })

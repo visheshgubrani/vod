@@ -4,12 +4,17 @@
  * warn-only; this one is what makes an installation complete or not.
  */
 
+/** Capability flags that are optional even when the API reports ready: true. */
+const OPTIONAL_HEALTH_CHECKS = new Set(['analytics', 'ai', 'delivery', 'rawUploads'])
+
 export interface OriginReadyInput {
   origin: string
   fetchImpl?: typeof fetch
   sleep?: (ms: number) => Promise<void>
   attempts?: number
   delayMs?: number
+  /** When set, only these `/health/config` checks may fail the probe. */
+  requiredChecks?: readonly string[]
 }
 
 export type OriginReadyFailure =
@@ -54,6 +59,7 @@ async function defaultSleep(ms: number): Promise<void> {
 async function probeOnce(
   origin: string,
   fetchImpl: typeof fetch,
+  requiredChecks?: readonly string[],
 ): Promise<OriginReadyFailure | null> {
   const base = origin.replace(/\/+$/, '')
   const dashboardUrl = `${base}/`
@@ -106,12 +112,40 @@ async function probeOnce(
     return { kind: 'not-ready', problems }
   }
   if (record.checks !== undefined && record.checks !== null && typeof record.checks === 'object') {
-    const failed = Object.entries(record.checks as Record<string, unknown>)
-      .filter(([, ok]) => ok === false)
-      .map(([key]) => key)
+    const failed = failedRequiredChecks(record.checks as Record<string, unknown>, requiredChecks)
     if (failed.length > 0) return { kind: 'checks', failed }
   }
   return null
+}
+
+/**
+ * Capability flags the selected configuration actually needs.
+ *
+ * `/health/config` reports optional surfaces (analytics, AI, delivery URL,
+ * raw uploads) as false when they are unused. Those must not block pairing.
+ */
+export function requiredHealthChecks(answers: {
+  transcodeProvider?: 'modal' | 'self-hosted'
+  uploadsEnabled?: boolean
+}): string[] {
+  const checks = ['database', 'auth']
+  const uploads = answers.uploadsEnabled !== false
+  const provider = answers.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+  if (uploads || provider === 'modal') checks.push('storage')
+  if (provider === 'modal') checks.push('transcoder')
+  return checks
+}
+
+function failedRequiredChecks(
+  checks: Record<string, unknown>,
+  requiredChecks?: readonly string[],
+): string[] {
+  if (requiredChecks !== undefined) {
+    return requiredChecks.filter((key) => checks[key] === false)
+  }
+  return Object.entries(checks)
+    .filter(([key, ok]) => ok === false && !OPTIONAL_HEALTH_CHECKS.has(key))
+    .map(([key]) => key)
 }
 
 /** Probe the origin, retrying until success or the attempt budget is spent. */
@@ -128,7 +162,7 @@ export async function waitForOriginReady(input: OriginReadyInput): Promise<void>
     detail: 'not attempted',
   }
   for (let i = 0; i < attempts; i += 1) {
-    last = await probeOnce(origin, fetchImpl)
+    last = await probeOnce(origin, fetchImpl, input.requiredChecks)
     if (last === null) return
     if (i + 1 < attempts) await sleep(delayMs)
   }

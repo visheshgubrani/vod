@@ -8,9 +8,12 @@
 #   ./scripts/install.sh --help
 #   ./scripts/install.sh --doctor
 #
-# Pin both the downloaded script and CLIPMUX_VERSION to the same ref:
-#   CLIPMUX_VERSION=<git-sha> curl -fsSL \
-#     https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh | bash
+# Pin both the downloaded script and CLIPMUX_VERSION to the same ref.
+# CLIPMUX_VERSION must be in the piped bash environment (curl never forwards it):
+#   curl -fsSL \
+#     https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh \
+#     | CLIPMUX_VERSION=<git-sha> bash
+#   # or: export CLIPMUX_VERSION=<git-sha> first, then curl … | bash
 #
 # Environment:
 #   CLIPMUX_DIR        install prefix (default: /opt/clipmux as root, ~/clipmux otherwise;
@@ -70,9 +73,12 @@ Usage:
   ./scripts/install.sh --help
 
 Pinned install (the URL ref and CLIPMUX_VERSION must be the same value — the
-script does not infer a ref from the download URL):
-  CLIPMUX_VERSION=<git-sha> curl -fsSL \\
-    https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh | bash
+script does not infer a ref from the download URL). Prefix the piped bash,
+not curl — curl never forwards the variable:
+  curl -fsSL \\
+    https://raw.githubusercontent.com/visheshgubrani/vod/<git-sha>/scripts/install.sh \\
+    | CLIPMUX_VERSION=<git-sha> bash
+  # or: export CLIPMUX_VERSION=<git-sha>  then  curl … | bash
 
 Environment:
   CLIPMUX_DIR                 install prefix (default /opt/clipmux as root, ~/clipmux otherwise)
@@ -271,6 +277,10 @@ docker_cmd() {
   ${CLIPMUX_DOCKER:-docker} "$@"
 }
 
+docker_cli_present() {
+  command -v docker >/dev/null 2>&1
+}
+
 docker_works() {
   docker_cmd info >/dev/null 2>&1
 }
@@ -318,6 +328,11 @@ install_docker_engine() {
   if docker_works; then
     ui_ok "Docker already usable — leaving the existing installation alone"
     return 0
+  fi
+  if docker_cli_present; then
+    die "Docker is installed but the daemon is not usable.
+      Start the Docker daemon (or Docker Desktop) and re-run.
+      The installer will not reinstall or upgrade an existing Docker installation."
   fi
   if [ "${OV_FAMILY}" != "debian" ] || ! debian_docker_supported; then
     if [ "${OV_OS}" = "macos" ]; then
@@ -383,6 +398,11 @@ if [ "${RERUN}" != "1" ]; then
     fi
   }
   if ! select_docker; then
+    if docker_cli_present; then
+      die "Docker is installed but the daemon is not usable.
+        Start the Docker daemon (or Docker Desktop) and re-run.
+        The installer will not reinstall or upgrade an existing Docker installation."
+    fi
     install_docker_engine
     select_docker || die "Docker Engine is installed but not usable by this user yet"
   else
