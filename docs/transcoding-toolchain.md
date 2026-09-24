@@ -1,6 +1,6 @@
 # The transcoding toolchain
 
-Both halves of the system — the Modal runner and the self-hosted agent — encode
+Both halves of the system — the Modal runner and the local worker — encode
 with **one** FFmpeg, built from source by one recipe, pinned in one file. This
 document says which versions, why they are pinned, how the images prove the
 toolchain is intact, and what must be verified on real hardware before a release
@@ -17,7 +17,7 @@ hard-code a version, URL or digest.
 | nv-codec-headers | `n12.1.14.0` (commit-pinned) | the release FFmpeg 9.0.1's configure accepts (`ffnvcodec >= 12.1.14.0`); its README documents the Linux driver floor of 530.41.03 that the NVENC path inherits |
 | Shaka Packager | 3.2.0 (sha256-pinned) | unchanged; a packager that silently changes version changes every job's bytes |
 | Modal base image | `nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04`, pinned by manifest digest | CUDA 12 + cuDNN 9 for faster-whisper's CTranslate2 backend, on Ubuntu 24.04 |
-| Agent base image | `ubuntu:24.04` | the managed OS, with the distribution's Python 3.12 |
+| Local worker base image | `ubuntu:24.04` | the managed OS, with the distribution's Python 3.12 |
 | Python (managed images) | 3.12 | one interpreter generation on both sides of the seam |
 
 Ubuntu 24.04 LTS is under standard maintenance until May 2029. Whisper's Python
@@ -80,7 +80,7 @@ difference is load-bearing:
 | --- | --- | --- |
 | Deploy machine / `modal run` / tests | `transcoding/toolchain/` | the checkout |
 | Modal container | `/opt/clipmux/toolchain` | `main.py`'s `add_local_dir(..., remote_path=_TOOLCHAIN_IN_IMAGE, copy=True)`, an image layer |
-| Self-hosted agent image | `/opt/clipmux/toolchain` | `Dockerfile.agent` copies four recipe files there |
+| Local worker image | `/opt/clipmux/toolchain` | `Dockerfile.agent` copies four recipe files there |
 | Relocated copy (opt-in) | `$CLIPMUX_TOOLCHAIN_DIR` | for a build from elsewhere; searched first |
 
 Inside a container the Modal CLI mounts `main.py` and `image_build.py` as
@@ -108,13 +108,13 @@ suite rather than by a deploy.
 The engine decides *which* path a rendition takes; the runner decides how much
 it may spend. The Modal worker sets these explicitly (each is an env override, so
 an operator can change them without editing code), and they are additive
-`ProcessingOptions` fields — a self-hosted agent keeps its operator's values
+`ProcessingOptions` fields — a local worker keeps its operator's values
 unless it sets them itself.
 
 | Variable / option | Default | Meaning |
 | --- | --- | --- |
 | `TRANSCODE_RENDITION_CONCURRENCY` (`rendition_concurrency`) | 3 | renditions encoded at once |
-| `TRANSCODE_CPU_RENDITION_CONCURRENCY` (`cpu_rendition_concurrency`) | 1 | how many CPU renditions may run at once. Enforced at *encode* time, not only when the chain is CPU-only: a GPU rendition that falls back to the CPU takes the same slot, so three GPU workers falling back together cannot start three concurrent x264 encodes. `0` disables the separate bound and leaves the operator's `rendition_concurrency` in charge (the self-hosted default). |
+| `TRANSCODE_CPU_RENDITION_CONCURRENCY` (`cpu_rendition_concurrency`) | 1 | how many CPU renditions may run at once. Enforced at *encode* time, not only when the chain is CPU-only: a GPU rendition that falls back to the CPU takes the same slot, so three GPU workers falling back together cannot start three concurrent x264 encodes. `0` disables the separate bound and leaves the operator's `rendition_concurrency` in charge (the local worker default). |
 | `TRANSCODE_CPU_THREADS` (`cpu_ffmpeg_threads`) | 4 | thread budget for a CPU rendition: decoder threads (`-threads`), filter threads (`-filter_threads`) and the output encoder (`-threads:v`) |
 | `TRANSCODE_HYBRID_THREADS` (`hybrid_ffmpeg_threads`) | 2 | the same three bounds for a hybrid rendition, whose decode and scale are the software half of the work |
 | `TRANSCODE_AUDIO_THREADS` (`audio_ffmpeg_threads`) | 1 | decoder, filter and encoder bounds (`-threads:a`) for the audio encode |
@@ -130,22 +130,22 @@ bounded so a CPU-only job cannot starve the container.
 ## Release gates
 
 These require real hardware and cannot be replaced by mocks. `doctor --full`
-(agent) and a Modal deployment run are the vehicles.
+(local worker) and a Modal deployment run are the vehicles.
 
 | Gate | What it proves |
 | --- | --- |
 | Modal L4, `encoder_backend=auto`, ordinary source | the full-GPU path is used and the rendition's `mode` is `gpu` |
 | Modal L4, forced fallback (e.g. `TRANSCODE_ENCODER=nvenc` with the CUDA filter path disabled) | the hybrid path is used, the job still completes, and `fallbacks` explains why |
-| Modal L4 / self-hosted VAAPI with a non-zero thread bound (both are set by default: 2 and 2) | a **hardware** encoder accepts the output-side `-threads:v` bound. FFmpeg ignores an option it cannot place, and `h264_nvenc`/`h264_vaapi` do not document `-threads`, so this is the only place that can settle whether the bound is applied or merely tolerated. The local suite can only prove the flag positions for `libx264`/AAC. |
-| Self-hosted NVIDIA | `doctor --full` reports NVENC verified; a job reports `backend=nvenc` |
-| Self-hosted VAAPI | `doctor --full` reports VAAPI verified; a job reports `backend=vaapi` |
-| Self-hosted CPU-only | a job completes on `libx264` and reverts to CPU concurrency/thread bounds (a real encode at a non-zero bound is covered by the real-media suite) |
+| Modal L4 / local-worker VAAPI with a non-zero thread bound (both are set by default: 2 and 2) | a **hardware** encoder accepts the output-side `-threads:v` bound. FFmpeg ignores an option it cannot place, and `h264_nvenc`/`h264_vaapi` do not document `-threads`, so this is the only place that can settle whether the bound is applied or merely tolerated. The local suite can only prove the flag positions for `libx264`/AAC. |
+| Local-worker NVIDIA | `doctor --full` reports NVENC verified; a job reports `backend=nvenc` |
+| Local-worker VAAPI | `doctor --full` reports VAAPI verified; a job reports `backend=vaapi` |
+| Local-worker CPU-only | a job completes on `libx264` and reverts to CPU concurrency/thread bounds (a real encode at a non-zero bound is covered by the real-media suite) |
 | Retry of the originally reported file | the source that produced the `scale_cuda` failure completes on the new image |
 | Driver floor | an NVIDIA driver >= 530.41.03 loads the compiled NVENC path (checked at runtime, never at build time) |
 
 ## Rollout
 
-1. **Canary** the new Modal deployment and agent image against the media matrix
+1. **Canary** the new Modal deployment and local worker image against the media matrix
    (`transcoding/tests/test_real_media.py` shapes: AV1/Opus WebM, VP9 WebM,
    H.264, HEVC 10-bit, HDR, rotated, 4:2:2/4:4:4, VFR, short, silent,
    audio-only).
@@ -154,8 +154,8 @@ These require real hardware and cannot be replaced by mocks. `doctor --full`
    resource use, subtitle results, and playback quality of the packaged HLS/DASH.
 3. Promote only when the canary has no unexplained fallbacks and no rendition
    reports a backend it should not have used.
-4. **Rollback**: the previous Modal deployment and the previous agent image
-   reference are retained. `SELF_HOSTED_ENABLED=false` stops new local
+4. **Rollback**: the previous Modal deployment and the previous local worker image
+   reference are retained. `LOCAL_TRANSCODE_ENABLED=false` stops new local
    submissions without cancelling anything; a Modal rollback is a redeploy of the
    previous version. Completed videos, playback URLs and storage layouts are
    untouched by either — the processing plan version (`PROCESSING_PLAN_VERSION`)

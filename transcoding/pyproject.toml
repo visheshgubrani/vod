@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clipmux-transcoder"
 version = "1.0.0"
-description = "ClipMux shared transcoding engine and self-hosted agent"
+description = "ClipMux shared transcoding engine and local worker"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -20,7 +20,7 @@ dependencies = ["requests>=2.31"]
 # Modal runner. `modal deploy main.py` imports the engine, so these are needed
 # locally to deploy even though the GPU image installs its own runtime extras.
 modal = ["modal>=1.5.0", "boto3", "fastapi"]
-# S3/R2 transfer (the Modal path). The self-hosted agent deliberately does not
+# S3/R2 transfer (the Modal path). The local worker deliberately does not
 # need this: it uploads against presigned URLs and holds no storage credentials.
 s3 = ["boto3"]
 # Enrichment. Separate because a CPU-only agent may want neither.

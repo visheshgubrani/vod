@@ -71,8 +71,14 @@ def resolve_toolchain_file(
     candidates.extend(root / name for root in (roots or (TOOLCHAIN_IN_IMAGE,)))
 
     for candidate in candidates:
-        if candidate.is_file():
-            return candidate
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            # A container may not have permission to inspect a host-only
+            # candidate (for example, /root/toolchain in the Modal image).
+            # Keep searching the remaining known locations.
+            continue
 
     # Name every candidate: the original deployed failure was a bare ENOENT for
     # one path, which said nothing about where the file actually was.
@@ -89,7 +95,7 @@ def read_package_list(path: str | Path, variable: str) -> List[str]:
     Read a bash array (`NAME=(a b c)`) out of a `.env` file.
 
     The image's package lists live in `toolchain/apt-packages.env` so that the
-    Modal image and the self-hosted agent image install the *same* libraries —
+    Modal image and the local worker image install the *same* libraries —
     the whole point of one shared recipe. Parsing the file rather than repeating
     the list here keeps them from drifting; a list that lives twice is a list
     that is wrong once.

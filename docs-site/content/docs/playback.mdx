@@ -121,10 +121,10 @@ import { ClipMuxPlayer } from '@clipmux/player'
 
 <Callout type="info" title="Prefer the URL the API returns">
   The `cdnBase` + `playbackId` shortcut matches the legacy `videos/<id>/` output
-  layout. A self-hosted transcode publishes under
+  layout. A local worker transcode publishes under
   `videos/<id>/attempts/<attempt-id>/…`, which cannot be reconstructed from the
   video id — so use `session.playback_url` when the video may have been encoded
-  by a self-hosted agent.
+  by a local worker.
 </Callout>
 
 For signed videos, pass the session your backend minted:

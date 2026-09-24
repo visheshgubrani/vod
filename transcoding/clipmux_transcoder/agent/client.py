@@ -4,7 +4,7 @@ The agent's API client.
 Every call the agent makes goes through here, which is what makes the security
 properties structural rather than aspirational:
 
-- **One credential, one scope.** The token is attached here and nowhere else; the
+- **One credential, one scope.** The deployment secret is attached here and nowhere else; the
   agent never reads R2 credentials, and there is no code path in which it could.
 - **Bounded retries with honest outcomes.** A network error is retried with
   backoff; a 4xx is not, because a request the server refused will be refused
@@ -58,7 +58,7 @@ class AuthenticationFailed(AgentApiError):
 @dataclass
 class ApiConfig:
     base_url: str
-    token: str
+    secret: str
     timeout: float = DEFAULT_TIMEOUT
     attempts: int = DEFAULT_ATTEMPTS
     user_agent: str = "clipmux-transcoder"
@@ -79,7 +79,7 @@ class TranscoderApiClient:
             self._session = requests.Session()
             self._session.headers.update(
                 {
-                    "Authorization": f"Bearer {self.config.token}",
+                    "x-local-transcoder-secret": self.config.secret,
                     "Content-Type": "application/json",
                     "User-Agent": self.config.user_agent,
                 }
@@ -149,58 +149,12 @@ class TranscoderApiClient:
 
         raise AgentApiError(0, f"request failed: {last_error}")
 
-    # ── pairing ─────────────────────────────────────────────────────────────
-
-    @classmethod
-    def pair(
-        cls,
-        base_url: str,
-        code: str,
-        *,
-        name: str = "",
-        hostname: str = "",
-        agent_version: str = "",
-        capabilities: Optional[Dict[str, Any]] = None,
-        timeout: float = 30.0,
-    ) -> Dict[str, Any]:
-        """
-        Redeem a pairing code. Unauthenticated by definition: this is how the
-        agent obtains its first credential.
-        """
-        import requests
-
-        response = requests.post(
-            f"{base_url.rstrip('/')}/api/transcoder/v1/pair",
-            json={
-                "code": code,
-                "name": name,
-                "hostname": hostname,
-                "agentVersion": agent_version,
-                "capabilities": capabilities or {},
-            },
-            timeout=timeout,
-            headers={"User-Agent": "clipmux-transcoder"},
-        )
-        if response.status_code >= 400:
-            body = _safe_json(response)
-            raise AgentApiError(
-                response.status_code,
-                (body or {}).get("error", "pairing failed") if isinstance(body, dict) else "pairing failed",
-                (body or {}).get("code", "") if isinstance(body, dict) else "",
-                body,
-            )
-        return response.json()
-
     # ── protocol ────────────────────────────────────────────────────────────
 
-    def whoami(self) -> Dict[str, Any]:
-        return self._request("GET", "whoami")
-
-    def rotate(self) -> Dict[str, Any]:
-        return self._request("POST", "rotate")
-
-    def revoke(self) -> Dict[str, Any]:
-        return self._request("POST", "revoke")
+    def status(self) -> Dict[str, Any]:
+        """Read worker configuration without changing its liveness timestamp."""
+        result = self._request("GET", "config")
+        return result if isinstance(result, dict) else {}
 
     def heartbeat(
         self,
@@ -208,7 +162,9 @@ class TranscoderApiClient:
         capabilities: Optional[Dict[str, Any]] = None,
         progress: Optional[Dict[str, Any]] = None,
         hostname: str = "",
-        agent_version: str = "",
+        worker_version: str = "",
+        capacity_jobs: Optional[int] = None,
+        capacity_renditions: Optional[int] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
         if capabilities is not None:
@@ -217,8 +173,12 @@ class TranscoderApiClient:
             body["progress"] = progress
         if hostname:
             body["hostname"] = hostname
-        if agent_version:
-            body["agentVersion"] = agent_version
+        if worker_version:
+            body["workerVersion"] = worker_version
+        if capacity_jobs is not None:
+            body["capacityJobs"] = capacity_jobs
+        if capacity_renditions is not None:
+            body["capacityRenditions"] = capacity_renditions
         return self._request("POST", "heartbeat", json_body=body)
 
     def poll(self) -> Dict[str, Any]:
@@ -241,18 +201,6 @@ class TranscoderApiClient:
     def reconcile(self, attempts: List[Dict[str, str]]) -> Dict[str, Any]:
         return self._request("POST", "reconcile", json_body={"attempts": attempts})
 
-    def list_jobs(self, limit: int = 25) -> Dict[str, Any]:
-        """Jobs in this agent's organization, newest first."""
-        return self._request("GET", f"jobs?limit={int(limit)}")
-
-    def cancel_job(self, job_id: str, reason: str = "") -> Dict[str, Any]:
-        return self._request(
-            "POST", f"jobs/{job_id}/cancel", json_body={"reason": reason} if reason else {}
-        )
-
-    def retry_job(self, job_id: str) -> Dict[str, Any]:
-        return self._request("POST", f"jobs/{job_id}/retry")
-
     def register_source(
         self,
         *,
@@ -274,8 +222,11 @@ class TranscoderApiClient:
             },
         )
 
-    def source_grant(self, source_id: str) -> Dict[str, Any]:
-        return self._request("POST", f"sources/{source_id}/grant")
+    def source_grant(self, source_id: str, job_id: str, attempt_id: str) -> Dict[str, Any]:
+        return self._request(
+            "POST", f"sources/{source_id}/grant",
+            json_body={"jobId": job_id, "attemptId": attempt_id},
+        )
 
     def register_inventory(
         self, job_id: str, artifacts: List[Dict[str, Any]]

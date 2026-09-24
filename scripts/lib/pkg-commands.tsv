@@ -41,7 +41,7 @@ python3|arch|pacman -S --noconfirm python python-pip
 python3|suse|zypper --non-interactive install python3 python3-pip
 python3|alpine|apk add --no-cache python3 py3-pip
 python3|mac|brew install python@3.12
-# Informational: only needed to run the transcoder agent natively. The agent image
+# Informational: only needed to run the local worker outside Compose. The worker image
 # builds and pins its own FFmpeg (transcoding/toolchain/), and the Modal pipeline
 # brings its own, so an installed host FFmpeg is never what produces the output.
 ffmpeg|debian|apt-get install -y ffmpeg

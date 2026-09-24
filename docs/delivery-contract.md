@@ -27,10 +27,10 @@ Two layouts are live, and both must keep working:
 
 | Writer | Layout |
 | --- | --- |
-| Modal worker (and every video encoded before self-hosting) | `videos/<id>/…` |
-| Self-hosted agent | `videos/<id>/attempts/<attempt-id>/…` |
+| Modal worker (and every video encoded before local workers were available) | `videos/<id>/…` |
+| Local worker | `videos/<id>/attempts/<attempt-id>/…` |
 
-Self-hosted attempts are **attempt-scoped** because a late worker from a
+Local worker attempts are **attempt-scoped** because a late worker from a
 superseded attempt would otherwise overwrite the newer attempt's segments after
 it published — the application's playback reference would then point at a mix of
 two encodes. The attempt id is minted at claim time and is the same value the
@@ -50,7 +50,7 @@ URL the API returns rather than building one from the video id.
 ## 2. Object metadata (S3 custom metadata)
 
 The transcoder (`clipmux_transcoder/transfer/s3.py` for Modal,
-`transfer/signed.py` for an agent) must set these custom metadata
+`transfer/signed.py` for the local worker) must set these custom metadata
 on **every object it uploads**:
 
 | Key | Value | Meaning |
@@ -153,7 +153,7 @@ database write per encoder-second:
 | --- | --- |
 | worker progress beats | at most one per `PROGRESS_BEAT_SECONDS` (15s), plus one immediately on every stage change |
 | worker liveness thread | every 30s, unconditional; carries the latest stage/progress |
-| agent progress beats | at most one per `progress_beat_seconds` (`CLIPMUX_PROGRESS_BEAT_SECONDS`, 15s), plus every stage change; the per-job lease probe is independent |
+| local worker progress beats | at most one per `progress_beat_seconds` (`CLIPMUX_PROGRESS_BEAT_SECONDS`, 15s), plus every stage change; the per-job lease probe is independent |
 | API write guard | a beat whose row was already beaten inside `HEARTBEAT_WRITE_MIN_INTERVAL_MS` (10s) answers `{ success: true, throttled: true }` without writing |
 
 Coalescing is a load guard, never an ownership guard: attempt and status checks
@@ -201,77 +201,77 @@ Ingest guards (Modal env): `ALLOWED_SOURCE_BUCKETS` restricts payload
 `ALLOWED_CALLBACK_HOSTS` must list your API host for callbacks/heartbeats
 (unset = localhost only, loud startup warning).
 
-## 6. Self-hosted agent protocol (`/api/transcoder/v1`)
+## 6. Local worker protocol (`/api/transcoder/v1`)
 
-**Protocol version: 1.** The version is returned by `POST /pair`,
-`GET /whoami` and every `claim`, and is bumped only for a breaking change. An
-agent that receives a version it does not know must refuse to run rather than
-guess: a mismatch here means an encode with the wrong options, or a completion
-against the wrong lifecycle.
+Protocol version: 1. The worker initiates every connection, has no public
+listener, and never connects directly to Postgres. One stable deployment worker
+identity (`local`) claims the oldest eligible local job across organizations.
+The setup-managed Compose service holds an exclusive lock on its persistent
+journal volume, so a second daemon fails clearly instead of duplicating work.
 
-The agent **initiates every connection**. It has no public listener, needs no
-port forwarding, and never connects to the database. That is a product
-constraint as much as a security one: an owner who must configure ingress before
-their first video encodes will not finish the setup.
+### Credential and tenant scope
 
-### Credentials
+The API and worker share `LOCAL_TRANSCODER_SECRET`, generated and reused by the
+setup wizard. Worker endpoints accept it only in the
+`x-local-transcoder-secret` header through `requireLocalWorker`; it cannot
+authenticate a dashboard, upload, playback, or organization-management request.
+The secret carries no organization membership. A claimed job and its source and
+inventory relationships supply tenant identity, and each transfer requires the
+current attempt, live lease, and matching video owner.
 
-| Secret | Lifetime | Storage | Scope |
-| --- | --- | --- | --- |
-| Pairing code | 15 minutes, single use | SHA-256 digest (`transcoder_pairing`) | one organization |
-| Agent token | until revoked | SHA-256 digest (`transcoder_agent.token_hash`) | one organization, one agent |
-
-An agent token can poll its own control requests, claim work for its
-organization, report on attempts it owns, and request transfers for paths in its
-own inventory. It **cannot** mint playback tokens, administer users, or read
-another tenant's data — enforced by the agent routes carrying their own
-middleware (`requireAgent`) rather than by a deny-list, which is a list that goes
-stale.
+Host-folder import is separately restricted by `LOCAL_IMPORT_ORG_ID`. Only
+owners/admins of that existing organization can browse roots or submit imports;
+worker control requests and CLI source registration are limited to it. Leaving
+the setting unset disables folder import without affecting uploaded jobs.
+Dashboard queues and API-key imports remain organization-scoped.
 
 ### Operations
 
 | Operation | Purpose |
 | --- | --- |
-| `POST /pair` | redeem a pairing code for a machine credential |
-| `POST /rotate`, `POST /revoke`, `GET /whoami` | credential lifecycle |
-| `POST /heartbeat` | capabilities, progress, lease renewal |
-| `GET /poll` | pending control requests + remaining capacity |
-| `POST /claim` | take the oldest eligible job (or one named job) |
-| `POST /reconcile` | after a restart: which attempts may be resumed |
-| `POST /jobs/:id/inventory` | declare the artifacts this attempt will upload |
-| `POST /inventories/:id/grants` | presigned PUT URLs, bounded and renewable |
-| `POST /inventories/:id/uploaded` | the agent's claim that paths are in place |
+| `GET /config` | read-only credential/configuration check for `doctor`; never writes liveness |
+| `GET /drain-status` | authenticated outstanding-local-job count for managed provider switching |
+| `POST /heartbeat` | worker capabilities, capacity, progress and lease renewal |
+| `GET /poll` | configured-organization control requests and worker capacity |
+| `POST /control/:id` | answer an authorized browse/register request |
+| `POST /claim` | claim the oldest eligible local job across organizations |
+| `POST /reconcile` | after restart, identify attempts the worker still owns |
+| `POST /jobs/:id/inventory` | declare artifacts this attempt will upload |
+| `POST /inventories/:id/grants` | bounded, renewable presigned PUT URLs |
+| `POST /inventories/:id/uploaded` | report uploaded paths |
 | `POST /inventories/:id/verify` | API confirms objects exist at the recorded size |
 | `POST /jobs/:id/complete` | publish, gated on verification and ownership |
-| `POST /jobs/:id/fail` | terminal or retryable failure |
-| `POST /jobs/:id/resume` | re-acquire an attempt this agent already owns, after a restart |
-| `POST /sources/:id/grant` | short-lived download URL for an r2 source |
-| `POST /sources` | register a local file (root name + relative path only) |
-| `GET /jobs`, `POST /jobs/:id/cancel`, `POST /jobs/:id/retry` | operator commands |
+| `POST /jobs/:id/fail` | report a terminal or retryable failure |
+| `POST /jobs/:id/resume` | re-acquire an attempt this worker still owns after restart |
+| `POST /sources/:id/grant` | short-lived source URL, only for a live owned attempt |
+| `POST /sources` | register a root-relative file for the configured import organization |
+
+Queue inspection, retry and cancellation use the authenticated dashboard/API,
+not worker CLI commands.
 
 ### Local source semantics
 
-A `local` source is **bound to exactly one agent**: the machine holding the file.
-No other agent is eligible, and waiting never changes that. The queue reports the
-condition rather than moving the job:
+Local files are rooted in this installation's explicitly mounted directories;
+there is no worker affinity. Uploaded R2 sources and local sources can be claimed
+by the same worker. Claims enforce total worker capacity and each organization's
+concurrency cap, skipping a capped organization so it cannot block other tenants.
 
 | `waiting_reason` | meaning |
 | --- | --- |
-| `agent-offline` | the bound agent has not been seen within the liveness window |
-| `agent-busy` | the agent is at its configured job capacity |
-| `source-missing` | the file is gone or the folder is not mounted |
-| `source-changed` | the file's identity differs from what was registered |
-| `no-eligible-agent` | the source has no bound agent (unrecoverable without re-selection) |
-| `retry-backoff` | between attempts after a retryable failure |
-| `capacity` | the organization is at its concurrency cap |
+| `worker-offline` | no worker heartbeat in the liveness window |
+| `worker-busy` | the worker is at its configured job capacity |
+| `source-missing` | a mounted file is gone or its folder is unavailable |
+| `source-changed` | the file identity differs from registration |
+| `capacity` | this organization is at its concurrency cap |
+| `retry-backoff` | waiting between attempts after a retryable failure |
 
-Absolute host paths are **never** sent to the API and never returned by it. A
-browse result and a source registration carry a configured root name plus a
-root-relative path; the API refuses an absolute path rather than normalising it.
+Absolute host paths are never sent to the API or returned. Browse and source
+registration carry a configured root name plus a root-relative path; the API
+refuses an absolute path rather than normalizing it.
 
 ### Attempt prefixes and publication verification
 
-1. The agent registers an inventory of `{path, size, checksum, role}`. Paths are
+1. The worker registers an inventory of `{path, size, checksum, role}`. Paths are
    prefix-relative; `..`, absolute paths, backslashes and NUL bytes are refused.
 2. Grants are issued per path, bounded to the attempt prefix, and only for paths
    on the inventory. Renewal is refused once the attempt is superseded.
@@ -297,7 +297,7 @@ root-relative path; the API refuses an absolute path rather than normalising it.
 7. `artifact_inventory.prefix` becomes the published prefix. `hls_url`,
    `thumbnail_url` and `subtitle_url` are built from it against `DELIVERY_URL`;
    an absolute URL in a completion payload is reduced to its pathname, so a
-   compromised agent cannot point a viewer at another origin.
+   compromised worker cannot point a viewer at another origin.
 
 This is atomic publication of the **application's playback reference**, not an
 atomic multi-object object-store upload — the latter is not a thing that exists.
@@ -305,7 +305,7 @@ atomic multi-object object-store upload — the latter is not a thing that exist
 ### Completion, replay and recovery
 
 Completion is **idempotent**. The API records a receipt on the job when it
-publishes, and a replay — which arrives precisely when the agent did not see the
+publishes, and a replay — which arrives precisely when the worker did not see the
 response — is answered with that receipt rather than a 404. A replay that names a
 different attempt is refused with the recorded receipt attached.
 
@@ -317,7 +317,7 @@ replay could repair.
 
 Restart recovery has three parts, and all three are needed:
 
-1. `POST /reconcile` reports which attempts the agent still owns;
+1. `POST /reconcile` reports which attempts the worker still owns;
 2. `POST /jobs/:id/resume` re-acquires them, extending both leases;
 3. the engine's reuse path skips already-encoded renditions, keyed on the
    **source hash and plan fingerprint** — not on the attempt id, which changes on
@@ -335,20 +335,21 @@ Restart recovery has three parts, and all three are needed:
 
 ### Compatibility requirements
 
-- **Additive migrations only.** The agent tables are new; no existing column
-  changed meaning. `video.transcode_attempt_id`, the lease, the state machine and
-  the webhook outbox keep their current behaviour unchanged.
+- **Forward migration.** The singleton worker/control tables replace fleet and
+  pairing tables; affinity columns and indexes are removed. Execution state,
+  attempt ownership, the state machine and webhook outbox retain their behavior.
 - **Guarded CTEs.** Every new statement is a single guarded CTE, so
   publication and job admission keep their concurrency guarantees inside a
   postgres-js transaction.
 - **Modal is unaffected.** A Modal callback passes no `outputPrefix` and no
   inventory gate; `videos/<id>/…` URLs and legacy player URL construction keep
   working exactly as before.
-- **Rollback.** Set `SELF_HOSTED_ENABLED=false` to stop accepting new local
-  submissions. Accepted jobs drain or can be cancelled explicitly. Local files
+- **Provider switch.** `LOCAL_TRANSCODE_ENABLED=false` stops new local
+  submissions while accepted jobs remain drainable. Managed local-to-Modal setup
+  verifies that the local queue is empty before stopping the worker. Local files
   are never moved to Modal automatically.
 
-### Error codes added for self-hosted jobs
+### Error codes added for local jobs
 
 | code | meaning | retryable |
 | --- | --- | --- |
@@ -365,43 +366,35 @@ Restart recovery has three parts, and all three are needed:
 
 ## 7. Provider selection on uploads
 
-`POST /api/upload/complete`, `POST /api/upload/multipart/complete` and
-`POST /v1/upload/complete` accept an optional `transcodingProvider` of `"modal"`
-or `"self-hosted"`. Omission uses the installation default (`TRANSCODE_PROVIDER`).
+Provider selection is deployment-wide: `TRANSCODE_PROVIDER=modal|local` applies
+to new jobs, and the chosen value is recorded in `transcode_job.provider`.
+Changing the setting never reroutes accepted work. Upload requests containing
+the removed `transcodingProvider` field are rejected with a validation error
+before storage completion or job dispatch.
 
-Resolution rules, all enforced in `server/src/utils/dispatchProvider.ts` so the
-three call sites cannot disagree:
-
-- An unrecognised value is **refused**, never silently replaced by the default. A
-  caller that asked for a specific engine is told it cannot have it.
-- The choice is written to `transcode_job.provider` at creation. Changing the
-  installation default never reroutes an existing job.
-- A self-hosted submission is refused with `503` (`provider-disabled`) when
-  `SELF_HOSTED_ENABLED=false`. It does **not** fall back to Modal: an owner who
-  turned local encoding off did not ask for their files to be uploaded to someone
-  else's cloud.
-- An uploaded object becomes an `r2` source with **no bound agent**, so any
-  eligible machine in the organization may claim it. A `local` source is pinned
-  to the one machine holding the file; the two are deliberately different.
+`LOCAL_TRANSCODE_ENABLED=false` rejects new local submissions. It does not
+silently send local work to Modal; accepted local jobs remain drainable. Uploaded
+objects become tenant-owned `r2` sources and can be claimed by the deployment's
+single worker. Host-folder imports remain optional and require
+`LOCAL_IMPORT_ORG_ID`.
 
 The raw bucket is still required for browser/SDK uploads whichever provider
-reads them — the bytes need somewhere to wait. It is not required when the only
-source is files on the owner's machine.
+reads the bytes. It is not required when uploads are disabled and all sources
+are already mounted on the host.
 
 ## 8. Capability reporting
 
-Two projections, deliberately different:
+**Public** (`GET /health/config` → `transcode`) reports secret-free provider
+configuration and coarse availability, including whether the local worker is
+online. It does not expose hostnames, paths, credentials or another tenant's
+jobs.
 
-**Public** (`GET /health/config` → `transcode`) — booleans and counts only:
-uploads available, local import available, configured providers, the default
-provider, enrichment availability, and `{paired, online}` agent counts. Never
-names, hostnames, paths or credentials.
-
-**Authenticated** (`GET /api/transcoder/health`) — per-agent connectivity,
-capacity, encoder list and scratch headroom, plus the queue's state histogram.
+**Authenticated** dashboard status shows one shared local-worker record and the
+active organization's queue and progress. It does not expose other organizations'
+job rows or source references.
 
 ## 9. Health probes
 
 - API: `GET /health` (text `ok`), `GET /health/config` (JSON capability flags)
 - Delivery: `GET /health` (text `ok`) — added before key resolution
-- Agent: `clipmux-transcoder doctor` (exit code is the answer)
+- Worker: `clipmux-transcoder doctor` (exit code is the answer)

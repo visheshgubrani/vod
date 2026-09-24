@@ -122,15 +122,15 @@ async function probeOnce(
  * Capability flags the selected configuration actually needs.
  *
  * `/health/config` reports optional surfaces (analytics, AI, delivery URL,
- * raw uploads) as false when they are unused. Those must not block pairing.
+ * raw uploads) as false when they are unused. Those are not required capabilities.
  */
 export function requiredHealthChecks(answers: {
-  transcodeProvider?: 'modal' | 'self-hosted'
+  transcodeProvider?: 'modal' | 'local'
   uploadsEnabled?: boolean
 }): string[] {
   const checks = ['database', 'auth']
   const uploads = answers.uploadsEnabled !== false
-  const provider = answers.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+  const provider = answers.transcodeProvider === 'local' ? 'local' : 'modal'
   if (uploads || provider === 'modal') checks.push('storage')
   if (provider === 'modal') checks.push('transcoder')
   return checks

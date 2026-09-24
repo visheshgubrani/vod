@@ -31,7 +31,7 @@ export type MaintenanceResult = {
   videos: SweepStats
   deliveries: DrainResult
   cleanup: CleanupStats
-  /** Self-hosted jobs whose agent stopped beating and were returned to the queue. */
+  /** Local jobs whose worker stopped sending heartbeats and were returned to the queue. */
   localJobsReclaimed: number
   durationMs: number
 }
@@ -115,8 +115,8 @@ export async function runMaintenance(env: EnvLike = {}): Promise<MaintenanceResu
     console.error('[MAINTENANCE] storage cleanup pass failed:', err)
   }
 
-  // Self-hosted jobs whose agent stopped beating. Kept in the shared pass
-  // rather than in the agent protocol so it runs even when every agent is
+  // Local jobs whose worker stopped sending heartbeats. Kept in the shared pass
+  // rather than in the agent protocol so it runs even when the local worker is
   // offline — which is precisely when it is needed: nobody is polling, so
   // nothing else would ever notice the leases had run out.
   let localJobsReclaimed = 0

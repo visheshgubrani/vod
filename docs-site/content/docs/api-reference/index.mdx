@@ -74,7 +74,7 @@ variations) for the upload token. A key sent as `UploadToken` or a token sent as
 | **IDs** | UUIDs. Video ids appear both as `id` and, in some responses, as `file_id`. |
 | **Timestamps** | ISO 8601 strings for wall-clock times; **epoch seconds** for playback-token expiry. |
 | **Request id** | Every response carries `x-request-id`. Quote it in a bug report. |
-| **Unknown fields** | Ignored, not rejected. Extra keys are safe to send. |
+| **Unknown fields** | Usually ignored. Upload completion explicitly rejects the removed `transcodingProvider` field before completing storage or dispatching a job. |
 | **Errors** | `{ error, hint?, status? }`. See [Errors & status codes](/errors). |
 
 <Callout type="warn" title="Timestamps are not consistently typed">
@@ -133,7 +133,7 @@ any non-fatal advisories.
     "dbTransport": "pg",
     "rateLimitStore": "redis",
     "transcodeProvider": "modal",
-    "selfHostedEnabled": false,
+    "localTranscodeEnabled": true,
     "modalDispatch": "direct-http",
     "analyticsWrite": "none",
     "analyticsRead": "none",
@@ -151,7 +151,7 @@ any non-fatal advisories.
     "localImport": false,
     "subtitles": false,
     "chapters": false,
-    "agents": { "paired": 0, "online": 0 }
+    "localWorker": { "online": false }
   }
 }
 ```
@@ -167,9 +167,8 @@ any non-fatal advisories.
 | `transcode` | Coarse capability projection: `uploads` answers "can a browser upload be processed?" |
 
 **Secret-free by construction** — no credentials, tokens, connection strings,
-agent hostnames or file paths appear anywhere in it, which is why it is safe to
-call from a browser or a status page. Agent names and hostnames live behind the
-authenticated dashboard health instead.
+worker hostnames or file paths appear anywhere in it, which is why it is safe to
+call from a browser or a status page. The local worker hostname is shown only in the authenticated Encoding page.
 
 Two things worth checking on a new deployment: `maintenance.stale` (if true,
 webhook retries and storage reclamation are silently not running — see

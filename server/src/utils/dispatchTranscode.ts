@@ -56,7 +56,7 @@ export type DispatchFailureReason =
   | 'dispatch-uncertain'
   /**
    * The operator has switched this provider off for *new* work
-   * (`SELF_HOSTED_ENABLED=false`). Accepted jobs keep draining; nothing is
+   * (`LOCAL_TRANSCODE_ENABLED=false`). Accepted jobs keep draining; nothing is
    * cancelled, and local files are never moved to Modal automatically.
    */
   | 'provider-disabled'

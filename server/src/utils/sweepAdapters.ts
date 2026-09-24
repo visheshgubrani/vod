@@ -58,7 +58,7 @@ function toSweepable(row: typeof video.$inferSelect): SweepableVideo {
 }
 
 /**
- * Videos the self-hosted queue owns.
+ * Videos the local queue owns.
  *
  * The sweeper and the local job queue both reclaim stuck work, and they must not
  * reclaim the *same* work: the sweeper would re-dispatch through the Modal path

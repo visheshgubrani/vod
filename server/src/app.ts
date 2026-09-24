@@ -22,7 +22,7 @@ import usage from './routes/usage'
 import webhooks from './routes/webhooks'
 import api from './routes/api'
 import transcoder from './routes/transcoder'
-import { dashboardApp, agentSourceApp, importLocalApp } from './routes/localImport'
+import { dashboardApp, localWorkerSourceApp, importLocalApp } from './routes/localImport'
 import analytics from './routes/analytics'
 import analyticsStats from './routes/analytics-stats'
 import type { Bindings } from './types'
@@ -267,10 +267,10 @@ export function createApp(runtime: RuntimeCapabilities): Hono<{ Bindings: Bindin
   // with an API key while the rest of the public API does not yet.
   app.route('/v1', importLocalApp)
   app.route('/v1', api)
-  // The agent protocol polls and posts frequently; it is deliberately outside the
-  // session and API-key middleware, carrying its own organization-scoped credential.
+  // The local-worker protocol runs outside session and API-key middleware. Its
+  // deployment credential authenticates only worker endpoints and carries no tenant.
   app.route('/api/transcoder/v1', transcoder)
-  app.route('/api/transcoder/v1/sources', agentSourceApp)
+  app.route('/api/transcoder/v1/sources', localWorkerSourceApp)
   app.route('/api/transcoder', dashboardApp)
   app.route('/api/playback', analytics)
   app.route('/api/analytics-stats', analyticsStats)

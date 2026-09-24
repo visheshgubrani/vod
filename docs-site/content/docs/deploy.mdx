@@ -70,7 +70,7 @@ Node host. Set its `NEXT_PUBLIC_*` values to your deployed API.
 | Axis | Options | Selected by |
 | --- | --- | --- |
 | Postgres | bundled \| any `postgresql://` URL | `DATABASE_URL` |
-| Transcode provider | `modal` \| `self-hosted` | `TRANSCODE_PROVIDER` |
+| Transcode provider | `modal` \| `local` | `TRANSCODE_PROVIDER` |
 | Dispatch transport | `direct-http` \| `qstash` | `QSTASH_TOKEN` presence |
 | Rate-limit store | `memory` \| `redis` (TCP) \| `upstash` (REST) | `REDIS_URL` → Upstash REST → in-memory |
 | Analytics write | `delivery-worker` \| `none` | `ANALYTICS_ENABLED` plus `DELIVERY_URL` and `ANALYTICS_INGEST_SECRET` |
@@ -86,7 +86,7 @@ resolved to — see [the health endpoint](/api-reference#get-healthconfig).
 
 | Combination | Why it is fatal |
 | --- | --- |
-| An unrecognised `TRANSCODE_PROVIDER` | The provider is stored per job at creation. Guessing would silently misroute work. |
+| An unrecognised `TRANSCODE_PROVIDER` | The API refuses to boot rather than guess which provider should receive new jobs. |
 
 ## Profiles and services
 
@@ -96,8 +96,8 @@ resolved to — see [the health endpoint](/api-reference#get-healthconfig).
 | `web` | default | `pnpm docker:up` |
 | `postgres`, `redis` | default | internal only, no host ports |
 | `migrate` | `tools` | `pnpm docker:migrate` |
-| `transcoder` | `transcoder` | `docker compose --profile transcoder up -d` (self-hosted agent) |
-| `caddy` | `proxy` | host installer sets `COMPOSE_PROFILES=proxy` (and `transcoder` after pairing) |
+| `transcoder` | `transcoder` | Setup enables this only for `TRANSCODE_PROVIDER=local`; Modal does not build or start it |
+| `caddy` | `proxy` | host installer preserves `proxy` and adds `transcoder` only for local encoding |
 
 ## Migrations
 
@@ -117,20 +117,19 @@ one replica — the one-shot service is the right call in production.
 
 ## Transcoding
 
-Two providers share one engine:
+Two deployment providers share one processing engine:
 
-- **Modal GPU** — `modal deploy main.py` in `transcoding/`. Needs the
-  `clipmux-creds` secret (and `clipmux-groq-creds`, which the GPU function
-  requires to exist even when you skip AI — use a dummy value).
-- **Self-hosted agent** — `docker compose --profile transcoder up -d`, or the
-  `clipmux_transcoder.agent` CLI. Pairing uses an organization-scoped token that
-  cannot mint playback tokens or read another tenant's data, and holds no storage
-  credentials: transfers are presigned per artifact and bounded to the attempt
-  prefix.
+- **Modal GPU** — deploy `main.py` in `transcoding/`; the setup wizard uploads
+  the required Modal secrets and refreshes callback hosts.
+- **Local worker** — the setup wizard defaults fresh installs to one Compose
+  worker, shares `LOCAL_TRANSCODER_SECRET` between API and worker, and waits for
+  its heartbeat. No pairing or organization membership is needed.
 
-The choice is stored **per job** at creation, so changing `TRANSCODE_PROVIDER`
-never reroutes work that already exists. `SELF_HOSTED_ENABLED=false` is the
-documented rollback — it stops new local submissions and cancels nothing.
+`TRANSCODE_PROVIDER` applies to new jobs and is recorded when each job is
+created. Existing work is never rerouted. `LOCAL_TRANSCODE_ENABLED=false`
+rejects new local submissions while accepted local jobs drain. Before a managed
+local-to-Modal switch, setup checks for queued or active local work; the Modal
+profile does not build or start the local media image.
 
 ## Delivery worker
 
@@ -200,5 +199,5 @@ fatal combinations, is on [Configuration](/configuration). The short version:
   <Card title="Configuration" href="/configuration" description="Every environment variable and which file it belongs in." />
   <Card title="Quickstart" href="/quickstart" description="The step-by-step path to a running deployment." />
   <Card title="Errors & status codes" href="/errors" description="Typed failure codes, including the transcode ones the sweeper produces." />
-  <Card title="Self-hosted transcoding" href="https://github.com/visheshgubrani/vod/blob/main/docs/self-hosted-transcoding.md" description="The agent protocol, attempt scoping and publication verification." />
+  <Card title="Local transcoding" href="/local-transcoding" description="Configure the one local worker, mounted roots and hardware." />
 </Cards>

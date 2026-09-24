@@ -24,8 +24,8 @@ from clipmux_transcoder.planning import POLICY_CAPPED
 
 # Provider identifiers — the stored value, never re-resolved at run time.
 PROVIDER_MODAL = "modal"
-PROVIDER_SELF_HOSTED = "self-hosted"
-PROVIDERS = (PROVIDER_MODAL, PROVIDER_SELF_HOSTED)
+PROVIDER_LOCAL = "local"
+PROVIDERS = (PROVIDER_MODAL, PROVIDER_LOCAL)
 
 PLAYBACK_PUBLIC = "public"
 PLAYBACK_SIGNED = "signed"

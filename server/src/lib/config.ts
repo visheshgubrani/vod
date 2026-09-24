@@ -35,7 +35,7 @@ export function parseEnabledFlag(env: EnvLike, key: string, defaultValue: boolea
   return defaultValue
 }
 
-export type TranscodeProvider = 'modal' | 'self-hosted'
+export type TranscodeProvider = 'modal' | 'local'
 
 export type CapabilityChecks = {
   database: boolean
@@ -61,6 +61,8 @@ export type ClipMuxConfig = {
   /** True when every capability this deployment's provider actually needs is configured. */
   ready: boolean
   checks: CapabilityChecks
+  /** R2 account and credentials are configured, independent of bucket names. */
+  storageCredentials: boolean
   /** Human-readable, non-secret problems ("DATABASE_URL is not set"). */
   problems: string[]
   /** Optional-capability notices (analytics/AI disabled) — not blockers. */
@@ -73,8 +75,12 @@ export type ClipMuxConfig = {
   transcodedBucket: string | null
   /** Installation default for new jobs. Never re-read for an existing job. */
   transcodeProvider: TranscodeProvider
-  /** False disables accepting *new* self-hosted submissions; running jobs drain. */
-  selfHostedEnabled: boolean
+  /** False stops new local submissions while accepted jobs continue to drain. */
+  localTranscodeEnabled: boolean
+  /** Shared only by the API and the deployment's local worker. */
+  localTranscoderSecret: string | null
+  /** Organization allowed to import files from the host's mounted roots. */
+  localImportOrgId: string | null
   /** True when the configured provider (or uploads being on) needs a raw bucket. */
   rawBucketRequired: boolean
   /** False rejects uploads at the route, not just in the health report. */
@@ -177,47 +183,38 @@ export function parseLogLevel(env: EnvLike, isProduction: boolean): LogLevel {
 }
 
 /**
- * Which provider new jobs use, and whether self-hosted submission is enabled.
+ * Which provider new jobs use, and whether local submission is enabled.
  *
- * Defaults are chosen so an existing installation is unaffected: unset means
- * `modal` with self-hosted submission off. Enabling self-hosted is therefore an
- * explicit act, which is what makes the documented rollback ("disable new local
- * submissions, drain accepted jobs") a single variable.
+ * The server retains its existing Modal default when the value is omitted;
+ * installers write the selected provider explicitly.
  */
 export function loadProviderSettings(env: EnvLike): {
   transcodeProvider: TranscodeProvider
-  selfHostedEnabled: boolean
+  localTranscodeEnabled: boolean
   problems: string[]
 } {
   const problems: string[] = []
   const raw = secretValue(env, 'TRANSCODE_PROVIDER')?.toLowerCase()
   let transcodeProvider: TranscodeProvider = 'modal'
 
-  if (raw === 'self-hosted' || raw === 'selfhosted' || raw === 'local') {
-    transcodeProvider = 'self-hosted'
+  if (raw === 'local') {
+    transcodeProvider = 'local'
   } else if (raw && raw !== 'modal') {
     problems.push(
-      `TRANSCODE_PROVIDER must be "modal" or "self-hosted" (got "${raw}")`,
+      `TRANSCODE_PROVIDER must be "modal" or "local" (got "${raw}")`,
     )
   }
 
-  const enabledRaw = secretValue(env, 'SELF_HOSTED_ENABLED')?.toLowerCase()
-  // Default follows the provider: choosing self-hosted is itself the enablement.
-  // An explicit `false` is how an operator rolls back without changing the
-  // default, leaving accepted jobs to drain instead of being cancelled.
-  const selfHostedEnabled =
-    enabledRaw === undefined
-      ? transcodeProvider === 'self-hosted'
-      : enabledRaw === 'true' || enabledRaw === '1'
+  const localTranscodeEnabled = parseEnabledFlag(env, 'LOCAL_TRANSCODE_ENABLED', true)
 
-  return { transcodeProvider, selfHostedEnabled, problems }
+  return { transcodeProvider, localTranscodeEnabled, problems }
 }
 
 /**
  * Whether a raw bucket is required at all.
  *
  * False only when nothing can upload: no browser/SDK uploads *and* a
- * self-hosted-only provider. That combination is the point of the feature — a
+ * local-only provider. That combination is the point of the feature — a
  * course creator importing an existing library needs no raw bucket, no Modal
  * account and no QStash.
  */
@@ -288,7 +285,7 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
   }
 
   // ---- transcoder -----------------------------------------------------------
-  // Modal is only mandatory when it is the provider. A self-hosted installation
+  // Modal is only mandatory when it is the provider. A local installation
   // must not be told to configure a Modal endpoint it will never call.
   const modalWebhookUrl = secretValue(env, 'MODAL_WEBHOOK_URL')
   const ingestSecret =
@@ -307,11 +304,18 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
     // Configured but unused: worth saying, because a stale Modal endpoint that
     // still receives callbacks is a confusing thing to debug later.
     advisories.push(
-      'MODAL_WEBHOOK_URL is configured but TRANSCODE_PROVIDER is "self-hosted": '
-        + 'new jobs run on the owner’s machines. Modal remains available as an '
-        + 'explicit per-job choice.',
+      'MODAL_WEBHOOK_URL is configured but TRANSCODE_PROVIDER is "local": '
+        + 'new jobs run on this installation. Existing Modal jobs still complete.',
     )
   }
+
+  const localTranscoderSecret = secretValue(env, 'LOCAL_TRANSCODER_SECRET')
+  if (provider.transcodeProvider === 'local' && !localTranscoderSecret) {
+    problems.push('LOCAL_TRANSCODER_SECRET is not set')
+  } else if (localTranscoderSecret && localTranscoderSecret.length < MIN_SECRET_LENGTH) {
+    problems.push('LOCAL_TRANSCODER_SECRET must be at least 32 characters')
+  }
+  const localImportOrgId = secretValue(env, 'LOCAL_IMPORT_ORG_ID')
 
   // ---- transcode callbacks ----------------------------------------------------
   // Where the worker reports results. Modal runs in Cloudflare's cloud, so the
@@ -393,16 +397,13 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
 
   return {
     ready: problems.length === 0,
+    storageCredentials: storageConfigured,
     checks: {
       database: Boolean(databaseUrl && /^postgres(ql)?:\/\//.test(databaseUrl)),
       storage: storageConfigured && Boolean(rawBucket) && Boolean(transcodedBucket),
       transcoder: modalRequired
         ? Boolean(modalWebhookUrl && ingestSecret && isHttpUrl(modalWebhookUrl))
-        // With a self-hosted provider the "transcoder" is whichever agents are
-        // paired; configuration cannot answer that, and pretending it can would
-        // report a healthy deployment with no working agent. The authenticated
-        // dashboard health is where agent connectivity is reported.
-        : provider.selfHostedEnabled,
+        : Boolean(localTranscoderSecret && provider.localTranscodeEnabled),
       auth: Boolean(
         betterAuthSecret &&
           betterAuthSecret.length >= MIN_SECRET_LENGTH &&
@@ -423,7 +424,12 @@ export function loadConfig(env: EnvLike): ClipMuxConfig {
     rawBucket,
     transcodedBucket,
     transcodeProvider: provider.transcodeProvider,
-    selfHostedEnabled: provider.selfHostedEnabled,
+    localTranscodeEnabled: provider.localTranscodeEnabled,
+    localTranscoderSecret:
+      localTranscoderSecret && localTranscoderSecret.length >= MIN_SECRET_LENGTH
+        ? localTranscoderSecret
+        : null,
+    localImportOrgId,
     rawBucketRequired: rawRequired,
     uploadsEnabled,
     betterAuthSecret,

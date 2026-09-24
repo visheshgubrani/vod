@@ -161,10 +161,10 @@ class TranscoderAgent:
                 try:
                     self._tick()
                 except AuthenticationFailed as exc:
-                    # Retrying a revoked credential is pointless and noisy; the
-                    # owner has to re-pair.
-                    self._log(f"credential rejected: {exc}. Re-pair with a new code.")
-                    return
+                    # The deployment secret is operator-managed; keep the
+                    # daemon unhealthy and let the process exit nonzero.
+                    self._log(f"local worker credential rejected: {exc}. Check LOCAL_TRANSCODER_SECRET on the API and worker.")
+                    raise
                 except Exception as exc:  # noqa: BLE001 — the loop must survive
                     self._log(f"tick failed (continuing): {exc}")
                 self._stop.wait(self.config.poll_seconds)
@@ -297,7 +297,9 @@ class TranscoderAgent:
                 self.client.heartbeat(
                     capabilities=self.capabilities(),
                     hostname=socket.gethostname(),
-                    agent_version=_agent_version(),
+                    worker_version=_agent_version(),
+                    capacity_jobs=self.config.capacity_jobs,
+                    capacity_renditions=self.config.capacity_renditions,
                 )
             except AuthenticationFailed:
                 return

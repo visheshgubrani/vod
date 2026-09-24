@@ -3,7 +3,7 @@ The shared processing pipeline.
 
 This is the orchestration that used to live inside Modal's worker function.
 Extracting it is what lets the same encode run in two places without forking the
-video lifecycle: the Modal runner and the self-hosted agent both call
+video lifecycle: the Modal runner and the local worker both call
 :func:`run_pipeline` and both produce a :class:`PipelineResult` that the same
 server-side finalizer accepts.
 
@@ -135,7 +135,7 @@ def run_pipeline(
     """
     Encode, package and (optionally) transfer one source.
 
-    ``snapshot`` lets a self-hosted agent hand in the immutable copy it took
+    ``snapshot`` lets a local worker hand in the immutable copy it took
     before the job started; when absent the engine encodes ``source_path``
     directly, which is what the Modal path does (its input is a fresh download in
     an ephemeral container, so it is already immutable).

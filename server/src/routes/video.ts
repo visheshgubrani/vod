@@ -580,7 +580,7 @@ app.post('/:id/retry', async (c) => {
    * The provider is stored on the job at creation precisely so a later default
    * change cannot reroute existing work. Retrying through the Modal path
    * unconditionally broke that in both directions: a local import was rejected
-   * for having no `rawKey`, and a self-hosted job created from a *browser*
+   * for having no `rawKey`, and a local job created from a *browser*
    * upload was silently re-sent to Modal — the opposite of the owner's choice.
    */
   const jobRows = await db
@@ -589,7 +589,6 @@ app.post('/:id/retry', async (c) => {
       provider: transcodeJob.provider,
       state: transcodeJob.state,
       sourceId: transcodeJob.sourceId,
-      agentId: transcodeJob.agentId,
       options: transcodeJob.options,
     })
     .from(transcodeJob)
@@ -598,8 +597,8 @@ app.post('/:id/retry', async (c) => {
     .limit(1)
   const previousJob = jobRows[0]
 
-  if (previousJob && previousJob.provider === 'self-hosted') {
-    return retrySelfHostedJob(c, videoRecord, previousJob)
+  if (previousJob && previousJob.provider === 'local') {
+    return retryLocalJob(c, videoRecord, previousJob)
   }
 
   if (!videoRecord.rawKey) {
@@ -671,15 +670,13 @@ app.post('/:id/retry', async (c) => {
 })
 
 /**
- * Retry a self-hosted video **on the machine that owns its source**.
+ * Retry an accepted local job on this installation's worker.
  *
- * Reuses the same job row so the source binding, the options the owner chose and
- * the provider all survive. A fresh job would re-derive its agent from the
- * source, which is right, but would also lose the frozen options — and a retry
- * that quietly changes the ladder is not a retry. It also retires the failed
- * attempt's inventory so its grants stop being renewable.
+ * Reuses the same job row so the source reference, frozen options and provider
+ * survive. It also retires the failed attempt's inventory so old grants stop
+ * being renewable.
  */
-async function retrySelfHostedJob(
+async function retryLocalJob(
   c: Context<{ Bindings: Bindings }>,
   videoRecord: typeof video.$inferSelect,
   job: { jobId: string; state: string; sourceId: string | null },
@@ -719,14 +716,14 @@ async function retrySelfHostedJob(
     videoId: videoRecord.id,
     title: videoRecord.title,
     retried: true,
-    provider: 'self-hosted',
+    provider: 'local',
   })
 
   return c.json({
     success: true,
     status: 'processing',
     videoId: videoRecord.id,
-    provider: 'self-hosted',
+    provider: 'local',
   })
 }
 

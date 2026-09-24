@@ -17,6 +17,7 @@ export function newSecretSet(): SecretSet {
     jwtSecret: randomHex(),
     internalSweepSecret: randomHex(),
     transcodeIngestSecret: randomHex(),
+    localTranscoderSecret: randomHex(),
     analyticsIngestSecret: randomHex(),
     postgresPassword: randomHex(24),
   }
@@ -28,6 +29,7 @@ const SECRET_ENV_KEYS: ReadonlyArray<readonly [keyof SecretSet, string]> = [
   ['jwtSecret', 'JWT_SECRET'],
   ['internalSweepSecret', 'INTERNAL_SWEEP_SECRET'],
   ['transcodeIngestSecret', 'TRANSCODE_INGEST_SECRET'],
+  ['localTranscoderSecret', 'LOCAL_TRANSCODER_SECRET'],
   ['analyticsIngestSecret', 'ANALYTICS_INGEST_SECRET'],
   ['postgresPassword', 'POSTGRES_PASSWORD'],
 ]

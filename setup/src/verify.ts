@@ -66,17 +66,26 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
   // installation that it is broken for lacking a raw bucket and a Modal
   // endpoint is the fastest way to make a working install look unfinished.
   const provider = (env['TRANSCODE_PROVIDER'] ?? 'modal').trim().toLowerCase()
-  const selfHosted = provider === 'self-hosted' || provider === 'selfhosted' || provider === 'local'
+  const local = provider === 'local'
+  if (provider !== 'modal' && provider !== 'local') {
+    failed = true
+    rows.push({ ok: false, text: 'TRANSCODE_PROVIDER must be modal or local', key: 'TRANSCODE_PROVIDER' })
+  }
   const uploadsEnabled = parseEnabledFlag(env['UPLOADS_ENABLED'], true)
 
-  if (selfHosted && !uploadsEnabled) {
+  if (local && !uploadsEnabled) {
     advisory('RAW_BUCKET_NAME', 'Raw bucket (not needed: uploads are off)')
   } else {
     check('RAW_BUCKET_NAME', 'Raw bucket')
   }
 
-  if (selfHosted) {
-    advisory('MODAL_WEBHOOK_URL', 'Modal webhook URL (optional: self-hosted provider)')
+  if (local) {
+    check('LOCAL_TRANSCODER_SECRET', 'Local worker secret (>=32 chars)')
+    if (!parseEnabledFlag(env['LOCAL_TRANSCODE_ENABLED'], true)) {
+      failed = true
+      rows.push({ ok: false, text: 'LOCAL_TRANSCODE_ENABLED is false while local is the selected provider', key: 'LOCAL_TRANSCODE_ENABLED' })
+    }
+    advisory('MODAL_WEBHOOK_URL', 'Modal webhook URL (optional: local provider)')
     advisory('TRANSCODE_INGEST_SECRET', 'Transcode ingest secret (only used by Modal callbacks)')
   } else {
     check('MODAL_WEBHOOK_URL', 'Modal webhook URL')
@@ -95,8 +104,9 @@ export function lintServerEnv(env: Record<string, string>): { rows: CheckRow[]; 
     advisory('CLOUDFLARE_ANALYTICS_TOKEN', 'Analytics SQL read token (not needed: analytics are off)')
   }
 
-  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET', 'ANALYTICS_INGEST_SECRET'] as const) {
+  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET', 'ANALYTICS_INGEST_SECRET', 'LOCAL_TRANSCODER_SECRET'] as const) {
     if (key === 'ANALYTICS_INGEST_SECRET' && !analyticsOn) continue
+    if (key === 'LOCAL_TRANSCODER_SECRET' && !local) continue
     const value = env[key]
     if (isSet(value) && value.trim().length < MIN_SECRET_LENGTH) {
       failed = true
@@ -234,16 +244,25 @@ export function lintDeployEnv(env: Record<string, string>): { rows: CheckRow[]; 
   check('TRANSCODED_BUCKET_NAME', 'Transcoded bucket')
 
   const provider = (env['TRANSCODE_PROVIDER'] ?? 'modal').trim().toLowerCase()
-  const selfHosted = provider === 'self-hosted' || provider === 'selfhosted' || provider === 'local'
+  const local = provider === 'local'
+  if (provider !== 'modal' && provider !== 'local') {
+    failed = true
+    rows.push({ ok: false, text: 'TRANSCODE_PROVIDER must be modal or local', key: 'TRANSCODE_PROVIDER' })
+  }
   const uploadsOn = parseEnabledFlag(env['UPLOADS_ENABLED'], true)
 
-  if (selfHosted && !uploadsOn) {
+  if (local && !uploadsOn) {
     advisory('RAW_BUCKET_NAME', 'Raw bucket (not needed: uploads are off)')
   } else {
     check('RAW_BUCKET_NAME', 'Raw bucket')
   }
-  if (selfHosted) {
-    advisory('MODAL_WEBHOOK_URL', 'Modal webhook URL (optional: self-hosted provider)')
+  if (local) {
+    check('LOCAL_TRANSCODER_SECRET', 'Local worker secret (>=32 chars)')
+    if (!parseEnabledFlag(env['LOCAL_TRANSCODE_ENABLED'], true)) {
+      failed = true
+      rows.push({ ok: false, text: 'LOCAL_TRANSCODE_ENABLED is false while local is the selected provider', key: 'LOCAL_TRANSCODE_ENABLED' })
+    }
+    advisory('MODAL_WEBHOOK_URL', 'Modal webhook URL (optional: local provider)')
   } else {
     check('MODAL_WEBHOOK_URL', 'Modal webhook URL')
   }
@@ -258,8 +277,9 @@ export function lintDeployEnv(env: Record<string, string>): { rows: CheckRow[]; 
     advisory('CLOUDFLARE_ANALYTICS_TOKEN', 'Analytics SQL read token (not needed: analytics are off)')
   }
 
-  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET', 'ANALYTICS_INGEST_SECRET'] as const) {
+  for (const key of ['JWT_SECRET', 'BETTER_AUTH_SECRET', 'ANALYTICS_INGEST_SECRET', 'LOCAL_TRANSCODER_SECRET'] as const) {
     if (key === 'ANALYTICS_INGEST_SECRET' && !analyticsOn) continue
+    if (key === 'LOCAL_TRANSCODER_SECRET' && !local) continue
     const value = env[key]
     if (isSet(value) && value.trim().length < MIN_SECRET_LENGTH) {
       failed = true

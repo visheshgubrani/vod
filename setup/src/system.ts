@@ -147,7 +147,7 @@ export const DOCKER_DESKTOP_HINT = 'https://docs.docker.com/desktop/ (or: brew i
 export interface SystemShape {
   target?: ConfigTarget
   dbKind?: DbKind
-  transcodeProvider?: 'modal' | 'self-hosted'
+  transcodeProvider?: 'modal' | 'local'
   uploadsEnabled?: boolean
 }
 
@@ -175,7 +175,7 @@ export function requirementsFor(
   mode: 'develop' | 'deploy',
 ): Requirement[] {
   const target = shape.target ?? 'dev'
-  const provider = shape.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+  const provider = shape.transcodeProvider === 'local' ? 'local' : 'modal'
   const requirements: Requirement[] = []
 
   const dockerHint = DOCKER_INSTALL_HINT
@@ -196,19 +196,19 @@ export function requirementsFor(
     capability: 'git',
   })
 
-  // ── Docker: the Compose stack and the self-hosted agent ─────────────────
+  // ── Docker: the Compose stack and the local worker ─────────────────
   const wantsCompose = target === 'deploy'
   const wantsLocalInfra =
     target === 'dev' && shape.dbKind === 'local'
-  const wantsAgent = provider === 'self-hosted'
-  if (wantsCompose || wantsLocalInfra || wantsAgent) {
-    const why = wantsAgent
-      ? 'the self-hosted transcoder agent runs as a container (it ships its own FFmpeg)'
+  const wantsLocalWorker = provider === 'local'
+  if (wantsCompose || wantsLocalInfra || wantsLocalWorker) {
+    const why = wantsLocalWorker
+      ? 'the local transcoder runs as a container (it ships its own FFmpeg)'
       : wantsCompose
         ? 'the deploy target runs the Docker Compose stack'
         : '`pnpm dev:infra` starts the dev Postgres and Redis in containers'
     const level: RequirementLevel =
-      wantsAgent || wantsCompose || (wantsLocalInfra && mode === 'develop') ? 'required' : 'advisory'
+      wantsLocalWorker || wantsCompose || (wantsLocalInfra && mode === 'develop') ? 'required' : 'advisory'
     requirements.push({
       id: 'docker',
       label: 'Docker',
@@ -249,7 +249,7 @@ export function requirementsFor(
   requirements.push({
     id: 'ffmpeg',
     label: 'FFmpeg on this machine',
-    why: 'only for running the transcoder agent natively — the agent image builds its own',
+    why: 'only for running the local worker directly — the Compose image builds its own',
     level: 'advisory',
     capability: 'ffmpeg',
   })
@@ -273,7 +273,7 @@ export function informationRequirements(): Requirement[] {
     { id: 'python3', label: 'Python 3', why: 'needed only for the Modal deploy path', level: 'advisory', capability: 'python3' },
     { id: 'uv', label: 'uv', why: 'optional: builds transcoding/.venv without a system Python', level: 'advisory' },
     { id: 'docker', label: 'Docker', why: 'needed for the Compose stack, local infra, or local transcoding', level: 'advisory', manual: DOCKER_INSTALL_HINT },
-    { id: 'ffmpeg', label: 'FFmpeg on this machine', why: 'only for running the transcoder agent natively', level: 'advisory', capability: 'ffmpeg' },
+    { id: 'ffmpeg', label: 'FFmpeg on this machine', why: 'only for running the local worker outside Compose', level: 'advisory', capability: 'ffmpeg' },
   ]
 }
 

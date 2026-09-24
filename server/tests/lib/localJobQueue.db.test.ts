@@ -14,12 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import {
-  buildClaimJobStatement,
-  buildClaimNextJobStatement,
-  buildFailJobStatement,
-  buildRequeueStatement,
-  claimJob,
-  claimNextJob,
+  claimNextLocalJob,
   failJob,
   reclaimExpiredJobs,
 } from '../../src/lib/localJobQueue'
@@ -57,10 +52,8 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
       INSERT INTO organization (id, name, slug, created_at)
       VALUES ('${ORG_A}', 'Queue A', 'queue-a', now()), ('${ORG_B}', 'Queue B', 'queue-b', now())
       ON CONFLICT (id) DO NOTHING;
-      INSERT INTO transcoder_agent (id, organization_id, name, token_hash, token_last4, capacity_jobs)
-      VALUES
-        ('agent-a', '${ORG_A}', 'Agent A', 'hash-a', 'aaaa', 1),
-        ('agent-b', '${ORG_B}', 'Agent B', 'hash-b', 'bbbb', 1)
+      INSERT INTO local_worker (id, capacity_jobs)
+      VALUES ('local', 1)
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO video (id, organization_id, title, status)
       VALUES
@@ -68,8 +61,8 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
         ('${VID_B}', '${ORG_A}', 'B', 'processing'),
         ('${VID_C}', '${ORG_B}', 'C', 'processing')
       ON CONFLICT (id) DO NOTHING;
-      INSERT INTO transcode_source (id, organization_id, kind, agent_id)
-      VALUES ('${SRC_R2}', '${ORG_A}', 'r2', NULL)
+      INSERT INTO transcode_source (id, organization_id, kind)
+      VALUES ('${SRC_R2}', '${ORG_A}', 'r2')
       ON CONFLICT (id) DO NOTHING;
     `)
   }
@@ -84,146 +77,79 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
 
   async function queueJob(id: string, videoId: string, organizationId: string, sourceId: string | null) {
     await handle.exec(`
-      INSERT INTO transcode_job (id, video_id, organization_id, provider, source_id, agent_id, state)
-      VALUES ('${id}', '${videoId}', '${organizationId}', 'self-hosted', ${sourceId ? `'${sourceId}'` : 'NULL'}, NULL, 'queued');
+      INSERT INTO transcode_job (id, video_id, organization_id, provider, source_id, state)
+      VALUES ('${id}', '${videoId}', '${organizationId}', 'local', ${sourceId ? `'${sourceId}'` : 'NULL'}, 'queued');
     `)
   }
 
-  // ── finding 2 and 3 ──────────────────────────────────────────────────────
-
-  it('executes the automatic claim and records the minted attempt on both rows', async () => {
+  it('claims eligible jobs across organizations with the singleton worker', async () => {
     await resetJobs()
     await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
+    await queueJob(JOB_B, VID_C, ORG_B, null)
 
-    const claimed = await claimNextJob(handle.db, {
-      agentId: 'agent-a',
-      organizationId: ORG_A,
-      capacity: 1,
-    })
+    const first = await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 2 })
+    expect(first).not.toBeNull()
+    expect([ORG_A, ORG_B]).toContain(first!.organizationId)
+    expect(first!.attemptId).toBeTruthy()
 
-    expect(claimed).not.toBeNull()
-    expect(claimed!.attemptId).toBeTruthy()
-
-    const [job] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, JOB_A))
-    const [vid] = await handle.db.select().from(video).where(eq(video.id, VID_A))
-
+    const [job] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, first!.jobId))
+    const [vid] = await handle.db.select().from(video).where(eq(video.id, first!.videoId))
     expect(job.state).toBe('claimed')
-    expect(job.attemptId).toBe(claimed!.attemptId)
-    // The job's attempt must match the video's, not the pre-update NULL the
-    // sibling CTE left behind in the statement's snapshot.
+    expect(job.attemptId).toBe(first!.attemptId)
     expect(job.attemptId).toBe(vid.transcodeAttemptId)
-    expect(job.leaseOwner).toBe('agent-a')
+    expect(job.leaseOwner).toBe('local')
     expect(vid.jobAttempts).toBe(1)
   })
 
-  // ── finding 1 ────────────────────────────────────────────────────────────
-
-  it('refuses a named claim from another organization', async () => {
+  it('enforces total worker capacity across organizations', async () => {
     await resetJobs()
     await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
+    await queueJob(JOB_B, VID_C, ORG_B, null)
 
-    const refused = await claimJob(handle.db, {
-      jobId: JOB_A,
-      agentId: 'agent-b',
-      organizationId: ORG_B,
-      attemptId: 'att-cross-org',
-      agentCapacity: 1,
-    })
-
-    expect(refused).toBeNull()
-    const [job] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, JOB_A))
-    const [vid] = await handle.db.select().from(video).where(eq(video.id, VID_A))
-    expect(job.state).toBe('queued')
-    expect(job.attemptId).toBeNull()
-    expect(job.leaseOwner).toBeNull()
-    expect(vid.transcodeAttemptId).toBeNull()
-  })
-
-  it('allows a named claim from the owning organization', async () => {
-    await resetJobs()
-    await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
-
-    const claimed = await claimJob(handle.db, {
-      jobId: JOB_A,
-      agentId: 'agent-a',
-      organizationId: ORG_A,
-      attemptId: 'att-owned',
-      agentCapacity: 1,
-    })
-
-    expect(claimed?.attemptId).toBe('att-owned')
-  })
-
-  // ── finding 12 ───────────────────────────────────────────────────────────
-
-  it('counts capacity by live ownership, including r2 jobs with no bound agent', async () => {
-    await resetJobs()
-    await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
-    await queueJob(JOB_B, VID_B, ORG_A, SRC_R2)
-
-    // First job: an r2 source, so `agent_id` stays NULL.
-    const first = await claimNextJob(handle.db, {
-      agentId: 'agent-a',
-      organizationId: ORG_A,
-      capacity: 1,
-    })
+    const first = await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 1 })
     expect(first).not.toBeNull()
-
-    const [row] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, JOB_A))
-    expect(row.agentId).toBeNull()
-    expect(row.leaseOwner).toBe('agent-a')
-
-    // A capacity check keyed on `agent_id` would see zero active jobs here and
-    // hand out a second one.
-    const second = await claimNextJob(handle.db, {
-      agentId: 'agent-a',
-      organizationId: ORG_A,
-      capacity: 1,
-    })
-    expect(second).toBeNull()
+    expect(await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 1 })).toBeNull()
   })
 
-  it('serializes concurrent claims so one agent cap holds', async () => {
+  it('serializes concurrent claims on the singleton worker capacity row', async () => {
     await resetJobs()
     await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
-    await queueJob(JOB_B, VID_B, ORG_A, SRC_R2)
+    await queueJob(JOB_B, VID_C, ORG_B, null)
 
-    // Two independent connections claiming simultaneously. A per-job
-    // `SKIP LOCKED` alone cannot stop both: they lock different job rows, so
-    // nothing serializes the capacity subquery.
     const [left, right] = await Promise.all([
-      claimNextJob(handle.db, { agentId: 'agent-a', organizationId: ORG_A, capacity: 1 }),
-      claimNextJob(other.db, { agentId: 'agent-a', organizationId: ORG_A, capacity: 1 }),
+      claimNextLocalJob(handle.db, { workerId: 'local', capacity: 1 }),
+      claimNextLocalJob(other.db, { workerId: 'local', capacity: 1 }),
     ])
-
-    const winners = [left, right].filter(Boolean)
-    expect(winners).toHaveLength(1)
+    expect([left, right].filter(Boolean)).toHaveLength(1)
   })
 
-  it('serializes concurrent claims across organizations independently', async () => {
+  it('skips an organization at its cap and claims another organization', async () => {
     await resetJobs()
-    await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
+    await handle.exec(`
+      INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, lease_expires_at)
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-a-active', 'local', now() + interval '10 minutes');
+      UPDATE video SET transcode_attempt_id='att-a-active' WHERE id='${VID_A}';
+    `)
+    await queueJob(JOB_B, VID_B, ORG_A, SRC_R2)
     await queueJob('dddddddd-0000-0000-0000-00000000000d', VID_C, ORG_B, null)
 
-    const [a, b] = await Promise.all([
-      claimNextJob(handle.db, { agentId: 'agent-a', organizationId: ORG_A, capacity: 1 }),
-      claimNextJob(other.db, { agentId: 'agent-b', organizationId: ORG_B, capacity: 1 }),
-    ])
-
-    expect(a?.videoId).toBe(VID_A)
-    expect(b?.videoId).toBe(VID_C)
+    const claimed = await claimNextLocalJob(handle.db, {
+      workerId: 'local',
+      capacity: 2,
+      organizationCapacity: 1,
+    })
+    expect(claimed?.organizationId).toBe(ORG_B)
+    expect(claimed?.videoId).toBe(VID_C)
   })
 
-  it('never claims across organizations', async () => {
+  it('claims another organization when the worker is shared across tenants', async () => {
     await resetJobs()
     await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
+    await queueJob(JOB_B, VID_C, ORG_B, null)
 
-    const claimed = await claimNextJob(handle.db, {
-      agentId: 'agent-b',
-      organizationId: ORG_B,
-      capacity: 1,
-    })
-    expect(claimed).toBeNull()
+    const first = await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 2 })
+    const second = await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 2 })
+    expect(new Set([first?.organizationId, second?.organizationId])).toEqual(new Set([ORG_A, ORG_B]))
   })
 
   it('refuses to claim a source that is not available', async () => {
@@ -231,13 +157,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
     await handle.exec(`UPDATE transcode_source SET availability='missing' WHERE id='${SRC_R2}'`)
 
-    const claimed = await claimNextJob(handle.db, {
-      agentId: 'agent-a',
-      organizationId: ORG_A,
-      capacity: 1,
-    })
-    expect(claimed).toBeNull()
-
+    expect(await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 1 })).toBeNull()
     await handle.exec(`UPDATE transcode_source SET availability='available' WHERE id='${SRC_R2}'`)
   })
 
@@ -246,13 +166,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
     await handle.exec(`UPDATE video SET deleted_at = now() WHERE id='${VID_A}'`)
 
-    const claimed = await claimNextJob(handle.db, {
-      agentId: 'agent-a',
-      organizationId: ORG_A,
-      capacity: 1,
-    })
-    expect(claimed).toBeNull()
-
+    expect(await claimNextLocalJob(handle.db, { workerId: 'local', capacity: 1 })).toBeNull()
     await handle.exec(`UPDATE video SET deleted_at = NULL WHERE id='${VID_A}'`)
   })
 
@@ -261,9 +175,9 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
   async function claimForFailure(jobId: string, videoId: string, attemptId: string, attempts = 1) {
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, attempts)
-      VALUES ('${jobId}', '${videoId}', '${ORG_A}', 'self-hosted', 'claimed', '${attemptId}', 'agent-a', ${attempts})
+      VALUES ('${jobId}', '${videoId}', '${ORG_A}', 'local', 'claimed', '${attemptId}', 'local', ${attempts})
       ON CONFLICT (id) DO UPDATE SET state='claimed', attempt_id='${attemptId}',
-        lease_owner='agent-a', attempts=${attempts}, waiting_reason=NULL, finished_at=NULL;
+        lease_owner='local', attempts=${attempts}, waiting_reason=NULL, finished_at=NULL;
       UPDATE video SET transcode_attempt_id='${attemptId}' WHERE id='${videoId}';
     `)
   }
@@ -386,7 +300,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, lease_expires_at)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'running', 'att-stale', 'agent-a', now() - interval '5 minutes');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-stale', 'local', now() - interval '5 minutes');
       UPDATE video SET transcode_attempt_id='att-stale', transcode_lease_expires_at = now() - interval '5 minutes' WHERE id='${VID_A}';
     `)
 
@@ -396,7 +310,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     const [job] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, JOB_A))
     expect(job.state).toBe('queued')
     expect(job.attemptId).toBeNull()
-    expect(job.waitingReason).toBe('agent-offline')
+    expect(job.waitingReason).toBe('worker-offline')
 
     const [vid] = await handle.db.select().from(video).where(eq(video.id, VID_A))
     expect(vid.transcodeAttemptId).toBeNull()
@@ -406,44 +320,20 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, lease_expires_at)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'running', 'att-live', 'agent-a', now() + interval '5 minutes');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-live', 'local', now() + interval '5 minutes');
     `)
 
     const reclaimed = await reclaimExpiredJobs(handle.db, { limit: 10 })
     expect(reclaimed.map((entry) => entry.jobId)).not.toContain(JOB_A)
   })
 
-  // ── statement construction guards ────────────────────────────────────────
+  // ── a restarted worker can finish what it already owns ─────────────────
 
-  it('claims nothing when the organization does not match any job', async () => {
-    // The organization is a required field on the input type, so a caller cannot
-    // omit it; this asserts the *behaviour* of a wrong value, which is what the
-    // type system cannot promise. An empty string must match no row rather than
-    // act as a wildcard.
-    await resetJobs()
-    await queueJob(JOB_A, VID_A, ORG_A, SRC_R2)
-
-    const claimed = await claimJob(handle.db, {
-      jobId: JOB_A,
-      agentId: 'agent-a',
-      organizationId: '',
-      attemptId: 'att-blank-org',
-      agentCapacity: 1,
-    })
-    expect(claimed).toBeNull()
-
-    const [job] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, JOB_A))
-    expect(job.state).toBe('queued')
-    expect(buildClaimJobStatement).toBeTypeOf('function')
-  })
-
-  // ── finding 11: a restarted agent can finish what it already owns ───────
-
-  it('resumes an attempt the agent still owns, renewing both leases', async () => {
+  it('resumes an attempt the worker still owns, renewing both leases', async () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, lease_expires_at)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'running', 'att-resume', 'agent-a', now() + interval '1 minute');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-resume', 'local', now() + interval '1 minute');
       UPDATE video SET transcode_attempt_id='att-resume', transcode_lease_expires_at = now() + interval '1 minute'
       WHERE id='${VID_A}';
     `)
@@ -452,7 +342,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     const resumed = await resumeOwnedAttempt(handle.db, {
       jobId: JOB_A,
       attemptId: 'att-resume',
-      agentId: 'agent-a',
+      workerId: 'local',
     })
 
     expect(resumed).not.toBeNull()
@@ -468,20 +358,20 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     expect(vid.transcodeLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000)
   })
 
-  it('refuses to resume an attempt the agent does not own', async () => {
+  it('refuses to resume a different attempt id', async () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'running', 'att-other-agent', 'agent-b');
-      UPDATE video SET transcode_attempt_id='att-other-agent' WHERE id='${VID_A}';
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-current', 'local');
+      UPDATE video SET transcode_attempt_id='att-current' WHERE id='${VID_A}';
     `)
 
     const { resumeOwnedAttempt } = await import('../../src/lib/localJobQueue')
     expect(
       await resumeOwnedAttempt(handle.db, {
         jobId: JOB_A,
-        attemptId: 'att-other-agent',
-        agentId: 'agent-a',
+        attemptId: 'att-not-current',
+        workerId: 'local',
       }),
     ).toBeNull()
   })
@@ -490,7 +380,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'running', 'att-old', 'agent-a');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-old', 'local');
       UPDATE video SET transcode_attempt_id='att-newer' WHERE id='${VID_A}';
     `)
 
@@ -499,7 +389,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
       await resumeOwnedAttempt(handle.db, {
         jobId: JOB_A,
         attemptId: 'att-old',
-        agentId: 'agent-a',
+        workerId: 'local',
       }),
     ).toBeNull()
   })
@@ -508,7 +398,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'succeeded', 'att-done', NULL);
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'succeeded', 'att-done', NULL);
       UPDATE video SET transcode_attempt_id=NULL WHERE id='${VID_A}';
     `)
 
@@ -517,7 +407,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
       await resumeOwnedAttempt(handle.db, {
         jobId: JOB_A,
         attemptId: 'att-done',
-        agentId: 'agent-a',
+        workerId: 'local',
       }),
     ).toBeNull()
   })
@@ -528,7 +418,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, failure_code, attempts, finished_at)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'failed', NULL, 'ENCODER_FAILED', 3, now());
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'failed', NULL, 'ENCODER_FAILED', 3, now());
       UPDATE video SET status='failed', failure_code='ENCODER_FAILED' WHERE id='${VID_A}';
     `)
 
@@ -553,13 +443,11 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
   })
 
   it('preserves the stored provider across a retry', async () => {
-    // The provider is stored so a later default change cannot reroute existing
-    // work. Retrying through the Modal path unconditionally sent self-hosted
-    // jobs to Modal, and rejected local imports for having no rawKey.
+    // The stored provider remains unchanged even if the installation default changes.
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'failed');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'failed');
       UPDATE video SET status='failed' WHERE id='${VID_A}';
     `)
 
@@ -567,14 +455,14 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await requeueJob(handle.db, { jobId: JOB_A, videoId: VID_A, organizationId: ORG_A })
 
     const [job] = await handle.db.select().from(transcodeJob).where(eq(transcodeJob.id, JOB_A))
-    expect(job.provider).toBe('self-hosted')
+    expect(job.provider).toBe('local')
   })
 
   it('refuses to re-open a job that is still running', async () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'running', 'att-live', 'agent-a');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'running', 'att-live', 'local');
     `)
     const { requeueJob } = await import('../../src/lib/localJobQueue')
     const requeued = await requeueJob(handle.db, {
@@ -589,7 +477,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'failed');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'failed');
     `)
     const { requeueJob } = await import('../../src/lib/localJobQueue')
     const requeued = await requeueJob(handle.db, {
@@ -604,7 +492,7 @@ describe.skipIf(!hasTestDatabase)('localJobQueue (PostgreSQL)', () => {
     await resetJobs()
     await handle.exec(`
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state)
-      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'self-hosted', 'failed');
+      VALUES ('${JOB_A}', '${VID_A}', '${ORG_A}', 'local', 'failed');
       INSERT INTO artifact_inventory (video_id, organization_id, job_id, attempt_id, prefix, status, item_count)
       VALUES ('${VID_A}', '${ORG_A}', '${JOB_A}', 'att-dead', 'videos/${VID_A}/attempts/att-dead', 'verified', 1);
       UPDATE video SET status='failed' WHERE id='${VID_A}';

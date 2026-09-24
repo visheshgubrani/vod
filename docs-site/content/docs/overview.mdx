@@ -65,7 +65,7 @@ An installation chooses part of its infrastructure and inherits the rest:
 | Axis | Options | Selected by |
 | --- | --- | --- |
 | Postgres | bundled/dev Postgres \| any `postgresql://` URL | `DATABASE_URL` |
-| Transcode provider | Modal GPU \| self-hosted agent | `TRANSCODE_PROVIDER` (stored per job) |
+| Transcode provider | Modal GPU \| one local worker | `TRANSCODE_PROVIDER` (deployment setting) |
 | Dispatch transport | direct HTTP \| QStash | `QSTASH_TOKEN` presence |
 | Rate-limit store | in-memory \| Redis (TCP) \| Upstash (REST) | `REDIS_URL`, else Upstash REST, else in-memory |
 | Analytics | on (default) \| off | `ANALYTICS_ENABLED`; writes go through the delivery worker |

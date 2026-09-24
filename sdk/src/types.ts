@@ -37,11 +37,6 @@ export interface ClipMuxUploaderConfig {
      * margin for a slow window. Never set this above the server's TTL.
      */
     presignRefreshMs?: number
-    /**
-     * Default provider for the transcode job (`modal` | `self-hosted`).
-     * Omitted means the installation default. Passed through on `/complete`.
-     */
-    transcodingProvider?: string
     /** Injectable fetch (defaults to global fetch) — for tests/proxies. */
     fetchImpl?: typeof fetch
     /** Test seam: override backoff waiting. Defaults to `setTimeout`. */
@@ -62,8 +57,6 @@ export interface UploadOptions {
     filename?: string
     /** Override the content type (defaults to `file.type`, then the extension). */
     contentType?: string
-    /** Provider for this job's transcode (`modal` | `self-hosted`). */
-    transcodingProvider?: string
     /** Progress callback, invoked on every state change (including pauses). */
     onProgress?: (progress: UploadProgress) => void
     /** Abort signal for cancellation. */
@@ -195,6 +188,5 @@ export interface ReUploadState {
         playbackPolicy?: 'public' | 'signed'
         generateSubtitle?: boolean
         generateChapters?: boolean
-        transcodingProvider?: string
     }
 }

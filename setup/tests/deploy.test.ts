@@ -14,7 +14,7 @@ import type { WizardAnswers } from '../src/types'
 
 /**
  * The deploy phase is where "some of it worked" used to look like success, and
- * where the self-hosted provider deployed a delivery worker and no API. Those
+ * where the local provider deployed a delivery worker and no API. Those
  * are ordering properties, so they are asserted against a fake port that records
  * every call — printed text cannot prove that the API deploy still happened.
  */
@@ -70,9 +70,9 @@ interface Harness {
   warnings: string[]
   failOn: (call: string, message?: string) => void
   modalAvailable: boolean
-  pairingCode: string
-  agentStatus: { kind: 'valid' } | { kind: 'missing' } | { kind: 'rejected'; detail: string } | { kind: 'unreachable'; detail: string }
   accounts: string[]
+  drainDetected: boolean
+  drainChecks: number
 }
 
 function harness(config: Record<string, string> = credsEnv()): Harness {
@@ -86,9 +86,9 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     warnings,
     config: { ...config },
     modalAvailable: true,
-    pairingCode: 'ABCD-EFGH',
-    agentStatus: { kind: 'missing' },
     accounts: ['a1b2c3d4e5f60718293a4b5c6d7e8f90'],
+    drainDetected: false,
+    drainChecks: 0,
     failOn: (call, message = `${call} failed`) => failures.set(call, message),
     port: undefined as unknown as DeployPort,
   }
@@ -108,7 +108,7 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
       info: () => {},
     },
     confirm: async () => true,
-    askPassword: async () => state.pairingCode,
+    askPassword: async () => '',
     ensureCfLogin: async () => run('ensureCfLogin', 'a1b2c3d4e5f60718293a4b5c6d7e8f90'),
     cfAccounts: async () => run('cfAccounts', state.accounts),
     ensureBucket: async (name) => void run(`ensureBucket:${name}`, undefined),
@@ -141,10 +141,17 @@ function harness(config: Record<string, string> = credsEnv()): Harness {
     hasDocker: () => true,
     checkHostPorts: async () => void run('checkHostPorts', undefined),
     waitForOrigin: async (origin) => void run(`waitForOrigin:${origin}`, undefined),
-    pairTranscoder: async () => void run('pairTranscoder', undefined),
-    inspectAgentCredential: async () => run('inspectAgentCredential', state.agentStatus),
-    agentDoctor: async () => void run('agentDoctor', undefined),
-    startTranscoder: async () => void run('startTranscoder', undefined),
+    waitForLocalWorker: async (origin) => void run(`waitForLocalWorker:${origin}`, undefined),
+    pauseLocalAdmission: async (origin) => run(`pauseLocalAdmission:${origin}`, state.drainDetected),
+    assertLocalJobsDrained: async (origin) => {
+      const name = `assertLocalJobsDrained:${origin}`
+      state.drainChecks += 1
+      calls.push(name)
+      const failure = failures.get(`${name}#${state.drainChecks}`) ?? failures.get(name)
+      if (failure !== undefined) throw new Error(failure)
+      return true
+    },
+    stopLocalWorker: async () => void run('stopLocalWorker', undefined),
     useCfAccount: (id) => void run(`useCfAccount:${id}`, undefined),
     readConfig: () => state.config,
     writeConfig: (updates: EntryList) => {
@@ -300,7 +307,7 @@ describe('runDeployPhase — failures', () => {
       answers({
         target: 'deploy',
         db: { kind: 'local' },
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: false,
       }),
       h.port,
@@ -313,19 +320,19 @@ describe('runDeployPhase — failures', () => {
   })
 })
 
-describe('runDeployPhase — self-hosted provider', () => {
+describe('runDeployPhase — local provider', () => {
   it('never touches Modal, and still deploys the delivery worker and the API', async () => {
-    const h = harness(credsEnv({ TRANSCODE_PROVIDER: 'self-hosted', UPLOADS_ENABLED: 'false' }))
+    const h = harness(credsEnv({ TRANSCODE_PROVIDER: 'local', UPLOADS_ENABLED: 'false' }))
     const report = await runDeployPhase(
       '/repo',
-      answers({ transcodeProvider: 'self-hosted', uploadsEnabled: false, rawBucket: '' }),
+      answers({ transcodeProvider: 'local', uploadsEnabled: false, rawBucket: '' }),
       h.port,
     )
 
     expect(h.calls).not.toContain('prepareModal')
     expect(h.calls).not.toContain('uploadModalSecrets')
     expect(h.calls).not.toContain('deployModal')
-    // The bug this replaces: the self-hosted path deployed delivery and stopped.
+    // The bug this replaces: the local path deployed delivery and stopped.
     expect(h.calls).toContain('deployWorker:delivery')
     expect(h.calls).not.toContain('deployWorker:server')
     expect(h.calls).not.toContain('dbMigrate')
@@ -338,6 +345,68 @@ describe('runDeployPhase — self-hosted provider', () => {
 })
 
 describe('runDeployPhase — deploy target', () => {
+
+  it('pauses admission, checks the queue before rebuilding, then rechecks before stopping the worker', async () => {
+    const h = harness(credsEnv({
+      TRANSCODE_PROVIDER: 'modal',
+      COMPOSE_PROFILES: 'proxy,transcoder',
+    }))
+    h.drainDetected = true
+    const report = await runDeployPhase(
+      '/repo',
+      answers({ target: 'deploy', db: { kind: 'local' }, transcodeProvider: 'modal' }),
+      h.port,
+    )
+
+    const order = h.calls
+    const firstDrain = order.indexOf('assertLocalJobsDrained:http://localhost:8787')
+    const finalDrain = order.lastIndexOf('assertLocalJobsDrained:http://localhost:8787')
+    expect(order.indexOf('pauseLocalAdmission:http://localhost:8787')).toBeLessThan(firstDrain)
+    expect(firstDrain).toBeLessThan(order.indexOf('composeBuild:api,web'))
+    expect(order.indexOf('composeUp:proxy')).toBeLessThan(order.indexOf('stopLocalWorker'))
+    expect(order.indexOf('composeUp:proxy')).toBeLessThan(finalDrain)
+    expect(finalDrain).toBeLessThan(order.indexOf('stopLocalWorker'))
+    expect(order).not.toContain('composeBuild:transcoder')
+    expect(h.config['COMPOSE_PROFILES']).toBe('proxy')
+    expect(report.steps.find((step) => step.id === 'local-worker-stop')?.status).toBe('ok')
+  })
+
+  it('blocks a Modal switch when local jobs are still outstanding', async () => {
+    const h = harness(credsEnv({ TRANSCODE_PROVIDER: 'modal' }))
+    h.drainDetected = true
+    h.failOn('assertLocalJobsDrained:http://localhost:8787', '2 local transcode jobs remain queued or active')
+    const report = await runDeployPhase(
+      '/repo',
+      answers({ target: 'deploy', db: { kind: 'local' }, transcodeProvider: 'modal' }),
+      h.port,
+    )
+
+    expect(report.steps.find((step) => step.id === 'local-drain')?.status).toBe('failed')
+    expect(report.steps.find((step) => step.id === 'build')?.status).toBe('blocked')
+    expect(h.calls).not.toContain('composeMigrate')
+    expect(h.calls).not.toContain('stopLocalWorker')
+  })
+  it('does not stop the worker if a final drain check finds newly outstanding work', async () => {
+    const h = harness(credsEnv({ TRANSCODE_PROVIDER: 'modal' }))
+    h.drainDetected = true
+    h.failOn(
+      'assertLocalJobsDrained:http://localhost:8787#2',
+      '1 local transcode job remains queued or active',
+    )
+    const report = await runDeployPhase(
+      '/repo',
+      answers({ target: 'deploy', db: { kind: 'local' }, transcodeProvider: 'modal' }),
+      h.port,
+    )
+
+    expect(h.drainChecks).toBe(2)
+    const stopStep = report.steps.find((step) => step.id === 'local-worker-stop')
+    expect(stopStep?.status).toBe('failed')
+    expect(stopStep?.resume).toContain('verifies the queue before stopping the worker')
+    expect(stopStep?.resume).not.toContain('docker compose --profile transcoder stop')
+    expect(h.calls).not.toContain('stopLocalWorker')
+  })
+
   it('migrates and brings up Compose, and never deploys the API worker', async () => {
     const h = harness({ POSTGRES_PASSWORD: SECRET, JWT_SECRET: SECRET, ANALYTICS_INGEST_SECRET: SECRET })
     const report = await runDeployPhase(
@@ -345,21 +414,21 @@ describe('runDeployPhase — deploy target', () => {
       answers({
         target: 'deploy',
         db: { kind: 'local' },
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: false,
       }),
       h.port,
     )
 
     expect(h.calls).toContain('composeMigrate')
-    expect(h.calls).toContain('composeUp')
+    expect(h.calls).toContain('composeUp:transcoder')
     expect(h.calls).not.toContain('dbMigrate')
     expect(h.calls).not.toContain('deployWorker:server')
     expect(report.result.apiUrl).toBe('http://localhost:8787')
     expect(report.complete).toBe(true)
     const order = h.calls
     expect(order.indexOf('composeBuild:api,web')).toBeLessThan(order.indexOf('composeMigrate'))
-    expect(order.indexOf('composeMigrate')).toBeLessThan(order.indexOf('composeUp'))
+    expect(order.indexOf('composeMigrate')).toBeLessThan(order.indexOf('composeUp:transcoder'))
   })
 
   it('says analytics are off when the operator disabled them', async () => {
@@ -369,7 +438,7 @@ describe('runDeployPhase — deploy target', () => {
       answers({
         target: 'deploy',
         db: { kind: 'local' },
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: false,
         analyticsEnabled: false,
       }),
@@ -454,7 +523,7 @@ function hostInstallAnswers(overrides: Partial<WizardAnswers> = {}): WizardAnswe
     db: { kind: 'local' },
     hostInstall: true,
     access: 'localhost',
-    transcodeProvider: 'self-hosted',
+    transcodeProvider: 'local',
     uploadsEnabled: false,
     frontendUrl: 'http://localhost',
     proxy: {
@@ -475,11 +544,9 @@ describe('runDeployPhase — host install', () => {
     const order = h.calls
     expect(order.indexOf('checkHostPorts')).toBeLessThan(order.indexOf('composeBuild:api,web'))
     expect(order.indexOf('composeBuild:api,web')).toBeLessThan(order.indexOf('composeMigrate'))
-    expect(order.indexOf('composeMigrate')).toBeLessThan(order.indexOf('composeUp:proxy'))
-    expect(order.indexOf('composeUp:proxy')).toBeLessThan(order.indexOf('waitForOrigin:http://localhost'))
-    expect(order.indexOf('waitForOrigin:http://localhost')).toBeLessThan(order.indexOf('pairTranscoder'))
-    expect(h.calls).toContain('agentDoctor')
-    expect(h.calls).toContain('startTranscoder')
+    expect(order.indexOf('composeMigrate')).toBeLessThan(order.indexOf('composeUp:proxy,transcoder'))
+    expect(order.indexOf('composeUp:proxy,transcoder')).toBeLessThan(order.indexOf('waitForOrigin:http://localhost'))
+    expect(order.indexOf('waitForOrigin:http://localhost')).toBeLessThan(order.indexOf('waitForLocalWorker:http://localhost'))
     expect(h.config['COMPOSE_PROFILES']).toBe('proxy,transcoder')
     expect(report.result.apiUrl).toBe('http://localhost')
     expect(report.complete).toBe(true)
@@ -492,8 +559,8 @@ describe('runDeployPhase — host install', () => {
     const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
 
     expect(report.steps.find((step) => step.id === 'readiness')?.status).toBe('failed')
-    expect(report.steps.find((step) => step.id === 'pair')?.status).toBe('blocked')
-    expect(h.calls).not.toContain('pairTranscoder')
+    expect(report.steps.find((step) => step.id === 'local-worker')?.status).toBe('blocked')
+    expect(h.calls).not.toContain('waitForLocalWorker:http://localhost')
     expect(report.complete).toBe(false)
   })
 
@@ -512,31 +579,15 @@ describe('runDeployPhase — host install', () => {
     expect(report.complete).toBe(false)
   })
 
-  it('leaves the application running when pairing is cancelled', async () => {
+  it('requires local worker readiness before reporting a complete install', async () => {
     const h = harness()
-    h.pairingCode = ''
+    h.failOn('waitForLocalWorker:http://localhost', 'worker heartbeat timed out')
 
     const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
 
-    expect(h.calls).toContain('composeUp:proxy')
-    expect(h.calls).not.toContain('pairTranscoder')
-    expect(h.calls).not.toContain('startTranscoder')
-    expect(report.steps.find((step) => step.id === 'pair')?.status).toBe('failed')
-    expect(report.steps.find((step) => step.id === 'pair')?.resume).toContain('install.sh')
+    expect(h.calls).toContain('composeUp:proxy,transcoder')
+    expect(report.steps.find((step) => step.id === 'local-worker')?.status).toBe('failed')
     expect(report.complete).toBe(false)
-  })
-
-  it('reuses a valid pairing credential without prompting', async () => {
-    const h = harness()
-    h.agentStatus = { kind: 'valid' }
-
-    const report = await runDeployPhase('/repo', hostInstallAnswers(), h.port)
-
-    expect(h.calls).toContain('inspectAgentCredential')
-    expect(h.calls).not.toContain('pairTranscoder')
-    expect(h.calls).toContain('startTranscoder')
-    expect(report.steps.find((step) => step.id === 'pair')?.detail).toContain('reused')
-    expect(report.complete).toBe(true)
   })
 
   it('applies the selected Cloudflare account before provisioning resources', async () => {

@@ -165,19 +165,20 @@ const BASE: Record<string, string> = {
 const rowFor = (env: Record<string, string>, fragment: string) =>
   lintServerEnv(env).rows.find((row) => row.text.includes(fragment))
 
-describe('lintServerEnv with a self-hosted provider', () => {
+describe('lintServerEnv with a local provider', () => {
   it('passes with no raw bucket and no Modal configuration', () => {
     const result = lintServerEnv({
       ...BASE,
-      TRANSCODE_PROVIDER: 'self-hosted',
+      TRANSCODE_PROVIDER: 'local',
       UPLOADS_ENABLED: 'false',
+      LOCAL_TRANSCODER_SECRET: 'l'.repeat(40),
     })
     expect(result.failed).toBe(false)
   })
 
   it('does not report the missing bucket as a failure', () => {
     const row = rowFor(
-      { ...BASE, TRANSCODE_PROVIDER: 'self-hosted', UPLOADS_ENABLED: 'false' },
+      { ...BASE, TRANSCODE_PROVIDER: 'local', UPLOADS_ENABLED: 'false' },
       'RAW_BUCKET_NAME',
     )
     expect(row?.ok).toBe(false)
@@ -190,16 +191,16 @@ describe('lintServerEnv with a self-hosted provider', () => {
     // land, and silently accepting them would fail at the first upload.
     const result = lintServerEnv({
       ...BASE,
-      TRANSCODE_PROVIDER: 'self-hosted',
+      TRANSCODE_PROVIDER: 'local',
       UPLOADS_ENABLED: 'true',
     })
     expect(result.failed).toBe(true)
-    expect(rowFor({ ...BASE, TRANSCODE_PROVIDER: 'self-hosted' }, 'RAW_BUCKET_NAME')?.advisory)
+    expect(rowFor({ ...BASE, TRANSCODE_PROVIDER: 'local' }, 'RAW_BUCKET_NAME')?.advisory)
       .toBeUndefined()
   })
 
   it('treats a missing Modal endpoint as advisory, not a failure', () => {
-    const row = rowFor({ ...BASE, TRANSCODE_PROVIDER: 'self-hosted' }, 'MODAL_WEBHOOK_URL')
+    const row = rowFor({ ...BASE, TRANSCODE_PROVIDER: 'local' }, 'MODAL_WEBHOOK_URL')
     expect(row?.advisory).toBe(true)
   })
 

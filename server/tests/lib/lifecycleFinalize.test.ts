@@ -48,7 +48,7 @@ function payload(overrides: Record<string, unknown> = {}) {
 }
 
 describe('prefixes', () => {
-  it('scopes a self-hosted attempt to its own directory', () => {
+  it('scopes a local attempt to its own directory', () => {
     expect(attemptPrefix('vid-1', 'att-9')).toBe('videos/vid-1/attempts/att-9')
   })
 
@@ -239,7 +239,7 @@ describe('ownership and inventory guards', () => {
     expect(sqlText(ownershipPredicate(null))).toContain('transcode_attempt_id IS NULL')
   })
 
-  it('requires a fully verified inventory for a self-hosted attempt', () => {
+  it('requires a fully verified inventory for a local attempt', () => {
     const text = sqlText(inventoryVerifiedPredicate('vid-1', 'att-1')!)
     expect(text).toContain("inv.status = 'verified'")
     expect(text).toContain('inv.verified_count = inv.item_count')

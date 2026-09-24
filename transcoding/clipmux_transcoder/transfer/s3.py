@@ -2,7 +2,7 @@
 S3/R2 transfer — the Modal execution path.
 
 Credentials come from the environment of the runner (a Modal secret today),
-which is exactly why this backend is *not* the one self-hosted agents use: an
+which is exactly why this backend is *not* the one local workers use: an
 agent runs on a machine the owner also uses, and long-lived R2 keys there are a
 much larger blast radius than a short-lived presigned URL.
 

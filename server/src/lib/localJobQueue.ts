@@ -1,5 +1,5 @@
 /**
- * The durable queue for self-hosted transcode work.
+ * The durable queue for deployment-local transcode work.
  *
  * Postgres is the authority. Not a broker, not an in-memory list: the video row
  * and the lifecycle outbox already live here, and a second system of record
@@ -9,20 +9,20 @@
  * Four properties the statements below are built to hold:
  *
  * 1. **Claiming is atomic and exclusive.** `FOR UPDATE SKIP LOCKED` on the job
- *    row, with the video row updated in the same statement. Two agents polling
- *    simultaneously cannot both take one job, and a job cannot be taken while
+ *    row, with the video row updated in the same statement. Overlapping claims
+ *    from the local worker cannot take one job twice, and a job cannot be taken while
  *    its video has been deleted or is owned by a live attempt.
  * 2. **Waiting is not failing.** `waiting_reason` is a separate column from
- *    `state`, and an offline agent or unavailable source increments
+ *    `state`, and an offline worker or unavailable source increments
  *    `source_wait_count` instead of `attempts`. A laptop that is shut for a
  *    weekend has not failed three times.
  * 3. **Queue position costs nothing.** A queued job holds no attempt id and no
  *    lease, so it does not count against the organization concurrency cap or
  *    against `job_attempts`. The public status is still `processing`, because
  *    that is the vocabulary consumers already understand.
- * 4. **A local source is pinned to its agent.** `source.agent_id` is the machine
- *    holding the file; no other agent is eligible, and no amount of waiting will
- *    change that. The queue reports it rather than silently moving the job.
+ * 4. **Local sources belong to the installation.** Root-relative source paths
+ *    are resolved against the one worker's configured mounts, without affinity
+ *    columns or organization membership on the worker credential.
  */
 
 import { sql, type SQL } from 'drizzle-orm'
@@ -60,22 +60,20 @@ export const ACTIVE_JOB_STATES: JobState[] = [
 ]
 
 export type WaitingReason =
-  | 'agent-offline'
-  | 'agent-busy'
+  | 'worker-offline'
+  | 'worker-busy'
   | 'source-missing'
   | 'source-changed'
   | 'capacity'
   | 'retry-backoff'
-  | 'no-eligible-agent'
 
 export const WAITING_REASONS: WaitingReason[] = [
-  'agent-offline',
-  'agent-busy',
+  'worker-offline',
+  'worker-busy',
   'source-missing',
   'source-changed',
   'capacity',
   'retry-backoff',
-  'no-eligible-agent',
 ]
 
 /** Existing public status for queued work; the plan pins this vocabulary. */
@@ -88,9 +86,9 @@ export const DEFAULT_MAX_ATTEMPTS = 3
  * Retry backoff, as a pure function.
  *
  * Attempt 1 -> 30s, 2 -> 2m, 3 -> 10m. Jittered to avoid a thundering herd of
- * agents all waking on the same second after a provider outage.
+ * worker requests waking on the same second after an API outage.
  *
- * `sourceWait` short-circuits the whole thing: waiting for an offline agent or
+ * `sourceWait` short-circuits the whole thing: waiting for an offline worker or
  * an unmounted drive is not an attempt, so it never escalates the backoff.
  */
 export function nextAttemptDelayMs(
@@ -190,8 +188,6 @@ export type EnqueueLocalJobInput = {
   organizationId: string
   /** Source row already created by a browse/register control request. */
   sourceId: string
-  /** Bound agent for a local source. Null for an R2 source (any agent may run it). */
-  agentId: string | null
   /** Frozen ProcessingOptions blob. */
   options: Record<string, unknown>
   provider?: string
@@ -205,8 +201,8 @@ export type EnqueueResult = { jobId: string }
  *
  * The video is deliberately left **without** an attempt id and lease. That is
  * what "queue waiting does not consume a processing attempt or a concurrency
- * slot" means concretely: the attempt is minted when an agent claims the job, not
- * when it is queued. A job that sits behind an offline agent for a day therefore
+ * slot" means concretely: the attempt is minted when the worker claims the job, not
+ * when it is queued. A job that sits behind an offline worker for a day therefore
  * never blocks the organization's other work.
  *
  * The `video.ready`/`failed` outbox is untouched: queuing is not a lifecycle
@@ -227,14 +223,13 @@ export function buildEnqueueStatement(input: EnqueueJobRow): SQL {
       RETURNING id
     )
     INSERT INTO transcode_job (
-      video_id, organization_id, provider, source_id, agent_id, options,
+      video_id, organization_id, provider, source_id, options,
       state, max_attempts
     )
     SELECT ${input.videoId}::uuid,
            ${input.organizationId},
-           ${input.provider ?? 'self-hosted'},
+           ${input.provider ?? 'local'},
            ${input.sourceId}::uuid,
-           ${input.agentId},
            ${JSON.stringify(input.options)}::jsonb,
            'queued',
            ${maxAttempts}::int
@@ -258,8 +253,6 @@ export type CreateLocalImportInput = {
   organizationId: string
   userId: string
   sourceId: string
-  /** Bound agent for a local source; null for an r2 source. */
-  agentId: string | null
   title: string
   playbackPolicy: string
   generateSubtitle: boolean
@@ -310,14 +303,13 @@ export function buildCreateLocalImportStatement(input: CreateLocalImportInput): 
     ),
     queued AS (
       INSERT INTO transcode_job (
-        video_id, organization_id, provider, source_id, agent_id, options,
+        video_id, organization_id, provider, source_id, options,
         state, max_attempts, idempotency_key
       )
       SELECT id,
              ${input.organizationId},
-             ${input.provider ?? 'self-hosted'},
+             ${input.provider ?? 'local'},
              ${input.sourceId}::uuid,
-             ${input.agentId},
              ${JSON.stringify(input.options)}::jsonb,
              'queued',
              ${maxAttempts}::int,
@@ -422,38 +414,7 @@ export function buildFindByIdempotencyKeyStatement(input: {
 
 // ── claim ────────────────────────────────────────────────────────────────────
 
-export type ClaimJobInput = {
-  jobId: string
-  agentId: string
-  /**
-   * The claiming agent's organization. **Required**, and enforced in SQL.
-   *
-   * Without it a named claim is an authorization hole: an `r2` source has
-   * `agent_id = NULL` by design (any eligible machine may read an uploaded
-   * object), so the source-affinity predicate `(j.agent_id IS NULL OR
-   * j.agent_id = $agent)` is satisfied by *any* agent in *any* tenant that knows
-   * the job UUID. The named branch is exercised by the agent's `jobId` claim and
-   * must therefore carry the same tenant binding the automatic branch does.
-   */
-  organizationId: string
-  attemptId: string
-  leaseMs?: number
-  /** This agent's job budget. Enforced against live ownership, not `agent_id`. */
-  agentCapacity?: number | null
-  /** The organization's job budget. */
-  organizationCapacity?: number | null
-}
-
-/**
- * Count live attempts, by *ownership*.
- *
- * `transcode_job.agent_id` is source affinity, not ownership: it names the
- * machine a **local** source is pinned to, and is deliberately NULL for an `r2`
- * source so any eligible agent may take it. Counting capacity on that column
- * therefore misses exactly the jobs an upload produces — the common case — and
- * the cap is silently unenforced. Live ownership is `lease_owner` plus an
- * unexpired lease, which is what this counts.
- */
+/** Count live attempts by their current lease owner and organization. */
 function liveOwnershipPredicate(scope: SQL, capacity: SQL | null): SQL {
   return sql`AND (
     ${capacity}::int IS NULL
@@ -466,116 +427,6 @@ function liveOwnershipPredicate(scope: SQL, capacity: SQL | null): SQL {
         AND ${scope}
     ) < ${capacity}::int
   )`
-}
-
-/**
- * Admission locks.
- *
- * A count subquery inside the claim is not a cap on its own: two claims for
- * **different** jobs take `FOR UPDATE` on different job rows, so they never
- * block each other and both read the same pre-state. Under READ COMMITTED that
- * is unavoidable within one statement — the snapshot is taken when the statement
- * starts, before any lock it takes is granted.
- *
- * So admission is serialized on a *shared* row first, in a preceding statement
- * of the same transaction. Each statement in a READ COMMITTED transaction gets a
- * fresh snapshot, so the second claimer's count sees the first one's committed
- * row. The order (organization, then agent) is fixed so two claimers cannot
- * deadlock.
- *
- * Only taken when a cap is actually configured.
- */
-export function buildAdmissionLockStatements(input: {
-  organizationId: string
-  agentId: string
-  lockOrganization: boolean
-  lockAgent: boolean
-}): SQL[] {
-  const statements: SQL[] = []
-  if (input.lockOrganization) {
-    statements.push(sql`
-      SELECT o.id FROM organization AS o
-      WHERE o.id = ${input.organizationId}
-      FOR UPDATE
-    `)
-  }
-  if (input.lockAgent) {
-    statements.push(sql`
-      SELECT a.id FROM transcoder_agent AS a
-      WHERE a.id = ${input.agentId}
-      FOR UPDATE
-    `)
-  }
-  return statements
-}
-
-/**
- * Claim one named job for one agent, inside its organization.
- *
- * A named claim is the `jobId` variant an agent uses, and it applies **the same
- * rules** as an automatic claim: organization, source affinity, source
- * availability and capacity. Anything less makes the named path a way around the
- * checks the automatic path enforces.
- *
- * `attempt_id` is taken from `claimed_video`'s `RETURNING`, never re-read from
- * `video`: a data-modifying CTE's changes are invisible to the rest of the same
- * statement, so `SELECT transcode_attempt_id FROM video` would return the *old*
- * value and the job would be claimed with a NULL attempt — leaving a running job
- * the agent cannot report against.
- */
-export function buildClaimJobStatement(input: ClaimJobInput): SQL {
-  const leaseMs = input.leaseMs ?? DEFAULT_JOB_LEASE_MS
-  const agentCap = input.agentCapacity ?? null
-  const orgCap = input.organizationCapacity ?? null
-
-  return sql`
-    WITH candidate AS (
-      SELECT j.id, j.video_id, j.organization_id
-      FROM transcode_job AS j
-      LEFT JOIN transcode_source AS s ON s.id = j.source_id
-      WHERE j.id = ${input.jobId}::uuid
-        AND j.organization_id = ${input.organizationId}
-        AND j.state = 'queued'
-        AND (j.agent_id IS NULL OR j.agent_id = ${input.agentId})
-        AND (s.id IS NULL OR s.kind <> 'local' OR s.agent_id = ${input.agentId})
-        AND (s.id IS NULL OR s.availability = 'available')
-        AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= now())
-        ${liveOwnershipPredicate(sql`active.lease_owner = ${input.agentId}`, sql`${agentCap}`)}
-        ${liveOwnershipPredicate(sql`active.organization_id = j.organization_id`, sql`${orgCap}`)}
-      ORDER BY j.created_at ASC
-      LIMIT 1
-      FOR UPDATE OF j SKIP LOCKED
-    ),
-    claimed_video AS (
-      UPDATE video
-      SET transcode_attempt_id = ${input.attemptId},
-          status = 'processing',
-          processing_started_at = now(),
-          job_attempts = COALESCE(job_attempts, 0) + 1,
-          last_heartbeat_at = NULL,
-          transcode_lease_expires_at = now() + (${leaseMs}::int * interval '1 millisecond'),
-          failure_code = NULL,
-          updated_at = now()
-      WHERE id = (SELECT video_id FROM candidate)
-        AND deleted_at IS NULL
-        AND organization_id = ${input.organizationId}
-        AND status IN ('processing', 'uploading', 'failed', 'pending')
-      RETURNING id, transcode_attempt_id AS attempt_id
-    )
-    UPDATE transcode_job AS j
-    SET state = 'claimed',
-        attempt_id = v.attempt_id,
-        attempts = j.attempts + 1,
-        lease_owner = ${input.agentId},
-        lease_expires_at = now() + (${leaseMs}::int * interval '1 millisecond'),
-        waiting_reason = NULL,
-        started_at = COALESCE(j.started_at, now()),
-        updated_at = now()
-    FROM candidate AS c, claimed_video AS v
-    WHERE j.id = c.id
-      AND v.id = c.video_id
-    RETURNING j.id, j.video_id, j.organization_id, j.source_id, j.options, j.attempt_id, j.attempts
-  `
 }
 
 export type ClaimedJob = {
@@ -600,90 +451,39 @@ function toClaimedJob(row: Record<string, unknown>): ClaimedJob {
   }
 }
 
-/**
- * Run [admission locks..., claim] atomically and return the claim's rows.
- *
- * The lock statements' own results are discarded; they exist to serialize
- * admission so the capacity subquery in the claim sees a committed world.
- */
-async function claimUnderAdmissionLocks(
-  executor: AtomicExecutor,
-  input: { organizationId: string; agentId: string; needsOrgLock: boolean; needsAgentLock: boolean },
-  claim: () => SQL,
-): Promise<Record<string, unknown>[]> {
-  const atomic = executor as AtomicExecutor & AtomicBatchExecutor
-  if (!supportsAtomicBatch(atomic)) {
-    // A driver that can neither batch nor transact cannot order the lock ahead
-    // of the claim, so the cap would not hold. Refuse rather than over-admit.
-    throw new Error(
-      'capacity-limited job claims require a driver with batch() or transaction()',
-    )
-  }
-
-  const locks = buildAdmissionLockStatements({
-    organizationId: input.organizationId,
-    agentId: input.agentId,
-    lockOrganization: input.needsOrgLock,
-    lockAgent: input.needsAgentLock,
-  })
-
-  const results = await runAtomically(atomic, (handle) => {
-    const scoped = handle as unknown as AtomicExecutor
-    return [...locks.map((lock) => scoped.execute(lock)), scoped.execute(claim())]
-  })
-
-  return normalizeRows(results[results.length - 1])
-}
-
-/**
- * Find and claim the oldest job this agent is eligible for, in one statement.
- *
- * Eligibility is where source affinity lives: a `local` source names the machine
- * that holds the file, and any other agent is excluded outright. An `r2` source
- * has no agent, so every eligible machine in the **organization** may take it.
- *
- * `FOR UPDATE OF j` is not optional. The `LEFT JOIN transcode_source` makes `s`
- * the nullable side of an outer join, and PostgreSQL rejects an unqualified
- * `FOR UPDATE` there with "FOR UPDATE cannot be applied to the nullable side of
- * an outer join" — so the unqualified form is not a subtly different lock, it is
- * a statement that never runs.
- *
- * `attempt_id` comes from `claimed_video`'s `RETURNING`: a data-modifying CTE's
- * changes are invisible to the rest of the same statement, so re-reading `video`
- * would yield the pre-update value and claim the job with a NULL attempt.
- */
-export function buildClaimNextJobStatement(input: {
-  agentId: string
+/** Build one atomic claim for one candidate organization. */
+function buildClaimForOrganizationStatement(input: {
+  workerId: string
   organizationId: string
-  agentCapacity?: number
+  capacity?: number
   organizationCapacity?: number | null
   leaseMs?: number
   jobId?: string
-  /** Minted by the caller when it needs to know the id before claiming. */
   attemptId?: string
 }): SQL {
-  const agentCap = Math.max(1, input.agentCapacity ?? 1)
+  const workerCap = Math.max(1, input.capacity ?? 1)
   const orgCap = input.organizationCapacity ?? null
   const leaseMs = input.leaseMs ?? DEFAULT_JOB_LEASE_MS
-  // The attempt id is generated in SQL when the caller has no reason to know it
-  // in advance, which keeps the common claim to a single round trip.
   const attemptId = input.attemptId
     ? sql`${input.attemptId}`
-    : sql`${input.agentId} || ':' || gen_random_uuid()::text`
+    : sql`${input.workerId} || ':' || gen_random_uuid()::text`
 
   return sql`
     WITH candidate AS (
       SELECT j.id, j.video_id, j.organization_id
       FROM transcode_job AS j
+      INNER JOIN video AS v ON v.id = j.video_id
       LEFT JOIN transcode_source AS s ON s.id = j.source_id
       WHERE j.organization_id = ${input.organizationId}
+        AND j.provider = 'local'
         AND j.state = 'queued'
-        AND (j.agent_id IS NULL OR j.agent_id = ${input.agentId})
-        AND (s.id IS NULL OR s.kind <> 'local' OR s.agent_id = ${input.agentId})
-        AND (s.id IS NULL OR s.availability = 'available')
+        AND v.organization_id = j.organization_id
+        AND v.deleted_at IS NULL
+        AND v.status IN ('processing', 'uploading', 'failed', 'pending')
+        AND (s.id IS NULL OR (s.organization_id = j.organization_id AND s.availability = 'available'))
         AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= now())
         AND (${input.jobId ?? null}::uuid IS NULL OR j.id = ${input.jobId ?? null}::uuid)
-        ${liveOwnershipPredicate(sql`active.lease_owner = ${input.agentId}`, sql`${agentCap}`)}
+        ${liveOwnershipPredicate(sql`active.lease_owner = ${input.workerId}`, sql`${workerCap}`)}
         ${liveOwnershipPredicate(sql`active.organization_id = j.organization_id`, sql`${orgCap}`)}
       ORDER BY j.created_at ASC
       LIMIT 1
@@ -709,90 +509,85 @@ export function buildClaimNextJobStatement(input: {
     SET state = 'claimed',
         attempt_id = v.attempt_id,
         attempts = j.attempts + 1,
-        lease_owner = ${input.agentId},
+        lease_owner = ${input.workerId},
         lease_expires_at = now() + (${leaseMs}::int * interval '1 millisecond'),
         waiting_reason = NULL,
         started_at = COALESCE(j.started_at, now()),
         updated_at = now()
     FROM candidate AS c, claimed_video AS v
-    WHERE j.id = c.id
-      AND v.id = c.video_id
-    RETURNING j.id, j.video_id, j.organization_id, j.source_id, j.options,
-              j.attempt_id, j.attempts
+    WHERE j.id = c.id AND v.id = c.video_id
+    RETURNING j.id, j.video_id, j.organization_id, j.source_id, j.options, j.attempt_id, j.attempts
   `
 }
 
-export async function claimJob(
+/**
+ * Claim globally while serializing against both this worker's capacity and each
+ * organization's cap. Capped organizations are tried independently, so they do
+ * not block eligible jobs belonging to another organization.
+ */
+export async function claimNextLocalJob(
   executor: AtomicExecutor,
-  input: ClaimJobInput,
+  input: { workerId: string; capacity: number; organizationCapacity?: number | null; leaseMs?: number },
 ): Promise<ClaimedJob | null> {
-  const needsAgentLock = (input.agentCapacity ?? null) !== null
-  const needsOrgLock = (input.organizationCapacity ?? null) !== null
+  const atomic = executor as AtomicExecutor & AtomicBatchExecutor
+  if (!supportsAtomicBatch(atomic)) {
+    throw new Error('global local job claims require transaction()')
+  }
+  let claimed: ClaimedJob | null = null
+  await atomic.transaction!(async (rawTx) => {
+    const tx = rawTx as unknown as AtomicExecutor
+    // Local claims serialize on the singleton row. This gives the capacity count
+    // a fresh READ COMMITTED snapshot after any earlier claim has committed.
+    await tx.execute(sql`SELECT id FROM local_worker WHERE id = ${input.workerId} FOR UPDATE`)
+    const capacity = normalizeRows(await tx.execute(sql`
+      SELECT count(*)::int AS active
+      FROM transcode_job
+      WHERE lease_owner = ${input.workerId}
+        AND lease_expires_at > now()
+        AND state IN ('claimed', 'running', 'publishing')
+    `))[0]
+    if (Number(capacity?.active ?? 0) >= Math.max(1, input.capacity)) return
 
-  const rows =
-    needsAgentLock || needsOrgLock
-      ? await claimUnderAdmissionLocks(
-          executor,
-          {
-            organizationId: input.organizationId,
-            agentId: input.agentId,
-            needsOrgLock,
-            needsAgentLock,
-          },
-          () => buildClaimJobStatement(input),
-        )
-      : normalizeRows(await executor.execute(buildClaimJobStatement(input)))
+    const candidates = normalizeRows(await tx.execute(sql`
+      SELECT j.organization_id, min(j.created_at) AS oldest
+      FROM transcode_job AS j
+      INNER JOIN video AS v ON v.id = j.video_id
+      LEFT JOIN transcode_source AS s ON s.id = j.source_id
+      WHERE j.provider = 'local'
+        AND j.state = 'queued'
+        AND v.organization_id = j.organization_id
+        AND v.deleted_at IS NULL
+        AND v.status IN ('processing', 'uploading', 'failed', 'pending')
+        AND (s.id IS NULL OR (s.organization_id = j.organization_id AND s.availability = 'available'))
+        AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= now())
+      GROUP BY j.organization_id
+      ORDER BY min(j.created_at) ASC
+    `))
 
-  const row = rows[0]
-  return row && row.attempt_id ? toClaimedJob(row) : null
-}
-
-/** Attempt ids minted in SQL are opaque; the protocol treats them as strings. */
-export async function claimNextJob(
-  executor: AtomicExecutor,
-  input: {
-    agentId: string
-    organizationId: string
-    capacity?: number
-    organizationCapacity?: number | null
-    leaseMs?: number
-    jobId?: string
-  },
-): Promise<ClaimedJob | null> {
-  const needsAgentLock = true // the agent cap defaults to 1, so it is always set
-  const needsOrgLock = (input.organizationCapacity ?? null) !== null
-
-  const rows =
-    needsAgentLock || needsOrgLock
-      ? await claimUnderAdmissionLocks(
-          executor,
-          {
-            organizationId: input.organizationId,
-            agentId: input.agentId,
-            needsOrgLock,
-            needsAgentLock,
-          },
-          () =>
-            buildClaimNextJobStatement({
-              ...input,
-              agentCapacity: input.capacity,
-            }),
-        )
-      : normalizeRows(
-          await executor.execute(
-            buildClaimNextJobStatement({ ...input, agentCapacity: input.capacity }),
-          ),
-        )
-
-  const row = rows[0]
-  return row && row.attempt_id ? toClaimedJob(row) : null
+    for (const candidate of candidates) {
+      const organizationId = String(candidate.organization_id)
+      await tx.execute(sql`SELECT id FROM organization WHERE id = ${organizationId} FOR UPDATE`)
+      const rows = normalizeRows(await tx.execute(buildClaimForOrganizationStatement({
+        workerId: input.workerId,
+        organizationId,
+        capacity: input.capacity,
+        organizationCapacity: input.organizationCapacity,
+        leaseMs: input.leaseMs,
+      })))
+      if (rows[0]?.attempt_id) {
+        claimed = toClaimedJob(rows[0])
+        break
+      }
+    }
+  })
+  return claimed
 }
 
 // ── state transitions ────────────────────────────────────────────────────────
 
 export function buildJobStateStatement(input: {
   jobId: string
-  agentId: string
+  workerId: string
   attemptId: string
   from: JobState[]
   to: JobState
@@ -810,7 +605,7 @@ export function buildJobStateStatement(input: {
         updated_at = now()
     WHERE id = ${input.jobId}::uuid
       AND attempt_id = ${input.attemptId}
-      AND lease_owner = ${input.agentId}
+      AND lease_owner = ${input.workerId}
       AND state IN (${fromList})
     RETURNING id, state
   `
@@ -1129,8 +924,8 @@ async function retireInventory(executor: AtomicExecutor, jobId: string): Promise
  *
  * Local jobs have no wall-clock deadline — a CPU encode of a lecture is
  * legitimately slow — so expiry of the *lease* (not of the work) is the only
- * liveness signal. An expired lease means the agent stopped beating, and the
- * attempt is retired so the job can be retried; the agent's own reconcile step
+ * liveness signal. An expired lease means the worker stopped sending heartbeats, and the
+ * attempt is retired so the job can be retried; the worker's reconcile step
  * refuses to resume work whose attempt it no longer owns.
  */
 export function buildReclaimExpiredJobsStatement(input: { limit?: number } = {}): SQL {
@@ -1149,7 +944,7 @@ export function buildReclaimExpiredJobsStatement(input: { limit?: number } = {})
     requeued AS (
       UPDATE transcode_job AS j
       SET state = 'queued',
-          waiting_reason = 'agent-offline',
+          waiting_reason = 'worker-offline',
           attempt_id = NULL,
           lease_owner = NULL,
           lease_expires_at = NULL,
@@ -1189,53 +984,34 @@ export async function reclaimExpiredJobs(
  * Explain why a queued job is not running.
  *
  * Pure, so the mapping is checkable with literals. The dashboard shows this
- * verbatim: "waiting for the agent that holds this file" and "waiting for the
+ * verbatim: "waiting for the worker that holds this file" and "waiting for the
  * agent to finish another job" call for completely different actions from the
  * owner, and a single "queued" tells them neither.
  */
 export function classifyWaitingReason(input: {
-  jobAgentId: string | null
-  onlineAgentIds: Set<string>
-  sourceKind: string | null
   sourceAvailability: string | null
-  agentCapacityFree: boolean
+  workerOnline: boolean
+  workerCapacityFree: boolean
   nextAttemptAt: Date | null
   now?: Date
 }): WaitingReason | null {
   const now = input.now ?? new Date()
-
-  // Ordered from "nothing can fix this" to "nothing is wrong", so the first
-  // matching cause is also the most actionable one.
   if (input.sourceAvailability === 'missing') return 'source-missing'
   if (input.sourceAvailability === 'changed') return 'source-changed'
-
-  // A local source with no bound agent can never run: no other machine holds the
-  // file, so waiting will not help and the owner has to re-register it.
-  if (input.sourceKind === 'local' && !input.jobAgentId) return 'no-eligible-agent'
-
-  if (input.onlineAgentIds.size === 0) return 'agent-offline'
-  if (input.sourceKind === 'local' && input.jobAgentId && !input.onlineAgentIds.has(input.jobAgentId)) {
-    return 'agent-offline'
-  }
-
-  if (!input.agentCapacityFree) return 'agent-busy'
-
-  // Checked after capacity: an agent that is both busy and in backoff is busy
-  // now, and that is the state the owner can act on.
-  if (input.nextAttemptAt && input.nextAttemptAt.getTime() > now.getTime()) {
-    return 'retry-backoff'
-  }
+  if (!input.workerOnline) return 'worker-offline'
+  if (!input.workerCapacityFree) return 'worker-busy'
+  if (input.nextAttemptAt && input.nextAttemptAt.getTime() > now.getTime()) return 'retry-backoff'
   return null
 }
 
 // ── reads for the protocol ───────────────────────────────────────────────────
 
 /**
- * Re-acquire an attempt this agent already owns, after a restart.
+ * Re-acquire an attempt the local worker already owns, after a restart.
  *
- * Distinct from a claim: a job this agent already holds is not `queued`, so
+ * Distinct from a claim: a job the local worker already holds is not `queued`, so
  * claiming it is impossible. Reporting that an attempt may be resumed and then
- * being unable to resume it is what left restarted agents idling until the lease
+ * being unable to resume it is what left the restarted worker idling until the lease
  * expired — the video stuck, the capacity slot consumed, and the recovery path
  * present only on paper.
  *
@@ -1245,7 +1021,7 @@ export function classifyWaitingReason(input: {
 export function buildResumeAttemptStatement(input: {
   jobId: string
   attemptId: string
-  agentId: string
+  workerId: string
   leaseMs?: number
 }): SQL {
   const leaseMs = input.leaseMs ?? DEFAULT_JOB_LEASE_MS
@@ -1254,7 +1030,7 @@ export function buildResumeAttemptStatement(input: {
       SELECT id, video_id FROM transcode_job
       WHERE id = ${input.jobId}::uuid
         AND attempt_id = ${input.attemptId}
-        AND lease_owner = ${input.agentId}
+        AND lease_owner = ${input.workerId}
         AND state IN ('claimed', 'running', 'publishing')
     ),
     extended_job AS (
@@ -1281,7 +1057,7 @@ export function buildResumeAttemptStatement(input: {
 
 export async function resumeOwnedAttempt(
   executor: AtomicExecutor,
-  input: { jobId: string; attemptId: string; agentId: string; leaseMs?: number },
+  input: { jobId: string; attemptId: string; workerId: string; leaseMs?: number },
 ): Promise<ClaimedJob | null> {
   const rows = normalizeRows(await executor.execute(buildResumeAttemptStatement(input)))
   const row = rows[0]
@@ -1297,14 +1073,15 @@ export async function resumeOwnedAttempt(
   }
 }
 
-export function buildOutstandingWorkStatement(input: { agentId: string }): SQL {
+export function buildOutstandingWorkStatement(input: { workerId: string }): SQL {
   return sql`
     SELECT
-      (SELECT count(*) FROM agent_control_request
-        WHERE agent_id = ${input.agentId} AND status = 'pending' AND expires_at > now())::int
+      (SELECT count(*) FROM local_control_request
+        WHERE status = 'pending' AND expires_at > now())::int
         AS "pendingControls",
       (SELECT count(*) FROM transcode_job
-        WHERE agent_id = ${input.agentId}
+        WHERE lease_owner = ${input.workerId}
+          AND lease_expires_at > now()
           AND state IN ('claimed', 'running', 'publishing'))::int
         AS "activeJobs"
   `
@@ -1312,7 +1089,7 @@ export function buildOutstandingWorkStatement(input: { agentId: string }): SQL {
 
 export async function readOutstandingWork(
   executor: AtomicExecutor,
-  input: { agentId: string },
+  input: { workerId: string },
 ): Promise<{ pendingControls: number; activeJobs: number }> {
   const rows = normalizeRows(await executor.execute(buildOutstandingWorkStatement(input)))
   const row = rows[0] ?? {}

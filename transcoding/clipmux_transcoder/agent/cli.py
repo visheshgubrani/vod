@@ -19,6 +19,7 @@ that without parsing output.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
@@ -61,8 +62,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Self-hosted ClipMux transcoding agent.",
     )
     parser.add_argument("--api", help="ClipMux API base URL (default: $CLIPMUX_API_URL)")
-    parser.add_argument("--token", help="agent token (default: $CLIPMUX_AGENT_TOKEN)")
-    parser.add_argument("--token-file", help="read the agent token from a file")
     parser.add_argument(
         "--root",
         action="append",
@@ -75,10 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
 
     sub = parser.add_subparsers(dest="command", required=True)
-
-    pair = sub.add_parser("pair", help="redeem a pairing code and store a credential")
-    pair.add_argument("--code", required=True, help="pairing code from the dashboard")
-    pair.add_argument("--name", default="", help="display name for this machine")
 
     sub.add_parser("run", help="run the agent loop")
 
@@ -103,16 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--also-2160p", action="store_true", help="include 1440p and 2160p rungs"
     )
 
-    sub.add_parser("jobs", help="list recent jobs for this organization")
-
-    retry = sub.add_parser("retry", help="re-queue a failed video")
-    retry.add_argument("video_id")
-
-    cancel = sub.add_parser("cancel", help="cancel a queued or running video")
-    cancel.add_argument("video_id")
-
     sub.add_parser("capabilities", help="print this machine's encoder capabilities")
-    sub.add_parser("rotate", help="rotate this agent's credential")
     sub.add_parser("version", help="print the agent version")
 
     return parser
@@ -129,26 +115,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         return EXIT_OK
 
     try:
-        if args.command == "pair":
-            return cmd_pair(args)
         if args.command == "doctor":
             return cmd_doctor(args, load_config(args))
         if args.command == "capabilities":
             return cmd_capabilities(args)
         if args.command == "import":
-            return cmd_import(args)
+            return cmd_import(args, load_config(args))
 
         config = load_config(args)
         if args.command == "run":
             return cmd_run(args, config)
-        if args.command == "jobs":
-            return cmd_jobs(args, config)
-        if args.command == "retry":
-            return cmd_retry(args, config)
-        if args.command == "cancel":
-            return cmd_cancel(args, config)
-        if args.command == "rotate":
-            return cmd_rotate(args, config)
     except AgentApiError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -184,45 +160,12 @@ def load_config(args) -> AgentConfig:
             roots.append(Root(name=name.strip() or "media", path=Path(path.strip())))
         config.roots = roots
 
-    token = args.token
-    if not token and getattr(args, "token_file", None):
-        token = Path(args.token_file).read_text().strip()
-    if not token:
-        token = read_stored_token(config)
-    if token:
-        config.token = token
-
     return config
-
-
-def token_path(config: AgentConfig) -> Path:
-    return Path(os.environ.get("CLIPMUX_TOKEN_FILE", DEFAULT_STATE_DIR / "token"))
-
-
-def read_stored_token(config: AgentConfig) -> str:
-    path = token_path(config)
-    try:
-        return path.read_text().strip()
-    except OSError:
-        return ""
-
-
-def store_token(config: AgentConfig, token: str) -> Path:
-    path = token_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # 0600: the credential authenticates as this organization. A world-readable
-    # token on a shared machine is a tenant-isolation hole, not a convenience.
-    path.write_text(token)
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-    return path
 
 
 def make_client(config: AgentConfig) -> TranscoderApiClient:
     return TranscoderApiClient(
-        ApiConfig(base_url=config.api_url, token=config.token)
+        ApiConfig(base_url=config.api_url, secret=config.secret)
     )
 
 
@@ -230,36 +173,16 @@ def make_client(config: AgentConfig) -> TranscoderApiClient:
 # COMMANDS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def cmd_pair(args) -> int:
-    config = AgentConfig.from_env()
-    api = (args.api or config.api_url).rstrip("/")
-
-    print("Probing this machine before pairing (this runs real test encodes)...")
-    capabilities = detect_capabilities(scratch_dir=config.scratch_dir).to_payload()
-
-    reply = TranscoderApiClient.pair(
-        api,
-        args.code,
-        name=args.name or config.name or socket.gethostname(),
-        hostname=socket.gethostname(),
-        agent_version=_version(),
-        capabilities=capabilities,
-    )
-
-    path = store_token(config, str(reply["token"]))
-    print(f"Paired as {reply['agentId']} ({reply.get('name')}).")
-    print(f"Credential stored at {path} (mode 0600).")
-    print()
-    print("Run the agent with:")
-    print(f"  clipmux-transcoder --api {api} run")
-    return EXIT_OK
-
-
 def cmd_capabilities(args) -> int:
     config = AgentConfig.from_env()
     report = detect_capabilities(scratch_dir=config.scratch_dir)
     if args.json:
-        print(json.dumps(report.to_payload(), indent=2, sort_keys=True))
+        payload = report.to_payload()
+        payload['encoderDiagnostics'] = {
+            name: {"available": probe.available, "reason": probe.reason}
+            for name, probe in sorted(report.encoders.items())
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return EXIT_OK
 
     payload = report.to_payload()
@@ -268,9 +191,9 @@ def cmd_capabilities(args) -> int:
     print(f"cores:   {payload['cpuCores']}")
     print(f"hwaccels compiled in: {', '.join(payload['hwaccels']) or 'none'}")
     print("encoders (verified with a real encode):")
-    for name, probe in payload["encoders"].items():
-        mark = "ok  " if probe["available"] else "no  "
-        note = "" if probe["available"] else f"  — {probe['reason']}"
+    for name, probe in sorted(report.encoders.items()):
+        mark = "ok  " if probe.available else "no  "
+        note = "" if probe.available else f"  — {probe.reason}"
         print(f"  {mark}{name}{note}")
     return EXIT_OK
 
@@ -284,9 +207,9 @@ def cmd_doctor(args, config: AgentConfig) -> int:
     So each check below mirrors a real failure mode, and the last one runs an
     actual encode and package cycle.
 
-    The credential is loaded through `load_config`, the same helper `run` uses,
-    so a token written by `pair` is visible here even when it is not in the
-    environment.
+    The shared deployment credential is read from the environment and never
+    written to local state. The API check below is read-only and does not mark
+    the worker online.
     """
     checks: List[Dict[str, Any]] = []
     ok = True
@@ -366,21 +289,17 @@ def cmd_doctor(args, config: AgentConfig) -> int:
     )
 
     # 6) API connectivity and credential
-    if config.token:
+    if config.secret:
         try:
             client = make_client(config)
-            whoami = client.whoami()
-            record(
-                "api credential",
-                True,
-                f"authenticated as {whoami.get('name')} in {whoami.get('organizationId')}",
-            )
+            client.status()
+            record("api credential", True, "deployment credential accepted")
         except AuthenticationFailed as exc:
             record("api credential", False, f"rejected: {exc}")
         except AgentApiError as exc:
             record("api credential", False, f"could not reach the API: {exc}")
     else:
-        record("api credential", False, "no token — run `clipmux-transcoder pair`")
+        record("api credential", False, "LOCAL_TRANSCODER_SECRET is not configured")
 
     # 7) a real source, when one was named
     if getattr(args, "file", None):
@@ -495,13 +414,21 @@ def cmd_run(args, config: AgentConfig) -> int:
     from clipmux_transcoder.agent.daemon import TranscoderAgent
 
     config.scratch_dir.mkdir(parents=True, exist_ok=True)
-    journal = RecoveryJournal(config.journal_path)
-    client = make_client(config)
-    agent = TranscoderAgent(config, client, journal, verbose=not args.quiet)
-    try:
-        agent.run_forever()
-    finally:
-        journal.close()
+    config.journal_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = config.journal_path.parent / "worker.lock"
+    with lock_path.open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("error: another local transcoding worker already uses this state volume", file=sys.stderr)
+            return EXIT_FAILURE
+        journal = RecoveryJournal(config.journal_path)
+        client = make_client(config)
+        agent = TranscoderAgent(config, client, journal, verbose=not args.quiet)
+        try:
+            agent.run_forever()
+        finally:
+            journal.close()
     return EXIT_OK
 
 
@@ -587,60 +514,6 @@ def cmd_import(args, config: AgentConfig) -> int:
     for entry in imports:
         print(f"  sourceRef={entry['sourceRef']}  title={entry['title'] or '(from file)'}")
     return EXIT_OK
-
-
-def cmd_jobs(args, config: AgentConfig) -> int:
-    client = make_client(config)
-    jobs = client.list_jobs().get("jobs") or []
-    if args.json:
-        print(json.dumps(jobs, indent=2))
-        return EXIT_OK
-    if not jobs:
-        print("no jobs yet")
-        return EXIT_OK
-    for job in jobs:
-        waiting = f"  waiting: {job['waitingReason']}" if job.get("waitingReason") else ""
-        print(
-            f"{job['state']:<10} {job['videoId']}  {job['title'][:40]:<40} "
-            f"{job['attempts']}/{job['maxAttempts']}{waiting}"
-        )
-    return EXIT_OK
-
-
-def cmd_retry(args, config: AgentConfig) -> int:
-    client = make_client(config)
-    job = _find_job(client, args.video_id)
-    if job is None:
-        print(f"error: no job found for video {args.video_id}", file=sys.stderr)
-        return EXIT_FAILURE
-    reply = client.retry_job(str(job["jobId"]))
-    print(json.dumps(reply, indent=2) if args.json else f"retry queued: {args.video_id}")
-    return EXIT_OK
-
-
-def cmd_cancel(args, config: AgentConfig) -> int:
-    client = make_client(config)
-    job = _find_job(client, args.video_id)
-    if job is None:
-        print(f"error: no job found for video {args.video_id}", file=sys.stderr)
-        return EXIT_FAILURE
-    reply = client.cancel_job(str(job["jobId"]))
-    print(json.dumps(reply, indent=2) if args.json else f"cancelled: {args.video_id}")
-    return EXIT_OK
-
-
-def cmd_rotate(args, config: AgentConfig) -> int:
-    client = make_client(config)
-    reply = client.rotate()
-    store_token(config, str(reply["token"]))
-    print("Credential rotated; the previous token no longer works.")
-    return EXIT_OK
-
-
-def _find_job(client: TranscoderApiClient, video_id: str) -> Optional[Dict[str, Any]]:
-    """Locate a job by video id within this agent's organization."""
-    jobs = client.list_jobs().get("jobs") or []
-    return next((job for job in jobs if job.get("videoId") == video_id), None)
 
 
 def _version() -> str:

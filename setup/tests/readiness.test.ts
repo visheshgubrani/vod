@@ -17,10 +17,10 @@ describe('requiredHealthChecks', () => {
       'transcoder',
     ])
     expect(
-      requiredHealthChecks({ transcodeProvider: 'self-hosted', uploadsEnabled: false }),
+      requiredHealthChecks({ transcodeProvider: 'local', uploadsEnabled: false }),
     ).toEqual(['database', 'auth'])
     expect(
-      requiredHealthChecks({ transcodeProvider: 'self-hosted', uploadsEnabled: true }),
+      requiredHealthChecks({ transcodeProvider: 'local', uploadsEnabled: true }),
     ).toEqual(['database', 'auth', 'storage'])
   })
 })

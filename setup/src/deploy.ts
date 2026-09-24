@@ -23,7 +23,6 @@
 import { analyticsEnabled, transcodeProvider, uploadsEnabled } from './mapping'
 import type { ConfigTarget, WizardAnswers } from './types'
 import { WizardError } from './errors'
-import { pairingCommand } from './pairing'
 import { primaryConfigPath } from './envio'
 import { clipmuxCredsFromEnv, MODAL_CREDS_SECRET } from './modal'
 import { bucketCorsOrigins, createDeployPort, type DeployPort } from './deployPort'
@@ -47,10 +46,12 @@ export type DeployStepId =
   | 'delivery-secret'
   | 'delivery-analytics'
   | 'build'
+  | 'local-drain'
   | 'migrate'
   | 'api'
   | 'readiness'
-  | 'pair'
+  | 'local-worker'
+  | 'local-worker-stop'
   | 'modal-callbacks'
   | 'report'
 
@@ -140,10 +141,12 @@ const RESUME: Record<DeployStepId, string | undefined> = {
   'delivery-analytics':
     'cd delivery && pnpm exec wrangler secret put ANALYTICS_INGEST_SECRET && curl $DELIVERY_URL/health/config',
   build: 'docker compose build api web && docker compose run --rm migrate',
+  'local-drain': 'cancel or drain local jobs in Encoding, then re-run the installer',
   migrate: 'pnpm db:migrate   (dev target) or docker compose run --rm migrate   (deploy target)',
   api: 'pnpm docker:up   (deploy target) or pnpm dev   (dev target)',
   readiness: 'curl the configured origin /health/config until ready: true',
-  pair: './scripts/install.sh   (resume pairing — the application is already running)',
+  'local-worker': './scripts/install.sh   (resume worker startup after the API is ready)',
+  'local-worker-stop': 'let local jobs finish or cancel them in Encoding, then re-run `./scripts/bootstrap.sh --deploy` so it verifies the queue before stopping the worker',
   'modal-callbacks': './scripts/bootstrap.sh --deploy   (re-run once the API URL is known)',
   report: undefined,
 }
@@ -205,6 +208,7 @@ export async function runDeployPhase(
   let modalBin: string | null = null
   let uploadedCallbackHosts: string | null = null
   let apiConfigured = false
+  let switchingFromLocal = false
 
   const record = (step: DeployStepResult): boolean => {
     steps.push(step)
@@ -436,7 +440,7 @@ export async function runDeployPhase(
     } else {
       skip(
         { id: 'modal', label: 'Modal environment, secrets & deploy', dependsOn: [] },
-        'self-hosted provider — nothing to deploy to Modal',
+        'local provider — no Modal service is needed',
       )
     }
 
@@ -526,11 +530,38 @@ export async function runDeployPhase(
     // The migrate service uses the API image. Building only during `compose up`
     // is too late: migrate would run an older (or missing) image.
     if (target === 'deploy') {
+      if (wantsModal) {
+        await step(
+          {
+            id: 'local-drain',
+            label: 'Pause local admission and drain transcodes before switching to Modal',
+            dependsOn: [],
+          },
+          async () => {
+            const config = io.readConfig() ?? {}
+            const origin = config['BACKEND_URL']?.trim() || config['BETTER_AUTH_URL']?.trim()
+            if (!origin) return 'no existing API origin is configured'
+            switchingFromLocal = await io.pauseLocalAdmission(origin)
+            if (!switchingFromLocal) return 'no running local-provider API was detected'
+            const drained = await io.assertLocalJobsDrained(origin)
+            if (!drained) throw new Error('the local queue is not drained')
+            return 'local admission is paused and the existing queue is drained'
+          },
+        )
+      } else {
+        skip(
+          { id: 'local-drain', label: 'Pause local admission and drain transcodes before switching to Modal', dependsOn: [] },
+          'local provider selected',
+        )
+      }
       await step(
         {
           id: 'build',
           label: 'Build application images',
-          dependsOn: hostInstall ? ['ports'] : [],
+          dependsOn: [
+            ...(hostInstall ? ['ports' as const] : []),
+            ...(wantsModal ? ['local-drain' as const] : []),
+          ],
         },
         async () => {
           if (!io.hasDocker()) {
@@ -539,7 +570,7 @@ export async function runDeployPhase(
           await io.composeBuild({ services: ['api', 'web'] })
           if (!wantsModal) {
             await io.composeBuild({ services: ['transcoder'], profiles: ['transcoder'] })
-            return 'api, web and transcoder images built (transcoder not started)'
+            return 'api, web and local transcoder images built'
           }
           return 'api and web images built'
         },
@@ -566,7 +597,14 @@ export async function runDeployPhase(
     // ── 7. API ───────────────────────────────────────────────────────────
     if (target === 'deploy') {
       await step({ id: 'api', label: 'Bring up the Compose stack', dependsOn: ['migrate'] }, async () => {
-        await io.composeUp(proxyProfiles.length > 0 ? proxyProfiles : undefined)
+        const configuredProfiles = (io.readConfig()?.['COMPOSE_PROFILES'] ?? proxyProfiles.join(','))
+          .split(',').map((profile) => profile.trim()).filter(Boolean)
+        const profiles = [...new Set([
+          ...configuredProfiles.filter((profile) => wantsModal ? profile !== 'transcoder' : true),
+          ...(!wantsModal ? ['transcoder'] : []),
+        ])]
+        io.writeConfig([['COMPOSE_PROFILES', profiles.join(',')]])
+        await io.composeUp(profiles.length > 0 ? profiles : undefined)
         result.apiUrl = publicOrigin ?? 'http://localhost:8787'
         apiConfigured = true
         if (publicOrigin) return `origin ${publicOrigin}`
@@ -578,6 +616,30 @@ export async function runDeployPhase(
         'dev target — the API runs here via `pnpm dev`',
       )
       apiConfigured = true
+    }
+
+    if (target === 'deploy' && wantsModal && switchingFromLocal) {
+      await step(
+        {
+          id: 'local-worker-stop',
+          label: 'Stop the local transcoder after the provider switch',
+          dependsOn: ['api', 'local-drain'],
+        },
+        async () => {
+          const config = io.readConfig() ?? {}
+          const origin = config['BACKEND_URL']?.trim() || config['BETTER_AUTH_URL']?.trim()
+          if (!origin) throw new Error('the API origin is missing, so the local queue cannot be rechecked')
+          const drained = await io.assertLocalJobsDrained(origin)
+          if (!drained) throw new Error('local jobs became outstanding after the provider switch')
+          await io.stopLocalWorker()
+          return 'local queue is still drained; worker stopped and unrelated Compose profiles remain enabled'
+        },
+      )
+    } else {
+      skip(
+        { id: 'local-worker-stop', label: 'Stop the local transcoder after the provider switch', dependsOn: [] },
+        wantsModal ? 'no prior local-provider API was detected' : 'local provider selected',
+      )
     }
 
     if (hostInstall && publicOrigin) {
@@ -595,49 +657,20 @@ export async function runDeployPhase(
       )
     }
 
-    if (hostInstall && !wantsModal) {
+    if (target === 'deploy' && !wantsModal) {
       await step(
-        {
-          id: 'pair',
-          label: 'Pair the self-hosted transcoder',
-          dependsOn: ['readiness'],
-        },
+        { id: 'local-worker', label: 'Wait for the local transcoder', dependsOn: ['api', ...(hostInstall ? ['readiness' as const] : [])] },
         async () => {
-          const status = await io.inspectAgentCredential()
-          if (status.kind === 'valid') {
-            const profiles = withTranscoderProfile(
-              io.readConfig()?.['COMPOSE_PROFILES'] ?? answers.proxy?.profiles ?? 'proxy',
-            )
-            io.writeConfig([['COMPOSE_PROFILES', profiles]])
-            await io.startTranscoder()
-            return 'reused the saved pairing credential'
-          }
-          if (status.kind === 'unreachable') {
-            throw new Error(status.detail)
-          }
-          io.log.info(
-            'Create an organization in the dashboard, then open /dashboard/transcoders and copy a pairing code.',
-          )
-          const code = (await io.askPassword('Paste the pairing code from /dashboard/transcoders')).trim()
-          if (code === '') {
-            throw new Error(
-              'pairing was cancelled — the application is running. Resume with ./scripts/install.sh',
-            )
-          }
-          await io.pairTranscoder(code)
-          await io.agentDoctor()
-          const profiles = withTranscoderProfile(
-            io.readConfig()?.['COMPOSE_PROFILES'] ?? answers.proxy?.profiles ?? 'proxy',
-          )
-          io.writeConfig([['COMPOSE_PROFILES', profiles]])
-          await io.startTranscoder()
-          return 'paired and encoding is ready'
+          const config = io.readConfig()
+          const origin = publicOrigin ?? config?.['BETTER_AUTH_URL'] ?? 'http://localhost:8787'
+          await io.waitForLocalWorker(origin)
+          return 'local transcoder is online and reporting capabilities'
         },
       )
     } else {
       skip(
-        { id: 'pair', label: 'Pair the self-hosted transcoder', dependsOn: [] },
-        hostInstall ? 'Modal provider — no local agent to pair' : 'not a host install',
+        { id: 'local-worker', label: 'Wait for the local transcoder', dependsOn: [] },
+        wantsModal ? 'Modal provider — no local transcoder image is built or started' : 'dev target — start the worker explicitly when needed',
       )
     }
 
@@ -664,7 +697,7 @@ export async function runDeployPhase(
     } else {
       skip(
         { id: 'modal-callbacks', label: 'Refresh Modal callback hosts', dependsOn: [] },
-        wantsModal ? 'the Modal step was skipped' : 'self-hosted provider',
+        wantsModal ? 'the Modal step was skipped' : 'local provider',
       )
     }
 
@@ -683,9 +716,6 @@ export async function runDeployPhase(
         }
         const probeUrl = result.apiUrl ?? io.readConfig()?.['BETTER_AUTH_URL'] ?? null
         if (!hostInstall) await io.probeHealth(probeUrl)
-        if (provider === 'self-hosted' && !hostInstall) {
-          io.log.info(`Pair a machine to start encoding:\n  ${pairingCommand(result.apiUrl ?? undefined)}`)
-        }
         return lintFailed ? 'configuration incomplete' : 'configuration looks complete'
       },
     )

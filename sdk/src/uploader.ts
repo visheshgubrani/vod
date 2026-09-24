@@ -307,7 +307,6 @@ export class UploadSession {
                 playbackPolicy: this.options.playbackPolicy,
                 generateSubtitle: this.options.generateSubtitle,
                 generateChapters: this.options.generateChapters,
-                transcodingProvider: this.options.transcodingProvider,
             },
         }
     }
@@ -609,9 +608,6 @@ export class UploadSession {
             upload_id: this.uploadId,
             file_id: this.fileId,
             parts,
-            ...(this.options.transcodingProvider
-                ? { transcodingProvider: this.options.transcodingProvider }
-                : {}),
         })
         this.etag = complete.etag
     }

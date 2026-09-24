@@ -3,7 +3,7 @@
 **Operators installing on a host or VPS:** `./scripts/install.sh` (or
 `curl … | bash`) — see the docs site [Install on a host](../docs-site/content/docs/host-install.mdx).
 That path provisions Docker, writes `.env`, builds images, migrates, starts
-Compose with Caddy, and walks encoder pairing.
+Compose with Caddy and starts the local worker when selected.
 
 **Contributors** keep using `./scripts/bootstrap.sh` — the launcher installs
 Node/pnpm (nvm) when missing, then the interactive wizard writes `.dev.vars`
@@ -73,10 +73,9 @@ TypeScript schema and cannot create the hand-written objects, in particular the
 
 - **`migrate`** (profile `tools`) — `pnpm docker:migrate`, or
   `docker compose run --rm migrate`. Idempotent; safe to run every deploy.
-- **`transcoder`** (profile `transcoder`) — the self-hosted agent, opt-in:
-  `docker compose --profile transcoder up -d`, with
-  `TRANSCODE_PROVIDER=self-hosted`. See
-  [self-hosted-transcoding.md](./self-hosted-transcoding.md).
+- **`transcoder`** (profile `transcoder`) — the single local worker. Setup enables
+  this profile only for `TRANSCODE_PROVIDER=local`; Modal deployments neither
+  build nor start the media image. See [local-transcoding.md](./local-transcoding.md).
 - **`proxy`** (profile `proxy`) — Caddy in front of the API and dashboard.
   The host installer enables it. Bind address comes from `CLIPMUX_PROXY_BIND`.
 
@@ -150,7 +149,7 @@ reports an advisory — remove it.
   - Core (`ready`): database, storage, transcoder, auth
   - Advisory: analytics, AI, **delivery** (`DELIVERY_URL`)
   - `deployment`: the resolved shape — runtime, `dbTransport`,
-    `rateLimitStore`, `transcodeProvider`, `selfHostedEnabled`,
+    `rateLimitStore`, `transcodeProvider`, `localTranscodeEnabled`,
     `modalDispatch`, `analyticsWrite`, `analyticsRead`, `uploadsEnabled`,
     `deliveryRuntime`, `deliveryUrl`. Contract:
     [deployment-shapes.md](./deployment-shapes.md).

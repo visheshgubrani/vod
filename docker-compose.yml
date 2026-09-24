@@ -123,19 +123,15 @@ services:
     ports:
       - "127.0.0.1:${CLIPMUX_WEB_PORT:-3000}:3000"
 
-  # The self-hosted transcoding agent (`TRANSCODE_PROVIDER=self-hosted`).
-  #
-  # Opt-in: `docker compose --profile transcoder up -d`. It is a profile rather
-  # than a default service because a machine running the API is often not the
-  # machine that should be doing the encoding, and because an all-Cloudflare
-  # install does not need it at all.
+  # One deployment-local transcoder. The setup wizard enables this profile only
+  # for TRANSCODE_PROVIDER=local; Modal installations neither build nor start it.
   #
   # The media mounts are read-only on purpose. The agent takes its own snapshot
   # to encode from; it never needs to write to the owner's library, and a
   # container that cannot write to it cannot damage it.
   transcoder:
     profiles: ["transcoder"]
-    image: ${CLIPMUX_AGENT_IMAGE:-clipmux-transcoder:local}
+    image: ${CLIPMUX_WORKER_IMAGE:-clipmux-worker:local}
     build:
       context: .
       dockerfile: transcoding/Dockerfile.agent
@@ -146,7 +142,7 @@ services:
         condition: service_started
     environment:
       CLIPMUX_API_URL: ${CLIPMUX_API_URL:-http://api:4080}
-      CLIPMUX_AGENT_TOKEN: ${CLIPMUX_AGENT_TOKEN:-}
+      LOCAL_TRANSCODER_SECRET: ${LOCAL_TRANSCODER_SECRET:-}
       # NAME:PATH pairs. Every path here must also be mounted below.
       CLIPMUX_ROOTS: ${CLIPMUX_ROOTS:-media:/media}
       CLIPMUX_SCRATCH_DIR: /var/lib/clipmux-transcoder/scratch

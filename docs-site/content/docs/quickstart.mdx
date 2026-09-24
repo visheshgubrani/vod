@@ -8,14 +8,14 @@ already have a deployment and just want to integrate, go to
 [Your first video](/first-video) instead.
 
 **On a machine or VPS, start with the host installer** — it provisions Docker
-Compose, Caddy, Cloudflare resources and encoder pairing:
+Compose, Caddy, Cloudflare resources and local worker setup:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/install.sh | bash
 ```
 
 See [Install on a host](/host-install) for pinned revisions, localhost vs HTTPS,
-pairing and resume. The rest of this page is the **contributor / from-source**
+worker readiness and resume. The rest of this page is the **contributor / from-source**
 path (`./scripts/bootstrap.sh`) and the keys every deployment still needs.
 
 Budget about 30 minutes. Most of it is waiting for Cloudflare and Modal.
@@ -47,7 +47,7 @@ The API runtime is Node. Postgres is any `postgresql://` URL (including Neon as 
 
 Put these in `server/.dev.vars` for local development, or in `.env` at the repo
 root for a Docker Compose deployment. The bootstrap wizard writes the `.dev.vars`
-pair and mirrors `JWT_SECRET` into `delivery/.dev.vars`.
+configure and reuse the worker secret and mirrors `JWT_SECRET` into `delivery/.dev.vars`.
 
 <Callout type="error" title="Never commit .env or .dev.vars">
   Only the `*.example` templates are tracked. This repository's history was
@@ -147,7 +147,7 @@ The wizard:
 <Steps>
   <Step>Checks Node and pnpm against what the repository pins, installing them when missing — nvm first, then the distribution's package with the version re-checked. It keeps going when they are already present.</Step>
   <Step>Installs workspace dependencies at the root — never inside a package.</Step>
-  <Step>Asks how you want the installation shaped: Postgres (bundled or an existing URL), analytics on/off, the **transcoder** (Modal, or this machine via the self-hosted Docker agent), browser uploads, QStash queueing (Modal only), a rate-limit store, and AI subtitles/chapters (Modal only). The API always runs on Node.</Step>
+  <Step>Asks how you want the installation shaped: Postgres (bundled or an existing URL), analytics on/off, the **transcoder** (Modal or one local Docker worker), browser uploads, QStash queueing (Modal only), a rate-limit store, and AI subtitles/chapters (Modal only). The API always runs on Node.</Step>
   <Step>Checks the machine against those choices and offers to install what it is allowed to. Read-only modes (`--doctor`, `--check`) and headless runs install nothing; system packages are only ever installed with root or passwordless sudo — otherwise the exact command is printed.</Step>
   <Step>Walks through the keys those choices require, each with a link to the console page that creates it.</Step>
   <Step>Writes the configuration for one target: `server/.dev.vars` + `delivery/.dev.vars` (`dev`), sharing one `JWT_SECRET`. Secrets already in the file are reused, new ones are generated locally, and the files are `chmod 600`.</Step>

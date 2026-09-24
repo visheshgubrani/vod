@@ -66,7 +66,7 @@ session.chapters
 
 - **You run the infrastructure.** The API is a Node process or a Cloudflare
   Worker, the database is Postgres, the transcoder is Modal GPU or a
-  self-hosted agent. There is no hosted control plane, no hosted dashboard, no
+  local worker. There is no hosted control plane, no hosted dashboard, no
   CLI and no metered service behind the SDKs.
 - **Storage is Cloudflare R2.** The raw and transcoded buckets are both R2;
   generic S3/MinIO is not implemented.
@@ -76,7 +76,7 @@ session.chapters
   short-lived token per viewer, forwarding that viewer's user-agent, and the
   player refreshes it before expiry. The token binds the viewer's browser
   family; there is no IP binding.
-- **Use the URL the API returns.** With a self-hosted transcoder the output
+- **Use the URL the API returns.** With a local worker the output
   lives under an attempt prefix (`videos/<id>/attempts/<attempt-id>/…`), so a
   URL assembled as `cdnBase + videoId` is not guaranteed to resolve. The
   `cdnBase` + `playbackId` player shortcut matches the legacy Modal layout only.
@@ -84,9 +84,9 @@ session.chapters
   windows, honours a 10 000-part ceiling, and gives you pause/resume, progress
   and `abort()`. Completing an upload verifies the object's size before a
   transcode job is dispatched.
-- **Transcoding is a per-job choice.** `TRANSCODE_PROVIDER` sets the
-  installation default and `transcodingProvider` overrides it for one upload
-  (`'modal'` or `'self-hosted'`).
+- **Transcoding is deployment-wide.** `TRANSCODE_PROVIDER` selects `modal` or
+  `local` for new jobs; upload requests cannot override it, and accepted jobs
+  keep their recorded provider.
 - **Only two events are retried.** `video.ready` and `video.failed` go through
   the transactional outbox; every other event is dispatched once with no retry.
   Anything your product depends on must reconcile against the API.

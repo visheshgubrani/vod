@@ -161,13 +161,12 @@ new ClipMuxUploader({
   retryDelay: 1000,                   // backoff base, ms (default 1000)
   windowSize: 100,                    // part URLs per /parts call (max 100)
   presignRefreshMs: 2700000,          // refresh a window after 45 min
-  transcodingProvider: 'modal',       // 'modal' | 'self-hosted'
 })
 ```
 
 Upload options: `title`, `playbackPolicy` (`'public' | 'signed'`),
 `generateSubtitle`, `generateChapters` (requires subtitles),
-`transcodingProvider`, `filename`, `contentType`, `onProgress`, `signal`.
+`filename`, `contentType`, `onProgress`, `signal`. Provider selection is deployment-wide.
 
 ## Requirements
 

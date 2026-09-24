@@ -336,16 +336,17 @@ app.post('/url', async (c) => {
 })
 
 app.post('/complete', async (c) => {
+  const completeBody = await c.req.json<Record<string, unknown>>()
+  if (Object.hasOwn(completeBody, 'transcodingProvider')) {
+    return c.json({ error: 'transcodingProvider is no longer accepted per upload; set TRANSCODE_PROVIDER on the deployment.' }, 400)
+  }
   const bucket = rawBucketOrFail(c)
   if (typeof bucket !== 'string') return bucket
   const transcodedBucket = transcodedBucketOrFail(c)
   if (typeof transcodedBucket !== 'string') return transcodedBucket
 
   const organizationId = c.var.organizationId
-  const { fileId, transcodingProvider } = await c.req.json<{
-    fileId?: string
-    transcodingProvider?: string
-  }>()
+  const fileId = typeof completeBody.fileId === 'string' ? completeBody.fileId : undefined
   console.log(`[UPLOAD COMPLETE REQ] Received /api/upload/complete for fileId: ${fileId}, orgId: ${organizationId}`)
   if (!fileId) return c.json({ error: 'Missing fileId' }, 400)
   if (!organizationId) return c.json({ error: 'No active organization' }, 400)
@@ -428,7 +429,6 @@ app.post('/complete', async (c) => {
       playbackPolicy: videoRecord.playbackPolicy || 'public',
       generateSubtitle: videoRecord.generateSubtitle || false,
       generateChapters: videoRecord.generateChapters || false,
-      transcodingProvider,
       env: c.var.runtime.env,
     })
 
@@ -665,17 +665,20 @@ app.post('/multipart/parts', async (c) => {
 
 // Multipart upload - complete
 app.post('/multipart/complete', async (c) => {
+  const completeBody = await c.req.json<Record<string, unknown>>()
+  if (Object.hasOwn(completeBody, 'transcodingProvider')) {
+    return c.json({ error: 'transcodingProvider is no longer accepted per upload; set TRANSCODE_PROVIDER on the deployment.' }, 400)
+  }
   const bucket = rawBucketOrFail(c)
   if (typeof bucket !== 'string') return bucket
 
   const organizationId = c.var.organizationId
-  const { key, uploadId, parts, fileId, transcodingProvider } = await c.req.json<{
+  const { key, uploadId, parts, fileId } = completeBody as {
     key?: string
     uploadId?: string
     parts?: Array<Record<string, unknown>>
     fileId?: string
-    transcodingProvider?: string
-  }>()
+  }
   if (!key || !uploadId) return c.json({ error: 'Missing fields' }, 400)
   if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
@@ -782,7 +785,6 @@ app.post('/multipart/complete', async (c) => {
       playbackPolicy: videoRecord.playbackPolicy || 'public',
       generateSubtitle: videoRecord.generateSubtitle || false,
       generateChapters: videoRecord.generateChapters || false,
-      transcodingProvider,
       env: c.var.runtime.env,
     })
 

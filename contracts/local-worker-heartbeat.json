@@ -1,0 +1,16 @@
+{
+  "capabilities": {
+    "ffmpeg": "7.1",
+    "shaka": "1.7",
+    "hwaccels": ["cuda"],
+    "encoders": ["cpu", "nvenc"],
+    "cpuCores": 8,
+    "memoryBytes": 17179869184,
+    "scratchFreeBytes": 107374182400,
+    "probedAt": 1790208000
+  },
+  "hostname": "contract-worker",
+  "workerVersion": "1.0.0",
+  "capacityJobs": 3,
+  "capacityRenditions": 2
+}

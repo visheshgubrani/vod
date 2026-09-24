@@ -5,11 +5,13 @@
 
 import { maskSecret } from './verify'
 import type { WizardAnswers } from './types'
+import { transcodeProvider } from './mapping'
 
 const SECRET_KEYS = new Set([
   'BETTER_AUTH_SECRET',
   'R2_SECRET_ACCESS_KEY',
   'TRANSCODE_INGEST_SECRET',
+  'LOCAL_TRANSCODER_SECRET',
   'JWT_SECRET',
   'ANALYTICS_INGEST_SECRET',
   'INTERNAL_SWEEP_SECRET',
@@ -48,6 +50,8 @@ const SERVER_KEY_LABELS: Record<string, string> = {
   QSTASH_TOKEN: 'QStash token',
   MODAL_WEBHOOK_URL: 'Modal webhook URL',
   TRANSCODE_INGEST_SECRET: 'Transcode ingest secret (generated)',
+  LOCAL_TRANSCODER_SECRET: 'Local worker secret (generated)',
+  LOCAL_TRANSCODE_ENABLED: 'Local encoding enabled',
   JWT_SECRET: 'Playback JWT secret (generated)',
   DELIVERY_URL: 'Delivery worker URL',
   INTERNAL_SWEEP_SECRET: 'Sweeper secret (generated)',
@@ -63,16 +67,15 @@ const RATE_LIMIT_LABELS: Record<WizardAnswers['rateLimit']['kind'], string> = {
   upstash: 'Upstash Redis (shared, hosted)',
 }
 
-const PROVIDER_LABELS: Record<'modal' | 'self-hosted', string> = {
+const PROVIDER_LABELS: Record<'modal' | 'local', string> = {
   modal: 'Modal (GPU in the cloud)',
-  'self-hosted': 'this machine (Docker agent)',
+  local: 'this machine (Docker worker)',
 }
 
 /** One-line summary of the decisions for the final confirmation. */
 export function summaryText(answers: WizardAnswers): string {
   const target = answers.target ?? 'dev'
-  const provider: 'modal' | 'self-hosted' =
-    answers.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+  const provider = transcodeProvider(answers)
   const uploads = answers.uploadsEnabled !== false
   const lines = [
     `Configuration: ${target === 'deploy' ? 'deploy — root .env (Docker Compose)' : 'dev — server/.dev.vars'}`,

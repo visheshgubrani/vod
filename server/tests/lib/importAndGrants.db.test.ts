@@ -41,7 +41,6 @@ if (suiteUrl) {
 const { createTestDb, connectTestDb } = suiteDb ?? ({} as never)
 
 const ORG = 'org-import'
-const AGENT = 'agent-import'
 const VIDEO = '11111111-1111-1111-1111-111111111111'
 const ATTEMPT = 'att-grant'
 const JOB = 'aaaaaaaa-0000-0000-0000-00000000000a'
@@ -66,10 +65,10 @@ describe.skipIf(!hasTestDatabase)('local import and grants (PostgreSQL)', () => 
       VALUES ('${ORG}', 'Import', 'import', now());
       INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
       VALUES ('user-1', 'Importer', 'importer@example.com', true, now(), now());
-      INSERT INTO transcoder_agent (id, organization_id, name, token_hash, token_last4, capacity_jobs, enabled)
-      VALUES ('${AGENT}', '${ORG}', 'Agent', 'hash-import', 'aaaa', 1, true);
-      INSERT INTO transcode_source (id, organization_id, kind, agent_id, root_name, relative_path, file_name, availability)
-      VALUES ('11111111-1111-4111-8111-111111111111', '${ORG}', 'local', '${AGENT}',
+      INSERT INTO local_worker (id, last_seen_at) VALUES ('local', now())
+      ON CONFLICT (id) DO UPDATE SET last_seen_at = now();
+      INSERT INTO transcode_source (id, organization_id, kind, root_name, relative_path, file_name, availability)
+      VALUES ('11111111-1111-4111-8111-111111111111', '${ORG}', 'local',
               'media', 'course/lesson-01.mp4', 'lesson-01.mp4', 'available');
     `)
   })
@@ -89,6 +88,12 @@ describe.skipIf(!hasTestDatabase)('local import and grants (PostgreSQL)', () => 
     idempotencyKey: key,
     generateSubtitle: false,
     generateChapters: false,
+    env: {
+      TRANSCODE_PROVIDER: 'local',
+      LOCAL_TRANSCODE_ENABLED: 'true',
+      LOCAL_TRANSCODER_SECRET: 'x'.repeat(32),
+      LOCAL_IMPORT_ORG_ID: ORG,
+    },
   })
 
   it('creates one video and one job for one import', async () => {
@@ -176,7 +181,7 @@ describe.skipIf(!hasTestDatabase)('local import and grants (PostgreSQL)', () => 
     await expect(
       handle.exec(`
         INSERT INTO transcode_job (video_id, organization_id, provider, state)
-        VALUES ('${first.videoId}', '${ORG}', 'self-hosted', 'queued')
+        VALUES ('${first.videoId}', '${ORG}', 'local', 'queued')
       `),
     ).rejects.toThrow(/one_runnable_per_video|duplicate key/)
   })
@@ -191,8 +196,8 @@ describe.skipIf(!hasTestDatabase)('local import and grants (PostgreSQL)', () => 
 
   it('rejects a source that is no longer available', async () => {
     await handle.exec(`
-      INSERT INTO transcode_source (id, organization_id, kind, agent_id, root_name, relative_path, file_name, availability)
-      VALUES ('22222222-2222-4222-8222-222222222222', '${ORG}', 'local', '${AGENT}',
+      INSERT INTO transcode_source (id, organization_id, kind, root_name, relative_path, file_name, availability)
+      VALUES ('22222222-2222-4222-8222-222222222222', '${ORG}', 'local',
               'media', 'course/gone.mp4', 'gone.mp4', 'missing')
     `)
     const result = await createLocalImport(
@@ -216,7 +221,7 @@ describe.skipIf(!hasTestDatabase)('grant authorization (PostgreSQL)', () => {
       INSERT INTO video (id, organization_id, title, status, transcode_attempt_id, transcode_lease_expires_at)
       VALUES ('${VIDEO}', '${ORG}', 'One', 'processing', '${ATTEMPT}', now() + interval '10 minutes');
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, lease_expires_at)
-      VALUES ('${JOB}', '${VIDEO}', '${ORG}', 'self-hosted', 'running', '${ATTEMPT}', '${AGENT}', now() + interval '10 minutes');
+      VALUES ('${JOB}', '${VIDEO}', '${ORG}', 'local', 'running', '${ATTEMPT}', 'local', now() + interval '10 minutes');
       INSERT INTO artifact_inventory (video_id, organization_id, job_id, attempt_id, prefix, status, item_count)
       VALUES ('${VIDEO}', '${ORG}', '${JOB}', '${ATTEMPT}', '${PREFIX}', 'registering', 1);
     `)
@@ -234,7 +239,7 @@ describe.skipIf(!hasTestDatabase)('grant authorization (PostgreSQL)', () => {
       JOIN video AS v ON v.id = inv.video_id
       JOIN transcode_job AS j ON j.id = inv.job_id
       WHERE inv.attempt_id = '${ATTEMPT}'
-        AND j.lease_owner = '${AGENT}'
+        AND j.lease_owner = 'local'
         AND j.attempt_id = inv.attempt_id
         AND j.state IN ('claimed', 'running', 'publishing')
         AND j.lease_expires_at > now()

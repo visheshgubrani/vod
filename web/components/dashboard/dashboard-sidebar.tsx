@@ -40,7 +40,7 @@ const navItems = [
   { href: "/dashboard/usage", label: "Usage", icon: HardDrive },
   { href: "/dashboard/webhooks", label: "Webhooks", icon: Webhook },
   { href: "/dashboard/api-keys", label: "API keys", icon: Key },
-  { href: "/dashboard/transcoders", label: "Transcoders", icon: ServerCog },
+  { href: "/dashboard/transcoders", label: "Encoding", icon: ServerCog },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

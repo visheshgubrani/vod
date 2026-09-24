@@ -3,7 +3,7 @@
  *
  * Why this module exists rather than two call sites:
  *
- * Modal reports completion over HTTP; a self-hosted agent reports it over the
+ * Modal reports completion over HTTP; a local worker reports it over the
  * agent protocol. Those are different transports carrying the same *event*, and
  * the rules for accepting that event are not transport-specific:
  *
@@ -195,7 +195,7 @@ export type ParseCompletionOptions = {
 /**
  * Resolve an artifact path to a public URL.
  *
- * Self-hosted agents report paths **relative to their attempt prefix**, because
+ * Local workers report paths **relative to their attempt prefix**, because
  * the agent has no idea what the delivery base URL is and must not be trusted to
  * assert it. Two things are therefore forced here:
  *

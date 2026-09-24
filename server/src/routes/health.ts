@@ -1,53 +1,26 @@
 import { Hono } from 'hono'
+import { eq } from 'drizzle-orm'
 import type { ClipMuxConfig } from '../lib/config'
 import { db } from '../lib/database'
-import { transcoderAgent } from '../db/schema'
-import {
-  buildPublicCapabilities,
-  type AgentRow,
-} from '../lib/agentCapabilities'
+import { localWorker, organization } from '../db/schema'
+import { buildPublicCapabilities, isLocalWorkerLive } from '../lib/localWorkerCapabilities'
 import { readMaintenanceStatus } from '../utils/maintenance'
 import type { Bindings } from '../types'
 
 export const healthApp = new Hono<{ Bindings: Bindings }>()
 
-/**
- * GET /health — plain-text liveness probe.
- */
+/** GET /health — plain-text liveness probe. */
 healthApp.get('/', (c) => c.text('ok'))
 
-/**
- * GET /health/config — public, no secrets.
- *
- * Reports which BYOK capabilities are configured for this deployment.
- * Consumed by the dashboard "Developer Welcome" health cards and the
- * setup wizard. Never include secret values or connection strings.
- */
+/** GET /health/config — secret-free deployment and coarse local-worker status. */
 healthApp.get('/config', async (c) => {
-  // Configuration and the resolved deployment shape come from the composition
-  // root. This route used to rebuild the "process.env + string c.env" merge
-  // itself — a second copy of the bindings bridge, and the only production
-  // caller of loadConfig.
   const cfg = c.var.runtime.config
   const env = c.var.runtime.env
-
-  // Background processing is opt-in, and leaving it off is not a cosmetic
-  // choice: webhook retries and byte reclamation both stop, so deleted videos
-  // keep costing storage and failed deliveries are never retried. Surfacing it
-  // here makes that visible instead of silent. Booleans only — no secrets.
-  // Configured intent AND observed evidence. A deployment can have the flag on
-  // and still never run a pass, which is exactly the silent failure this
-  // reports: `stale` is true when it is enabled but no recent pass succeeded.
   const maintenance = await readMaintenanceStatus(env)
-  // A local copy: `cfg` is the runtime's shared configuration object, and pushing
-  // into it would accumulate this advisory on every request for the lifetime of
-  // the process (or isolate).
   const advisories = [...cfg.advisories]
   if (!maintenance.enabled) {
     advisories.push(
-      'SWEEP_ENABLED is false: background maintenance is off, so webhook ' +
-        'retries and storage reclamation will not run on this instance ' +
-        '(see docs/deploy.md).',
+      'SWEEP_ENABLED is false: background maintenance is off, so webhook retries and storage reclamation will not run on this instance (see docs/deploy.md).',
     )
   } else if (maintenance.stale) {
     advisories.push(
@@ -62,62 +35,49 @@ healthApp.get('/config', async (c) => {
     time: new Date().toISOString(),
     ready: cfg.ready,
     checks: cfg.checks,
-    // What this deployment actually resolved to — runtime, transports, providers,
-    // stores. Flat and secret-free, so an operator can see which choices are in
-    // force instead of inferring them from defaults. See docs/deployment-shapes.md.
     deployment: c.var.runtime.shape,
     maintenance,
-    // Every problem, fatal or not, as strings — the shape the dashboard already
-    // reads.
     problems: c.var.runtime.problems.map((problem) => problem.message),
     advisories,
-    // Split capability reporting, and deliberately coarse.
-    //
-    // An unauthenticated caller learning that an organization runs three agents
-    // with specific hostnames is an information disclosure with no upside, so
-    // this projection is booleans and counts: `uploads` answers "can a browser
-    // upload be processed?", `localImport` answers "can a file on the owner's
-    // machine be imported?", and `providers` says what is wired up. Agent names,
-    // hostnames, paths and credentials are in the authenticated dashboard health
-    // (`/api/transcoder/health`).
     transcode: await buildTranscodeCapabilities(cfg, cfg.uploadsEnabled),
   })
 })
 
-async function buildTranscodeCapabilities(
-  cfg: ClipMuxConfig,
-  uploadsEnabled: boolean,
-) {
-  // Agent rows are counted by state, not listed: the query selects only what the
-  // public projection needs, so a field added for the dashboard cannot leak here
-  // by accident.
-  let agents: AgentRow[] = []
+async function buildTranscodeCapabilities(cfg: ClipMuxConfig, uploadsEnabled: boolean) {
+  let worker: typeof localWorker.$inferSelect | null = null
+  let importOrgExists = false
   try {
-    agents = await db
-      .select({
-        id: transcoderAgent.id,
-        name: transcoderAgent.name,
-        enabled: transcoderAgent.enabled,
-        lastSeenAt: transcoderAgent.lastSeenAt,
-        capabilities: transcoderAgent.capabilities,
-      })
-      .from(transcoderAgent)
+    const [row] = await db
+      .select()
+      .from(localWorker)
+      .where(eq(localWorker.id, 'local'))
+      .limit(1)
+    worker = row ?? null
+    if (cfg.localImportOrgId) {
+      const [org] = await db
+        .select({ id: organization.id })
+        .from(organization)
+        .where(eq(organization.id, cfg.localImportOrgId))
+        .limit(1)
+      importOrgExists = Boolean(org)
+    }
   } catch (error) {
-    // A missing table (an installation that has not migrated yet) must not take
-    // down the health endpoint the setup wizard reads.
-    console.error('[HEALTH] agent lookup failed:', error)
+    console.error('[HEALTH] local worker lookup failed:', error)
   }
 
+  const online = isLocalWorkerLive(worker?.lastSeenAt ?? null)
   return buildPublicCapabilities({
-    modalWebhookUrl: cfg.modalWebhookUrl,
-    ingestSecret: cfg.ingestSecret,
+    modalConfigured: Boolean(cfg.modalWebhookUrl && cfg.ingestSecret),
+    localConfigured: Boolean(cfg.localTranscoderSecret),
+    localEnabled: cfg.localTranscodeEnabled,
+    localWorkerOnline: online,
+    localImportConfigured: Boolean(cfg.localImportOrgId && importOrgExists),
     rawBucket: uploadsEnabled ? cfg.rawBucket : null,
     transcodedBucket: cfg.transcodedBucket,
-    hasStorageCredentials: cfg.checks.storage,
-    agents,
+    hasStorageCredentials: cfg.storageCredentials,
     defaultProvider: cfg.transcodeProvider,
-    selfHostedEnabled: cfg.selfHostedEnabled,
     aiEnabled: cfg.checks.ai,
+    workerCapabilities: worker?.capabilities,
   })
 }
 

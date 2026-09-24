@@ -468,15 +468,22 @@ app.post('/parts', async (c) => {
  * Complete the multipart upload and start transcoding.
  */
 app.post('/complete', async (c) => {
-  const bucket = rawBucketOrFail(c)
-  if (typeof bucket !== 'string') return bucket
+    const body = await c.req.json<Record<string, unknown>>()
+    if (Object.hasOwn(body, 'transcodingProvider')) {
+        return c.json({ error: 'transcodingProvider is no longer accepted per upload; set TRANSCODE_PROVIDER on the deployment.' }, 400)
+    }
+    const bucket = rawBucketOrFail(c)
+    if (typeof bucket !== 'string') return bucket
 
     const organizationId = c.var.organizationId
-
-    const body = await c.req.json()
-    const { key, parts, file_id } = body
-    const uploadId = body.upload_id || body.uploadId
-    const fileId = file_id || body.fileId
+    const key = typeof body.key === 'string' ? body.key : ''
+    const parts = body.parts
+    const uploadId = typeof body.upload_id === 'string'
+        ? body.upload_id
+        : typeof body.uploadId === 'string' ? body.uploadId : ''
+    const fileId = typeof body.file_id === 'string'
+        ? body.file_id
+        : typeof body.fileId === 'string' ? body.fileId : ''
 
     if (!key || !uploadId) {
         return c.json({ error: 'Missing key or upload_id' }, 400)
@@ -488,9 +495,11 @@ app.post('/complete', async (c) => {
 
     // Normalize parts to AWS format
     const normalizedParts = parts
-        .map((part) => {
-            const partNumber = Number(part.part_number ?? part.partNumber ?? part.PartNumber)
-            const etag = part.etag ?? part.ETag
+        .map((part: unknown) => {
+            if (typeof part !== 'object' || part === null || Array.isArray(part)) return null
+            const entry = part as Record<string, unknown>
+            const partNumber = Number(entry.part_number ?? entry.partNumber ?? entry.PartNumber)
+            const etag = entry.etag ?? entry.ETag
             if (!Number.isInteger(partNumber) || partNumber < 1 || !etag) {
                 return null
             }
@@ -586,10 +595,6 @@ app.post('/complete', async (c) => {
             playbackPolicy: videoRecord.playbackPolicy || 'public',
             generateSubtitle: videoRecord.generateSubtitle || false,
             generateChapters: videoRecord.generateChapters || false,
-            // Per-request override; omitted means the installation default.
-            // Per-request override from the SDK; omitted means the installation default.
-            transcodingProvider:
-                typeof body?.transcodingProvider === 'string' ? body.transcodingProvider : undefined,
             env: c.var.runtime.env,
         })
 

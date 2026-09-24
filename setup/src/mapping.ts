@@ -65,7 +65,8 @@ export const SERVER_KEY_ORDER = [
   'MODAL_WEBHOOK_URL',
   'TRANSCODE_INGEST_SECRET',
   'TRANSCODE_PROVIDER',
-  'SELF_HOSTED_ENABLED',
+  'LOCAL_TRANSCODE_ENABLED',
+  'LOCAL_TRANSCODER_SECRET',
   'UPLOADS_ENABLED',
   'JWT_SECRET',
   'DELIVERY_URL',
@@ -117,7 +118,8 @@ export const DEPLOY_KEY_ORDER = [
   'ANALYTICS_INGEST_SECRET',
   'DELIVERY_URL',
   'TRANSCODE_PROVIDER',
-  'SELF_HOSTED_ENABLED',
+  'LOCAL_TRANSCODE_ENABLED',
+  'LOCAL_TRANSCODER_SECRET',
   'UPLOADS_ENABLED',
   'MODAL_WEBHOOK_URL',
   'QSTASH_TOKEN',
@@ -213,15 +215,15 @@ export function analyticsEnabled(answers: Pick<WizardAnswers, 'analyticsEnabled'
 }
 
 /** The transcoder that new jobs use. Omitted means Modal. */
-export function transcodeProvider(answers: WizardAnswers): 'modal' | 'self-hosted' {
-  return answers.transcodeProvider === 'self-hosted' ? 'self-hosted' : 'modal'
+export function transcodeProvider(answers: WizardAnswers): 'modal' | 'local' {
+  return answers.transcodeProvider === 'modal' ? 'modal' : 'local'
 }
 
 /**
  * Whether a raw upload bucket is part of this installation.
  *
  * A raw bucket exists to serve *uploads*. A local-only installation — the
- * self-hosted provider with uploads switched off — needs none, and writing the
+ * local provider with uploads switched off — needs none, and writing the
  * default bucket name anyway would make the wizard provision a bucket nobody
  * writes to (and tell the operator to create it).
  */
@@ -235,21 +237,6 @@ export function rawBucketValue(answers: WizardAnswers): string {
 }
 
 /**
- * `SELF_HOSTED_ENABLED` as written to the environment.
- *
- * Three states, and the difference matters: `true`, an explicit `false` (the
- * documented rollback, which must survive a regeneration), and unset (`''`,
- * meaning "follow the provider"). Serialising an explicit false as blank turned
- * it back into "follow the provider", which re-enabled local submission on the
- * very installation that had switched it off.
- */
-export function selfHostedEnabledValue(answers: WizardAnswers): string {
-  if (answers.selfHostedEnabled === true) return 'true'
-  if (answers.selfHostedEnabled === false) return 'false'
-  return ''
-}
-
-/**
  * The decisions a run makes, as the choice stage knows them.
  *
  * Deliberately not `WizardAnswers`: compatibilities must be checkable *before*
@@ -259,7 +246,7 @@ export function selfHostedEnabledValue(answers: WizardAnswers): string {
 export interface ChoiceShape {
   target?: ConfigTarget
   dbKind?: DbKind
-  transcodeProvider?: 'modal' | 'self-hosted'
+  transcodeProvider?: 'modal' | 'local'
   uploadsEnabled?: boolean
   analyticsEnabled?: boolean
   queueKind?: QueueKind
@@ -308,18 +295,18 @@ export function validateChoices(shape: ChoiceShape): string[] {
   if (
     shape.transcodeProvider !== undefined &&
     shape.transcodeProvider !== 'modal' &&
-    shape.transcodeProvider !== 'self-hosted'
+    shape.transcodeProvider !== 'local'
   ) {
     problems.push(
-      `transcodeProvider must be "modal" or "self-hosted", got "${String(shape.transcodeProvider)}"`,
+      `transcodeProvider must be "modal" or "local", got "${String(shape.transcodeProvider)}"`,
     )
   }
-  if (shape.transcodeProvider !== 'self-hosted' && shape.uploadsEnabled === false) {
+  if (shape.transcodeProvider === 'modal' && shape.uploadsEnabled === false) {
     // Modal reads its input from the raw bucket, so there is nothing for it to
-    // transcode: uploads off is only meaningful for the self-hosted provider.
+    // transcode: uploads off is only meaningful for the local provider.
     problems.push(
       'transcodeProvider "modal" requires uploads (Modal ingests from the raw bucket) — ' +
-        'use "self-hosted" for a local-only installation',
+        'use "local" for a local-only installation',
     )
   }
 
@@ -330,7 +317,7 @@ export function validateChoices(shape: ChoiceShape): string[] {
   ) {
     problems.push(
       'localhost installations cannot use Modal — Modal needs a publicly reachable HTTPS API. ' +
-        'Use the self-hosted transcoder, or install on a public HTTPS hostname.',
+        'Use the local worker, or install on a public HTTPS hostname.',
     )
   }
 
@@ -426,14 +413,14 @@ export function warningsFor(answers: WizardAnswers): string[] {
   if (answers.rawBucket === answers.transcodedBucket) {
     warnings.push('raw and transcoded bucket names are identical — keep them distinct')
   }
-  // The agent image ships neither faster-whisper nor the Groq client, so a Groq
-  // key on a self-hosted install buys nothing today. Saying so here is the
+  // The worker image ships neither faster-whisper nor the Groq client, so a Groq
+  // key on a local install buys nothing today. Saying so here is the
   // difference between an operator waiting for subtitles that never appear and
   // an operator choosing Modal.
-  if (transcodeProvider(answers) === 'self-hosted' && (answers.groqApiKey ?? '').trim() !== '') {
+  if (transcodeProvider(answers) === 'local' && (answers.groqApiKey ?? '').trim() !== '') {
     warnings.push(
       'GROQ_API_KEY is set, but AI subtitles/chapters are not available for the ' +
-        'self-hosted provider yet (the agent image ships neither Whisper nor the Groq ' +
+        'local provider yet (the worker image ships neither Whisper nor the Groq ' +
         'client — see docs/known-gaps.md). Use the Modal provider for AI enrichment.',
     )
   }
@@ -470,7 +457,8 @@ export function buildDevConfig(
     ['TRANSCODE_PROVIDER', transcodeProvider(answers)],
     // Blank means "follow the provider"; `false` is the documented rollback and
     // survives a regeneration.
-    ['SELF_HOSTED_ENABLED', selfHostedEnabledValue(answers)],
+    ['LOCAL_TRANSCODE_ENABLED', 'true'],
+    ['LOCAL_TRANSCODER_SECRET', secrets.localTranscoderSecret],
     // Whether browser/SDK uploads are accepted. The raw bucket is required by
     // *uploading*, not by transcoding, so turning this off is what makes a
     // local-only installation valid without one.
@@ -553,7 +541,8 @@ export function buildDeployConfig(
     ['ANALYTICS_INGEST_SECRET', analyticsEnabled(answers) ? secrets.analyticsIngestSecret : ''],
     ['DELIVERY_URL', ''],
     ['TRANSCODE_PROVIDER', transcodeProvider(answers)],
-    ['SELF_HOSTED_ENABLED', selfHostedEnabledValue(answers)],
+    ['LOCAL_TRANSCODE_ENABLED', 'true'],
+    ['LOCAL_TRANSCODER_SECRET', secrets.localTranscoderSecret],
     ['UPLOADS_ENABLED', uploadsEnabled(answers) ? 'true' : 'false'],
     ['MODAL_WEBHOOK_URL', ''],
     ['QSTASH_TOKEN', qstashToken(answers.queue)],
@@ -588,11 +577,8 @@ export function buildDeliveryEntries(secrets: SecretSet, answers?: Pick<WizardAn
  * (no --force) but still need bucket names/account/provider to drive the
  * provision & deploy phase.
  *
- * The provider flags are read, not assumed: a `self-hosted` installation that
- * was reconfigured through `--deploy` used to be read back as `modal`, and the
- * deploy phase then tried to provision a Modal pipeline for a machine that
- * never uses one. A file written before the flags existed reads as modal with
- * uploads on, which is what those installations do.
+ * Provider settings are read from the target file; a missing provider keeps
+ * the API's Modal default while a fresh wizard explicitly writes its selection.
  */
 export function deriveAnswersFromConfig(
   target: ConfigTarget,
@@ -620,11 +606,10 @@ export function deriveAnswersFromConfig(
   })()
 
   const providerRaw = (env['TRANSCODE_PROVIDER'] ?? '').trim().toLowerCase()
-  const transcodeProvider: 'modal' | 'self-hosted' =
-    providerRaw === 'self-hosted' || providerRaw === 'selfhosted' || providerRaw === 'local'
-      ? 'self-hosted'
-      : 'modal'
-  const selfHostedRaw = (env['SELF_HOSTED_ENABLED'] ?? '').trim().toLowerCase()
+  if (providerRaw && providerRaw !== 'local' && providerRaw !== 'modal') {
+    throw new Error('TRANSCODE_PROVIDER must be "local" or "modal"')
+  }
+  const transcodeProvider: 'modal' | 'local' = providerRaw === 'local' ? 'local' : 'modal'
 
   return {
     target,
@@ -637,7 +622,6 @@ export function deriveAnswersFromConfig(
     rawBucket: (env['RAW_BUCKET_NAME'] ?? '').trim(),
     transcodedBucket: (env['TRANSCODED_BUCKET_NAME'] ?? '').trim(),
     transcodeProvider,
-    ...(selfHostedRaw === '' ? {} : { selfHostedEnabled: selfHostedRaw === 'true' || selfHostedRaw === '1' }),
     uploadsEnabled: parseEnabledFlag(env['UPLOADS_ENABLED'], true),
     analyticsEnabled: parseEnabledFlag(env['ANALYTICS_ENABLED'], true),
     frontendUrl: (env['FRONTEND_URL'] ?? '').trim() || (env['CORS_ORIGINS'] ?? '').trim(),
@@ -653,7 +637,7 @@ export function isHostInstallConfigured(env: Record<string, string>): boolean {
 
 /**
  * Overlay host-install access onto answers reconstructed from an existing
- * deploy config. Credentials stay; localhost forces self-hosted encoding.
+ * deploy config. Credentials stay; localhost defaults to local encoding.
  */
 export function applyHostInstallSettings(
   answers: WizardAnswers,
@@ -668,7 +652,7 @@ export function applyHostInstallSettings(
     access,
     frontendUrl: origin,
     proxy: proxySettingsFor({ origin, access }, input.acmeEmail),
-    ...(access === 'localhost' ? { transcodeProvider: 'self-hosted' as const } : {}),
+    ...(access === 'localhost' ? { transcodeProvider: 'local' as const } : {}),
   }
 }
 

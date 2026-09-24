@@ -34,8 +34,7 @@ DEFAULT_ROOTS_FILE = "/etc/clipmux-transcoder/roots.json"
 @dataclass
 class AgentConfig:
     api_url: str = "http://localhost:8787"
-    token: str = ""
-    name: str = ""
+    secret: str = ""
     roots: List[Root] = field(default_factory=list)
     scratch_dir: Path = Path(DEFAULT_SCRATCH)
     journal_path: Path = Path(DEFAULT_JOURNAL)
@@ -66,8 +65,8 @@ class AgentConfig:
         problems: List[str] = []
         if not self.api_url:
             problems.append('api_url is not set (pass --api or set CLIPMUX_API_URL)')
-        if not self.token:
-            problems.append('no agent token (run "clipmux-transcoder pair" first)')
+        if len(self.secret) < 32:
+            problems.append('LOCAL_TRANSCODER_SECRET must be set and at least 32 characters')
         if not self.roots:
             problems.append(
                 'no readable folders are configured: set CLIPMUX_ROOTS to a '
@@ -94,8 +93,7 @@ class AgentConfig:
                 or values.get("CLIPMUX_API")
                 or "http://localhost:8787"
             ).rstrip("/"),
-            token=values.get("CLIPMUX_AGENT_TOKEN", ""),
-            name=values.get("CLIPMUX_AGENT_NAME", ""),
+            secret=values.get("LOCAL_TRANSCODER_SECRET", ""),
             roots=roots,
             scratch_dir=Path(values.get("CLIPMUX_SCRATCH_DIR") or DEFAULT_SCRATCH),
             journal_path=Path(values.get("CLIPMUX_JOURNAL") or DEFAULT_JOURNAL),

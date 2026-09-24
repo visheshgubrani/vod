@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/visheshgubrani/vod/main/scripts/ins
 ```
 
 That installer provisions Docker Compose, writes `.env`, starts the app behind
-Caddy, and walks self-hosted encoder pairing. Cloudflare is still required.
+Caddy, and starts the one local encoder when selected. Cloudflare is still required.
 Details: [Install on a host](docs-site/content/docs/host-install.mdx).
 
 **Contributor setup** (Node on the host, not the operator installer):
@@ -87,7 +87,7 @@ raw bucket needs, and what each key unlocks — is the
 | Cloudflare login | Deploy the delivery worker | wrangler is a pinned local devDependency of `delivery/` — `cd delivery && pnpm exec wrangler login`, never a global `npx wrangler` |
 | [Postgres](https://www.postgresql.org) **or** Docker | Metadata, auth, video rows | Any `postgresql://` URL (Neon is ordinary hosted Postgres), or the `postgres` service inside the Compose stack |
 | [Modal](https://modal.com) account (only for the Modal transcoder) | GPU transcoding (FFmpeg / Shaka / Whisper) | `--deploy` prepares `transcoding/.venv` (uv, else `python3 -m venv`) and runs `modal setup` — or `modal token set` when a browser login is not possible |
-| Docker (Compose v2) | The Compose stack, the dev Postgres/Redis, and the self-hosted transcoder agent | `./scripts/bootstrap.sh --doctor` checks the daemon, not just the binary; Docker is installed by Docker's own instructions, never with a guessed package name |
+| Docker (Compose v2) | The Compose stack, the dev Postgres/Redis, and the single local transcoder worker | `./scripts/bootstrap.sh --doctor` checks the daemon, not just the binary; Docker is installed by Docker's own instructions, never with a guessed package name |
 | Node 22 + pnpm 12 | Workspace install / `wrangler` / dashboard | `./scripts/bootstrap.sh` installs both when missing (nvm first, then the distro package, re-checking the version) |
 
 **Delivery and storage are fixed, not choices.** Signed playback is always the
@@ -162,7 +162,7 @@ curl -fsSL \
 
 Defaults: `/opt/clipmux` as root, `~/clipmux` otherwise. Access is
 `http://localhost` or a public HTTPS hostname. Localhost encoding is
-self-hosted; Modal needs a reachable HTTPS API. Resume with the same command
+local; Modal needs a reachable HTTPS API. Resume with the same command
 (config, secrets and volumes are kept). Stop without deleting data:
 `docker compose down`. There is no `--update` in v1.
 
@@ -204,10 +204,10 @@ then the opt-in **deploy**.
 Choices the wizard asks about: **Postgres** (the bundled/dev container, or your
 own URL — a Neon connection string is a regular `postgresql://` URL),
 **analytics** (on by default), the **transcoder** (**Modal**, GPU in the cloud, or
-**this machine**, the self-hosted Docker agent), browser **uploads** (a local-only
+**this machine**, one local Docker worker), browser **uploads** (a local-only
 installation needs no raw bucket), **QStash** queueing (Modal only — self-hosted
 work is queued in the database), a **rate-limit store** (in-memory, Upstash, or
-your own Redis) and **AI subtitles/chapters** (Modal only — the agent
+your own Redis) and **AI subtitles/chapters** (Modal only — the local worker
 image does not ship Whisper or the Groq client yet, see
 [docs/known-gaps.md](docs/known-gaps.md)). The API always runs on Node.
 
@@ -452,7 +452,7 @@ player/        @clipmux/player — Vidstack-based React player (token auto-refre
 server-sdk/    @clipmux/server — server SDK (upload/playback tokens, webhooks)
 examples/      nextjs-integration — the documented upload → play → webhook flow
 transcoding/   clipmux_transcoder — shared engine (FFmpeg + Shaka + Whisper),
-               the Modal runner, and the self-hosted agent + CLI
+               the Modal runner, and the single local worker + CLI
 docs-site/     Fumadocs documentation site
 docs/          Long-form markdown (deployment shapes, delivery contract, integrations)
 setup/         clipmux-setup — interactive bootstrap wizard (TS, clack + chalk + ora)
@@ -554,29 +554,35 @@ The full contributor workflow (single-service commands, TDD, PR checks) is in
 
 ## Transcoding providers
 
-Videos can be encoded by **Modal** or by a **self-hosted agent** on your own
-machine. Both run the same processing engine (`transcoding/clipmux_transcoder`),
-so the ladder, packaging, validation and video lifecycle are identical — only the
-execution environment differs.
+Videos are encoded by **Modal** or by one **local worker** managed with the
+installation. Both use the same processing engine
+(`transcoding/clipmux_transcoder`), so the ladder, packaging, validation and
+video lifecycle are the same. The deployment-wide `TRANSCODE_PROVIDER` setting
+selects the provider for new jobs; accepted jobs keep their recorded provider.
 
 | Source | Provider | Raw bucket needed? |
 | --- | --- | --- |
-| File on your machine | self-hosted agent | no |
-| Browser / SDK upload | self-hosted agent | yes |
+| File mounted on the local host | local worker | no |
+| Browser / SDK upload | local worker | yes |
 | Browser / SDK upload | Modal | yes |
 
-`TRANSCODE_PROVIDER` selects the installation default (`modal` unless set);
-existing installations are unaffected, and the choice is stored per job so
-changing the default never reroutes work that already exists. A local-only
-installation needs no raw bucket, no Modal account and no QStash —
-`UPLOADS_ENABLED=false` makes upload routes return 403, which is what makes a
-deployment valid without a raw bucket. Provider selection is one of the
-choosable deployment axes; see
-[docs/deployment-shapes.md](docs/deployment-shapes.md).
+Fresh setup defaults to local and writes `TRANSCODE_PROVIDER=local` explicitly.
+The wizard creates and reuses one `LOCAL_TRANSCODER_SECRET`, starts the Compose
+worker for deployment targets, and waits for its heartbeat. `LOCAL_IMPORT_ORG_ID` is optional and
+only limits who may browse/import mounted host folders; ordinary uploads from
+every organization can use local encoding.
 
-See [docs/self-hosted-transcoding.md](docs/self-hosted-transcoding.md) for
-setup, hardware selection and troubleshooting, and
-[docs/delivery-contract.md](docs/delivery-contract.md) for the agent protocol.
+`LOCAL_TRANSCODE_ENABLED=false` stops new local submissions while accepted jobs
+drain. It never sends a local job to Modal. The managed local-to-Modal switch
+checks for queued or active local work before stopping the worker. Modal
+installations do not build or start the local media image.
+
+A local-only installation with browser uploads disabled needs no raw bucket,
+Modal account or QStash — `UPLOADS_ENABLED=false` disables upload routes. See
+[docs/local-transcoding.md](docs/local-transcoding.md) for setup, hardware and
+troubleshooting, [docs/deployment-shapes.md](docs/deployment-shapes.md) for the
+provider contract, and [docs/delivery-contract.md](docs/delivery-contract.md)
+for the local worker protocol.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

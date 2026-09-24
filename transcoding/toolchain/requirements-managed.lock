@@ -9,7 +9,7 @@
 #
 # This file is NOT the engine's dependency set. transcoding/pyproject.toml
 # declares exactly one runtime dependency, `requests`; the engine and the
-# self-hosted agent must import without Modal, boto3 or Whisper
+# local worker must import without Modal, boto3 or Whisper
 # (transcoding/tests/test_engine_isolation.py enforces that in a subprocess with
 # the optional packages blocked). This lock is installed only into the managed
 # image, which is the one place that owns a GPU, storage credentials and the

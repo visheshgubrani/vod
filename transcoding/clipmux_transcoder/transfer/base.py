@@ -117,5 +117,5 @@ class NullTransfer:
     def upload_artifacts(self, output_dir: Path, relative_paths: List[str], **_: object) -> TransferStats:
         raise RuntimeError(
             "No artifact transfer configured: pass a Transfer implementation "
-            "(S3Transfer for Modal, SignedHttpTransfer for a self-hosted agent)"
+            "(S3Transfer for Modal, SignedHttpTransfer for a local worker)"
         )

@@ -1,5 +1,5 @@
 """
-Signed HTTP transfer — the self-hosted agent path.
+Signed HTTP transfer — the local worker path.
 
 The agent holds **no** storage credentials. The API mints short-lived presigned
 URLs for the exact artifacts the agent registered, and this backend PUTs to

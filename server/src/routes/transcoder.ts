@@ -1,5 +1,5 @@
 /**
- * The self-hosted transcoder protocol — `/api/transcoder/v1`.
+ * The local worker protocol — `/api/transcoder/v1`.
  *
  * The agent initiates every connection. There is no public listener on the
  * agent, no port forwarding, no tunnel: an owner who has to configure ingress
@@ -30,40 +30,29 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { db } from '../lib/database'
 import {
-  agentControlRequest,
+  localControlRequest,
   artifactInventory,
   artifactInventoryItem,
   transcodeJob,
   transcodeSource,
-  transcoderAgent,
-  transcoderPairing,
+  localWorker,
   video,
 } from '../db/schema'
 import { getR2 } from '../utils/R2'
 import { drainOutbox } from '../lib/webhookDelivery'
-import {
-  generateAgentToken,
-  hashAgentSecret,
-  last4,
-  newAgentId,
-  redeemPairingCode,
-} from '../lib/agentToken'
-import { validateCapabilities } from '../lib/agentCapabilities'
+import { validateCapabilities } from '../lib/localWorkerCapabilities'
 import {
   DEFAULT_JOB_LEASE_MS,
+  claimNextLocalJob,
   JOB_STATE_CLAIMED,
   JOB_STATE_PUBLISHING,
   JOB_STATE_RUNNING,
-  buildClaimNextJobStatement,
   buildSucceedJobStatement,
-  claimJob,
   failJob,
   reclaimExpiredJobs,
-  claimNextJob,
   readAttemptState,
   resumeOwnedAttempt,
   readOutstandingWork,
-  setJobState,
   succeedJob,
 } from '../lib/localJobQueue'
 import {
@@ -89,10 +78,9 @@ import {
   parseCompletionPayload,
 } from '../lib/lifecycleFinalize'
 import { normalizeRows } from '../lib/atomicWrite'
-import { organizationCapFromEnv } from '../lib/transcodeClaim'
 import type { Bindings } from '../types'
-import type { AgentVariables } from '../middleware/agentAuth'
-import { requireAgent } from '../middleware/agentAuth'
+import type { LocalWorkerVariables } from '../middleware/localWorkerAuth'
+import { requireLocalWorker } from '../middleware/localWorkerAuth'
 
 export const TRANSCODER_PROTOCOL_VERSION = 1
 
@@ -104,7 +92,7 @@ export const SOURCE_GRANT_TTL_SECONDS = 6 * 3600
 export const CONTROL_REQUEST_TTL_MS = 5 * 60_000
 
 /**
- * Prefix used for self-hosted artifacts.
+ * Prefix used for local-worker artifacts.
  *
  * Re-exported from the finalizer so the agent, the inventory and the publish
  * step cannot disagree about where the bytes live.
@@ -113,146 +101,77 @@ export function outputPrefixFor(videoId: string, attemptId: string): string {
   return attemptPrefix(videoId, attemptId)
 }
 
-const app = new Hono<{ Bindings: Bindings; Variables: AgentVariables }>()
-
-// ── pairing ──────────────────────────────────────────────────────────────────
-
-/**
- * POST /pair — redeem a pairing code for a machine credential.
- *
- * Unauthenticated by necessity: this is how an agent gets its first credential.
- * The code is single-use, expiring and short, which is what keeps an
- * unauthenticated endpoint acceptable.
- */
-app.post('/pair', async (c) => {
-  const body = await readJson(c)
-  if (!body || typeof body.code !== 'string') {
-    return c.json({ error: 'code is required' }, 400)
-  }
-
-  const redemption = await redeemPairingCode(body.code)
-  if (!redemption) {
-    return c.json(
-      { error: 'Pairing code is invalid, already used, or expired', code: 'PAIRING_FAILED' },
-      401,
-    )
-  }
-
-  const capabilityCheck = validateCapabilities(body.capabilities)
-  if (!capabilityCheck.ok) {
-    return c.json({ error: capabilityCheck.reason }, 400)
-  }
-
-  const name =
-    typeof body.name === 'string' && body.name.trim()
-      ? body.name.trim().slice(0, 120)
-      : (redemption.suggestedName ?? 'Self-hosted transcoder')
-
-  const agentId = newAgentId()
-  const token = generateAgentToken(agentId)
-
-  const inserted = await db
-    .insert(transcoderAgent)
-    .values({
-      id: agentId,
-      organizationId: redemption.organizationId,
-      name,
-      tokenHash: hashAgentSecret(token),
-      tokenLast4: last4(token),
-      capabilities: capabilityCheck.value as Record<string, unknown>,
-      agentVersion: typeof body.agentVersion === 'string' ? body.agentVersion.slice(0, 60) : null,
-      hostname: typeof body.hostname === 'string' ? body.hostname.slice(0, 200) : null,
-      lastSeenAt: new Date(),
-    })
-    .onConflictDoNothing({ target: transcoderAgent.id })
-    .returning({ id: transcoderAgent.id })
-
-  if (inserted.length === 0) {
-    return c.json({ error: 'Could not register agent' }, 500)
-  }
-
-  if (redemption.pairingId) {
-    await db
-      .update(transcoderPairing)
-      .set({ consumedByAgentId: agentId })
-      .where(eq(transcoderPairing.id, redemption.pairingId))
-      .catch(() => {})
-  }
-
-  return c.json({
-    protocolVersion: TRANSCODER_PROTOCOL_VERSION,
-    agentId,
-    token,
-    organizationId: redemption.organizationId,
-    name,
-  })
-})
-
-/** POST /rotate — issue a fresh credential and invalidate the presented one. */
-app.post('/rotate', requireAgent, async (c) => {
-  const agent = c.var.agent
-  const token = generateAgentToken(agent.id)
-  await db
-    .update(transcoderAgent)
-    .set({
-      tokenHash: hashAgentSecret(token),
-      tokenLast4: last4(token),
-      updatedAt: new Date(),
-    })
-    .where(eq(transcoderAgent.id, agent.id))
-  return c.json({ token, tokenLast4: last4(token) })
-})
-
-/** POST /revoke — an agent retiring itself. The dashboard can do this too. */
-app.post('/revoke', requireAgent, async (c) => {
-  const agent = c.var.agent
-  await db
-    .update(transcoderAgent)
-    .set({ enabled: false, revokedAt: new Date(), updatedAt: new Date() })
-    .where(eq(transcoderAgent.id, agent.id))
-  return c.json({ revoked: true })
-})
-
-/** GET /whoami — lets `doctor` verify the credential without side effects. */
-app.get('/whoami', requireAgent, async (c) => {
-  const agent = c.var.agent
-  return c.json({
-    protocolVersion: TRANSCODER_PROTOCOL_VERSION,
-    agentId: agent.id,
-    organizationId: agent.organizationId,
-    name: agent.name,
-    capacityJobs: agent.capacityJobs,
-    capacityRenditions: agent.capacityRenditions,
-  })
-})
+const app = new Hono<{ Bindings: Bindings; Variables: LocalWorkerVariables }>()
 
 // ── liveness and polling ─────────────────────────────────────────────────────
 
+/** Read-only credential probe used by doctor; it never updates liveness. */
+app.get('/config', requireLocalWorker, (c) => c.json({
+  provider: c.var.runtime.config.transcodeProvider,
+  enabled: c.var.runtime.config.localTranscodeEnabled,
+  workerId: c.var.worker.id,
+  protocolVersion: TRANSCODER_PROTOCOL_VERSION,
+}))
+
+/** GET /drain-status — deployment-only count used before switching to Modal. */
+app.get('/drain-status', requireLocalWorker, async (c) => {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(transcodeJob)
+    .where(and(
+      eq(transcodeJob.provider, 'local'),
+      inArray(transcodeJob.state, ['queued', 'claimed', 'running', 'publishing']),
+    ))
+  return c.json({ outstandingLocalJobs: Number(row?.count ?? 0) })
+})
+
 /** POST /heartbeat — capabilities, current progress, lease extension. */
-app.post('/heartbeat', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/heartbeat', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const body = await readJson(c)
 
   const capabilityCheck = validateCapabilities(body?.capabilities)
   if (!capabilityCheck.ok) {
     return c.json({ error: capabilityCheck.reason }, 400)
   }
-  const hasCapabilities = Object.keys(capabilityCheck.value).length > 0
+  const hasField = (name: string) => Object.prototype.hasOwnProperty.call(body, name)
+  const capabilitiesSupplied = hasField('capabilities')
+  const workerVersionSupplied = hasField('workerVersion')
+  const hostnameSupplied = hasField('hostname')
+  const workerVersion = typeof body?.workerVersion === 'string' ? body.workerVersion.slice(0, 60) : null
+  const hostname = typeof body?.hostname === 'string' ? body.hostname.slice(0, 200) : null
+  const capabilities = capabilityCheck.value as Record<string, unknown>
 
+  const capacityJobs = boundedCapacity(body?.capacityJobs, worker.capacityJobs)
+  const capacityRenditions = boundedCapacity(body?.capacityRenditions, worker.capacityRenditions)
+  const seenAt = new Date()
+  const workerMetadata = {
+    ...(capabilitiesSupplied ? { capabilities } : {}),
+    ...(workerVersionSupplied ? { workerVersion } : {}),
+    ...(hostnameSupplied ? { hostname } : {}),
+  }
   await db
-    .update(transcoderAgent)
-    .set({
-      lastSeenAt: new Date(),
-      ...(hasCapabilities ? { capabilities: capabilityCheck.value as Record<string, unknown> } : {}),
-      ...(typeof body?.agentVersion === 'string'
-        ? { agentVersion: body.agentVersion.slice(0, 60) }
-        : {}),
-      ...(typeof body?.hostname === 'string'
-        ? { hostname: body.hostname.slice(0, 200) }
-        : {}),
-      updatedAt: new Date(),
+    .insert(localWorker)
+    .values({
+      id: worker.id,
+      lastSeenAt: seenAt,
+      capabilities: capabilitiesSupplied ? capabilities : null,
+      workerVersion: workerVersionSupplied ? workerVersion : null,
+      hostname: hostnameSupplied ? hostname : null,
+      capacityJobs,
+      capacityRenditions,
+      updatedAt: seenAt,
     })
-    .where(eq(transcoderAgent.id, agent.id))
+    .onConflictDoUpdate({
+      target: localWorker.id,
+      set: {
+        lastSeenAt: seenAt,
+        ...workerMetadata,
+        capacityJobs,
+        capacityRenditions,
+        updatedAt: seenAt,
+      },
+    })
 
   const progress = (body?.progress ?? null) as Record<string, unknown> | null
   const jobId = typeof progress?.jobId === 'string' ? progress.jobId : null
@@ -274,7 +193,7 @@ app.post('/heartbeat', requireAgent, async (c) => {
         FROM transcode_job AS j
         WHERE j.id = ${jobId}::uuid
           AND j.attempt_id = ${attemptId}
-          AND j.lease_owner = ${agent.id}
+          AND j.lease_owner = ${worker.id}
           AND j.state IN ('claimed', 'running', 'publishing')
       ),
       beat AS (
@@ -346,40 +265,42 @@ app.post('/heartbeat', requireAgent, async (c) => {
 })
 
 /** GET /poll — pending control requests and how much work this agent holds. */
-app.get('/poll', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.get('/poll', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
 
-  const controls = await db
-    .select({
-      id: agentControlRequest.id,
-      kind: agentControlRequest.kind,
-      request: agentControlRequest.request,
-      expiresAt: agentControlRequest.expiresAt,
-    })
-    .from(agentControlRequest)
-    .where(
-      and(
-        eq(agentControlRequest.agentId, agent.id),
-        eq(agentControlRequest.status, 'pending'),
-        sql`${agentControlRequest.expiresAt} > now()`,
-      ),
-    )
-    .orderBy(agentControlRequest.createdAt)
-    .limit(10)
+  const importOrganizationId = c.var.runtime.config.localImportOrgId
+  const controls = importOrganizationId
+    ? await db
+        .select({
+          id: localControlRequest.id,
+          kind: localControlRequest.kind,
+          request: localControlRequest.request,
+          expiresAt: localControlRequest.expiresAt,
+        })
+        .from(localControlRequest)
+        .where(
+          and(
+            eq(localControlRequest.organizationId, importOrganizationId),
+            eq(localControlRequest.status, 'pending'),
+            sql`${localControlRequest.expiresAt} > now()`,
+          ),
+        )
+        .orderBy(localControlRequest.createdAt)
+        .limit(10)
+    : []
 
-  const outstanding = await readOutstandingWork(db, { agentId: agent.id })
+  const outstanding = await readOutstandingWork(db, { workerId: worker.id })
 
   // Expired requests are retired here rather than by a sweeper: the only moment
   // anybody cares is when the agent asks.
   c.executionCtx?.waitUntil?.(
     db
-      .update(agentControlRequest)
+      .update(localControlRequest)
       .set({ status: 'expired' })
       .where(
         and(
-          eq(agentControlRequest.agentId, agent.id),
-          eq(agentControlRequest.status, 'pending'),
-          lt(agentControlRequest.expiresAt, new Date()),
+            eq(localControlRequest.status, 'pending'),
+          lt(localControlRequest.expiresAt, new Date()),
         ),
       )
       .catch(() => {}),
@@ -395,22 +316,22 @@ app.get('/poll', requireAgent, async (c) => {
     })),
     outstanding,
     capacity: {
-      jobs: agent.capacityJobs,
-      renditions: agent.capacityRenditions,
-      free: Math.max(0, agent.capacityJobs - outstanding.activeJobs),
+      jobs: worker.capacityJobs,
+      renditions: worker.capacityRenditions,
+      free: Math.max(0, worker.capacityJobs - outstanding.activeJobs),
     },
   })
 })
 
 /** POST /control/:id — the agent's answer to a browse or registration request. */
-app.post('/control/:id', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/control/:id', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const controlId = c.req.param('id')
   const body = await readJson(c)
 
   const ok = body?.ok !== false
   const updated = await db
-    .update(agentControlRequest)
+    .update(localControlRequest)
     .set({
       status: ok ? 'completed' : 'failed',
       response: (body?.response ?? null) as Record<string, unknown> | null,
@@ -419,12 +340,12 @@ app.post('/control/:id', requireAgent, async (c) => {
     })
     .where(
       and(
-        eq(agentControlRequest.id, controlId),
-        eq(agentControlRequest.agentId, agent.id),
-        inArray(agentControlRequest.status, ['pending', 'delivered']),
+        eq(localControlRequest.id, controlId),
+        eq(localControlRequest.organizationId, c.var.runtime.config.localImportOrgId ?? ''),
+        inArray(localControlRequest.status, ['pending', 'delivered']),
       ),
     )
-    .returning({ id: agentControlRequest.id })
+    .returning({ id: localControlRequest.id })
 
   if (updated.length === 0) {
     return c.json({ error: 'Control request not found or already answered' }, 404)
@@ -434,202 +355,27 @@ app.post('/control/:id', requireAgent, async (c) => {
 
 // ── work claiming ────────────────────────────────────────────────────────────
 
-/**
- * POST /claim — take the oldest eligible job, if there is capacity.
- *
- * A `jobId` may be supplied to claim one specific job; the eligibility rules
- * (source affinity, availability, this agent's own capacity) still apply, so a
- * named claim cannot jump the queue into a job the agent should not run.
- */
-app.post('/claim', requireAgent, async (c) => {
-  const agent = c.var.agent
+/** POST /claim — claim the oldest eligible local job across organizations. */
+app.post('/claim', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const body = await readJson(c)
-  const jobId = typeof body?.jobId === 'string' ? body.jobId : null
-  const leaseMs = typeof body?.leaseMs === 'number' ? body.leaseMs : DEFAULT_JOB_LEASE_MS
-
-  if (jobId) {
-    const attemptId =
-      typeof body?.attemptId === 'string' && body.attemptId
-        ? body.attemptId
-        : `${agent.id}:${crypto.randomUUID()}`
-    // The organization is required, not optional: a named claim that skipped it
-    // let any tenant's agent take an `r2`-source job it could name, because such
-    // a job has `agent_id = NULL` by design.
-    const claimed = await claimJob(db, {
-      jobId,
-      agentId: agent.id,
-      organizationId: agent.organizationId,
-      attemptId,
-      leaseMs,
-      agentCapacity: agent.capacityJobs,
-      organizationCapacity: c.var.runtime.config.orgConcurrencyCap,
-    })
-    if (!claimed) {
-      return c.json({ claim: null, reason: 'not-eligible' })
-    }
-    return c.json({ protocolVersion: TRANSCODER_PROTOCOL_VERSION, claim: await claimPayload(claimed) })
+  if (body?.jobId !== undefined) {
+    return c.json({ error: 'Local workers claim the next eligible job; named claims are unsupported' }, 400)
   }
-
-  const claimed = await claimNextForAgent({
-    agentId: agent.id,
-    organizationId: agent.organizationId,
-    capacity: agent.capacityJobs,
+  const leaseMs = typeof body?.leaseMs === 'number' ? body.leaseMs : DEFAULT_JOB_LEASE_MS
+  const claimed = await claimNextLocalJob(db, {
+    workerId: worker.id,
+    capacity: worker.capacityJobs,
     organizationCapacity: c.var.runtime.config.orgConcurrencyCap,
     leaseMs,
   })
-  if (!claimed) {
-    return c.json({ claim: null, reason: 'no-work' })
-  }
+  if (!claimed) return c.json({ claim: null, reason: 'no-work' })
   return c.json({ protocolVersion: TRANSCODER_PROTOCOL_VERSION, claim: await claimPayload(claimed) })
 })
 
-/**
- * GET /jobs — the jobs this agent's organization has queued or running.
- *
- * Organization-scoped, and deliberately narrow: the CLI needs to answer "what is
- * this machine working on?", which does not require titles, playback URLs or
- * anything about another tenant. A separate route from the dashboard's, because
- * the two are authorized differently and merging them would mean one of them
- * carrying a scope check the other does not need.
- */
-app.get('/jobs', requireAgent, async (c) => {
-  const agent = c.var.agent
-  const limit = Math.min(100, Math.max(1, Number(c.req.query('limit')) || 25))
-
-  const rows = await db
-    .select({
-      jobId: transcodeJob.id,
-      videoId: transcodeJob.videoId,
-      state: transcodeJob.state,
-      waitingReason: transcodeJob.waitingReason,
-      attempts: transcodeJob.attempts,
-      maxAttempts: transcodeJob.maxAttempts,
-      failureCode: transcodeJob.failureCode,
-      lastError: transcodeJob.lastError,
-      agentId: transcodeJob.agentId,
-      createdAt: transcodeJob.createdAt,
-      updatedAt: transcodeJob.updatedAt,
-    })
-    .from(transcodeJob)
-    .where(eq(transcodeJob.organizationId, agent.organizationId))
-    .orderBy(sql`${transcodeJob.createdAt} DESC`)
-    .limit(limit)
-
-  return c.json({
-    jobs: rows.map((row) => ({
-      ...row,
-      mine: row.agentId === agent.id,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-    })),
-  })
-})
-
-/**
- * POST /jobs/:id/cancel — stop a job in this agent's organization.
- *
- * Allowed for an agent credential because the alternative is worse: an operator
- * watching a job run on a headless box has no session cookie there, and the
- * "correct" answer would be to walk to another machine. The scope is the same
- * organization the agent already serves, and cancelling is never destructive of
- * the owner's original file.
- */
-app.post('/jobs/:id/cancel', requireAgent, async (c) => {
-  const agent = c.var.agent
-  const jobId = c.req.param('id')
-  const body = await readJson(c)
-
-  const { cancelJob } = await import('../lib/localJobQueue')
-  const cancelled = await cancelJob(db, {
-    jobId,
-    organizationId: agent.organizationId,
-    reason: typeof body?.reason === 'string' ? body.reason : 'cancelled from the agent CLI',
-  })
-
-  if (!cancelled) return c.json({ error: 'Job not found or already finished' }, 404)
-  return c.json({ success: true, jobId, videoId: cancelled.videoId, status: 'cancelled' })
-})
-
-/**
- * POST /jobs/:id/retry — re-queue a failed job.
- *
- * Only a job in a terminal state, and only within the organization. The source
- * is unchanged, so a local job returns to the same agent that holds the file —
- * which is the whole point: retrying must not silently move work to a machine
- * that cannot read it.
- */
-app.post('/jobs/:id/retry', requireAgent, async (c) => {
-  const agent = c.var.agent
-  const jobId = c.req.param('id')
-
-  const rows = await db
-    .select({
-      jobId: transcodeJob.id,
-      videoId: transcodeJob.videoId,
-      state: transcodeJob.state,
-      agentId: transcodeJob.agentId,
-    })
-    .from(transcodeJob)
-    .where(
-      and(
-        eq(transcodeJob.id, jobId),
-        eq(transcodeJob.organizationId, agent.organizationId),
-      ),
-    )
-    .limit(1)
-
-  const job = rows[0]
-  if (!job) return c.json({ error: 'Job not found' }, 404)
-  if (!['failed', 'cancelled'].includes(job.state)) {
-    return c.json({ error: `Only failed or cancelled jobs can be retried (current: ${job.state})` }, 409)
-  }
-
-  const requeued = normalizeRows(
-    await db.execute(sql`
-      WITH requeued AS (
-        UPDATE transcode_job
-        SET state = 'queued',
-            attempts = 0,
-            failure_code = NULL,
-            last_error = NULL,
-            waiting_reason = NULL,
-            next_attempt_at = NULL,
-            attempt_id = NULL,
-            lease_owner = NULL,
-            lease_expires_at = NULL,
-            finished_at = NULL,
-            updated_at = now()
-        WHERE id = ${jobId}::uuid
-          AND organization_id = ${agent.organizationId}
-          AND state IN ('failed', 'cancelled')
-        RETURNING id, video_id
-      ),
-      reopened AS (
-        UPDATE video
-        SET status = 'processing',
-            failure_code = NULL,
-            processing_started_at = now(),
-            transcode_attempt_id = NULL,
-            transcode_lease_expires_at = NULL,
-            updated_at = now()
-        WHERE id IN (SELECT video_id FROM requeued)
-          AND deleted_at IS NULL
-        RETURNING id
-      )
-      SELECT id, video_id FROM requeued
-    `),
-  )
-
-  if (requeued.length === 0) {
-    return c.json({ error: 'Job could not be re-queued' }, 409)
-  }
-
-  return c.json({ success: true, jobId, videoId: job.videoId, status: 'queued' })
-})
-
 /** POST /reconcile — what should this agent be doing after a restart? */
-app.post('/reconcile', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/reconcile', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const body = await readJson(c)
   const attempts = Array.isArray(body?.attempts) ? body.attempts : []
 
@@ -668,56 +414,72 @@ app.post('/reconcile', requireAgent, async (c) => {
  * filesystem, and handing out a URL for a path on someone's laptop is not a thing
  * that exists.
  */
-app.post('/sources/:id/grant', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/sources/:id/grant', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const sourceId = c.req.param('id')
+  const body = await readJson(c)
+  const jobId = typeof body?.jobId === 'string' ? body.jobId : ''
+  const attemptId = typeof body?.attemptId === 'string' ? body.attemptId : ''
+  if (!jobId || !attemptId) {
+    return c.json({ error: 'jobId and attemptId are required' }, 400)
+  }
 
   const rows = await db
-    .select()
+    .select({
+      id: transcodeSource.id,
+      kind: transcodeSource.kind,
+      r2Bucket: transcodeSource.r2Bucket,
+      r2Key: transcodeSource.r2Key,
+      inputUrl: transcodeSource.inputUrl,
+      sizeBytes: transcodeSource.sizeBytes,
+      videoId: transcodeJob.videoId,
+      organizationId: transcodeJob.organizationId,
+    })
     .from(transcodeSource)
-    .where(
-      and(
-        eq(transcodeSource.id, sourceId),
-        eq(transcodeSource.organizationId, agent.organizationId),
-      ),
-    )
+    .innerJoin(transcodeJob, eq(transcodeJob.sourceId, transcodeSource.id))
+    .innerJoin(video, eq(video.id, transcodeJob.videoId))
+    .where(and(
+      eq(transcodeSource.id, sourceId),
+      eq(transcodeJob.id, jobId),
+      eq(transcodeJob.attemptId, attemptId),
+      eq(transcodeJob.leaseOwner, worker.id),
+      inArray(transcodeJob.state, [JOB_STATE_CLAIMED, JOB_STATE_RUNNING, JOB_STATE_PUBLISHING]),
+      sql`${transcodeJob.leaseExpiresAt} > now()`,
+      eq(video.transcodeAttemptId, attemptId),
+      eq(video.organizationId, transcodeJob.organizationId),
+      eq(transcodeSource.organizationId, transcodeJob.organizationId),
+      isNull(video.deletedAt),
+    ))
     .limit(1)
   const source = rows[0]
-  if (!source) return c.json({ error: 'Source not found' }, 404)
-
+  if (!source) return c.json({ error: 'Source not found or attempt is no longer current' }, 404)
   if (source.kind === 'local') {
-    return c.json(
-      {
-        error: 'Local sources are read from the agent that holds them',
-        code: 'SOURCE_IS_LOCAL',
-      },
-      400,
-    )
+    return c.json({ error: 'Local sources are read from the installation worker', code: 'SOURCE_IS_LOCAL' }, 400)
   }
 
+  let grant: Record<string, unknown>
   if (source.kind === 'url') {
-    // A one-off URL source is fetched directly; the API does not proxy it.
-    return c.json({ kind: 'url', url: source.inputUrl, expiresAt: null })
+    grant = { kind: 'url', url: source.inputUrl, expiresAt: null }
+  } else {
+    const bucket = source.r2Bucket
+    const key = source.r2Key
+    if (!bucket || !key) return c.json({ error: 'Source is missing its object location' }, 409)
+    grant = {
+      kind: 'r2',
+      url: await getSignedUrl(
+        getR2(),
+        new GetObjectCommand({ Bucket: bucket, Key: key }),
+        { expiresIn: SOURCE_GRANT_TTL_SECONDS },
+      ),
+      expiresAt: new Date(Date.now() + SOURCE_GRANT_TTL_SECONDS * 1000).toISOString(),
+      sizeBytes: source.sizeBytes ?? null,
+    }
   }
 
-  const bucket = source.r2Bucket
-  const key = source.r2Key
-  if (!bucket || !key) {
-    return c.json({ error: 'Source is missing its object location' }, 409)
+  if (!await extendLease(source.videoId, attemptId, worker.id)) {
+    return c.json({ error: 'Attempt is no longer current', code: 'SUPERSEDED' }, 409)
   }
-
-  const url = await getSignedUrl(
-    getR2(),
-    new GetObjectCommand({ Bucket: bucket, Key: key }),
-    { expiresIn: SOURCE_GRANT_TTL_SECONDS },
-  )
-
-  return c.json({
-    kind: 'r2',
-    url,
-    expiresAt: new Date(Date.now() + SOURCE_GRANT_TTL_SECONDS * 1000).toISOString(),
-    sizeBytes: source.sizeBytes ?? null,
-  })
+  return c.json(grant)
 })
 
 /**
@@ -727,15 +489,15 @@ app.post('/sources/:id/grant', requireAgent, async (c) => {
  * attempt must still own the job. Both are what stop an agent from writing into
  * another attempt's directory.
  */
-app.post('/jobs/:id/inventory', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/jobs/:id/inventory', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const jobId = c.req.param('id')
   const body = await readJson(c)
 
   const artifacts = Array.isArray(body?.artifacts) ? body.artifacts : null
   if (!artifacts) return c.json({ error: 'artifacts must be an array' }, 400)
 
-  const job = await requireOwnedJob(agent.id, jobId)
+  const job = await requireOwnedJob(worker.id, jobId)
   if (!job) return c.json({ error: 'Job not found or not owned by this agent' }, 404)
 
   const prefix = outputPrefixFor(job.videoId, job.attemptId)
@@ -745,7 +507,7 @@ app.post('/jobs/:id/inventory', requireAgent, async (c) => {
     // request carrying them would exceed every request budget in the stack.
     registered = await registerInventoryPaged(db, {
       videoId: job.videoId,
-      organizationId: agent.organizationId,
+      organizationId: job.organizationId,
       jobId: job.jobId,
       attemptId: job.attemptId,
       prefix,
@@ -775,11 +537,11 @@ app.post('/jobs/:id/inventory', requireAgent, async (c) => {
  * because a job that spends an hour uploading must not lose ownership while it
  * does.
  */
-app.post('/inventories/:id/grants', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/inventories/:id/grants', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const inventoryId = c.req.param('id')
 
-  const inventory = await loadAuthorizedInventory(agent.id, inventoryId)
+  const inventory = await loadAuthorizedInventory(worker.id, inventoryId)
   if (!inventory) {
     // Unknown, superseded, deleted video, stale lease or a newer attempt: all
     // the same answer to the agent, which is to stop.
@@ -813,7 +575,7 @@ app.post('/inventories/:id/grants', requireAgent, async (c) => {
         CacheControl: cacheControlFor(artifact.path),
         Metadata: {
           'video-id': inventory.videoId,
-          'organization-id': agent.organizationId,
+          'organization-id': inventory.organizationId,
           'playback-policy': inventory.playbackPolicy,
           'attempt-id': inventory.attemptId,
         },
@@ -830,7 +592,7 @@ app.post('/inventories/:id/grants', requireAgent, async (c) => {
   // lease cannot be extended, the grants are withheld rather than handed over:
   // a URL issued to an attempt that no longer owns the job authorizes a write
   // into a prefix a newer attempt may be publishing.
-  const extended = await extendLease(inventory.videoId, inventory.attemptId, agent.id)
+  const extended = await extendLease(inventory.videoId, inventory.attemptId, worker.id)
   if (!extended) {
     return c.json({ error: 'Attempt is no longer current', code: 'SUPERSEDED' }, 409)
   }
@@ -843,10 +605,10 @@ app.post('/inventories/:id/grants', requireAgent, async (c) => {
 })
 
 /** POST /inventories/:id/uploaded — the agent's claim that paths are in place. */
-app.post('/inventories/:id/uploaded', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/inventories/:id/uploaded', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const inventoryId = c.req.param('id')
-  const inventory = await loadAuthorizedInventory(agent.id, inventoryId)
+  const inventory = await loadAuthorizedInventory(worker.id, inventoryId)
   if (!inventory) return c.json({ error: 'Inventory not found or not owned by this agent' }, 404)
   if (inventory.status === 'superseded') {
     return c.json({ error: 'Attempt has been superseded', code: 'SUPERSEDED' }, 409)
@@ -864,7 +626,7 @@ app.post('/inventories/:id/uploaded', requireAgent, async (c) => {
   }
 
   const updated = await markArtifactsUploaded(db, { inventoryId, paths, checksums })
-  const extended = await extendLease(inventory.videoId, inventory.attemptId, agent.id)
+  const extended = await extendLease(inventory.videoId, inventory.attemptId, worker.id)
   if (!extended) {
     return c.json({ error: 'Attempt is no longer current', code: 'SUPERSEDED' }, 409)
   }
@@ -880,10 +642,10 @@ app.post('/inventories/:id/uploaded', requireAgent, async (c) => {
  * what the agent itself recorded, because an object store's multipart ETag is
  * not a content hash.
  */
-app.post('/inventories/:id/verify', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/inventories/:id/verify', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const inventoryId = c.req.param('id')
-  const inventory = await loadAuthorizedInventory(agent.id, inventoryId)
+  const inventory = await loadAuthorizedInventory(worker.id, inventoryId)
   if (!inventory) {
     return c.json({ error: 'Inventory not found or not owned by this agent', code: 'SUPERSEDED' }, 409)
   }
@@ -924,7 +686,7 @@ app.post('/inventories/:id/verify', requireAgent, async (c) => {
   const { verified, failed } = classifyVerification(candidates, observed)
   const result = await applyVerification(db, { inventoryId, verified, failed })
 
-  const extended = await extendLease(inventory.videoId, inventory.attemptId, agent.id)
+  const extended = await extendLease(inventory.videoId, inventory.attemptId, worker.id)
   if (!extended) {
     return c.json({ error: 'Attempt is no longer current', code: 'SUPERSEDED' }, 409)
   }
@@ -952,8 +714,8 @@ app.post('/inventories/:id/verify', requireAgent, async (c) => {
  * Refused unless the attempt still owns both rows, which is the same authority
  * the completion path checks.
  */
-app.post('/jobs/:id/resume', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/jobs/:id/resume', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const jobId = c.req.param('id')
   const body = await readJson(c)
   const attemptId = typeof body.attemptId === 'string' ? body.attemptId : ''
@@ -962,7 +724,7 @@ app.post('/jobs/:id/resume', requireAgent, async (c) => {
   const job = await resumeOwnedAttempt(db, {
     jobId,
     attemptId,
-    agentId: agent.id,
+    workerId: worker.id,
   })
   if (!job) {
     return c.json({ error: 'Attempt is no longer current', code: 'SUPERSEDED' }, 409)
@@ -990,8 +752,8 @@ app.post('/jobs/:id/resume', requireAgent, async (c) => {
  * when it did not see the response, so the one case where it asks again is the
  * case where "already done" must be a success, not a 404.
  */
-app.post('/jobs/:id/complete', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/jobs/:id/complete', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const jobId = c.req.param('id')
   const body = await readJson(c)
   const attemptId = typeof body?.attemptId === 'string' ? body.attemptId : null
@@ -1001,7 +763,7 @@ app.post('/jobs/:id/complete', requireAgent, async (c) => {
     return c.json({ error: 'attemptId and payload are required' }, 400)
   }
 
-  const existing = await loadJobForCompletion(agent.organizationId, jobId)
+  const existing = await loadJobForCompletion(jobId, worker.id)
   if (!existing) return c.json({ error: 'Job not found' }, 404)
 
   // ── replay ───────────────────────────────────────────────────────────────
@@ -1052,7 +814,7 @@ app.post('/jobs/:id/complete', requireAgent, async (c) => {
     return c.json(receipt)
   }
 
-  const job = await loadJobForAgent(agent.id, jobId)
+  const job = await loadJobForWorker(worker.id, jobId)
   if (!job) return c.json({ error: 'Job not found or not owned by this agent', code: 'SUPERSEDED' }, 409)
   if (job.attemptId !== attemptId) {
     return c.json({ error: 'Attempt is no longer current', code: 'SUPERSEDED' }, 409)
@@ -1087,7 +849,7 @@ app.post('/jobs/:id/complete', requireAgent, async (c) => {
     db,
     {
       videoId: job.videoId,
-      organizationId: agent.organizationId,
+      organizationId: job.organizationId,
       title: videoRecord.title,
       attemptId,
       jobId,
@@ -1140,8 +902,8 @@ async function recordCompletionReceipt(
  * Uses the same finalizer as a Modal error callback, so the row and the
  * `video.failed` event are identical whichever provider produced them.
  */
-app.post('/jobs/:id/fail', requireAgent, async (c) => {
-  const agent = c.var.agent
+app.post('/jobs/:id/fail', requireLocalWorker, async (c) => {
+  const worker = c.var.worker
   const jobId = c.req.param('id')
   const body = await readJson(c)
   const attemptId = typeof body?.attemptId === 'string' ? body.attemptId : null
@@ -1150,7 +912,7 @@ app.post('/jobs/:id/fail', requireAgent, async (c) => {
 
   if (!attemptId) return c.json({ error: 'attemptId is required' }, 400)
 
-  const job = await loadJobForAgent(agent.id, jobId)
+  const job = await loadJobForWorker(worker.id, jobId)
   if (!job) return c.json({ error: 'Job not found or not owned by this agent' }, 404)
 
   const outcome = await failJob(db, {
@@ -1203,6 +965,12 @@ app.post('/jobs/:id/fail', requireAgent, async (c) => {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+function boundedCapacity(value: unknown, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 64 ? parsed : fallback
+}
+
+
 type OwnedJob = {
   jobId: string
   videoId: string
@@ -1213,7 +981,7 @@ type OwnedJob = {
   attempts: number
 }
 
-async function loadJobForAgent(agentId: string, jobId: string): Promise<OwnedJob | null> {
+async function loadJobForWorker(workerId: string, jobId: string): Promise<OwnedJob | null> {
   const rows = await db
     .select({
       jobId: transcodeJob.id,
@@ -1226,7 +994,7 @@ async function loadJobForAgent(agentId: string, jobId: string): Promise<OwnedJob
       state: transcodeJob.state,
     })
     .from(transcodeJob)
-    .where(and(eq(transcodeJob.id, jobId), eq(transcodeJob.leaseOwner, agentId)))
+    .where(and(eq(transcodeJob.id, jobId), eq(transcodeJob.leaseOwner, workerId)))
     .limit(1)
   const job = rows[0]
   if (!job || !job.attemptId) return null
@@ -1254,11 +1022,12 @@ async function loadJobForAgent(agentId: string, jobId: string): Promise<OwnedJob
  * forever.
  */
 async function loadJobForCompletion(
-  organizationId: string,
   jobId: string,
+  workerId: string,
 ): Promise<{
   jobId: string
   videoId: string
+  organizationId: string
   attemptId: string | null
   state: string
   completionReceipt: Record<string, unknown> | null
@@ -1267,28 +1036,25 @@ async function loadJobForCompletion(
     .select({
       jobId: transcodeJob.id,
       videoId: transcodeJob.videoId,
+      organizationId: transcodeJob.organizationId,
       attemptId: transcodeJob.attemptId,
       state: transcodeJob.state,
       completionReceipt: transcodeJob.completionReceipt,
     })
     .from(transcodeJob)
-    .where(
-      and(
-        eq(transcodeJob.id, jobId),
-        eq(transcodeJob.organizationId, organizationId),
-      ),
-    )
+    .where(and(eq(transcodeJob.id, jobId), eq(transcodeJob.provider, 'local'), sql`(${transcodeJob.leaseOwner} = ${workerId} OR ${transcodeJob.state} = 'succeeded')`))
     .limit(1)
   return rows[0] ?? null
 }
 
-async function requireOwnedJob(agentId: string, jobId: string): Promise<OwnedJob | null> {
-  return loadJobForAgent(agentId, jobId)
+async function requireOwnedJob(workerId: string, jobId: string): Promise<OwnedJob | null> {
+  return loadJobForWorker(workerId, jobId)
 }
 
 type AuthorizedInventory = {
   inventoryId: string
   videoId: string
+  organizationId: string
   attemptId: string
   prefix: string
   status: string
@@ -1313,13 +1079,14 @@ type AuthorizedInventory = {
  * A grant is a write capability. "The row exists" is not a reason to issue one.
  */
 async function loadAuthorizedInventory(
-  agentId: string,
+  workerId: string,
   inventoryId: string,
 ): Promise<AuthorizedInventory | null> {
   const rows = await db
     .select({
       inventoryId: artifactInventory.id,
       videoId: artifactInventory.videoId,
+      organizationId: artifactInventory.organizationId,
       attemptId: artifactInventory.attemptId,
       prefix: artifactInventory.prefix,
       status: artifactInventory.status,
@@ -1331,7 +1098,7 @@ async function loadAuthorizedInventory(
       transcodeJob,
       and(
         eq(transcodeJob.id, artifactInventory.jobId),
-        eq(transcodeJob.leaseOwner, agentId),
+        eq(transcodeJob.leaseOwner, workerId),
         eq(transcodeJob.attemptId, artifactInventory.attemptId),
         inArray(transcodeJob.state, [JOB_STATE_CLAIMED, JOB_STATE_RUNNING, JOB_STATE_PUBLISHING]),
         sql`${transcodeJob.leaseExpiresAt} > now()`,
@@ -1352,6 +1119,7 @@ async function loadAuthorizedInventory(
   return {
     inventoryId: row.inventoryId,
     videoId: row.videoId,
+    organizationId: row.organizationId,
     attemptId: row.attemptId,
     prefix: row.prefix,
     status: row.status,
@@ -1371,14 +1139,14 @@ async function loadAuthorizedInventory(
 async function extendLease(
   videoId: string,
   attemptId: string,
-  agentId: string,
+  workerId: string,
 ): Promise<boolean> {
   const rows = normalizeRows(await db.execute(sql`
     WITH owning AS (
       SELECT 1 FROM transcode_job
       WHERE video_id = ${videoId}::uuid
         AND attempt_id = ${attemptId}
-        AND lease_owner = ${agentId}
+        AND lease_owner = ${workerId}
         AND state IN ('claimed', 'running', 'publishing')
     )
     UPDATE video
@@ -1401,21 +1169,11 @@ async function extendLease(
         updated_at = now()
     WHERE video_id = ${videoId}::uuid
       AND attempt_id = ${attemptId}
-      AND lease_owner = ${agentId}
+      AND lease_owner = ${workerId}
       AND state IN ('claimed', 'running', 'publishing')
   `)
 
   return true
-}
-
-async function claimNextForAgent(input: {
-  agentId: string
-  organizationId: string
-  capacity: number
-  organizationCapacity?: number | null
-  leaseMs: number
-}) {
-  return claimNextJob(db, input)
 }
 
 async function claimPayload(claimed: {

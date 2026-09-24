@@ -14,7 +14,7 @@ const faqs = [
   {
     question: "What do I actually have to run?",
     answer:
-      "Storage: two R2 buckets, one for raw uploads and one for transcoded output. State: Postgres. Compute: the Node API and the delivery Worker that serves media. Transcoding: Modal's GPU runners, or the self-hosted agent on machines you already have. The bootstrap wizard checks each requirement before it writes any configuration.",
+      "Storage: two R2 buckets, one for raw uploads and one for transcoded output. State: Postgres. Compute: the Node API and the delivery Worker that serves media. Transcoding: Modal's GPU runners or one local worker included in your deployment. The bootstrap wizard checks each requirement before it writes any configuration.",
   },
   {
     question: "Who owns the video files?",
@@ -29,7 +29,7 @@ const faqs = [
   {
     question: "Can I transcode on my own hardware?",
     answer:
-      "Yes. Modal GPU runners are the default and need no machines of your own. The self-hosted agent runs the same processing engine on hardware you operate and authenticates with an organization-scoped token — it holds no storage credentials, because transfers are presigned per artifact. The provider is recorded per job, so switching does not change how playback works.",
+      "Yes. Choose Modal's GPU runners or the single local worker installed alongside your deployment. The local worker uses the same processing engine, and new jobs follow the provider selected for the installation.",
   },
   {
     question: "What does it cost?",

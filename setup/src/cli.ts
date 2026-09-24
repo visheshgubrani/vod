@@ -75,7 +75,6 @@ import {
 } from './devInfra'
 import { summaryText } from './display'
 import { linksNote, type LinkKind } from './links'
-import { agentApiUrlNote, pairingCommand } from './pairing'
 import {
   announceCancel,
   askConfirm,
@@ -241,8 +240,8 @@ function parseArgs(argv: string[]): CliOptions {
       }
       case '--transcode': {
         const value = next(i, arg)
-        if (value !== 'modal' && value !== 'self-hosted') {
-          usageError(`--transcode must be modal|self-hosted, got ${value}`)
+        if (value !== 'modal' && value !== 'local') {
+          usageError(`--transcode must be modal|local, got ${value}`)
         }
         options.prefill.transcodeProvider = value
         i += 1
@@ -327,8 +326,8 @@ function loadAnswersFile(path: string): WizardAnswers {
     throw new WizardError('answers rateLimit.kind must be "memory", "redis" or "upstash"')
   }
   const provider = answers.transcodeProvider
-  if (provider !== undefined && provider !== 'modal' && provider !== 'self-hosted') {
-    throw new WizardError('answers transcodeProvider must be "modal" or "self-hosted"')
+  if (provider !== undefined && provider !== 'modal' && provider !== 'local') {
+    throw new WizardError('answers transcodeProvider must be "modal" or "local"')
   }
   const merged: WizardAnswers = {
     ...(target !== undefined ? { target } : {}),
@@ -348,9 +347,6 @@ function loadAnswersFile(path: string): WizardAnswers {
       .toString()
       .trim(),
     ...(provider !== undefined ? { transcodeProvider: provider } : {}),
-    ...(answers.selfHostedEnabled !== undefined
-      ? { selfHostedEnabled: answers.selfHostedEnabled === true }
-      : {}),
     ...(answers.uploadsEnabled !== undefined
       ? { uploadsEnabled: answers.uploadsEnabled !== false }
       : {}),
@@ -377,10 +373,8 @@ function targetFlag(target: ConfigTarget): string {
 
 function nextStepsText(answers: WizardAnswers): string {
   const target = answers.target ?? 'dev'
-  const local = transcodeProvider(answers) === 'self-hosted'
-  const pairing = local
-    ? ['', 'Encode on this machine (self-hosted provider):', `  ${pairingCommand()}`]
-    : []
+  const local = transcodeProvider(answers) === 'local'
+
 
   if (answers.hostInstall) {
     const origin = answers.frontendUrl.trim()
@@ -398,7 +392,7 @@ function nextStepsText(answers: WizardAnswers): string {
       '',
       'Manual upgrade (v1 does not auto-update):',
       `  git pull && docker compose build api web && docker compose run --rm migrate && docker compose up -d`,
-      ...(local ? ['', 'Self-hosted encoding uses the paired agent on this machine.'] : []),
+      ...(local ? ['', 'Local encoding runs in the transcoder container on this machine.'] : []),
     ].join('\n')
   }
 
@@ -412,8 +406,6 @@ function nextStepsText(answers: WizardAnswers): string {
       '',
       'Cloudflare + transcoder (delivery is always the Cloudflare Worker):',
       `  ${color.cmd(`./scripts/bootstrap.sh --deploy${targetFlag(target)}`)}`,
-      ...pairing,
-      ...(local ? ['', agentApiUrlNote(undefined, true)] : []),
       '',
       'Verify:',
       `  ${color.cmd('./scripts/bootstrap.sh --check')}`,
@@ -426,7 +418,6 @@ function nextStepsText(answers: WizardAnswers): string {
     'Deploy (Cloudflare + Modal):',
     `  ${color.cmd(`./scripts/bootstrap.sh --deploy${targetFlag(target)}`)}`,
     `  ${delivery}`,
-    ...pairing,
   ]
   return [
     'Develop (this machine):',
@@ -1051,7 +1042,7 @@ async function main(): Promise<void> {
         logSuccess(`Updated ${primary} with host-install access — secrets were reused`)
       } else {
         answers = deriveAnswersFromConfig(target, env)
-        logWarn(`Using the existing ${primary} — secrets, volumes and pairing are reused`)
+        logWarn(`Using the existing ${primary} — secrets and volumes are reused`)
       }
     }
     deployNow = true

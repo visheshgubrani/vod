@@ -172,7 +172,7 @@ class PipelineResult:
         ``key_prefix`` is the storage prefix the artifacts were written to. The
         Modal runner passes its legacy `videos/<id>` layout, because its callback
         carries complete object keys and the API's rebasing is opt-in; a
-        self-hosted agent passes nothing, because the API already knows the
+        local worker passes nothing, because the API already knows the
         attempt prefix and re-bases against it.
         """
         return {
@@ -204,7 +204,7 @@ class PipelineResult:
         handled with rebasing *off*, so it passes that prefix here; omitting it
         would send `playlist.m3u8` and the API would save
         `<delivery>/playlist.m3u8`, a URL that 404s for every viewer. A
-        self-hosted agent omits it because the API re-bases against the attempt
+        local worker omits it because the API re-bases against the attempt
         prefix it recorded in the inventory.
         """
         playlist = self.artifact_for_role("playlist")

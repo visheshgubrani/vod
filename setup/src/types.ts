@@ -65,10 +65,8 @@ export interface WizardAnswers {
   r2SecretAccessKey: string
   rawBucket: string
   transcodedBucket: string
-  /** 'modal' (default) or 'self-hosted'. Omitted means Modal. */
-  transcodeProvider?: 'modal' | 'self-hosted'
-  /** Accept new self-hosted submissions. Omitted follows the provider. */
-  selfHostedEnabled?: boolean
+  /** Which deployment-level encoder handles new jobs. The wizard defaults to local. */
+  transcodeProvider?: 'modal' | 'local'
   /** Accept browser/SDK uploads. Omitted means true. */
   uploadsEnabled?: boolean
   /** Playback/bandwidth analytics. Omitted means true. */
@@ -102,6 +100,7 @@ export interface SecretSet {
   jwtSecret: string
   internalSweepSecret: string
   transcodeIngestSecret: string
+  localTranscoderSecret: string
   analyticsIngestSecret: string
   /** Password for the bundled Postgres of a Docker deployment (.env only). */
   postgresPassword: string
@@ -112,7 +111,7 @@ export interface Prefill {
   dbKind?: DbKind
   queueKind?: QueueKind
   rateLimitKind?: RateLimitKind
-  transcodeProvider?: 'modal' | 'self-hosted'
+  transcodeProvider?: 'modal' | 'local'
   uploadsEnabled?: boolean
   analyticsEnabled?: boolean
   access?: PublicAccess

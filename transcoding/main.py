@@ -5,7 +5,7 @@ This module is now only the *Modal adapter*. It owns the things that are
 genuinely Modal's: the image, the HTTP ingest endpoint, the container-level
 duplicate suppression, and the GPU worker's resource request. Everything else —
 probing, planning, encoding, packaging, validation, inventory — is in
-`clipmux_transcoder`, which is the same code a self-hosted agent runs.
+`clipmux_transcoder`, which is the same code a local worker runs.
 
 That split is the point of the extraction: a fix to rendition planning or to
 output validation lands in both environments at once, and cannot drift.
@@ -94,7 +94,7 @@ ATTEMPT_MARKER_TTL_SECONDS = int(os.environ.get("ATTEMPT_MARKER_TTL_SECONDS", "3
 # ── the shared media toolchain ───────────────────────────────────────────────
 #
 # One recipe, two images. `transcoding/toolchain/build_ffmpeg.sh` builds the
-# pinned FFmpeg 9.0.1 here and in the self-hosted agent image
+# pinned FFmpeg 9.0.1 here and in the local worker image
 # (`Dockerfile.agent`), so the bytes a Modal worker produces and the bytes an
 # agent produces come from the same binary. `versions.env` is the only place a
 # version, URL or digest is written down.

@@ -68,7 +68,7 @@ class CancellationToken:
         """A token cancelled whenever this one is (one-way, parent → child)."""
         child = CancellationToken()
         # A parent link avoids leaking a forever-waiting daemon for every
-        # successful job on a long-running self-hosted agent.
+        # successful job on a long-running local worker.
         child._parent = self
         return child
 

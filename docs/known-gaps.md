@@ -96,7 +96,7 @@ of v1:
   (Node + pnpm) so wrangler device login and prompts work. A fully
   containerized setup UI is deferred.
 - **Prebuilt application images / a distribution registry.** Host installs
-  build `api`, `web`, and the agent image from the checkout. Shipping generic
+  build `api`, `web`, and the local worker image from the checkout. Shipping generic
   images is deferred.
 
 ## Marketing assets
@@ -134,7 +134,7 @@ of v1:
   would have to reproduce the toolchain ladder (node/pnpm, `corepack`, the
   workspace install) and the wizard's `pnpm exec` calls — deferred until the Unix
   path has settled.
-- **AI subtitles/chapters do not work with the self-hosted transcoder yet.** The
+- **AI subtitles/chapters do not work with the local transcoder yet.** The
   agent image (`transcoding/Dockerfile.agent`) installs `requests` and the engine
   only: neither `faster-whisper` (subtitles) nor the `groq` client (chapters), both
   of which `transcoding/clipmux_transcoder/pipeline.py` reaches for when the job
@@ -144,7 +144,7 @@ of v1:
   the Whisper model pre-baked the way the Modal image does it, and
   `GROQ_API_KEY` passed through to the `transcoder` compose service. The wizard
   therefore asks about Groq **only** for the Modal provider and warns if a
-  headless answers file sets the key on a self-hosted install.
+  headless answers file sets the key on a local install.
 - **The wizard cannot verify R2 S3 keys.** It checks presence and format; only a
   real S3 request proves them, and neither wrangler (OAuth) nor the wizard
   (no SigV4) makes one. `--deploy` and `GET /health/config` are the first real

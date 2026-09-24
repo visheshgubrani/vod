@@ -10,7 +10,6 @@ import {
   SERVER_KEY_ORDER,
   DEPLOY_KEY_ORDER,
   needsRawBucket,
-  selfHostedEnabledValue,
   validateAnswers,
   validateChoices,
   validateCredentials,
@@ -24,6 +23,7 @@ const SECRETS: SecretSet = {
   jwtSecret: 'b'.repeat(64),
   internalSweepSecret: 'c'.repeat(64),
   transcodeIngestSecret: 'd'.repeat(64),
+  localTranscoderSecret: 'g'.repeat(64),
   analyticsIngestSecret: 'f'.repeat(64),
   postgresPassword: 'e'.repeat(48),
 }
@@ -153,7 +153,7 @@ describe('mapping to env entries', () => {
     expect(entries.get('POSTGRES_PASSWORD')).toBe(SECRETS.postgresPassword)
     expect(entries.get('JWT_SECRET')).toBe(SECRETS.jwtSecret)
     expect(entries.get('SWEEP_ENABLED')).toBe('true')
-    expect(entries.get('TRANSCODE_PROVIDER')).toBe('modal')
+    expect(entries.get('TRANSCODE_PROVIDER')).toBe('local')
     expect(entries.get('ANALYTICS_ENABLED')).toBe('true')
   })
 
@@ -267,7 +267,8 @@ describe('the transcoder provider', () => {
   it('keeps the provider flags in the canonical key set', () => {
     for (const key of [
       'TRANSCODE_PROVIDER',
-      'SELF_HOSTED_ENABLED',
+      'LOCAL_TRANSCODE_ENABLED',
+      'LOCAL_TRANSCODER_SECRET',
       'UPLOADS_ENABLED',
       'ANALYTICS_ENABLED',
       'ANALYTICS_INGEST_SECRET',
@@ -276,22 +277,16 @@ describe('the transcoder provider', () => {
     }
   })
 
-  it('serialises an explicit false so the rollback survives a regeneration', () => {
-    expect(selfHostedEnabledValue(nodeAnswers({ selfHostedEnabled: false }))).toBe('false')
-    expect(selfHostedEnabledValue(nodeAnswers({ selfHostedEnabled: true }))).toBe('true')
-    expect(selfHostedEnabledValue(nodeAnswers())).toBe('')
-  })
-
   it('writes the provider and upload flags into both configurations', () => {
     const local = nodeAnswers({
       db: { kind: 'local' },
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       uploadsEnabled: false,
       rawBucket: 'unused-raw',
     })
     for (const entries of [buildDevConfig(local, SECRETS), buildDeployConfig(local, SECRETS)]) {
       const map = new Map(entries)
-      expect(map.get('TRANSCODE_PROVIDER')).toBe('self-hosted')
+      expect(map.get('TRANSCODE_PROVIDER')).toBe('local')
       expect(map.get('UPLOADS_ENABLED')).toBe('false')
       expect(map.get('RAW_BUCKET_NAME')).toBe('')
     }
@@ -311,7 +306,7 @@ describe('the transcoder provider', () => {
   it('does not need a raw bucket for a local-only installation', () => {
     const local = nodeAnswers({
       db: { kind: 'local' },
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       uploadsEnabled: false,
       rawBucket: '',
     })
@@ -356,15 +351,13 @@ describe('deriveAnswersFromConfig', () => {
     const local = nodeAnswers({
       target: 'dev',
       db: { kind: 'local' },
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       uploadsEnabled: false,
-      selfHostedEnabled: false,
     })
     const entries = new Map(buildDevConfig(local, SECRETS))
     const derived = deriveAnswersFromConfig('dev', Object.fromEntries(entries))
-    expect(derived.transcodeProvider).toBe('self-hosted')
+    expect(derived.transcodeProvider).toBe('local')
     expect(derived.uploadsEnabled).toBe(false)
-    expect(derived.selfHostedEnabled).toBe(false)
   })
 
   it('round-trips the deploy target through the .env builder', () => {
@@ -393,7 +386,6 @@ describe('deriveAnswersFromConfig', () => {
     const derived = deriveAnswersFromConfig('dev', legacy)
     expect(derived.transcodeProvider).toBe('modal')
     expect(derived.uploadsEnabled).toBe(true)
-    expect(derived.selfHostedEnabled).toBeUndefined()
     expect(derived.analyticsEnabled).toBe(true)
   })
 
@@ -498,7 +490,7 @@ describe('host-install mapping', () => {
       db: { kind: 'local' },
       hostInstall: true,
       access: 'localhost',
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       frontendUrl: 'http://localhost',
       proxy: proxySettingsFor({ origin: 'http://localhost', access: 'localhost' }),
     })
@@ -545,7 +537,7 @@ describe('host-install mapping', () => {
       db: { kind: 'local' },
       hostInstall: true,
       access: 'domain',
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       frontendUrl: 'https://vod.example.com',
       proxy: proxySettingsFor(
         { origin: 'https://vod.example.com', access: 'domain' },
@@ -606,7 +598,7 @@ describe('host-install mapping', () => {
     expect(overlaid.frontendUrl).toBe('http://localhost')
     expect(overlaid.r2AccessKeyId).toBe('r2-access-key')
     expect(overlaid.accountId).toBe('a1b2c3d4e5f60718293a4b5c6d7e8f90')
-    expect(overlaid.transcodeProvider).toBe('self-hosted')
+    expect(overlaid.transcodeProvider).toBe('local')
     expect(overlaid.proxy).toEqual({
       enabled: true,
       site: 'http://localhost',

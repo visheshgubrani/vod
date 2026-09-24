@@ -4,7 +4,7 @@
  * Publication is the point where a viewer either gets bytes or a 404, and the
  * guarantees are all database-level: the ownership guard, the verification gate,
  * the outbox row written in the same statement, and the atomic pairing of
- * publication with the self-hosted job's own terminal state.
+ * publication with the local job's own terminal state.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq } from 'drizzle-orm'
@@ -53,7 +53,7 @@ describe.skipIf(!hasTestDatabase)('lifecycleFinalize (PostgreSQL)', () => {
         ('${VIDEO_3}', '${ORG}', 'Three', 'processing', 'att-job', now() + interval '10 minutes'),
         ('${VIDEO_4}', '${ORG}', 'Four', 'processing', 'att-fail', now() + interval '10 minutes');
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner, lease_expires_at)
-      VALUES ('${JOB}', '${VIDEO_3}', '${ORG}', 'self-hosted', 'running', 'att-job', 'agent-a', now() + interval '10 minutes');
+      VALUES ('${JOB}', '${VIDEO_3}', '${ORG}', 'local', 'running', 'att-job', 'local', now() + interval '10 minutes');
     `)
   })
 
@@ -206,7 +206,7 @@ describe.skipIf(!hasTestDatabase)('lifecycleFinalize (PostgreSQL)', () => {
       VALUES ('55555555-5555-5555-5555-555555555555', '${ORG}', 'Five', 'processing', 'att-five', now() + interval '10 minutes');
       INSERT INTO transcode_job (id, video_id, organization_id, provider, state, attempt_id, lease_owner)
       VALUES ('bbbbbbbb-0000-0000-0000-00000000000b', '55555555-5555-5555-5555-555555555555',
-              '${ORG}', 'self-hosted', 'succeeded', 'att-five', NULL);
+              '${ORG}', 'local', 'succeeded', 'att-five', NULL);
     `)
     const videoId = '55555555-5555-5555-5555-555555555555'
     const jobId = 'bbbbbbbb-0000-0000-0000-00000000000b'

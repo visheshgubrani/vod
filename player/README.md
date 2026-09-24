@@ -32,7 +32,7 @@ Or let the player build the URL from your delivery origin:
 
 > **Prefer `src` whenever you have the URL.** `cdnBase` builds
 > `{cdnBase}/{playbackId}/playlist.m3u8`, which matches output encoded by the
-> Modal worker. Videos encoded by a **self-hosted agent** are published under
+> Modal worker. Videos encoded by a **local worker** are published under
 > `videos/<id>/attempts/<attempt-id>/playlist.m3u8` (attempts are scoped so a
 > superseded encode cannot overwrite the live one), so the shortcut would 404.
 > The playback URL from `vod.playback.createToken()` or the `video.ready`

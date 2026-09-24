@@ -768,7 +768,8 @@ class TestDetectCapabilities:
             "ffmpeg", "shaka", "hwaccels", "encoders", "cpuCores",
             "memoryBytes", "scratchFreeBytes", "probedAt",
         }
-        assert "device" not in payload["encoders"]["nvenc"]
+        assert all(isinstance(backend, str) for backend in payload["encoders"])
+        assert "device" not in payload["encoders"]
 
 
 class TestBackendIdentity:

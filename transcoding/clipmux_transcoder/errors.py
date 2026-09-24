@@ -32,7 +32,7 @@ ERROR_INSUFFICIENT_DISK = "INSUFFICIENT_DISK"      # scratch too small for this 
 ERROR_PARTIAL_UPLOAD = "PARTIAL_UPLOAD"            # uploaded files != expected outputs
 ERROR_TRANSCODE_FAILED = "TRANSCODE_FAILED"        # generic pipeline failure
 
-# Source handling (self-hosted agents)
+# Source handling (local workers)
 ERROR_SOURCE_MISSING = "SOURCE_MISSING"            # file moved, unmounted or deleted
 ERROR_SOURCE_CHANGED = "SOURCE_CHANGED"            # identity/size changed since registration
 ERROR_SOURCE_UNREADABLE = "SOURCE_UNREADABLE"      # permissions, special file, symlink escape

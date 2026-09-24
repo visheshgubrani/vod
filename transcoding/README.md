@@ -1,17 +1,17 @@
 # clipmux_transcoder
 
-The shared ClipMux processing engine, plus the self-hosted transcoding agent.
+The shared ClipMux processing engine and the single local worker bundled with a ClipMux deployment.
 
 Two entry points over one implementation:
 
 - **`clipmux_transcoder.run_pipeline(...)`** — probe, plan, encode, package,
   validate and inventory a source. Used by the Modal GPU runner
-  (`transcoding/main.py`) and by the self-hosted agent.
-- **`clipmux-transcoder`** — the agent CLI: `pair`, `doctor`, `run`, `import`,
-  `jobs`, `retry`, `cancel`, `capabilities`, `rotate`.
+  (`transcoding/main.py`) and by the local worker.
+- **`clipmux-transcoder`** — the local worker CLI: `run`, read-only `doctor`,
+  configured-organization `import`, `capabilities`, and `version`.
 
 ```bash
-pip install -e .            # engine + agent (needs only `requests`)
+pip install -e .            # engine + local worker (needs only `requests`)
 pip install -e '.[s3]'      # ...plus the Modal S3 transfer path
 clipmux-transcoder doctor --full
 ```
@@ -24,7 +24,7 @@ clipmux-transcoder doctor --full
    `tests/test_engine_isolation.py` enforces this in a subprocess with the
    optional packages blocked outright.
 2. **The engine never authenticates to anything.** Transfers arrive as a
-   parameter. That is what makes "the self-hosted agent holds no storage
+   parameter. That is what makes "the local worker holds no storage
    credentials" a property of the design rather than a promise in a document.
 3. **Failures are typed** (`errors.py`), and the taxonomy separates the failures a
    different encoder could fix from the ones it could not.
@@ -47,7 +47,7 @@ encode) and CPU. Which one a rendition takes is decided from the source's codec,
 pixel format, bit depth, rotation and HDR properties plus the preflight result —
 never from a file extension.
 
-See `docs/self-hosted-transcoding.md`, `docs/transcoding-toolchain.md` and
+See `docs/local-transcoding.md`, `docs/transcoding-toolchain.md` and
 `docs/delivery-contract.md` at the repository root for the operator-facing,
 toolchain-facing and protocol-facing views.
 

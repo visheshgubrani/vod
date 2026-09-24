@@ -21,7 +21,9 @@ See the plan / docs for the full table. The critical-path seams:
 | `src/lib/artifactInventory.ts` | registration (paged), path authorization, verification (paged, recounted) |
 | `src/lib/lifecycleFinalize.ts` | publication, ownership/verification gates, atomic job finalization |
 | `src/routes/localImport.ts` | import idempotency under concurrency, source scoping |
-| `src/utils/dispatchProvider.ts` | provider resolution and the self-hosted rollback switch |
+| `src/routes/transcoder.ts` | Python heartbeat contract, configured capacity, and metadata-preserving progress beats |
+| `src/routes/localImport.ts` | deployment worker status includes the active-job count for the Encoding card |
+| `src/utils/dispatchProvider.ts` | provider resolution and the local submission switch |
 
 ## Real-database tests
 

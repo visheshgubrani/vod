@@ -15,7 +15,7 @@ inferring them from defaults.
 | Axis | Options | Selected by |
 | --- | --- | --- |
 | Postgres | bundled/dev Postgres \| any `postgresql://` URL (including Neon as ordinary hosted Postgres) | `DATABASE_URL` |
-| Transcode provider | `modal` \| `self-hosted` | `TRANSCODE_PROVIDER` (a per-job override is stored on the job) |
+| Transcode provider | `modal` \| `local` | `TRANSCODE_PROVIDER` (deployment setting; accepted jobs retain their provider) |
 | Dispatch transport | `direct-http` \| `qstash` | `QSTASH_TOKEN` presence — unset means direct HTTPS to the Modal endpoint |
 | Rate-limit store | `memory` \| `redis` (plain TCP) \| `upstash` (REST) | `REDIS_URL`, else `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, else in-memory |
 | Analytics | on (default) \| off | `ANALYTICS_ENABLED`; writes go through the delivery worker |
@@ -41,7 +41,7 @@ reason rather than looking healthy and failing later:
 
 | Combination | Why it cannot work | Fix |
 | --- | --- | --- |
-| Unrecognised `TRANSCODE_PROVIDER` | Silently keeping the previous provider would run the wrong pipeline. | `modal` or `self-hosted`. |
+| Unrecognised `TRANSCODE_PROVIDER` | Silently keeping the previous provider would run the wrong pipeline. | `modal` or `local`. |
 
 `DB_DRIVER` is obsolete. If it is still set, the API starts and reports an
 advisory: remove it. A Neon URL is a regular `DATABASE_URL`.
@@ -57,8 +57,10 @@ instead of turning into a boot crash loop.
 | `DATABASE_URL` | postgres-js over TCP. Provider-neutral; a Neon URL is an ordinary connection string. |
 | `REDIS_URL` | Plain Redis over TCP for rate limiting; takes precedence over Upstash. |
 | `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` | Upstash REST rate limiting. |
-| `TRANSCODE_PROVIDER` | `modal` (default) or `self-hosted`. The choice is stored per job, so changing it never reroutes work that already exists. |
-| `SELF_HOSTED_ENABLED` | `false` stops new self-hosted submissions while accepted jobs drain; it never moves a local file to Modal. |
+| `TRANSCODE_PROVIDER` | `modal` (default) or `local`. The deployment setting applies to new jobs; accepted jobs keep their recorded provider. |
+| `LOCAL_TRANSCODE_ENABLED` | `false` stops new local submissions while accepted jobs drain. |
+| `LOCAL_TRANSCODER_SECRET` | Shared only between the API and the one local worker. |
+| `LOCAL_IMPORT_ORG_ID` | Optional existing organization that may browse mounted host folders; ordinary uploads need no import organization. |
 | `UPLOADS_ENABLED` | `false` makes upload routes return 403, which is what lets a local-only install be valid without a raw bucket. |
 | `QSTASH_TOKEN` | Set selects QStash dispatch; unset selects direct HTTP. |
 | `ANALYTICS_ENABLED` | Default true. False stops playback/bandwidth collection and analytics queries. |
@@ -106,7 +108,7 @@ and contains no secrets:
     "dbTransport": "postgres-js",
     "rateLimitStore": "redis",
     "transcodeProvider": "modal",
-    "selfHostedEnabled": false,
+    "localTranscodeEnabled": true,
     "modalDispatch": "direct-http",
     "analyticsEnabled": true,
     "analyticsWrite": "delivery-worker",
@@ -119,7 +121,7 @@ and contains no secrets:
 ```
 
 `deliveryUrl` is `null` when `DELIVERY_URL` is unset. `modalDispatch` describes
-the transport used for Modal jobs; self-hosted jobs are queued in Postgres and
+the transport used for Modal jobs; local jobs are queued in Postgres and
 do not use it.
 
 ## The API is Node; delivery is Cloudflare

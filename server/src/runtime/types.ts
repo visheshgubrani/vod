@@ -48,8 +48,8 @@ export type DeploymentShape = {
   dbTransport: DbTransport
   rateLimitStore: RateLimitStoreKind
   transcodeProvider: TranscodeProvider
-  selfHostedEnabled: boolean
-  /** Self-hosted jobs are queued in Postgres; this is the Modal transport. */
+  localTranscodeEnabled: boolean
+  /** Local jobs are queued in Postgres; this is the Modal transport. */
   modalDispatch: ModalDispatchTransport
   analyticsEnabled: boolean
   analyticsWrite: AnalyticsWriteSink

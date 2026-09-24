@@ -17,7 +17,7 @@ server-sdk/    @clipmux/server — server SDK (upload/playback tokens, webhook
 examples/      nextjs-integration — the documented upload → play → webhook flow,
                compiled in CI so the docs cannot drift
 transcoding/   clipmux_transcoder — shared processing engine (FFmpeg + Shaka +
-               Whisper), the Modal runner (main.py), and the self-hosted agent
+               Whisper), the Modal runner (main.py), and the local worker
                (`clipmux_transcoder.agent`: CLI, daemon, journal) + pytest
 docs-site/     Fumadocs documentation site (package: clipmux-docs) — the
                developer-facing docs: quickstart, framework integrations,
@@ -25,7 +25,7 @@ docs-site/     Fumadocs documentation site (package: clipmux-docs) — the
 docs/          Maintainer-facing markdown: cross-service contracts
                (delivery-contract.md), architecture rationale
                (deployment-shapes.md), operator guides (deploy.md,
-               self-hosted-transcoding.md), build recipe
+               local-transcoding.md), build recipe
                (transcoding-toolchain.md) and known-gaps.md
 scripts/       bootstrap.sh (contributor toolchain + wizard) · install.sh
                (operator host installer) · lib/ — detect.sh (the one OS
@@ -119,13 +119,13 @@ the Docker image runs `tsx` on `src/node/migrate.ts` then `src/node/server.ts`;
   `tests/test_engine_isolation.py` enforces that in a subprocess with the
   optional packages blocked. Provider selection is stored per job
   (`transcode_job.provider`); never re-derive it from the environment.
-- **Self-hosted agents** authenticate with an organization-scoped token that
-  cannot mint playback tokens or read another tenant's data (`requireAgent`, not
-  a scope flag). They hold **no storage credentials**: transfers are presigned
-  per artifact, bounded to the attempt prefix and to paths on the inventory.
-  Completion is gated on a fully verified inventory and on attempt ownership, in
-  one statement. `SELF_HOSTED_ENABLED=false` is the rollback — it stops new local
-  submissions and cancels nothing.
+- **Local transcoding** is one deployment worker shared across organizations.
+  It authenticates with `LOCAL_TRANSCODER_SECRET` through dedicated middleware;
+  the secret cannot authorize user routes. It holds no storage credentials:
+  source and artifact transfers are presigned and attempt-scoped. Claims enforce
+  worker capacity and organization concurrency caps, and completion requires a
+  verified inventory plus current attempt ownership. `LOCAL_TRANSCODE_ENABLED=false`
+  blocks new local submissions while accepted work remains drainable.
 - **Uploads:** windowed presigned URLs via `/v1/upload/parts` (cap 100);
   `/create` never pre-mints URLs; completes HEAD-verify size; global cap
   `MAX_UPLOAD_SIZE_BYTES` (default 25 GiB).
@@ -225,7 +225,8 @@ expected values from literals/worked examples (never re-derived from code).
 `ANALYTICS_ENABLED` (default true), `ANALYTICS_INGEST_SECRET` (shared with delivery),
 `MODAL_WEBHOOK_URL`, `TRANSCODE_INGEST_SECRET` (wins over the legacy alias
 `MODAL_WEBHOOK_SECRET` in both directions), `QSTASH_TOKEN` (optional),
-`TRANSCODE_PROVIDER` (`modal` default | `self-hosted`), `SELF_HOSTED_ENABLED`,
+`TRANSCODE_PROVIDER` (`modal` server default | `local`), `LOCAL_TRANSCODE_ENABLED`,
+`LOCAL_TRANSCODER_SECRET`, `LOCAL_IMPORT_ORG_ID`,
 `UPLOADS_ENABLED` (enforced — upload routes 403 when false),
 `TRANSCODE_ORG_CONCURRENCY_CAP`,
 `JWT_SECRET`, `DELIVERY_URL` (single delivery base URL everywhere),

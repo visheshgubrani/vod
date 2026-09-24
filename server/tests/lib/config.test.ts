@@ -199,34 +199,34 @@ describe('maxUploadBytes', () => {
 // that sets nothing new keeps exactly the behaviour it had.
 // ────────────────────────────────────────────────────────────────────────────
 describe('loadProviderSettings', () => {
-  it('defaults to modal with self-hosted submission off', () => {
+  it('defaults to modal with local submissions enabled', () => {
     expect(loadProviderSettings({})).toEqual({
       transcodeProvider: 'modal',
-      selfHostedEnabled: false,
+      localTranscodeEnabled: true,
       problems: [],
     })
   })
 
-  it('treats choosing self-hosted as enabling it', () => {
-    const settings = loadProviderSettings({ TRANSCODE_PROVIDER: 'self-hosted' })
-    expect(settings.transcodeProvider).toBe('self-hosted')
-    expect(settings.selfHostedEnabled).toBe(true)
+  it('accepts local as the deployment provider', () => {
+    const settings = loadProviderSettings({ TRANSCODE_PROVIDER: 'local' })
+    expect(settings.transcodeProvider).toBe('local')
+    expect(settings.localTranscodeEnabled).toBe(true)
   })
 
-  it('accepts the local alias', () => {
+  it('keeps local as the canonical provider', () => {
     expect(loadProviderSettings({ TRANSCODE_PROVIDER: 'local' }).transcodeProvider).toBe(
-      'self-hosted',
+      'local',
     )
   })
 
-  it('lets an operator disable new submissions without changing the default', () => {
+  it('supports disabling new local submissions without changing the provider', () => {
     // This is the documented rollback: accepted jobs drain, nothing is cancelled.
     const settings = loadProviderSettings({
-      TRANSCODE_PROVIDER: 'self-hosted',
-      SELF_HOSTED_ENABLED: 'false',
+      TRANSCODE_PROVIDER: 'local',
+      LOCAL_TRANSCODE_ENABLED: 'false',
     })
-    expect(settings.transcodeProvider).toBe('self-hosted')
-    expect(settings.selfHostedEnabled).toBe(false)
+    expect(settings.transcodeProvider).toBe('local')
+    expect(settings.localTranscodeEnabled).toBe(false)
   })
 
   it('rejects an unknown provider instead of silently defaulting', () => {
@@ -240,7 +240,7 @@ describe('requiresRawBucket', () => {
   it('is not required for a local-only installation', () => {
     expect(
       requiresRawBucket({
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: false,
         hasRawBucket: false,
       }),
@@ -250,7 +250,7 @@ describe('requiresRawBucket', () => {
   it('is required when uploads are enabled', () => {
     expect(
       requiresRawBucket({
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: true,
         hasRawBucket: false,
       }),
@@ -278,7 +278,7 @@ describe('requiresRawBucket', () => {
   })
 })
 
-describe('loadConfig with a self-hosted provider', () => {
+describe('loadConfig with a local provider', () => {
   const LOCAL_ONLY = {
     DATABASE_URL: 'postgresql://user:pass@host:5432/db',
     BETTER_AUTH_SECRET: 'b'.repeat(40),
@@ -287,7 +287,8 @@ describe('loadConfig with a self-hosted provider', () => {
     R2_ACCESS_KEY_ID: 'key',
     R2_SECRET_ACCESS_KEY: 'secret',
     TRANSCODED_BUCKET_NAME: 'clipmux-transcoded',
-    TRANSCODE_PROVIDER: 'self-hosted',
+    TRANSCODE_PROVIDER: 'local',
+    LOCAL_TRANSCODER_SECRET: 'local-worker-secret-32-characters-long',
     UPLOADS_ENABLED: 'false',
     DELIVERY_URL: 'https://delivery.example.com',
   }
@@ -325,8 +326,8 @@ describe('loadConfig with a self-hosted provider', () => {
     expect(cfg.advisories.some((a) => a.includes('MODAL_WEBHOOK_URL is configured'))).toBe(true)
   })
 
-  it('reports self-hosted transcoding as off when submissions are disabled', () => {
-    const cfg = loadConfig({ ...LOCAL_ONLY, SELF_HOSTED_ENABLED: 'false' })
+  it('reports local transcoding as off when submissions are disabled', () => {
+    const cfg = loadConfig({ ...LOCAL_ONLY, LOCAL_TRANSCODE_ENABLED: 'false' })
     expect(cfg.checks.transcoder).toBe(false)
   })
 })
@@ -370,7 +371,7 @@ describe('loadConfig transcode callback reachability', () => {
   })
 
   it('does not say anything when no Modal worker will call back', () => {
-    const cfg = loadConfig({ ...MODAL_ENV, TRANSCODE_PROVIDER: 'self-hosted' })
+    const cfg = loadConfig({ ...MODAL_ENV, TRANSCODE_PROVIDER: 'local' })
     expect(cfg.advisories.some((a) => a.includes('BACKEND_URL'))).toBe(false)
   })
 

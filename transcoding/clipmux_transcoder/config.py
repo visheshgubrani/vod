@@ -4,7 +4,7 @@ Configuration constants and encoding profiles for the VOD transcoding pipeline.
 Importing this module must never require Modal, CUDA, boto3, R2 credentials or
 Whisper: those belong to the optional seams (transfer, encoding, enrichment) and
 are imported lazily by the code that actually uses them. The shared engine is
-imported by the Modal runner, the self-hosted agent and the CLI alike, and on a
+imported by the Modal runner, the local worker and the CLI alike, and on a
 fresh machine none of the optional extras need to be installed for the package
 to import and plan work.
 """

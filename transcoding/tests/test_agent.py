@@ -183,7 +183,7 @@ class TestConfigFromEnv:
     def test_defaults_target_a_local_api_with_no_credentials(self):
         config = AgentConfig.from_env({})
         assert config.api_url == "http://localhost:8787"
-        assert config.token == ""
+        assert config.secret == ""
         assert config.capacity_jobs == 1
         assert config.capacity_renditions == 1
 
@@ -232,14 +232,14 @@ class TestConfigFromEnv:
     def test_validation_reports_every_missing_precondition(self, tmp_path):
         config = AgentConfig.from_env({"CLIPMUX_SCRATCH_DIR": str(tmp_path)})
         problems = config.validate()
-        assert any("token" in problem for problem in problems)
+        assert any("LOCAL_TRANSCODER_SECRET" in problem for problem in problems)
         assert any("folders" in problem for problem in problems)
 
     def test_validation_reports_a_missing_folder(self, tmp_path):
         config = AgentConfig.from_env(
             {
                 "CLIPMUX_ROOTS": f"media:{tmp_path / 'not-here'}",
-                "CLIPMUX_AGENT_TOKEN": "agt_x_y",
+                "LOCAL_TRANSCODER_SECRET": "s" * 32,
             }
         )
         assert any("does not exist" in problem for problem in config.validate())
@@ -248,7 +248,7 @@ class TestConfigFromEnv:
         config = AgentConfig.from_env(
             {
                 "CLIPMUX_ROOTS": f"media:{tmp_path}",
-                "CLIPMUX_AGENT_TOKEN": "agt_x_y",
+                "LOCAL_TRANSCODER_SECRET": "s" * 32,
                 "CLIPMUX_API_URL": "https://api.example.com",
             }
         )
@@ -295,15 +295,15 @@ class TestDefaultApiConfig:
     def test_timeouts_are_bounded_so_a_hung_server_cannot_wedge_the_agent(self):
         from clipmux_transcoder.agent.client import ApiConfig
 
-        config = ApiConfig(base_url="https://api.example.com", token="t")
+        config = ApiConfig(base_url="https://api.example.com", secret="s" * 32)
         assert config.timeout > 0
         assert config.attempts >= 1
 
-    def test_the_client_sends_the_token_as_a_bearer_credential(self):
+    def test_the_client_sends_the_deployment_secret_header(self):
         from clipmux_transcoder.agent.client import ApiConfig, TranscoderApiClient
 
-        client = TranscoderApiClient(ApiConfig(base_url="https://api.example.com", token="secret"))
-        assert client.session.headers["Authorization"] == "Bearer secret"
+        client = TranscoderApiClient(ApiConfig(base_url="https://api.example.com", secret="secret"))
+        assert client.session.headers["x-local-transcoder-secret"] == "secret"
         assert client._url("poll") == "https://api.example.com/api/transcoder/v1/poll"
 
 
@@ -366,33 +366,25 @@ class TestRenditionReuseAcrossAttempts:
         assert journal.reusable_across_attempts("v2", "abc", "plan-1") == {}
 
 
-class TestPairingCredentialIsShared:
-    """
-    `pair` writes a token file. `run` loads it through `load_config`. `doctor`
-    used to call `AgentConfig.from_env()` instead, so a paired agent that
-    reported healthy under `run` looked unconfigured to `doctor`.
-    """
+class TestWorkerCliSurface:
+    def test_fleet_management_commands_are_not_available(self):
+        from clipmux_transcoder.agent.cli import build_parser
 
-    def test_pair_persists_a_credential_that_run_and_doctor_both_load(self, tmp_path, monkeypatch):
+        parser = build_parser()
+        for command in ("pair", "jobs", "retry", "cancel", "rotate-token"):
+            try:
+                parser.parse_args([command])
+            except SystemExit as exc:
+                assert exc.code == 2
+            else:
+                raise AssertionError(f"obsolete command {command!r} was accepted")
+
+    def test_doctor_status_does_not_require_or_create_persistent_identity(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLIPMUX_STATE_DIR", str(tmp_path))
-        monkeypatch.delenv("CLIPMUX_AGENT_TOKEN", raising=False)
-        monkeypatch.delenv("CLIPMUX_TOKEN_FILE", raising=False)
-
-        from clipmux_transcoder.agent.cli import load_config, store_token
+        from clipmux_transcoder.agent.cli import load_config
         from clipmux_transcoder.agent.config import AgentConfig
 
-        stored = store_token(AgentConfig.from_env({}), "agt_paired_token")
-        assert stored.read_text().strip() == "agt_paired_token"
-
-        class Args:
-            api = None
-            token = None
-            token_file = None
-            scratch_dir = None
-            root = None
-
-        loaded = load_config(Args())
-        assert loaded.token == "agt_paired_token"
-        # The environment still has no token — both commands must read the file.
-        env_config = AgentConfig.from_env({})
-        assert env_config.token == ""
+        config = AgentConfig.from_env({"LOCAL_TRANSCODER_SECRET": "s" * 32})
+        assert config.secret == "s" * 32
+        assert not (tmp_path / "token").exists()
+        assert load_config(type("Args", (), {"api": None, "scratch_dir": None, "root": None})()).secret == ""

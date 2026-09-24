@@ -130,7 +130,6 @@ not the SDK's.
 | `generateSubtitle` | `false` | Run Whisper subtitle generation. |
 | `generateChapters` | `false` | Generate chapters. Requires subtitles; the server forces it off without them. |
 | `filename` / `contentType` | from the file | Override what is sent to the API — required for a bare `Blob`. |
-| `transcodingProvider` | installation default | `'modal'` or `'self-hosted'` for this job. |
 | `onProgress` | — | Called on every state change. |
 | `signal` | — | `AbortSignal` for cancellation. |
 
@@ -145,7 +144,6 @@ new ClipMuxUploader({
   retryDelay: 1000,                   // backoff base, ms (default 1000)
   windowSize: 100,                    // part URLs per /parts call (max 100)
   presignRefreshMs: 2700000,          // re-fetch a window after 45 min
-  transcodingProvider: 'modal',       // 'modal' | 'self-hosted'
 })
 ```
 

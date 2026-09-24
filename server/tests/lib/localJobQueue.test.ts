@@ -4,7 +4,6 @@ import {
   consumesRetry,
   nextAttemptDelayMs,
   prefixForAttempt,
-  buildClaimNextJobStatement,
   buildFailJobStatement,
   buildCancelJobStatement,
   buildEnqueueStatement,
@@ -54,11 +53,9 @@ describe('prefixForAttempt', () => {
 
 describe('classifyWaitingReason', () => {
   const base = {
-    jobAgentId: 'agt_1',
-    onlineAgentIds: new Set(['agt_1']),
-    sourceKind: 'local',
     sourceAvailability: 'available',
-    agentCapacityFree: true,
+    workerOnline: true,
+    workerCapacityFree: true,
     nextAttemptAt: null,
     now: new Date('2026-03-01T12:00:00Z'),
   }
@@ -67,20 +64,20 @@ describe('classifyWaitingReason', () => {
     expect(classifyWaitingReason(base)).toBeNull()
   })
 
-  it('reports an offline bound agent', () => {
-    expect(classifyWaitingReason({ ...base, onlineAgentIds: new Set() })).toBe('agent-offline')
+  it('reports an offline deployment worker', () => {
+    expect(classifyWaitingReason({ ...base, workerOnline: false })).toBe('worker-offline')
   })
 
-  it('reports a busy agent separately from an offline one', () => {
-    expect(classifyWaitingReason({ ...base, agentCapacityFree: false })).toBe('agent-busy')
+  it('reports a busy worker separately from an offline one', () => {
+    expect(classifyWaitingReason({ ...base, workerCapacityFree: false })).toBe('worker-busy')
   })
 
-  it('reports a missing source ahead of agent state', () => {
+  it('reports a missing source ahead of worker state', () => {
     expect(
       classifyWaitingReason({
         ...base,
         sourceAvailability: 'missing',
-        onlineAgentIds: new Set(),
+        workerOnline: false,
       }),
     ).toBe('source-missing')
   })
@@ -89,10 +86,6 @@ describe('classifyWaitingReason', () => {
     expect(classifyWaitingReason({ ...base, sourceAvailability: 'changed' })).toBe(
       'source-changed',
     )
-  })
-
-  it('reports that no agent can ever satisfy an unbound local source', () => {
-    expect(classifyWaitingReason({ ...base, jobAgentId: null })).toBe('no-eligible-agent')
   })
 
   it('reports retry backoff while the next attempt is in the future', () => {
@@ -104,27 +97,6 @@ describe('classifyWaitingReason', () => {
     ).toBe('retry-backoff')
   })
 
-  it('lets an r2 source run on any online agent', () => {
-    expect(
-      classifyWaitingReason({
-        ...base,
-        sourceKind: 'r2',
-        jobAgentId: null,
-        onlineAgentIds: new Set(['agt_9']),
-      }),
-    ).toBeNull()
-  })
-
-  it('reports agent-offline for an r2 source when no agent is online', () => {
-    expect(
-      classifyWaitingReason({
-        ...base,
-        sourceKind: 'r2',
-        jobAgentId: null,
-        onlineAgentIds: new Set(),
-      }),
-    ).toBe('agent-offline')
-  })
 })
 
 describe('enqueue statement', () => {
@@ -132,7 +104,6 @@ describe('enqueue statement', () => {
     videoId: 'vid-1',
     organizationId: 'org-1',
     sourceId: 'src-1',
-    agentId: 'agt_1',
     options: { maxHeight: 720 },
   })
 
@@ -156,62 +127,6 @@ describe('enqueue statement', () => {
   it('does not emit an event for queuing', () => {
     // Queuing is not a lifecycle transition consumers were promised.
     expect(sqlText(statement)).not.toContain('event_outbox')
-  })
-})
-
-describe('claim-next statement', () => {
-  const statement = buildClaimNextJobStatement({
-    agentId: 'agt_1',
-    organizationId: 'org-1',
-    agentCapacity: 1,
-  })
-
-  it('locks the job row explicitly, not the nullable side of its outer join', () => {
-    // PostgreSQL rejects an unqualified `FOR UPDATE` here with "FOR UPDATE
-    // cannot be applied to the nullable side of an outer join", so the statement
-    // never ran at all. This assertion is a *shape* claim; the behaviour is
-    // covered by localJobQueue.db.test.ts, which executes it.
-    expect(containsClause(statement, 'FOR UPDATE OF j SKIP LOCKED')).toBe(true)
-    expect(containsClause(statement, 'LEFT JOIN transcode_source')).toBe(true)
-  })
-
-  it('binds the claim to the calling agent’s organization', () => {
-    expect(containsClause(statement, 'j.organization_id =')).toBe(true)
-  })
-
-  it('counts capacity by live ownership rather than by source affinity', () => {
-    // `agent_id` is NULL for r2 jobs by design, so counting it under-admits.
-    expect(containsClause(statement, 'active.lease_owner =')).toBe(true)
-    expect(containsClause(statement, 'active.organization_id = j.organization_id')).toBe(true)
-    expect(containsClause(statement, "active.state IN ('claimed', 'running', 'publishing')")).toBe(
-      true,
-    )
-  })
-
-  it('pins a local source to the agent that holds the file', () => {
-    expect(
-      containsClause(statement, "s.kind <> 'local' OR s.agent_id ="),
-    ).toBe(true)
-  })
-
-  it('refuses to dispatch a source that is not available', () => {
-    expect(containsClause(statement, "s.availability = 'available'")).toBe(true)
-  })
-
-  it('bounds this agent by its own active job count', () => {
-    expect(containsClause(statement, 'active.lease_expires_at > now()')).toBe(true)
-  })
-
-  it('only claims a video that can legally transition', () => {
-    expect(
-      containsClause(statement, "status IN ('processing', 'uploading', 'failed', 'pending')"),
-    ).toBe(true)
-  })
-
-  it('mints the attempt id and lease in the same statement as the claim', () => {
-    const text = sqlText(statement)
-    expect(text).toContain('transcode_attempt_id =')
-    expect(text).toContain('transcode_lease_expires_at = now() +')
   })
 })
 
@@ -271,6 +186,6 @@ describe('expired-lease reclaim', () => {
   })
 
   it('returns work to the queue with an explicit waiting reason', () => {
-    expect(containsClause(statement, "waiting_reason = 'agent-offline'")).toBe(true)
+    expect(containsClause(statement, "waiting_reason = 'worker-offline'")).toBe(true)
   })
 })

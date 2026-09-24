@@ -26,7 +26,7 @@ const PAGE_LABELS: Array<[prefix: string, label: string]> = [
   ["/dashboard/analytics", "Analytics"],
   ["/dashboard/api-keys", "API keys"],
   ["/dashboard/webhooks", "Webhooks"],
-  ["/dashboard/transcoders", "Transcoders"],
+  ["/dashboard/transcoders", "Encoding"],
   ["/dashboard/usage", "Usage"],
   ["/dashboard/settings", "Settings"],
   ["/dashboard/videos", "Video"],

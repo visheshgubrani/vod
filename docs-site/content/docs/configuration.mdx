@@ -84,8 +84,10 @@ the web image after changing one.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `TRANSCODE_PROVIDER` | `modal` | `modal` or `self-hosted`. Stored on each job at creation, so changing it never reroutes existing work. |
-| `SELF_HOSTED_ENABLED` | — | `false` stops accepting **new** self-hosted submissions while accepted jobs drain. This is the documented rollback. |
+| `TRANSCODE_PROVIDER` | `modal` | `modal` or `local`. Deployment-wide for new jobs; accepted jobs retain their provider. |
+| `LOCAL_TRANSCODE_ENABLED` | `true` | `false` stops new local submissions while accepted jobs drain. |
+| `LOCAL_TRANSCODER_SECRET` | — | Shared by the API and local worker. Setup generates and reuses it. |
+| `LOCAL_IMPORT_ORG_ID` | — | Optional existing organization ID allowed to browse mounted host folders. |
 | `MODAL_WEBHOOK_URL` | — | Required only when the provider is `modal`. |
 | `QSTASH_TOKEN` | — | Optional. When set, dispatch goes through QStash instead of direct HTTP. |
 | `TRANSCODE_ORG_CONCURRENCY_CAP` | unlimited | Max concurrent transcode attempts per organization. Enforced by an organization-level lock, so it holds under concurrent claims. |
@@ -129,7 +131,7 @@ rather than behaving strangely at runtime:
 
 | Combination | Why |
 | --- | --- |
-| An unrecognised `TRANSCODE_PROVIDER` | The value is stored per job; guessing would misroute work. |
+| An unrecognised `TRANSCODE_PROVIDER` | The API refuses to boot rather than guess which provider should receive new jobs. |
 
 ## Verifying a deployment
 
@@ -153,13 +155,12 @@ leaves them blank and does not start Caddy.
 | `CLIPMUX_CADDY_SITE` | Caddy site address: `http://localhost` or a public hostname |
 | `CLIPMUX_ACME_EMAIL` | Optional contact for certificate expiry notices |
 | `CLIPMUX_PROXY_BIND` | `127.0.0.1` (localhost) or `0.0.0.0` (public HTTPS) |
-| `COMPOSE_PROFILES` | `proxy`, then `proxy,transcoder` after pairing |
+| `COMPOSE_PROFILES` | `proxy`, plus `transcoder` when local encoding is selected |
 
-The agent pairing token is **not** an env var. It lives on the
-`clipmux_transcoder_scratch` volume. See [Install on a host](/host-install).
+The worker uses `LOCAL_TRANSCODER_SECRET`, shared only between the API and the local worker. See [Install on a host](/host-install).
 
 <Cards>
-  <Card title="Install on a host" href="/host-install" description="Operator installer: Compose, Caddy, Cloudflare, pairing." />
+  <Card title="Install on a host" href="/host-install" description="Operator installer: Compose, Caddy, Cloudflare, local worker setup." />
   <Card title="Deployment" href="/deploy" description="Compose and delivery-worker deployment, step by step." />
   <Card title="Quickstart" href="/quickstart" description="Create the R2 buckets, keys and Modal secrets this page refers to." />
 </Cards>

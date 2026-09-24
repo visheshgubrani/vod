@@ -73,8 +73,8 @@ export interface AskContext {
 export interface Choices {
   target: ConfigTarget
   dbKind: DbKind
-  transcodeProvider: 'modal' | 'self-hosted'
-  /** Only meaningful (and only asked) for the self-hosted provider. */
+  transcodeProvider: 'modal' | 'local'
+  /** Only meaningful (and only asked) for the local provider. */
   uploadsEnabled: boolean
   queueKind: QueueKind
   rateLimitKind: RateLimitKind
@@ -198,9 +198,9 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
   step(index, total, 'Where videos are encoded')
   const transcodeProvider =
     access === 'localhost'
-      ? 'self-hosted'
+      ? 'local'
       : (prefill.transcodeProvider ??
-        (await askSelect<'modal' | 'self-hosted'>(
+        (await askSelect<'modal' | 'local'>(
           'How should ClipMux transcode?',
           [
             {
@@ -209,18 +209,18 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
               hint: 'FFmpeg/Shaka/Whisper on Modal; uploads come from the raw R2 bucket',
             },
             {
-              value: 'self-hosted',
+              value: 'local',
               label: 'This machine (Docker, your own CPU/GPU)',
-              hint: 'the agent reads files from folders you mount — no GPU rental',
+              hint: 'the worker reads files from folders you mount — no GPU rental',
             },
           ],
-          'modal',
+          'local',
         )))
 
   // Conditional sub-prompt: a local-only installation may have no uploads at
   // all, which is what makes it valid without a raw bucket.
   let uploadsEnabled = true
-  if (transcodeProvider === 'self-hosted') {
+  if (transcodeProvider === 'local') {
     uploadsEnabled =
       prefill.uploadsEnabled ??
       (await askConfirm(
@@ -229,7 +229,7 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
       ))
     if (!uploadsEnabled) {
       note(
-        'No raw upload bucket is needed then. The transcoder agent reads the\n' +
+        'No raw upload bucket is needed then. The local worker reads the\n' +
           'folders you mount, and playback still uses Cloudflare R2 + the delivery worker.',
         'Local-only installation',
       )
@@ -237,7 +237,7 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
   }
 
   // ── 4. How transcode jobs are dispatched ───────────────────────────────
-  // Only the Modal path uses a dispatch transport; self-hosted work is queued in
+  // Only the Modal path uses a dispatch transport; local work is queued in
   // the database and claimed by an agent, so the question would be noise.
   let queueKind: QueueKind = 'direct'
   if (transcodeProvider === 'modal') {
@@ -289,7 +289,7 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
     ))
 
   // ── 6. AI subtitles and chapters ───────────────────────────────────────
-  // Modal-only: the prebuilt agent image ships neither Whisper nor the Groq
+  // Modal-only: the local worker image ships neither Whisper nor the Groq
   // client, so offering it for the local provider would be a promise the
   // installation cannot keep (see docs/known-gaps.md).
   let wantGroq = false
@@ -337,8 +337,8 @@ export async function askChoices(ctx: AskContext): Promise<Choices> {
 /**
  * Collect the values the choices require, and return a complete answers object.
  *
- * Everything is conditional on the choices: a self-hosted installation with no
- * uploads is never asked for a raw bucket, a self-hosted one is never asked for
+ * Everything is conditional on the choices: a local installation with no
+ * uploads is never asked for a raw bucket, a local one is never asked for
  * a QStash token, and a Modal one always is (when QStash was chosen).
  */
 export async function askCredentials(

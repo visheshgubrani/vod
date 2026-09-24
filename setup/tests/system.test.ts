@@ -137,12 +137,12 @@ describe('requirementsFor', () => {
     expect(external.map((requirement) => requirement.id)).not.toContain('docker')
   })
 
-  it('requires Docker for the self-hosted provider, because the agent is a container', () => {
+  it('requires Docker for the local provider, because the worker is a container', () => {
     const requirements = requirementsFor(
       {
         target: 'dev',
         dbKind: 'existing',
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: false,
       },
       'develop',
@@ -237,7 +237,7 @@ describe('systemShapeFromAnswers', () => {
       db: { kind: 'local' },
       queue: { kind: 'direct' },
       rateLimit: { kind: 'memory' },
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       uploadsEnabled: false,
       accountId: 'a'.repeat(32),
       r2AccessKeyId: 'k',
@@ -249,7 +249,7 @@ describe('systemShapeFromAnswers', () => {
     expect(shape).toEqual({
       target: 'deploy',
       dbKind: 'local',
-      transcodeProvider: 'self-hosted',
+      transcodeProvider: 'local',
       uploadsEnabled: false,
     })
   })
@@ -336,7 +336,7 @@ describe('every shape plans', () => {
   const shapes: SystemShape[] = []
   for (const target of ['dev', 'deploy'] as const) {
     for (const dbKind of ['local', 'existing'] as const) {
-      for (const transcodeProvider of ['modal', 'self-hosted'] as const) {
+      for (const transcodeProvider of ['modal', 'local'] as const) {
         for (const uploadsEnabled of [true, false]) {
           shapes.push({ target, dbKind, transcodeProvider, uploadsEnabled })
         }

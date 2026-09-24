@@ -117,10 +117,7 @@ class CapabilityReport:
             "ffmpeg": self.ffmpeg,
             "shaka": self.shaka,
             "hwaccels": list(self.compiled_hwaccels),
-            "encoders": {
-                name: {"available": probe.available, "reason": probe.reason}
-                for name, probe in sorted(self.encoders.items())
-            },
+            "encoders": sorted(self.available_backends()),
             "cpuCores": self.cpu_cores,
             "memoryBytes": self.memory_bytes,
             "scratchFreeBytes": self.scratch_free_bytes,

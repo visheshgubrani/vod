@@ -122,7 +122,7 @@ app.post('/transcode-complete', async (c) => {
 
       // Same outbox guarantee as the success path: the terminal state and its
       // event are one write, so a crash cannot strand a `failed` video whose
-      // tenant is never told. Shared with the self-hosted path so both
+      // tenant is never told. Shared with the local worker path so both
       // providers produce identical rows and events.
       const failed = await finalizeVideoFailure(db, {
         videoId,
@@ -151,7 +151,7 @@ app.post('/transcode-complete', async (c) => {
     //
     // `outputPrefix` is null here on purpose: the Modal worker writes to the
     // legacy `videos/<id>/` layout, so its artifact paths are already complete
-    // keys. A self-hosted agent passes its attempt prefix instead, and the same
+    // keys. A local worker passes its attempt prefix instead, and the same
     // code re-bases its relative paths onto it.
     const lifecycle = await finalizeVideoSuccess(db, {
       videoId,

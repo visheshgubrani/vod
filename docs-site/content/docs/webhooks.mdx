@@ -186,7 +186,7 @@ Related exports, for the cases the one-call helper does not cover:
 | --- | --- | --- |
 | `video.uploading` | The video row was created and the upload started. | `videoId`, `title`, `status` |
 | `video.uploaded` | The client completed the upload and transcoding was dispatched. | `videoId`, `title`, `status` |
-| `video.processing` | A transcode job was submitted for an existing video — a retry, or a self-hosted import. | `videoId`, `title`, plus `retried` / `attempts`, or `provider` |
+| `video.processing` | A transcode job was submitted for an existing video — a retry, or a local file import. | `videoId`, `title`, plus `retried` / `attempts`, or `provider` |
 | `video.ready` | Transcoding finished and the video was published. | `videoId`, `title`, `status`, `duration`, `hlsUrl`, `thumbnailUrl`, `publishedPrefix` |
 | `video.failed` | The transcode attempt ended in failure. | `videoId`, `title`, `error`, `failureCode` |
 | `video.updated` | Title or playback policy changed. | `videoId`, `title`, `playbackPolicy`, `changes` |

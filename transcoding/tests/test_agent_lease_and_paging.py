@@ -79,7 +79,7 @@ def make_runner(tmp_path: Path, client: FakeClient | None = None) -> JobRunner:
     root.mkdir(parents=True, exist_ok=True)
     config = AgentConfig(
         api_url="https://api.example.com",
-        token="agt_x_y",
+        secret="s" * 32,
         roots=[Root(name="media", path=root)],
         scratch_dir=tmp_path / "scratch",
         journal_path=tmp_path / "journal.sqlite",

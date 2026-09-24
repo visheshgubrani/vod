@@ -16,9 +16,9 @@ this folder is the reference for how the pieces fit together.
 | Doc | What it is | Audience |
 | --- | --- | --- |
 | [deployment-shapes.md](./deployment-shapes.md) | Canonical architecture reference: the choosable axes, what is fixed and why, fatal combinations, the runtime seam, the `/health/config` contract | Maintainer |
-| [delivery-contract.md](./delivery-contract.md) | The wire contract between the delivery worker, the API and the transcoder: object layout, playback JWT, manifest rewriting, transcode payloads, the self-hosted agent protocol | Maintainer |
+| [delivery-contract.md](./delivery-contract.md) | The wire contract between the delivery worker, the API and the transcoder: object layout, playback JWT, manifest rewriting, transcode payloads and the local worker protocol | Maintainer |
 | [deploy.md](./deploy.md) | Host installer vs contributor bootstrap, Compose deployment, Node API + delivery worker, Cloudflare surface, health and maintenance | Operator |
-| [self-hosted-transcoding.md](./self-hosted-transcoding.md) | Self-hosted agent setup, hardware sizing, day-two operation and troubleshooting | Operator |
+| [local-transcoding.md](./local-transcoding.md) | Local worker setup, hardware sizing, day-two operation and troubleshooting | Operator |
 | [transcoding-toolchain.md](./transcoding-toolchain.md) | The FFmpeg/Shaka build recipe, `versions.env` as the single source of version truth, release gates and rollout | Maintainer |
 | [known-gaps.md](./known-gaps.md) | What the platform deliberately does not do yet, weak guarantees worth knowing about, and deferred roadmap work | Maintainer |
 
@@ -43,9 +43,9 @@ code disagree, the code is right — and the doc is the bug. The usual sources:
 | Claim about | Source of truth |
 | --- | --- |
 | Deployment axes, fatal combinations | `server/src/runtime/deployment.ts`, `server/src/lib/config.ts` |
-| Public capability reporting | `server/src/lib/agentCapabilities.ts`, `server/src/routes/health.ts` |
+| Public capability reporting | `server/src/lib/localWorkerCapabilities.ts`, `server/src/routes/health.ts` |
 | Playback JWT, object layout | `server/src/routes/video.ts`, `delivery/src/` |
-| Self-hosted agent protocol | `server/src/routes/transcoder.ts` |
+| Local worker protocol | `server/src/routes/transcoder.ts` |
 | Transcode error codes | `transcoding/clipmux_transcoder/errors.py` |
 | Toolchain versions | `transcoding/toolchain/versions.env` |
 

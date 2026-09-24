@@ -70,7 +70,7 @@ export function resolveDeployment(env: EnvLike): DeploymentResolution {
     dbTransport: 'postgres-js',
     rateLimitStore: rateLimit.store,
     transcodeProvider: config.transcodeProvider,
-    selfHostedEnabled: config.selfHostedEnabled,
+    localTranscodeEnabled: config.localTranscodeEnabled,
     modalDispatch: value(env, 'QSTASH_TOKEN') ? 'qstash' : 'direct-http',
     analyticsEnabled: config.analyticsEnabled,
     analyticsWrite: canForwardPlayback ? 'delivery-worker' : 'none',

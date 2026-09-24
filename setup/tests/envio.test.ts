@@ -31,6 +31,7 @@ const SECRETS: SecretSet = {
   jwtSecret: 'b'.repeat(64),
   internalSweepSecret: 'c'.repeat(64),
     transcodeIngestSecret: 'd'.repeat(64),
+  localTranscoderSecret: 'g'.repeat(64),
   analyticsIngestSecret: 'f'.repeat(64),
   postgresPassword: 'e'.repeat(48),
 }
@@ -91,18 +92,18 @@ describe('writeTargetConfig', () => {
     // The regression: the provider keys were outside the canonical key set, so
     // a --force rewrite emitted the new value and then preserved the old one as
     // an unknown key. Parsing takes the last occurrence, so the *old* provider
-    // won and `--deploy` provisioned Modal for a self-hosted install.
+    // won and `--deploy` provisioned Modal for a local install.
     writeDev(answers({ transcodeProvider: 'modal' }))
     writeDev(
       answers({
-        transcodeProvider: 'self-hosted',
+        transcodeProvider: 'local',
         uploadsEnabled: false,
         db: { kind: 'local' },
       }),
     )
     const text = readFileSync(serverVarsPath(root), 'utf8')
     expect(text.match(/^TRANSCODE_PROVIDER=/gm)).toHaveLength(1)
-    expect(readTargetConfig(root, 'dev')?.['TRANSCODE_PROVIDER']).toBe('self-hosted')
+    expect(readTargetConfig(root, 'dev')?.['TRANSCODE_PROVIDER']).toBe('local')
     expect(readTargetConfig(root, 'dev')?.['UPLOADS_ENABLED']).toBe('false')
   })
 

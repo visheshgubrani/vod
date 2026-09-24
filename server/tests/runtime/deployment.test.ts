@@ -37,7 +37,7 @@ describe('resolveDeployment', () => {
       dbTransport: 'postgres-js',
       rateLimitStore: 'memory',
       transcodeProvider: 'modal',
-      selfHostedEnabled: false,
+      localTranscodeEnabled: true,
       modalDispatch: 'qstash',
       analyticsEnabled: true,
       analyticsWrite: 'none',
@@ -68,13 +68,13 @@ describe('resolveDeployment', () => {
     ).toBe('none')
   })
 
-  it('reports the self-hosted provider and its enablement', () => {
+  it('reports the local provider and its enablement', () => {
     const { shape } = resolveDeployment({
       ...MODAL_INSTALL,
-      TRANSCODE_PROVIDER: 'self-hosted',
+      TRANSCODE_PROVIDER: 'local',
     })
-    expect(shape.transcodeProvider).toBe('self-hosted')
-    expect(shape.selfHostedEnabled).toBe(true)
+    expect(shape.transcodeProvider).toBe('local')
+    expect(shape.localTranscodeEnabled).toBe(true)
   })
 
   it('reports the analytics read path only when analytics is enabled', () => {

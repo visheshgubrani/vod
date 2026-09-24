@@ -448,7 +448,7 @@ Configuration targets (one per run):
   deploy   the root .env — the Docker Compose stack
 
 Prefill flags (interactive only):
-  --runtime workers|node   --db neon|local|existing   --transcode modal|self-hosted
+  --runtime workers|node   --db neon|local|existing   --transcode modal|local
   --queue direct|qstash    --ratelimit memory|redis|upstash   --uploads on|off
 
 Environment:

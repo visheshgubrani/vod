@@ -11,6 +11,7 @@ import {
   bigint,
   uuid,
   jsonb,
+  check,
 } from 'drizzle-orm/pg-core'
 
 // =========================================
@@ -553,7 +554,7 @@ export const maintenanceRun = pgTable('maintenance_run', {
 })
 
 // =========================================
-// 4. SELF-HOSTED TRANSCODING (AGENT PLANE)
+// 4. LOCAL TRANSCODING
 // =========================================
 
 /**
@@ -564,14 +565,12 @@ export const maintenanceRun = pgTable('maintenance_run', {
  * chosen. `raw_key` alone cannot express "a file on Dana's workstation", and the
  * code that assumed it could is what makes a local-only install impossible.
  *
- *   local -> the file lives on the machine of `agent_id`
+ *   local -> the file lives under one of the deployment worker's mounted roots
  *   r2    -> the file lives in the raw bucket at `r2_bucket`/`r2_key`
  *   url   -> a one-off public URL (Modal's `input_url` path)
  *
- * `kind = 'local'` sources are **bound to one agent**: only the machine holding
- * the file can read it. That binding is the reason a local job cannot simply be
- * moved to another agent when one goes offline, and the reason the dashboard
- * shows "waiting for agent" instead.
+ * The local worker resolves root-relative paths against its configured mounts;
+ * no worker identity or affinity is stored on the source.
  */
 export const transcodeSource = pgTable(
   'transcode_source',
@@ -584,8 +583,6 @@ export const transcodeSource = pgTable(
     kind: text('kind').notNull(),
 
     // ── local ───────────────────────────────────────────────────────────────
-    /** The only agent that can read this source. Null for r2/url sources. */
-    agentId: text('agent_id'),
     /** Configured root name, as shown to the owner ("media"). */
     rootName: text('root_name'),
     /** Root-relative path. Absolute host paths are never stored or returned. */
@@ -614,83 +611,27 @@ export const transcodeSource = pgTable(
   },
   (table) => [
     index('transcode_source_org_idx').on(table.organizationId, table.createdAt),
-    index('transcode_source_agent_idx').on(table.agentId),
-  ],
+      ],
 )
 
 /**
- * A paired self-hosted agent.
- *
- * Credentials are stored **hashed** and are organization-scoped, so a stolen
- * agent token cannot mint playback tokens, administer users, or read another
- * tenant's jobs. `capabilities` is the JSON report the agent sends: it is
- * advisory (the dashboard renders it and the dispatcher may use it to avoid
- * routing a job to a machine with no usable encoder), never authoritative — the
- * agent re-probes before it encodes.
+ * The one worker belonging to this deployment. The fixed primary key is also
+ * the admission lock for local worker capacity; credentials stay in environment
+ * configuration and never enter this row.
  */
-export const transcoderAgent = pgTable(
-  'transcoder_agent',
-  {
-    id: text('id').primaryKey(), // "agt_..."
-    organizationId: text('organization_id')
-      .notNull()
-      .references(() => organization.id, { onDelete: 'cascade' }),
-    name: text('name').notNull(),
-    tokenHash: text('token_hash').notNull(),
-    /** Last 4 characters of the token, for a masked dashboard preview. */
-    tokenLast4: text('token_last4').notNull(),
-    capabilities: jsonb('capabilities').$type<Record<string, unknown>>(),
-    agentVersion: text('agent_version'),
-    hostname: text('hostname'),
-    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
-    /** Operator-declared job and rendition concurrency for this machine. */
-    capacityJobs: integer('capacity_jobs').notNull().default(1),
-    capacityRenditions: integer('capacity_renditions').notNull().default(1),
-    enabled: boolean('enabled').notNull().default(true),
-    /** Set when the credential is revoked; the row is kept for the audit trail. */
-    revokedAt: timestamp('revoked_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    uniqueIndex('transcoder_agent_token_hash_idx').on(table.tokenHash),
-    index('transcoder_agent_org_idx').on(table.organizationId, table.createdAt),
-  ],
-)
+export const localWorker = pgTable('local_worker', {
+  id: text('id').primaryKey(),
+  capabilities: jsonb('capabilities').$type<Record<string, unknown>>(),
+  workerVersion: text('worker_version'),
+  hostname: text('hostname'),
+  capacityJobs: integer('capacity_jobs').notNull().default(1),
+  capacityRenditions: integer('capacity_renditions').notNull().default(1),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [check('local_worker_singleton_ck', sql`${table.id} = 'local'`)])
 
 /**
- * Short-lived pairing codes.
- *
- * The code is the only secret that ever travels through a human channel (the
- * dashboard shows it, the owner pastes it into the agent). It is single-use,
- * expires quickly, and is replaced by a machine credential on first redemption —
- * so a code read over someone's shoulder is useless after one use.
- */
-export const transcoderPairing = pgTable(
-  'transcoder_pairing',
-  {
-    id: text('id').primaryKey(), // "pair_..."
-    organizationId: text('organization_id')
-      .notNull()
-      .references(() => organization.id, { onDelete: 'cascade' }),
-    codeHash: text('code_hash').notNull(),
-    codeLast4: text('code_last4').notNull(),
-    createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
-    /** Pre-filled name so the paired agent is recognisable in the list. */
-    suggestedName: text('suggested_name'),
-    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-    consumedAt: timestamp('consumed_at', { withTimezone: true }),
-    consumedByAgentId: text('consumed_by_agent_id'),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('transcoder_pairing_code_hash_idx').on(table.codeHash),
-    index('transcoder_pairing_org_idx').on(table.organizationId, table.createdAt),
-  ],
-)
-
-/**
- * The durable queue for self-hosted work.
+ * The durable queue for local work.
  *
  * This is a row in Postgres rather than a message in a broker on purpose: the
  * database is already the authority for `video.status` and the lifecycle outbox,
@@ -699,7 +640,7 @@ export const transcoderPairing = pgTable(
  *
  * `video.status` stays the *application-facing* vocabulary (`processing`); this
  * row carries the finer-grained state (`queued`/`running`/`publishing`) and,
- * separately, `waiting_reason` — because "queued because the agent is offline"
+ * separately, `waiting_reason` — because "queued because the worker is offline"
  * and "queued because three jobs are ahead of it" need different UI and
  * different operator responses.
  *
@@ -716,13 +657,11 @@ export const transcodeJob = pgTable(
     organizationId: text('organization_id')
       .notNull()
       .references(() => organization.id, { onDelete: 'cascade' }),
-    /** modal | self-hosted — selected when the job is created, never re-derived. */
+    /** modal | local — selected when the job is created, never re-derived. */
     provider: text('provider').notNull(),
     sourceId: uuid('source_id').references(() => transcodeSource.id, {
       onDelete: 'set null',
     }),
-    /** Preferred/bound agent. Local sources are pinned to exactly one. */
-    agentId: text('agent_id'),
 
     /** Frozen ProcessingOptions blob. See `options.py` for the field set. */
     options: jsonb('options').$type<Record<string, unknown>>().notNull().default({}),
@@ -733,7 +672,7 @@ export const transcodeJob = pgTable(
      * Why a queued job is not running. Deliberately a separate field from
      * `state`: the state vocabulary is about progress, this is about the cause,
      * and collapsing them loses the distinction the dashboard needs.
-     * Null | agent-offline | agent-busy | source-missing | source-changed
+     * Null | worker-offline | worker-busy | source-missing | source-changed
      *      | capacity | retry-backoff
      */
     waitingReason: text('waiting_reason'),
@@ -779,9 +718,8 @@ export const transcodeJob = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    // The claim scans for eligible work by agent and state; the sweeper scans by
-    // state and lease. Both are covered by these two.
-    index('transcode_job_state_agent_idx').on(table.state, table.agentId),
+    // The worker claims by state and age; the sweeper scans by state and lease.
+    index('transcode_job_state_created_idx').on(table.state, table.createdAt),
     index('transcode_job_lease_idx').on(table.state, table.leaseExpiresAt),
     index('transcode_job_video_idx').on(table.videoId),
     index('transcode_job_org_created_idx').on(table.organizationId, table.createdAt),
@@ -804,7 +742,7 @@ export const transcodeJob = pgTable(
 )
 
 /**
- * A short-lived request for the agent to act on the owner's behalf.
+ * A short-lived request for the deployment worker to act on an owner's behalf.
  *
  * The browser never connects to the agent — the agent has no public listener by
  * design, because requiring port forwarding or a tunnel would make self-hosting
@@ -813,14 +751,13 @@ export const transcodeJob = pgTable(
  * long a response is still interesting: a folder listing from ten minutes ago
  * may describe a machine that has since gone away.
  */
-export const agentControlRequest = pgTable(
-  'agent_control_request',
+export const localControlRequest = pgTable(
+  'local_control_request',
   {
     id: uuid('id').defaultRandom().primaryKey(),
     organizationId: text('organization_id')
       .notNull()
       .references(() => organization.id, { onDelete: 'cascade' }),
-    agentId: text('agent_id').notNull(),
     /** browse | register-source | reselect-source | doctor */
     kind: text('kind').notNull(),
     request: jsonb('request').$type<Record<string, unknown>>().notNull().default({}),
@@ -834,8 +771,8 @@ export const agentControlRequest = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index('agent_control_agent_status_idx').on(table.agentId, table.status),
-    index('agent_control_org_created_idx').on(table.organizationId, table.createdAt),
+    index('local_control_status_idx').on(table.status, table.expiresAt),
+    index('local_control_org_created_idx').on(table.organizationId, table.createdAt),
   ],
 )
 

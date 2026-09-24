@@ -8,7 +8,7 @@
 #   ./build_ffmpeg.sh --force /usr/local      # rebuild even if the manifest matches
 #
 # Consumed by:
-#   transcoding/Dockerfile.agent      (self-hosted agent image, Ubuntu 24.04)
+#   transcoding/Dockerfile.agent      (local worker image, Ubuntu 24.04)
 #   transcoding/main.py               (Modal runner image, CUDA 12.9/cuDNN 9)
 #
 # Both images get the same bytes and the same configure line, which is the whole

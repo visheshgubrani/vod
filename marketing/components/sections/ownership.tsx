@@ -11,7 +11,7 @@ const ownershipPoints = [
   },
   {
     title: "Choose the compute",
-    body: "Run transcoding on Modal's GPU runners, or point a self-hosted agent at machines you already operate. The provider is recorded per job, so playback is unaffected either way.",
+    body: "Run transcoding on Modal's GPU runners or on the single local worker that comes with your deployment. Both use the same processing engine, and each new job uses the provider selected for the installation.",
   },
   {
     title: "Control access",

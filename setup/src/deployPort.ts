@@ -84,12 +84,6 @@ function mask(value: string): string {
   return `••••${value.length - 4} chars`
 }
 
-export type AgentCredentialStatus =
-  | { kind: 'valid' }
-  | { kind: 'missing' }
-  | { kind: 'rejected'; detail: string }
-  | { kind: 'unreachable'; detail: string }
-
 export interface DeployPort {
   log: {
     step: (message: string) => void
@@ -138,10 +132,12 @@ export interface DeployPort {
   hasDocker: () => boolean
   checkHostPorts: (needs: readonly HostPortNeed[]) => Promise<void>
   waitForOrigin: (origin: string, requiredChecks?: readonly string[]) => Promise<void>
-  pairTranscoder: (code: string) => Promise<void>
-  inspectAgentCredential: () => Promise<AgentCredentialStatus>
-  agentDoctor: () => Promise<void>
-  startTranscoder: () => Promise<void>
+  waitForLocalWorker: (origin: string) => Promise<void>
+  /** Disable local submissions on a running local-provider API before its queue is checked. */
+  pauseLocalAdmission: (origin: string) => Promise<boolean>
+  /** Return true only after the API confirms there are no queued or active local jobs. */
+  assertLocalJobsDrained: (origin: string) => Promise<boolean>
+  stopLocalWorker: () => Promise<void>
 
   readConfig: () => Record<string, string> | undefined
   writeConfig: (updates: EntryList) => void
@@ -305,33 +301,6 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
     if (code !== 0) throw new Error(`${message} — check the compose logs`)
   }
 
-  const runAgent = async (args: string[]): Promise<{ code: number | null; output: string }> => {
-    const argv = compose(
-      '--profile',
-      'transcoder',
-      'run',
-      '--rm',
-      '--no-deps',
-      'transcoder',
-      '--api',
-      'http://api:4080',
-      ...args,
-    )
-    const result = await runCapture(argv, { cwd: root, timeoutMs: 0 })
-    return { code: result.code, output: `${result.stdout}\n${result.stderr}` }
-  }
-
-  const classifyAgent = (code: number | null, output: string): AgentCredentialStatus => {
-    const text = output.toLowerCase()
-    if (text.includes('no token') || text.includes('no agent token')) return { kind: 'missing' }
-    if (text.includes('rejected')) return { kind: 'rejected', detail: output.trim().split(/\r?\n/).pop() ?? 'rejected' }
-    if (code !== 0 && (text.includes('could not reach') || text.includes('connection refused'))) {
-      return { kind: 'unreachable', detail: output.trim().split(/\r?\n/).pop() ?? 'could not reach the API' }
-    }
-    if (code === 0) return { kind: 'valid' }
-    return { kind: 'unreachable', detail: output.trim().slice(-200) || 'agent doctor failed' }
-  }
-
   const port: DeployPort = {
     log: {
       step: logStep,
@@ -413,29 +382,114 @@ export function createDeployPort(options: DeployPortOptions): DeployPort {
         'API container recreation failed',
       )
     },
+    stopLocalWorker: async () => {
+      await runCompose(['--profile', 'transcoder', 'stop', 'transcoder'], 'local transcoder stop failed')
+    },
     hasDocker: () => findOnPath('docker') !== null,
     checkHostPorts,
     waitForOrigin: (origin, requiredChecks) => waitForOriginReady({ origin, requiredChecks }),
-    pairTranscoder: async (code) => {
-      const result = await runAgent(['pair', '--code', code])
-      if (result.code !== 0) {
-        throw new Error(result.output.trim().split(/\r?\n/).pop() || 'pairing failed')
+    waitForLocalWorker: async (origin) => {
+      const healthUrl = `${origin.replace(/\/+$/, '')}/health/config`
+      let lastError = 'worker did not report online'
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        try {
+          const response = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) })
+          if (!response.ok) {
+            lastError = `health endpoint returned HTTP ${response.status}`
+          } else {
+            const body = await response.json() as { transcode?: { localWorker?: { online?: boolean } } }
+            if (body.transcode?.localWorker?.online === true) return
+            lastError = 'API is ready but the local worker has not sent its first heartbeat'
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5_000))
       }
+      throw new Error(`local transcoder did not become ready within 5 minutes: ${lastError}`)
     },
-    inspectAgentCredential: async () => {
-      const result = await runAgent(['doctor'])
-      return classifyAgent(result.code, result.output)
-    },
-    agentDoctor: async () => {
-      const result = await runAgent(['doctor'])
-      if (result.code !== 0) {
-        throw new Error(result.output.trim().slice(-400) || 'agent doctor failed')
+    pauseLocalAdmission: async (origin) => {
+      const apiOrigin = origin.replace(/\/+$/, '')
+      let health: Response | null = null
+      try {
+        health = await fetch(`${apiOrigin}/health/config`, { signal: AbortSignal.timeout(5_000) })
+      } catch {
+        // A stopped API is acceptable for a fresh Modal install only when no
+        // managed local worker container exists to own outstanding work.
       }
-    },
-    startTranscoder: async () => {
-      await runCompose(['--profile', 'transcoder', 'up', '-d', 'transcoder'], 'could not start the transcoder')
-    },
 
+      const workerProbe = await runCapture(
+        compose('--profile', 'transcoder', 'ps', '-a', '-q', 'transcoder'),
+        { cwd: root, timeoutMs: 10_000 },
+      )
+      if (workerProbe.code !== 0 && health?.ok !== true && findOnPath('docker') !== null) {
+        throw new Error('could not inspect the existing local worker or API; start Docker and the API, then retry the provider switch')
+      }
+      const hasWorkerContainer = workerProbe.code === 0 && workerProbe.stdout.trim() !== ''
+      if (health?.ok !== true) {
+        if (hasWorkerContainer) {
+          throw new Error('a local worker container exists but the API is unreachable, so its queue cannot be verified; start the API and drain or cancel local jobs in Encoding')
+        }
+        return false
+      }
+
+      const body = await health.json() as { transcode?: { defaultProvider?: string } }
+      const previousProviderIsLocal = body.transcode?.defaultProvider === 'local'
+      if (!previousProviderIsLocal && !hasWorkerContainer) return false
+
+      const config = readTargetConfig(root, target) ?? {}
+      if (!config['LOCAL_TRANSCODER_SECRET']?.trim()) {
+        throw new Error('a local worker is configured, but LOCAL_TRANSCODER_SECRET is missing; keep the worker running and drain jobs in Encoding')
+      }
+      upsertTargetConfig(root, target, [['LOCAL_TRANSCODE_ENABLED', 'false']])
+      await runCompose(
+        ['up', '-d', '--force-recreate', '--no-deps', 'api'],
+        'could not restart the API to pause local admission',
+      )
+
+      let lastError = 'the API still reports local as an available provider'
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        try {
+          const response = await fetch(`${apiOrigin}/health/config`, { signal: AbortSignal.timeout(5_000) })
+          if (response.ok) {
+            const current = await response.json() as { transcode?: { providers?: string[] } }
+            const providers = current.transcode?.providers
+            if (Array.isArray(providers) && !providers.includes('local')) return true
+            lastError = 'the API still reports local as an available provider'
+          } else {
+            lastError = `health endpoint returned HTTP ${response.status}`
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000))
+      }
+      throw new Error(`local admission did not pause within 30 seconds: ${lastError}`)
+    },
+    assertLocalJobsDrained: async (origin) => {
+      const apiOrigin = origin.replace(/\/+$/, '')
+      const config = readTargetConfig(root, target) ?? {}
+      const secret = config['LOCAL_TRANSCODER_SECRET']?.trim()
+      if (!secret) {
+        throw new Error('LOCAL_TRANSCODER_SECRET is missing, so the local queue cannot be verified')
+      }
+      const response = await fetch(`${apiOrigin}/api/transcoder/v1/drain-status`, {
+        headers: { 'x-local-transcoder-secret': secret },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!response.ok) {
+        throw new Error(`could not verify the local queue (HTTP ${response.status}); keep the worker running and drain jobs in Encoding`)
+      }
+      const status = await response.json() as { outstandingLocalJobs?: number }
+      const outstanding = Number(status.outstandingLocalJobs)
+      if (!Number.isInteger(outstanding) || outstanding < 0) {
+        throw new Error('the running API returned an invalid local queue status; keep the worker running and drain jobs in Encoding')
+      }
+      if (outstanding > 0) {
+        throw new Error(`${outstanding} local transcode job${outstanding === 1 ? '' : 's'} remain queued or active; let them finish or cancel them in Encoding before switching to Modal`)
+      }
+      return true
+    },
     readConfig: () => readTargetConfig(root, target),
     writeConfig: (updates) => upsertTargetConfig(root, target, updates),
     lintConfig: () => {

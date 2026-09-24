@@ -6,20 +6,19 @@
  * same place (a video plus a queued job) and splitting them is how the dashboard
  * path and the CLI path drift apart on validation or on idempotency.
  *
- *   - `/api/transcoder/*`  session auth. Agents, pairings, folder browsing,
- *     imports, job control. Everything a signed-in owner does.
- *   - `/api/transcoder/v1/sources`  agent auth. The CLI registers a file it can
- *     already read. The agent supplies root + relative path; absolute host paths
- *     are never accepted and never stored.
+ *   - `/api/transcoder/*` session auth. Organization queue controls and the
+ *     configured import organization's browse/register/import operations.
+ *   - `/api/transcoder/v1/sources` deployment-worker auth. The local worker
+ *     registers root-relative files in LOCAL_IMPORT_ORG_ID.
  *   - `/v1/video/import-local`  API-key auth. Automation, accepting a
  *     **source reference** rather than a path or URL, so a compromised API key
  *     cannot ask the transcoder to read an arbitrary file.
  *
  * Browsing deserves a note. The browser never talks to the agent — the agent has
- * no listener by design. A browse is a row in `agent_control_request`, answered
+ * no listener by design. A browse is a row in `local_control_request`, answered
  * on the agent's next poll; the dashboard polls for the answer. That also means
  * a browse can time out, which is reported as a timeout rather than as an empty
- * folder: "your machine did not answer" and "that folder is empty" are very
+ * folder: "the local worker did not answer" and "that folder is empty" are very
  * different messages.
  */
 
@@ -27,29 +26,23 @@ import { Hono } from 'hono'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { requireApiKey } from '../middleware/apiKey'
-import { requireAgent } from '../middleware/agentAuth'
+import { requireLocalWorker } from '../middleware/localWorkerAuth'
 import { db } from '../lib/database'
 import {
-  agentControlRequest,
+  localControlRequest,
   member,
   transcodeJob,
   transcodeSource,
-  transcoderAgent,
-  transcoderPairing,
+  localWorker,
+  organization,
   video,
 } from '../db/schema'
 import { notDeleted } from '../db/predicates'
-import {
-  generatePairingCode,
-  hashAgentSecret,
-  last4,
-  newPairingId,
-  PAIRING_CODE_TTL_MS,
-} from '../lib/agentToken'
-import { buildAgentHealth, type AgentRow } from '../lib/agentCapabilities'
+import { isLocalWorkerLive } from '../lib/localWorkerCapabilities'
 import {
   buildCreateLocalImportStatement,
   DEFAULT_MAX_ATTEMPTS,
+  readOutstandingWork,
   WAITING_REASONS,
 } from '../lib/localJobQueue'
 import { normalizeRows } from '../lib/atomicWrite'
@@ -62,7 +55,7 @@ import {
 import { dispatchWebhook } from '../utils/webhookDispatcher'
 import type { Bindings } from '../types'
 import type { EnvLike } from '../lib/config'
-import type { AgentVariables } from '../middleware/agentAuth'
+import type { LocalWorkerVariables } from '../middleware/localWorkerAuth'
 import type { ApiKeyVariables } from '../types'
 
 const CONTROL_TIMEOUT_MS = 30_000
@@ -95,187 +88,57 @@ async function activeOrganizationId(c: {
   return null
 }
 
-/** POST /pairings — mint a single-use code for a new agent. */
-dashboardApp.post('/pairings', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
-
-  const body = await readJson(c)
-  const code = generatePairingCode()
-  const pairingId = newPairingId()
-  const expiresAt = new Date(Date.now() + PAIRING_CODE_TTL_MS)
-
-  await db.insert(transcoderPairing).values({
-    id: pairingId,
-    organizationId,
-    codeHash: hashAgentSecret(code.replace(/[\s-]/g, '')),
-    codeLast4: last4(code),
-    createdBy: c.var.session.userId,
-    suggestedName:
-      typeof body?.name === 'string' && body.name.trim()
-        ? body.name.trim().slice(0, 120)
-        : null,
-    expiresAt,
-  })
-
-  // The plaintext code is returned exactly once: it is stored hashed, so this
-  // response is the only time it can be read.
+/** GET /worker — one read-only status record for this deployment. */
+dashboardApp.get('/worker', async (c) => {
+  const [row] = await db
+    .select()
+    .from(localWorker)
+    .where(eq(localWorker.id, 'local'))
+    .limit(1)
+  const online = Boolean(row?.lastSeenAt && Date.now() - row.lastSeenAt.getTime() <= 90_000)
+  const capabilities = row?.capabilities ?? {}
+  const outstanding = await readOutstandingWork(db, { workerId: 'local' })
+  const access = c.var.runtime.config.transcodeProvider === 'local' && c.var.runtime.config.localTranscodeEnabled && online
+    ? await resolveImportAccess(c.var.runtime.env, c.var.session.userId)
+    : null
   return c.json({
-    pairingId,
-    code,
-    expiresAt: expiresAt.toISOString(),
-    command: `clipmux-transcoder pair --api ${apiBaseUrl(c.req.url, c.var.runtime.env['BACKEND_URL'])} --code ${code}`,
+    provider: c.var.runtime.config.transcodeProvider,
+    modalConfigured: c.var.runtime.config.transcodeProvider === 'modal' && c.var.runtime.config.checks.transcoder,
+    importAvailable: Boolean(access?.ok),
+    importOrganizationId: access?.ok ? access.organizationId : null,
+    worker: row ? {
+      online,
+      lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+      hostname: row.hostname,
+      version: row.workerVersion,
+      capacityJobs: row.capacityJobs,
+      capacityRenditions: row.capacityRenditions,
+      activeJobs: outstanding.activeJobs,
+      encoders: Array.isArray(capabilities.encoders) ? capabilities.encoders : [],
+    } : null,
   })
-})
-
-/** GET /agents — connectivity, capacity and capabilities per agent. */
-dashboardApp.get('/agents', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
-
-  const rows = await db
-    .select({
-      id: transcoderAgent.id,
-      name: transcoderAgent.name,
-      enabled: transcoderAgent.enabled,
-      lastSeenAt: transcoderAgent.lastSeenAt,
-      capabilities: transcoderAgent.capabilities,
-      hostname: transcoderAgent.hostname,
-      agentVersion: transcoderAgent.agentVersion,
-      capacityJobs: transcoderAgent.capacityJobs,
-      capacityRenditions: transcoderAgent.capacityRenditions,
-      tokenLast4: transcoderAgent.tokenLast4,
-      createdAt: transcoderAgent.createdAt,
-      revokedAt: transcoderAgent.revokedAt,
-    })
-    .from(transcoderAgent)
-    .where(eq(transcoderAgent.organizationId, organizationId))
-    .orderBy(desc(transcoderAgent.createdAt))
-
-  const health = buildAgentHealth(rows as AgentRow[])
-  const byId = new Map(rows.map((row) => [row.id, row]))
-
-  // Capacity use is read per agent in one query rather than N: the dashboard
-  // polls this, and an N+1 here is N round trips per poll per agent.
-  const active = await db
-    .select({
-      agentId: transcodeJob.agentId,
-      active: sql<number>`count(*)::int`,
-    })
-    .from(transcodeJob)
-    .where(
-      and(
-        eq(transcodeJob.organizationId, organizationId),
-        inArray(transcodeJob.state, ['claimed', 'running', 'publishing']),
-      ),
-    )
-    .groupBy(transcodeJob.agentId)
-  const activeByAgent = new Map(active.map((row) => [row.agentId ?? '', row.active]))
-
-  return c.json({
-    agents: health.map((entry) => ({
-      ...entry,
-      tokenLast4: byId.get(entry.id)?.tokenLast4 ?? '****',
-      createdAt: byId.get(entry.id)?.createdAt?.toISOString() ?? null,
-      activeJobs: activeByAgent.get(entry.id) ?? 0,
-    })),
-  })
-})
-
-/** PATCH /agents/:id — rename, retune capacity, enable or disable. */
-dashboardApp.patch('/agents/:id', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
-
-  const agentId = c.req.param('id')
-  const body = await readJson(c)
-
-  const updates: Record<string, unknown> = { updatedAt: new Date() }
-  if (typeof body?.name === 'string' && body.name.trim()) {
-    updates.name = body.name.trim().slice(0, 120)
-  }
-  if (typeof body?.enabled === 'boolean') {
-    updates.enabled = body.enabled
-    if (!body.enabled) updates.revokedAt = null
-  }
-  for (const key of ['capacityJobs', 'capacityRenditions'] as const) {
-    if (body?.[key] === undefined) continue
-    const value = Number(body[key])
-    if (!Number.isInteger(value) || value < 1 || value > 64) {
-      return c.json({ error: `${key} must be an integer between 1 and 64` }, 400)
-    }
-    updates[key] = value
-  }
-
-  const updated = await db
-    .update(transcoderAgent)
-    .set(updates)
-    .where(
-      and(eq(transcoderAgent.id, agentId), eq(transcoderAgent.organizationId, organizationId)),
-    )
-    .returning({ id: transcoderAgent.id })
-
-  if (updated.length === 0) return c.json({ error: 'Agent not found' }, 404)
-  return c.json({ success: true, agentId })
-})
-
-/** DELETE /agents/:id — revoke. The row survives for the audit trail. */
-dashboardApp.delete('/agents/:id', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
-
-  const agentId = c.req.param('id')
-  const revoked = await db
-    .update(transcoderAgent)
-    .set({ enabled: false, revokedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(eq(transcoderAgent.id, agentId), eq(transcoderAgent.organizationId, organizationId)),
-    )
-    .returning({ id: transcoderAgent.id })
-
-  if (revoked.length === 0) return c.json({ error: 'Agent not found' }, 404)
-
-  // Work bound to this agent cannot run anywhere else when its source is local,
-  // so those jobs are left queued with an explicit reason rather than silently
-  // failing. The owner decides whether to re-point them or cancel.
-  await db
-    .update(transcodeJob)
-    .set({ waitingReason: 'agent-offline', updatedAt: new Date() })
-    .where(
-      and(
-        eq(transcodeJob.organizationId, organizationId),
-        eq(transcodeJob.agentId, agentId),
-        eq(transcodeJob.state, 'queued'),
-      ),
-    )
-
-  return c.json({ success: true, agentId, revoked: true })
 })
 
 /**
- * POST /agents/:id/browse — ask the agent for a directory listing.
+ * POST /browse — ask the agent for a directory listing.
  *
  * The result is fetched by a second call so a slow machine cannot hold the HTTP
  * request open past a Worker's limits. The control row carries the pagination
  * cursor and the root name; the response carries only root-relative paths.
  */
-dashboardApp.post('/agents/:id/browse', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
-  const agentId = c.req.param('id')
-
-  const agent = await loadAgent(organizationId, agentId)
-  if (!agent) return c.json({ error: 'Agent not found' }, 404)
-  if (!agent.enabled) return c.json({ error: 'Agent is disabled' }, 409)
+dashboardApp.post('/browse', async (c) => {
+  const access = await resolveImportAccess(c.var.runtime.env, c.var.session.userId)
+  if (!access.ok) return c.json({ error: access.error }, access.status)
+  const organizationId = access.organizationId
+  if (!await localImportReady(c.var.runtime.env)) return c.json({ error: 'The local worker must be online and selected as the provider to import host folders' }, 503)
 
   const body = await readJson(c)
   const expiresAt = new Date(Date.now() + CONTROL_TIMEOUT_MS)
 
   const inserted = await db
-    .insert(agentControlRequest)
+    .insert(localControlRequest)
     .values({
       organizationId,
-      agentId,
       kind: 'browse',
       request: {
         rootName: typeof body?.rootName === 'string' ? body.rootName : null,
@@ -288,7 +151,7 @@ dashboardApp.post('/agents/:id/browse', async (c) => {
       },
       expiresAt,
     })
-    .returning({ id: agentControlRequest.id })
+    .returning({ id: localControlRequest.id })
 
   return c.json({
     controlId: inserted[0].id,
@@ -299,16 +162,17 @@ dashboardApp.post('/agents/:id/browse', async (c) => {
 
 /** GET /controls/:id — the answer to a browse or registration request. */
 dashboardApp.get('/controls/:id', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
+  const access = await resolveImportAccess(c.var.runtime.env, c.var.session.userId)
+  if (!access.ok) return c.json({ error: access.error }, access.status)
+  const organizationId = access.organizationId
 
   const rows = await db
     .select()
-    .from(agentControlRequest)
+    .from(localControlRequest)
     .where(
       and(
-        eq(agentControlRequest.id, c.req.param('id')),
-        eq(agentControlRequest.organizationId, organizationId),
+        eq(localControlRequest.id, c.req.param('id')),
+        eq(localControlRequest.organizationId, organizationId),
       ),
     )
     .limit(1)
@@ -331,26 +195,24 @@ dashboardApp.get('/controls/:id', async (c) => {
  * POST /sources — register a file the owner picked from a browse result.
  *
  * The dashboard already holds the root-relative path and the file identity from
- * the listing, so this needs no agent round trip. The identity is what detects
+ * the listing, so this needs no worker round trip. The identity is what detects
  * the file changing between registration and execution.
  */
 dashboardApp.post('/sources', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
+  const access = await resolveImportAccess(c.var.runtime.env, c.var.session.userId)
+  if (!access.ok) return c.json({ error: access.error }, access.status)
+  const organizationId = access.organizationId
+  if (!await localImportReady(c.var.runtime.env)) return c.json({ error: 'The local worker must be online and selected as the provider to import host folders' }, 503)
 
   const body = await readJson(c)
   const parsed = parseLocalSourceInput(body)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
-
-  const agent = await loadAgent(organizationId, parsed.value.agentId)
-  if (!agent) return c.json({ error: 'Agent not found' }, 404)
 
   const source = await db
     .insert(transcodeSource)
     .values({
       organizationId,
       kind: 'local',
-      agentId: agent.id,
       rootName: parsed.value.rootName,
       relativePath: parsed.value.relativePath,
       fileName: parsed.value.fileName,
@@ -379,8 +241,10 @@ dashboardApp.post('/sources', async (c) => {
  * concurrent requests rather than only within one process.
  */
 dashboardApp.post('/imports', async (c) => {
-  const organizationId = await activeOrganizationId(c)
-  if (!organizationId) return c.json({ error: 'No active organization' }, 400)
+  const access = await resolveImportAccess(c.var.runtime.env, c.var.session.userId)
+  if (!access.ok) return c.json({ error: access.error }, access.status)
+  const organizationId = access.organizationId
+  if (!await localImportReady(c.var.runtime.env)) return c.json({ error: 'The local worker must be online and selected as the provider to import host folders' }, 503)
 
   const body = await readJson(c)
   const items = Array.isArray(body?.items) ? body.items : null
@@ -412,7 +276,7 @@ dashboardApp.post('/imports', async (c) => {
     dispatchWebhook(c.executionCtx, organizationId, 'video.processing', {
       videoId: entry.videoId,
       title: entry.title,
-      provider: 'self-hosted',
+      provider: 'local',
     })
   }
 
@@ -438,7 +302,6 @@ dashboardApp.get('/jobs', async (c) => {
       maxAttempts: transcodeJob.maxAttempts,
       failureCode: transcodeJob.failureCode,
       lastError: transcodeJob.lastError,
-      agentId: transcodeJob.agentId,
       createdAt: transcodeJob.createdAt,
       updatedAt: transcodeJob.updatedAt,
       finishedAt: transcodeJob.finishedAt,
@@ -484,56 +347,58 @@ dashboardApp.post('/jobs/:id/cancel', async (c) => {
   return c.json({ success: true, jobId, videoId: cancelled.videoId, status: 'cancelled' })
 })
 
-/**
- * GET /health — the authenticated capability view.
- *
- * Distinct from the public `/health/config`: this one names agents and reports
- * their capacity, which an unauthenticated caller has no business seeing.
- */
+/** GET /health — shared worker status plus this organization's queue counts. */
 dashboardApp.get('/health', async (c) => {
   const organizationId = await activeOrganizationId(c)
   if (!organizationId) return c.json({ error: 'No active organization' }, 400)
 
-  const agents = await db
-    .select({
-      id: transcoderAgent.id,
-      name: transcoderAgent.name,
-      enabled: transcoderAgent.enabled,
-      lastSeenAt: transcoderAgent.lastSeenAt,
-      capabilities: transcoderAgent.capabilities,
-      hostname: transcoderAgent.hostname,
-      agentVersion: transcoderAgent.agentVersion,
-      capacityJobs: transcoderAgent.capacityJobs,
-      capacityRenditions: transcoderAgent.capacityRenditions,
-    })
-    .from(transcoderAgent)
-    .where(eq(transcoderAgent.organizationId, organizationId))
-
+  const [worker] = await db
+    .select()
+    .from(localWorker)
+    .where(eq(localWorker.id, 'local'))
+    .limit(1)
   const queue = await db
-    .select({
-      state: transcodeJob.state,
-      count: sql<number>`count(*)::int`,
-    })
+    .select({ state: transcodeJob.state, count: sql<number>`count(*)::int` })
     .from(transcodeJob)
     .where(eq(transcodeJob.organizationId, organizationId))
     .groupBy(transcodeJob.state)
 
+  const active = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(transcodeJob)
+    .where(and(
+      eq(transcodeJob.organizationId, organizationId),
+      inArray(transcodeJob.state, ['claimed', 'running', 'publishing']),
+    ))
+  const online = Boolean(worker?.lastSeenAt && Date.now() - worker.lastSeenAt.getTime() <= 90_000)
+  const capabilities = worker?.capabilities ?? {}
+
   return c.json({
-    agents: buildAgentHealth(agents as AgentRow[]),
+    provider: c.var.runtime.config.transcodeProvider,
+    worker: worker ? {
+      online,
+      lastSeenAt: worker.lastSeenAt?.toISOString() ?? null,
+      hostname: worker.hostname,
+      version: worker.workerVersion,
+      capacityJobs: worker.capacityJobs,
+      capacityRenditions: worker.capacityRenditions,
+      activeJobs: Number(active[0]?.count ?? 0),
+      encoders: Array.isArray(capabilities.encoders) ? capabilities.encoders : [],
+    } : null,
     queue: Object.fromEntries(queue.map((row) => [row.state, row.count])),
     waitingReasons: WAITING_REASONS,
   })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Agent-side source registration: /api/transcoder/v1/sources
+// Local worker source registration: /api/transcoder/v1/sources
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export const agentSourceApp = new Hono<{
+export const localWorkerSourceApp = new Hono<{
   Bindings: Bindings
-  Variables: AgentVariables
+  Variables: LocalWorkerVariables
 }>()
-agentSourceApp.use('/*', requireAgent)
+localWorkerSourceApp.use('/*', requireLocalWorker)
 
 /**
  * POST / — the CLI registering a file it can already read.
@@ -543,10 +408,14 @@ agentSourceApp.use('/*', requireAgent)
  * mean the API's stored "location" for a source could name a path the agent
  * never proved it had under a configured root.
  */
-agentSourceApp.post('/', async (c) => {
-  const agent = c.var.agent
+localWorkerSourceApp.post('/', async (c) => {
+  if (!await localImportReady(c.var.runtime.env)) {
+    return c.json({ error: 'The local worker must be online and selected as the provider to register host files' }, 503)
+  }
+  const importOrg = await configuredImportOrganization(c.var.runtime.env)
+  if (!importOrg) return c.json({ error: localImportDisabledMessage }, 503)
   const body = await readJson(c)
-  const parsed = parseLocalSourceInput({ ...body, agentId: agent.id })
+  const parsed = parseLocalSourceInput(body)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
 
   const existing = await db
@@ -554,8 +423,7 @@ agentSourceApp.post('/', async (c) => {
     .from(transcodeSource)
     .where(
       and(
-        eq(transcodeSource.organizationId, agent.organizationId),
-        eq(transcodeSource.agentId, agent.id),
+        eq(transcodeSource.organizationId, importOrg),
         eq(transcodeSource.kind, 'local'),
         eq(transcodeSource.rootName, parsed.value.rootName),
         eq(transcodeSource.relativePath, parsed.value.relativePath),
@@ -573,9 +441,8 @@ agentSourceApp.post('/', async (c) => {
   const inserted = await db
     .insert(transcodeSource)
     .values({
-      organizationId: agent.organizationId,
+      organizationId: importOrg,
       kind: 'local',
-      agentId: agent.id,
       rootName: parsed.value.rootName,
       relativePath: parsed.value.relativePath,
       fileName: parsed.value.fileName,
@@ -607,6 +474,9 @@ export const importLocalApp = new Hono<{
  */
 importLocalApp.post('/video/import-local', requireApiKey, async (c) => {
   const organizationId = c.var.organizationId
+  const importOrg = await configuredImportOrganization(c.var.runtime.env)
+  if (!importOrg) return c.json({ error: localImportDisabledMessage }, 503)
+  if (organizationId !== importOrg) return c.json({ error: 'Host-folder imports are restricted to the configured LOCAL_IMPORT_ORG_ID organization' }, 403)
   const body = await readJson(c)
   const sourceRef = typeof body?.sourceRef === 'string' ? body.sourceRef : ''
 
@@ -614,7 +484,7 @@ importLocalApp.post('/video/import-local', requireApiKey, async (c) => {
     return c.json(
       {
         error:
-          'sourceRef is required. Register the file first (agent `clipmux-transcoder import`, or the dashboard) to obtain one.',
+          'sourceRef is required. Register the file first (`clipmux-transcoder import`, or the dashboard) to obtain one.',
       },
       400,
     )
@@ -634,14 +504,14 @@ importLocalApp.post('/video/import-local', requireApiKey, async (c) => {
   })
 
   if ('error' in result) {
-    return c.json({ error: result.error }, (result.status ?? 400) as 400 | 404 | 409)
+    return c.json({ error: result.error }, (result.status ?? 400) as 400 | 403 | 404 | 409 | 503)
   }
 
   if (!result.deduplicated) {
     dispatchWebhook(c.executionCtx, organizationId, 'video.processing', {
       videoId: result.videoId,
       title: result.title,
-      provider: 'self-hosted',
+      provider: 'local',
     })
   }
 
@@ -689,12 +559,20 @@ export async function createLocalImport(
   input: LocalImportInput,
 ): Promise<LocalImportResult> {
   if (!input.sourceRef) return { error: 'sourceRef is required', status: 400 }
+  const importOrgId = input.env?.['LOCAL_IMPORT_ORG_ID']?.trim()
+  if (!await localImportReady(input.env ?? {})) return { error: 'The local worker must be online and selected as the provider to import host folders', status: 503 }
+  if (!importOrgId) return { error: localImportDisabledMessage, status: 503 }
+  if (importOrgId !== input.organizationId) {
+    return { error: 'Host-folder imports are restricted to the configured LOCAL_IMPORT_ORG_ID organization', status: 403 }
+  }
+  if (input.env?.['LOCAL_TRANSCODE_ENABLED']?.trim().toLowerCase() === 'false' || input.env?.['LOCAL_TRANSCODE_ENABLED']?.trim() === '0') {
+    return { error: 'Local transcoding is disabled for new submissions', status: 503 }
+  }
 
   const sourceRows = await db
     .select({
       id: transcodeSource.id,
       kind: transcodeSource.kind,
-      agentId: transcodeSource.agentId,
       fileName: transcodeSource.fileName,
       relativePath: transcodeSource.relativePath,
       availability: transcodeSource.availability,
@@ -715,7 +593,7 @@ export async function createLocalImport(
   if (source.availability === 'missing') {
     return {
       error:
-        'The source file is no longer where it was registered. Re-select it from the agent’s folders.',
+        'The source file is no longer where it was registered. Re-select it from the mounted folders.',
       status: 409,
     }
   }
@@ -744,7 +622,7 @@ export async function createLocalImport(
     ...input.options,
     // Provider is pinned here, at creation, so changing the installation default
     // never reroutes a job that already exists.
-    provider: 'self-hosted',
+    provider: 'local',
     playbackPolicy: input.playbackPolicy,
     organizationId: input.organizationId,
     generateSubtitle: input.generateSubtitle,
@@ -774,14 +652,13 @@ export async function createLocalImport(
           organizationId: input.organizationId,
           userId: input.userId,
           sourceId: source.id,
-          agentId: source.kind === 'local' ? source.agentId : null,
           title,
           playbackPolicy: input.playbackPolicy,
           generateSubtitle: input.generateSubtitle,
           generateChapters: input.generateChapters,
           options,
           idempotencyKey: input.idempotencyKey,
-          provider: 'self-hosted',
+          provider: 'local',
         })),
       ]
     })
@@ -817,7 +694,7 @@ export async function createLocalImport(
     title,
     sourceRef: source.id,
     status: 'processing',
-    waitingReason: source.kind === 'local' && !source.agentId ? 'no-eligible-agent' : null,
+    waitingReason: null,
     deduplicated: false,
   }
 }
@@ -883,8 +760,45 @@ function isUniqueViolation(error: unknown, fragment: string): boolean {
 
 // ── shared helpers ───────────────────────────────────────────────────────────
 
+const localImportDisabledMessage =
+  'Host-folder import is disabled. Set LOCAL_IMPORT_ORG_ID to an existing organization ID.'
+
+
+async function localImportReady(env: EnvLike): Promise<boolean> {
+  const provider = env['TRANSCODE_PROVIDER']?.trim().toLowerCase() ?? 'modal'
+  if (provider !== 'local') return false
+  if (env['LOCAL_TRANSCODE_ENABLED']?.trim().toLowerCase() === 'false' || env['LOCAL_TRANSCODE_ENABLED']?.trim() === '0') return false
+  const [worker] = await db.select({ lastSeenAt: localWorker.lastSeenAt }).from(localWorker).where(eq(localWorker.id, 'local')).limit(1)
+  return isLocalWorkerLive(worker?.lastSeenAt ?? null)
+}
+
+type ImportAccess =
+  | { ok: true; organizationId: string }
+  | { ok: false; error: string; status: 403 | 503 }
+
+async function configuredImportOrganization(env: EnvLike): Promise<string | null> {
+  const id = env['LOCAL_IMPORT_ORG_ID']?.trim()
+  if (!id) return null
+  const rows = await db.select({ id: organization.id }).from(organization).where(eq(organization.id, id)).limit(1)
+  return rows[0]?.id ?? null
+}
+
+async function resolveImportAccess(env: EnvLike, userId: string): Promise<ImportAccess> {
+  const organizationId = await configuredImportOrganization(env)
+  if (!organizationId) return { ok: false, error: localImportDisabledMessage, status: 503 }
+  const members = await db
+    .select({ role: member.role })
+    .from(member)
+    .where(and(eq(member.userId, userId), eq(member.organizationId, organizationId)))
+    .limit(1)
+  if (!members[0] || !['owner', 'admin'].includes(members[0].role)) {
+    return { ok: false, error: 'Only organization owners and admins may import host folders', status: 403 }
+  }
+  return { ok: true, organizationId }
+}
+
+
 type ParsedLocalSource = {
-  agentId: string
   rootName: string
   relativePath: string
   fileName: string
@@ -895,9 +809,6 @@ type ParsedLocalSource = {
 export function parseLocalSourceInput(
   body: Record<string, unknown>,
 ): { ok: true; value: ParsedLocalSource } | { ok: false; error: string } {
-  const agentId = typeof body?.agentId === 'string' ? body.agentId.trim() : ''
-  if (!agentId) return { ok: false, error: 'agentId is required' }
-
   const rootName = typeof body?.rootName === 'string' ? body.rootName.trim() : ''
   if (!rootName) return { ok: false, error: 'rootName is required' }
 
@@ -929,7 +840,6 @@ export function parseLocalSourceInput(
   return {
     ok: true,
     value: {
-      agentId,
       rootName,
       relativePath,
       fileName:
@@ -968,17 +878,6 @@ async function readJson(c: { req: { json: <T>() => Promise<T> } }): Promise<Reco
   } catch {
     return {}
   }
-}
-
-async function loadAgent(organizationId: string, agentId: string) {
-  const rows = await db
-    .select({ id: transcoderAgent.id, enabled: transcoderAgent.enabled })
-    .from(transcoderAgent)
-    .where(
-      and(eq(transcoderAgent.id, agentId), eq(transcoderAgent.organizationId, organizationId)),
-    )
-    .limit(1)
-  return rows[0] ?? null
 }
 
 function apiBaseUrl(requestUrl: string, configuredBackendUrl: string | undefined): string {

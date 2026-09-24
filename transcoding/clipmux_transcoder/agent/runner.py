@@ -373,7 +373,7 @@ class JobRunner:
         if not source_id:
             raise TranscodeError(ERROR_SOURCE_MISSING, "job has no usable source")
 
-        grant = self.client.source_grant(source_id)
+        grant = self.client.source_grant(source_id, job.job_id, job.attempt_id)
         download_dir = self.config.scratch_dir / job.video_id / job.attempt_id / "download"
         download_dir.mkdir(parents=True, exist_ok=True)
         target = download_dir / (str(source.get("fileName") or "source.bin"))
